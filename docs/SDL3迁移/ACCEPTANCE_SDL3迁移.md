@@ -2,7 +2,7 @@
  * @Author: Antigravity
  * @LastEditors: 炽热
  * @Date: 2026-04-25 20:52:42
- * @LastEditTime: 2026-04-25 22:39:56
+ * @LastEditTime: 2026-04-25 23:05:52
 -->
 # ACCEPTANCE — SDL3 迁移验收记录
 
@@ -98,3 +98,31 @@
 - `templates/ios-sdl3/` — CMake+SDL3 iOS 模板 (main.m, Info.plist, LaunchScreen)
 
 **M4 提交**: `7396b6f`
+
+---
+
+## M5: CI 构建修复 + 全平台验证 ✅
+
+| 问题 | 修复 | 提交 |
+|------|------|------|
+| CMake 子项目路径 | `CMAKE_SOURCE_DIR` → `CMAKE_CURRENT_SOURCE_DIR` | `0b831f6` |
+| Android ROOT_DIR | 7层→6层 `..` | `f6bfe36` |
+| iOS 部署目标 | 13.0→16.4 (`std::to_chars` 需要 16.3+) | `f6bfe36` |
+| choco_decrypt 签名 | 3参数→4参数 + `choco_free`→`free` | `d776da6` |
+| iOS miniaudio ObjC | `miniaudio_impl.c` 设为 `LANGUAGE OBJC` | `ed39f85` |
+| iOS main.m C++ | `main.m` 设为 `LANGUAGE OBJCXX` | `fc13606` |
+| iOS Storyboard | `targetRuntime` → `iOS.CocoaTouch` | `c315751` |
+| Android 子模块注册 | 注册全部 26 个 `luaopen_*` | `e3c9d2f` |
+| iOS 子模块注册 | 同上 | `e3c9d2f` |
+| main.lua API | 使用正确的引擎 OOP API | `3a3f01b` |
+
+### CI 验证结果
+
+| 平台 | 编译 | 运行 |
+|------|------|------|
+| Windows | ✅ | ✅ (桌面验证) |
+| Linux | ✅ | CI 无 GUI |
+| macOS | ✅ | CI 无 GUI |
+| Web/WASM | ✅ | 需浏览器 |
+| Android | ✅ | 待真机/模拟器验证 |
+| iOS | ✅ | 待真机验证 |

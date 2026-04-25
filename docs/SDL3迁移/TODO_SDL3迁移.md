@@ -2,34 +2,34 @@
  * @Author: Antigravity
  * @LastEditors: 炽热
  * @Date: 2026-04-25 21:18:33
- * @LastEditTime: 2026-04-25 22:02:07
+ * @LastEditTime: 2026-04-25 23:06:14
 -->
 # TODO — SDL3 迁移待办事项
 
+## 已完成
+
+### 1. CI 全平台编译 ✅
+- [x] 6 个平台全部编译通过 (Windows/Linux/macOS/Web/Android/iOS)
+- [x] M5 阶段修复了 10 个构建问题 (详见 ACCEPTANCE)
+- [x] 子模块注册: Android/iOS main 注册全部 26 个 `luaopen_*`
+
+### 2. Android SDL3 Java 源码集成 ✅
+- [x] CI 中 `setup_sdl3_java.sh` 正常工作
+- [x] SDLActivity.java 从 FetchContent 缓存动态提取
+
 ## 高优先级
 
-### 1. CI 全平台验证
-- [ ] 确认 GitHub Actions 6 个 job 全部通过
-- [ ] 如有失败, 根据日志修复编译错误
-- **操作**: 访问 https://github.com/futzhj/ChocoLightEngine/actions 查看最新构建结果
-
-### 2. Android SDL3 Java 源码集成
-- [ ] CI 中 SDL3 FetchContent 下载后, 需要将 Java 文件复制到模板项目
-- [ ] `setup_sdl3_java.sh` 脚本需要在 CI 环境中验证
-- [ ] SDLActivity.java 等文件不在 git 中, 每次构建动态获取
-- **操作**: 首次本地构建时运行 `bash templates/android-sdl3/setup_sdl3_java.sh`
-
 ### 3. Android 真机测试
-- [ ] 在 Android 设备/模拟器上验证 APK 安装和运行
-- [ ] 确认 GLES3 上下文创建成功
+- [x] APK 安装到模拟器 (MuMu x86_64)
+- [x] SDL3 初始化成功, `libchocolight.so` 加载正常
+- [ ] **Lua 引擎运行时验证** — 子模块已注册, 等待新 APK 确认窗口创建
+- [ ] 确认 GLES3 渲染正常 (矩形/圆形绘制)
 - [ ] 确认 SDL3 事件循环 (触摸) 正常
-- **操作**: `cd templates/android-sdl3 && ./gradlew installDebug`
 
-### 4. iOS 模拟器/真机测试
-- [ ] Xcode 打开 `templates/ios-sdl3/build/ChocoLightIOS.xcodeproj`
-- [ ] 选择 iPhone 模拟器, Build & Run
-- [ ] 确认 GLES3 上下文和引擎初始化日志
-- **操作**: `cd templates/ios-sdl3 && cmake -B build -GXcode -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_ARCHITECTURES=arm64`
+### 4. iOS 真机测试
+- [x] CI 编译通过 (Xcode 16.4, arm64)
+- [ ] Xcode 真机 Build & Run 验证
+- [ ] 确认 GLES3 上下文和引擎初始化
 
 ## 中优先级
 

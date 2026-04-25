@@ -97,13 +97,13 @@ CMakeLists.txt 判断:
 
 ## CI 状态
 
-| 平台 | Job | 状态 |
-|------|-----|------|
-| Windows | build-windows | 待验证 |
-| Linux | build-linux | 待验证 |
-| macOS | build-macos | 待验证 |
-| Web | build-web | 待验证 |
-| Android | build-android | 待验证 |
-| iOS | build-ios | 待验证 |
+| 平台 | Job | 编译 | 运行 |
+|------|-----|------|------|
+| Windows | build-windows | ✅ | ✅ 桌面验证 |
+| Linux | build-linux | ✅ | CI 无 GUI |
+| macOS | build-macos | ✅ | CI 无 GUI |
+| Web | build-web | ✅ | 需浏览器 |
+| Android | build-android | ✅ | 待真机验证 |
+| iOS | build-ios | ✅ | 待真机验证 |
 
-> CI 已触发 (commit `ca8138c`), 等待全平台结果确认。
+> 全平台编译通过。M5 阶段修复了 10 个构建问题 (详见 ACCEPTANCE)。
