@@ -1,7 +1,6 @@
 package com.chocolight.engine;
 
 import org.libsdl.app.SDLActivity;
-import android.os.Bundle;
 
 /**
  * ChocoLight 引擎 Android Activity — 继承 SDLActivity
@@ -9,13 +8,6 @@ import android.os.Bundle;
  * 原生层 main() 通过 SDL_main 调用
  */
 public class ChocoLightActivity extends SDLActivity {
-
-    @Override
-    protected void onCreate(Bundle savedInstanceState) {
-        // 等待模拟器 GPU 驱动初始化完成, 避免 EGL 竞态
-        try { Thread.sleep(300); } catch (InterruptedException ignored) {}
-        super.onCreate(savedInstanceState);
-    }
 
     @Override
     protected String[] getLibraries() {

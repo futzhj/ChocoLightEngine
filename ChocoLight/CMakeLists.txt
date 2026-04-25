@@ -43,19 +43,23 @@ FetchContent_MakeAvailable(SDL3)
 
 message(STATUS "SDL3: integrated via FetchContent (release-3.2.0)")
 
-# ==================== Box2D v3 (FetchContent) ====================
-set(BOX2D_SAMPLES   OFF CACHE BOOL "" FORCE)
-set(BOX2D_UNIT_TESTS OFF CACHE BOOL "" FORCE)
-set(BOX2D_BENCHMARKS OFF CACHE BOOL "" FORCE)
+# ==================== Box2D v3 (FetchContent, 非 Android) ====================
+if(NOT ANDROID)
+    set(BOX2D_SAMPLES   OFF CACHE BOOL "" FORCE)
+    set(BOX2D_UNIT_TESTS OFF CACHE BOOL "" FORCE)
+    set(BOX2D_BENCHMARKS OFF CACHE BOOL "" FORCE)
 
-FetchContent_Declare(
-    box2d
-    GIT_REPOSITORY https://github.com/erincatto/box2d.git
-    GIT_TAG        v3.0.0
-    GIT_SHALLOW    TRUE
-)
-FetchContent_MakeAvailable(box2d)
-message(STATUS "Box2D: integrated via FetchContent (v3.0.0)")
+    FetchContent_Declare(
+        box2d
+        GIT_REPOSITORY https://github.com/erincatto/box2d.git
+        GIT_TAG        v3.0.0
+        GIT_SHALLOW    TRUE
+    )
+    FetchContent_MakeAvailable(box2d)
+    message(STATUS "Box2D: integrated via FetchContent (v3.0.0)")
+else()
+    message(STATUS "Box2D: SKIPPED on Android (MuMu GPU compat)")
+endif()
 
 # ==================== 路径配置 ====================
 
@@ -120,7 +124,6 @@ set(LIGHT_SOURCES
     ${CHOCO_SRC}/light_input.cpp
     ${CHOCO_SRC}/light_particles.cpp
     ${CHOCO_SRC}/light_tilemap.cpp
-    ${CHOCO_SRC}/light_physics.cpp
     ${CHOCO_SRC}/light_ecs.cpp
     ${CHOCO_SRC}/light_antidebug.cpp
     ${CHOCO_SRC}/platform_window_sdl3.cpp
@@ -160,6 +163,11 @@ else()
         ${CHOCO_SRC}/render_legacy.cpp
         ${GLAD_DIR}/src/gl.c
     )
+endif()
+
+# Box2D physics 源文件 (仅非 Android)
+if(NOT ANDROID)
+    list(APPEND LIGHT_SOURCES ${CHOCO_SRC}/light_physics.cpp)
 endif()
 
 # Emscripten/Android: STATIC 库 (链接到最终二进制)
@@ -249,9 +257,12 @@ elseif(NOT EMSCRIPTEN AND NOT ANDROID AND NOT CHOCO_IOS)
     )
 endif()
 
-# Box2D (全平台)
-target_link_libraries(Light PRIVATE box2d)
-target_include_directories(Light PRIVATE ${box2d_SOURCE_DIR}/include)
+# Box2D (非 Android)
+if(NOT ANDROID)
+    target_link_libraries(Light PRIVATE box2d)
+    target_include_directories(Light PRIVATE ${box2d_SOURCE_DIR}/include)
+    target_compile_definitions(Light PRIVATE CHOCO_HAS_BOX2D=1)
+endif()
 
 # ==================== 编译定义 ====================
 

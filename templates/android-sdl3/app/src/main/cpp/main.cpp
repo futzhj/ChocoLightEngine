@@ -13,7 +13,6 @@
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
 #include <android/log.h>
-#include <unistd.h>
 
 // Lumen (Lua 5.1 兼容)
 #include "lua.h"
@@ -160,10 +159,8 @@ int main(int argc, char* argv[]) {
     luaopen_Light_Graphics_Particles(L); lua_pop(L, 1);
     LOGI("[DIAG] Phase2: Tilemap...");
     luaopen_Light_Graphics_Tilemap(L); lua_pop(L, 1);
-    LOGI("[DIAG] Phase2: Physics...");
-    luaopen_Light_Physics(L); lua_pop(L, 1);
-    LOGI("[DIAG] Phase2: Physics.World...");
-    luaopen_Light_Physics_World(L); lua_pop(L, 1);
+    // Physics 模块仅桌面/iOS 可用 (Android 暂未链接 Box2D)
+    LOGI("[DIAG] Phase2: Physics SKIPPED (no Box2D on Android)");
     LOGI("[DIAG] Phase2: ECS...");
     luaopen_Light_ECS(L); lua_pop(L, 1);
     luaopen_Light_Record(L); lua_pop(L, 1);
