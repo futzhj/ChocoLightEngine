@@ -136,59 +136,76 @@ jobs:
           name: template-web-wasm
           path: dist/web/
 
-  # ==================== Android (NDK → .so) ====================
+  # ==================== Android (APK) ====================
   build-android:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Android NDK
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Build Lumen (arm64-v8a)
+      - name: Build Lumen native libs
         run: |
           cd lumen-master
-          cmake -B build-android \
+          # arm64-v8a
+          cmake -B build-arm64 \
             -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake \
-            -DANDROID_ABI=arm64-v8a \
-            -DANDROID_PLATFORM=android-24 \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DLUA_USE_COMPAT=ON \
-            -DLUA_SKIP_INSTALL=ON
-          cmake --build build-android -j$(nproc) || true
+            -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-24 \
+            -DCMAKE_BUILD_TYPE=Release -DLUA_USE_COMPAT=ON \
+            -DLUA_BUILD_STATIC_ONLY=1
+          cmake --build build-arm64 -j$(nproc) || true
+          # armeabi-v7a
+          cmake -B build-arm32 \
+            -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake \
+            -DANDROID_ABI=armeabi-v7a -DANDROID_PLATFORM=android-24 \
+            -DCMAKE_BUILD_TYPE=Release -DLUA_USE_COMPAT=ON \
+            -DLUA_BUILD_STATIC_ONLY=1
+          cmake --build build-arm32 -j$(nproc) || true
 
-      - name: Build Lumen (armeabi-v7a)
+      - name: Copy native libs to template
         run: |
-          cd lumen-master
-          cmake -B build-android-v7a \
-            -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake \
-            -DANDROID_ABI=armeabi-v7a \
-            -DANDROID_PLATFORM=android-24 \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DLUA_USE_COMPAT=ON \
-            -DLUA_SKIP_INSTALL=ON
-          cmake --build build-android-v7a -j$(nproc) || true
+          mkdir -p templates/android/app/src/main/jniLibs/arm64-v8a
+          mkdir -p templates/android/app/src/main/jniLibs/armeabi-v7a
+          find lumen-master/build-arm64 -name "*.so" -exec cp {} templates/android/app/src/main/jniLibs/arm64-v8a/ \; 2>/dev/null || true
+          find lumen-master/build-arm32 -name "*.so" -exec cp {} templates/android/app/src/main/jniLibs/armeabi-v7a/ \; 2>/dev/null || true
+          ls -la templates/android/app/src/main/jniLibs/*/
+
+      - name: Build APK
+        run: |
+          cd templates/android
+          chmod +x gradlew 2>/dev/null || true
+          gradle wrapper 2>/dev/null || true
+          ./gradlew assembleRelease --no-daemon || gradle assembleRelease --no-daemon || true
 
       - name: Package Android Template
         run: |
-          mkdir -p dist/android/{arm64-v8a,armeabi-v7a}
-          find lumen-master/build-android -name "*.so" -exec cp {} dist/android/arm64-v8a/ \; 2>/dev/null || true
-          find lumen-master/build-android-v7a -name "*.so" -exec cp {} dist/android/armeabi-v7a/ \; 2>/dev/null || true
-          # Also copy lightc for host
+          mkdir -p dist/android
+          find templates/android -name "*.apk" -exec cp {} dist/android/ \; 2>/dev/null || true
+          # Also include raw .so files in case APK build fails
+          find lumen-master/build-arm64 -name "*.so" -exec cp {} dist/android/ \; 2>/dev/null || true
+          find lumen-master/build-arm32 -name "*.so" -exec cp {} dist/android/ \; 2>/dev/null || true
           cp lumen-master/tools/lightpack.py dist/android/
+          ls -la dist/android/
 
       - uses: actions/upload-artifact@v4
         with:
           name: template-android
           path: dist/android/
 
-  # ==================== iOS (Xcode → static libs) ====================
+  # ==================== iOS (.app unsigned) ====================
   build-ios:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build Lumen (iOS arm64)
+      - name: Build Lumen static lib (iOS arm64)
         run: |
           cd lumen-master
           cmake -B build-ios \
@@ -198,19 +215,38 @@ jobs:
             -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0 \
             -DCMAKE_BUILD_TYPE=Release \
             -DLUA_USE_COMPAT=ON \
+            -DLUA_BUILD_STATIC_ONLY=1 \
             -DLUA_SKIP_INSTALL=ON
           cmake --build build-ios --config Release -- -quiet || true
 
+      - name: Copy libs to iOS template
+        run: |
+          mkdir -p templates/ios/libs
+          find lumen-master/build-ios -name "*.a" -exec cp {} templates/ios/libs/ \; 2>/dev/null || true
+          ls -la templates/ios/libs/
+
+      - name: Build iOS .app
+        run: |
+          cd templates/ios
+          cmake -B build -GXcode \
+            -DCMAKE_SYSTEM_NAME=iOS \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0
+          cmake --build build --config Release -- -quiet \
+            CODE_SIGN_IDENTITY="-" CODE_SIGNING_ALLOWED=NO || true
+
       - name: Package iOS Template
         run: |
-          mkdir -p dist/ios-arm64
-          find lumen-master/build-ios -name "*.a" -exec cp {} dist/ios-arm64/ \; 2>/dev/null || true
-          cp lumen-master/tools/lightpack.py dist/ios-arm64/
+          mkdir -p dist/ios
+          find templates/ios/build -name "*.app" -exec cp -r {} dist/ios/ \; 2>/dev/null || true
+          find templates/ios/libs -name "*.a" -exec cp {} dist/ios/ \; 2>/dev/null || true
+          cp lumen-master/tools/lightpack.py dist/ios/
+          ls -la dist/ios/
 
       - uses: actions/upload-artifact@v4
         with:
           name: template-ios-arm64
-          path: dist/ios-arm64/
+          path: dist/ios/
 
   # ==================== Release ====================
   release:
