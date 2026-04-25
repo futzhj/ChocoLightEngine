@@ -32,19 +32,33 @@
 #include "light_audio_backend.h"
 #include <cstring>
 #include <cstdlib>
+#include <GLFW/glfw3.h>  // glfwGetTime (跨平台高精度计时)
+
+#ifdef _WIN32
 #include <windows.h>
 #include <mmsystem.h>    // Video 音频同步仍需 waveOut API
 #pragma comment(lib, "winmm.lib")
+typedef HMODULE DynLib;
+#define DynLoad(name) LoadLibraryA(name)
+#define DynSym(lib, name) GetProcAddress(lib, name)
+#define DynFree(lib) FreeLibrary(lib)
+#else
+#include <dlfcn.h>
+typedef void* DynLib;
+#define DynLoad(name) dlopen(name, RTLD_LAZY)
+#define DynSym(lib, name) dlsym(lib, name)
+#define DynFree(lib) dlclose(lib)
+#endif
 
 // ==================== FFmpeg 动态加载 ====================
 
 // FFmpeg 函数指针类型定义 (简化为 void* 泛型, 内部按正确 ABI 调用)
 struct FFmpegLib {
-    HMODULE hFormat;   // avformat-59.dll
-    HMODULE hCodec;    // avcodec-59.dll
-    HMODULE hUtil;     // avutil-57.dll
-    HMODULE hResample; // swresample-4.dll
-    HMODULE hScale;    // swscale-6.dll
+    DynLib  hFormat;   // avformat-59
+    DynLib  hCodec;    // avcodec-59
+    DynLib  hUtil;     // avutil-57
+    DynLib  hResample; // swresample-4
+    DynLib  hScale;    // swscale-6
     bool    loaded;
     bool    attempted; // 防止重复尝试加载
 
@@ -103,26 +117,39 @@ static bool LoadFFmpeg() {
     if (g_ff.attempted) return g_ff.loaded;
     g_ff.attempted = true;
 
-    // FFmpeg 5.x DLL (swscale-9 兼容已验证)
+#ifdef _WIN32
     const char* fmtNames[] = { "avformat-59.dll", "avformat.dll", nullptr };
     const char* codNames[] = { "avcodec-59.dll",  "avcodec.dll",  nullptr };
     const char* utlNames[] = { "avutil-57.dll",   "avutil.dll",   nullptr };
     const char* swrNames[] = { "swresample-4.dll","swresample.dll",nullptr };
     const char* swsNames[] = { "swscale-9.dll",   "swscale.dll",  nullptr };
+#elif defined(__APPLE__)
+    const char* fmtNames[] = { "libavformat.59.dylib", "libavformat.dylib", nullptr };
+    const char* codNames[] = { "libavcodec.59.dylib",  "libavcodec.dylib",  nullptr };
+    const char* utlNames[] = { "libavutil.57.dylib",   "libavutil.dylib",   nullptr };
+    const char* swrNames[] = { "libswresample.4.dylib","libswresample.dylib",nullptr };
+    const char* swsNames[] = { "libswscale.6.dylib",   "libswscale.dylib",  nullptr };
+#else
+    const char* fmtNames[] = { "libavformat.so.59", "libavformat.so", nullptr };
+    const char* codNames[] = { "libavcodec.so.59",  "libavcodec.so",  nullptr };
+    const char* utlNames[] = { "libavutil.so.57",   "libavutil.so",   nullptr };
+    const char* swrNames[] = { "libswresample.so.4","libswresample.so",nullptr };
+    const char* swsNames[] = { "libswscale.so.6",   "libswscale.so",  nullptr };
+#endif
 
-    // 加载 DLL: 先从 lib/ 子目录查找, 再回退到当前目录
-    // 设置 DLL 搜索路径, 让依赖 DLL 也能在 lib/ 找到
+#ifdef _WIN32
     SetDllDirectoryA("lib");
-    auto tryLoad = [](const char** names) -> HMODULE {
+#endif
+    auto tryLoad = [](const char** names) -> DynLib {
         for (int i = 0; names[i]; ++i) {
-            // 优先从 lib/ 子目录加载
-            char libPath[MAX_PATH];
-            snprintf(libPath, MAX_PATH, "lib\\%s", names[i]);
-            HMODULE h = LoadLibraryA(libPath);
+#ifdef _WIN32
+            char libPath[260];
+            snprintf(libPath, 260, "lib\\%s", names[i]);
+            DynLib h = DynLoad(libPath);
             if (h) return h;
-            // 回退到当前目录
-            h = LoadLibraryA(names[i]);
-            if (h) return h;
+#endif
+            DynLib h2 = DynLoad(names[i]);
+            if (h2) return h2;
         }
         return nullptr;
     };
@@ -132,7 +159,9 @@ static bool LoadFFmpeg() {
     g_ff.hUtil     = tryLoad(utlNames);
     g_ff.hResample = tryLoad(swrNames);
     g_ff.hScale    = tryLoad(swsNames);
+#ifdef _WIN32
     SetDllDirectoryA(nullptr); // 恢复默认搜索路径
+#endif
 
     if (!g_ff.hFormat || !g_ff.hCodec || !g_ff.hUtil) {
         CC::Log(CC::LOG_WARN, "FFmpeg DLLs not found (avformat=%p, avcodec=%p, avutil=%p)",
@@ -143,7 +172,7 @@ static bool LoadFFmpeg() {
 
     // 解析函数指针
     #define LOAD_FUNC(lib, name) \
-        *(void**)&g_ff.name = (void*)GetProcAddress(g_ff.lib, #name)
+        *(void**)&g_ff.name = (void*)DynSym(g_ff.lib, #name)
 
     LOAD_FUNC(hFormat, avformat_open_input);
     LOAD_FUNC(hFormat, avformat_find_stream_info);
@@ -578,14 +607,18 @@ static void* ProbeCodecPar(void* stream, int expectedType, int expectedId) {
         void* candidate = *(void**)(base + off);
         // 跳过空指针和明显无效地址
         if (!candidate || (uintptr_t)candidate < 0x10000) continue;
+#ifdef _WIN32
         __try {
+#endif
             int* fields = (int*)candidate;
             if (fields[0] == expectedType && fields[1] == expectedId) {
                 return candidate;
             }
+#ifdef _WIN32
         } __except(EXCEPTION_EXECUTE_HANDLER) {
             continue;  // 无效指针, 跳过
         }
+#endif
     }
     return nullptr;
 }
@@ -620,9 +653,11 @@ static bool ProbeAudioParams(void* codecpar, int* outSampleRate, int* outChannel
     return false;
 }
 
+#ifdef _WIN32
 // waveOut 音频缓冲区数量
 #define VIDEO_AUDIO_BUFS 64
 #define VIDEO_AUDIO_BUF_SAMPLES 4096
+#endif
 
 /// 视频播放上下文
 struct VideoContext {
@@ -642,8 +677,12 @@ struct VideoContext {
     bool           finished;
     bool           useSwscale;
     double         frameDelay;
+#ifdef _WIN32
     LARGE_INTEGER  lastFrameTime;
     LARGE_INTEGER  perfFreq;
+#else
+    double         lastFrameTimeSec;  // 上一帧时间 (glfwGetTime)
+#endif
     char           filePath[260];
 
     // === 音频 ===
@@ -653,10 +692,12 @@ struct VideoContext {
     int            audioSampleFmt;  // FFmpeg 采样格式
     int            audioSampleRate;
     int            audioChannels;
+#ifdef _WIN32
     HWAVEOUT       hWaveOut;        // waveOut 句柄
     WAVEHDR        waveHdrs[VIDEO_AUDIO_BUFS]; // 环形缓冲区头
     uint8_t*       audioBufs[VIDEO_AUDIO_BUFS]; // PCM 缓冲区
     int            audioWriteIdx;   // 当前写入缓冲区索引
+#endif
     bool           audioReady;      // 音频流是否可用
     void*          swrCtx;          // SwrContext* (音频格式转换)
     // 累积缓冲区: 攒满 VIDEO_AUDIO_BUF_SAMPLES 样本后再提交
@@ -678,6 +719,7 @@ static int l_Video_GC(lua_State* L) {
     if (!ctx) return 0;
 
     // 关闭音频
+#ifdef _WIN32
     if (ctx->hWaveOut) {
         waveOutReset(ctx->hWaveOut);
         for (int i = 0; i < VIDEO_AUDIO_BUFS; ++i) {
@@ -688,6 +730,7 @@ static int l_Video_GC(lua_State* L) {
         waveOutClose(ctx->hWaveOut);
         ctx->hWaveOut = nullptr;
     }
+#endif
 
     if (g_ff.loaded) {
         if (ctx->swsCtx && g_ff.sws_freeContext) g_ff.sws_freeContext(ctx->swsCtx);
@@ -854,8 +897,12 @@ static int l_Video_Call(lua_State* L) {
 
     // 初始化高精度计时器
     CC::Log(CC::LOG_INFO, "Video: step4 - init timer");
+#ifdef _WIN32
     QueryPerformanceFrequency(&ctx->perfFreq);
     QueryPerformanceCounter(&ctx->lastFrameTime);
+#else
+    ctx->lastFrameTimeSec = glfwGetTime();
+#endif
 
     ctx->playing = true;
     CC::Log(CC::LOG_INFO, "Video: opened '%s' (%dx%d, %.1f fps, texId=%u)",
@@ -912,9 +959,14 @@ static int l_Video_Update(lua_State* L) {
     if (!ctx || !ctx->playing || ctx->finished || !g_ff.loaded) return 0;
 
     // 视频帧定时: 判断是否需要新的视频帧
+#ifdef _WIN32
     LARGE_INTEGER now;
     QueryPerformanceCounter(&now);
     double elapsed = (double)(now.QuadPart - ctx->lastFrameTime.QuadPart) / ctx->perfFreq.QuadPart;
+#else
+    double nowSec = glfwGetTime();
+    double elapsed = nowSec - ctx->lastFrameTimeSec;
+#endif
     bool needVideoFrame = (elapsed >= ctx->frameDelay);
 
     // AVPacket 简化布局
@@ -933,6 +985,7 @@ static int l_Video_Update(lua_State* L) {
     bool gotVideoFrame = false;
 
     if (!needVideoFrame) {
+#ifdef _WIN32
         // 检查 waveOut 缓冲区水位 (pending = 已提交但未播完)
         int pending = 0;
         if (ctx->hWaveOut) {
@@ -942,8 +995,11 @@ static int l_Video_Update(lua_State* L) {
                     pending++;
             }
         }
-        // 4+ 个缓冲区在播放 (≥372ms), 不需要补充
+        // 4+ 个缓冲区在播放 (≥0.372s), 不需要补充
         if (pending >= 4) return 0;
+#else
+        return 0; // 非 Windows: 不需要音频缓冲补充
+#endif
     }
 
     int maxPackets = needVideoFrame ? 60 : 8;
@@ -958,7 +1014,8 @@ static int l_Video_Update(lua_State* L) {
 
         AVPacketSimple* pkt = (AVPacketSimple*)ctx->packet;
 
-        // ===== 音频包: 始终解码并送 waveOut =====
+        // ===== 音频包: 始终解码并送 waveOut (Windows only) =====
+#ifdef _WIN32
         if (pkt->stream_index == ctx->audioStreamIdx && ctx->audioReady) {
             g_ff.avcodec_send_packet(ctx->audioCodecCtx, ctx->packet);
             g_ff.av_packet_unref(ctx->packet);
@@ -1097,6 +1154,13 @@ static int l_Video_Update(lua_State* L) {
             }
             continue; // 继续读下一个包
         }
+#else
+        // 非 Windows: 跳过音频包
+        if (pkt->stream_index == ctx->audioStreamIdx) {
+            g_ff.av_packet_unref(ctx->packet);
+            continue;
+        }
+#endif
 
         // ===== 视频包: 始终送给解码器 (维护参考帧), 按需取帧 =====
         if (pkt->stream_index == ctx->videoStreamIdx) {
@@ -1106,7 +1170,11 @@ static int l_Video_Update(lua_State* L) {
             if (g_ff.avcodec_receive_frame(ctx->codecCtx, ctx->frame) == 0) {
                 if (needVideoFrame && !gotVideoFrame) {
                     gotVideoFrame = true;
+#ifdef _WIN32
                     ctx->lastFrameTime = now;
+#else
+                    ctx->lastFrameTimeSec = nowSec;
+#endif
                 }
                 // 不需要视频帧时丢弃已解码帧 (但解码器参考帧已更新)
             }

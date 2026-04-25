@@ -10,13 +10,19 @@
 
 #ifdef _WIN32
 #include <GL/gl.h>
-#else
+#elif defined(__APPLE__)
 #include <OpenGL/gl.h>
+#else
+#include <GL/gl.h>
 #endif
 
 #include <GLFW/glfw3.h>
 
 // ==================== FBO 扩展函数指针 (从 canvas 迁入) ====================
+
+#ifndef APIENTRY
+#define APIENTRY
+#endif
 
 typedef void   (APIENTRY *PFN_glGenFramebuffers)(int, unsigned int*);
 typedef void   (APIENTRY *PFN_glDeleteFramebuffers)(int, const unsigned int*);
@@ -61,18 +67,18 @@ class LegacyGLBackend : public RenderBackend {
     bool fboAvailable = false;
 
     void LoadFBOExtensions() {
-#ifdef _WIN32
-        glGenFB   = (PFN_glGenFramebuffers)wglGetProcAddress("glGenFramebuffers");
-        glDelFB   = (PFN_glDeleteFramebuffers)wglGetProcAddress("glDeleteFramebuffers");
-        glBindFB  = (PFN_glBindFramebuffer)wglGetProcAddress("glBindFramebuffer");
-        glFBTex2D = (PFN_glFramebufferTexture2D)wglGetProcAddress("glFramebufferTexture2D");
-        glGenRB   = (PFN_glGenRenderbuffers)wglGetProcAddress("glGenRenderbuffers");
-        glDelRB   = (PFN_glDeleteRenderbuffers)wglGetProcAddress("glDeleteRenderbuffers");
-        glBindRB  = (PFN_glBindRenderbuffer)wglGetProcAddress("glBindRenderbuffer");
-        glRBStore = (PFN_glRenderbufferStorage)wglGetProcAddress("glRenderbufferStorage");
-        glFBRB    = (PFN_glFramebufferRenderbuffer)wglGetProcAddress("glFramebufferRenderbuffer");
-        glCheckFB = (PFN_glCheckFramebufferStatus)wglGetProcAddress("glCheckFramebufferStatus");
-#endif
+        // 使用 glfwGetProcAddress 跨平台加载 FBO 扩展
+        auto getProc = [](const char* name) { return glfwGetProcAddress(name); };
+        glGenFB   = (PFN_glGenFramebuffers)getProc("glGenFramebuffers");
+        glDelFB   = (PFN_glDeleteFramebuffers)getProc("glDeleteFramebuffers");
+        glBindFB  = (PFN_glBindFramebuffer)getProc("glBindFramebuffer");
+        glFBTex2D = (PFN_glFramebufferTexture2D)getProc("glFramebufferTexture2D");
+        glGenRB   = (PFN_glGenRenderbuffers)getProc("glGenRenderbuffers");
+        glDelRB   = (PFN_glDeleteRenderbuffers)getProc("glDeleteRenderbuffers");
+        glBindRB  = (PFN_glBindRenderbuffer)getProc("glBindRenderbuffer");
+        glRBStore = (PFN_glRenderbufferStorage)getProc("glRenderbufferStorage");
+        glFBRB    = (PFN_glFramebufferRenderbuffer)getProc("glFramebufferRenderbuffer");
+        glCheckFB = (PFN_glCheckFramebufferStatus)getProc("glCheckFramebufferStatus");
         fboAvailable = glGenFB && glDelFB && glBindFB && glFBTex2D && glCheckFB;
     }
 

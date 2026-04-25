@@ -1,3 +1,9 @@
+<!--
+ * @Author: Antigravity
+ * @LastEditors: 炽热
+ * @Date: 2026-04-25 18:43:37
+ * @LastEditTime: 2026-04-25 19:09:53
+-->
 # 项目总结报告 — ChocoLight 引擎升级
 
 ## 项目概述

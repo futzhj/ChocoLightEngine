@@ -3,9 +3,9 @@
  * @file light_antidebug.h
  * @brief Engine-level anti-debugging protection
  * @note 5 detection methods + silent anomaly strategy
+ *       Windows: 5 层检测 (IsDebuggerPresent, RemoteDebugger, DebugPort, Timing, HW BP)
+ *       其他平台: 空实现 (Init/Check/GetAnomalyFactor 全部为无操作)
  */
-
-#ifdef _WIN32
 
 namespace LightAntiDebug {
 
@@ -21,5 +21,3 @@ bool Check();
 float GetAnomalyFactor();
 
 } // namespace LightAntiDebug
-
-#endif // _WIN32

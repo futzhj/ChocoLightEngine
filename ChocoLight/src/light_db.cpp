@@ -20,7 +20,9 @@
 #include "light.h"
 #include <cstring>
 #include <cstdlib>
+#ifdef _WIN32
 #include <windows.h>
+#endif
 
 // 真实 sqlite3 头文件 (来自 third_party/sqlite3/)
 extern "C" {
@@ -243,12 +245,14 @@ static int l_SQLite_Tostring(lua_State* L) {
 // 还原自 sub_1800B0100: GetModuleFileNameA → strstr(light/luajit) → exit(-1)
 
 static bool CheckBinaryName() {
+#ifdef _WIN32
     char filename[MAX_PATH] = {};
     GetModuleFileNameA(NULL, filename, MAX_PATH);
     if (!strstr(filename, "light") && !strstr(filename, "luajit")) {
         CC::Log(CC::LOG_WARN, "Binary name check: %s (expected light/luajit)", filename);
         return false;
     }
+#endif
     return true;
 }
 

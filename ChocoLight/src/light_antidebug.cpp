@@ -128,4 +128,15 @@ float GetAnomalyFactor() {
 
 } // namespace LightAntiDebug
 
+#else // !_WIN32
+
+// 非 Windows 平台: 空实现 (无反调试)
+#include "light_antidebug.h"
+
+namespace LightAntiDebug {
+void  Init() {}
+bool  Check() { return true; }
+float GetAnomalyFactor() { return 0.0f; }
+} // namespace LightAntiDebug
+
 #endif // _WIN32

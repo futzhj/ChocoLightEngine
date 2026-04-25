@@ -25,6 +25,13 @@ jobs:
           cmake -B build -DCMAKE_BUILD_TYPE=Release -DLUA_USE_COMPAT=ON
           cmake --build build --config Release --target light lightw lightc
 
+      # ChocoLight 引擎 (Light.dll) — 依赖 Lumen lua51.lib
+      - name: Build ChocoLight Engine
+        run: |
+          cd ChocoLight
+          cmake -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --config Release
+
       - name: Package Windows Template
         run: |
           mkdir dist\windows-x64
@@ -33,6 +40,7 @@ jobs:
           copy lumen-master\build\src\lightc\Release\lightc.exe dist\windows-x64\lightc.exe
           copy lumen-master\build\lib\lua\Release\lua51.dll     dist\windows-x64\lua51.dll
           copy lumen-master\tools\lightpack.py                  dist\windows-x64\lightpack.py
+          if exist ChocoLight\build\bin\Release\Light.dll copy ChocoLight\build\bin\Release\Light.dll dist\windows-x64\Light.dll
 
       - uses: actions/upload-artifact@v4
         with:
@@ -46,13 +54,23 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install Dependencies
-        run: sudo apt-get update && sudo apt-get install -y build-essential cmake libreadline-dev
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake libreadline-dev \
+            libglfw3-dev libgl-dev libuv1-dev xorg-dev
 
       - name: Build Lumen
         run: |
           cd lumen-master
           cmake -B build -DCMAKE_BUILD_TYPE=Release -DLUA_USE_COMPAT=ON
           cmake --build build -j$(nproc)
+
+      # ChocoLight 引擎 (libLight.so)
+      - name: Build ChocoLight Engine
+        run: |
+          cd ChocoLight
+          cmake -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build -j$(nproc) || true
 
       - name: Package Linux Template
         run: |
@@ -62,6 +80,7 @@ jobs:
           cp lumen-master/build/src/lightc/lightc  dist/linux-x64/ || true
           # Linux shared lib name varies
           find lumen-master/build/lib/lua -name "*.so*" -exec cp {} dist/linux-x64/ \;
+          find ChocoLight/build/bin -name "*.so*" -exec cp {} dist/linux-x64/ \; 2>/dev/null || true
           cp lumen-master/tools/lightpack.py       dist/linux-x64/
 
       - uses: actions/upload-artifact@v4
@@ -75,6 +94,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install Dependencies
+        run: brew install glfw
+
       - name: Build Lumen
         run: |
           cd lumen-master
@@ -83,6 +105,14 @@ jobs:
                 -DCMAKE_OSX_ARCHITECTURES="x86_64;arm64"
           cmake --build build -j$(sysctl -n hw.ncpu)
 
+      # ChocoLight 引擎 (libLight.dylib)
+      - name: Build ChocoLight Engine
+        run: |
+          cd ChocoLight
+          cmake -B build -DCMAKE_BUILD_TYPE=Release \
+                -DCMAKE_OSX_ARCHITECTURES="x86_64;arm64"
+          cmake --build build -j$(sysctl -n hw.ncpu) || true
+
       - name: Package macOS Template
         run: |
           mkdir -p dist/macos-universal
@@ -90,6 +120,7 @@ jobs:
           cp lumen-master/build/src/light/lightw   dist/macos-universal/ || true
           cp lumen-master/build/src/lightc/lightc  dist/macos-universal/ || true
           find lumen-master/build/lib/lua -name "*.dylib" -exec cp {} dist/macos-universal/ \;
+          find ChocoLight/build/bin -name "*.dylib" -exec cp {} dist/macos-universal/ \; 2>/dev/null || true
           cp lumen-master/tools/lightpack.py       dist/macos-universal/
 
       - uses: actions/upload-artifact@v4

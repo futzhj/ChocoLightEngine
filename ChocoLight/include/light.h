@@ -34,10 +34,14 @@ extern "C" {
 
 // ==================== 导出宏 ====================
 
-#ifdef LIGHT_EXPORTS
-#define LIGHT_API __declspec(dllexport)
+#ifdef _WIN32
+  #ifdef LIGHT_EXPORTS
+    #define LIGHT_API __declspec(dllexport)
+  #else
+    #define LIGHT_API __declspec(dllimport)
+  #endif
 #else
-#define LIGHT_API __declspec(dllimport)
+  #define LIGHT_API __attribute__((visibility("default")))
 #endif
 
 // ==================== CC 命名空间 (核心工具) ====================

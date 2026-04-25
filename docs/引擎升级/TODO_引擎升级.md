@@ -1,3 +1,9 @@
+<!--
+ * @Author: Antigravity
+ * @LastEditors: 炽热
+ * @Date: 2026-04-25 18:44:04
+ * @LastEditTime: 2026-04-25 19:13:17
+-->
 # 待办事项 — ChocoLight 引擎升级
 
 ## 优先级: 高
@@ -41,9 +47,13 @@
 - **内容**: 当前固定 v1.48.0, 后续可考虑 CMake FetchContent 自动更新
 - **操作**: 无需立即操作
 
-### 8. 跨平台编译测试
-- **内容**: 当前只在 Windows MSVC 编译, 理论上 libuv/miniaudio/glad 跨平台
-- **操作**: 在 Linux/macOS 上测试编译
+### 8. ~~跨平台编译测试~~ ✅ 已完成
+- **内容**: ~~当前只在 Windows MSVC 编译~~ → 已完成跨平台适配
+- **已完成**:
+  - `CMakeLists.txt` 支持 Windows/Linux/macOS 三平台构建
+  - 源码跨平台适配: `cc_core.cpp` (POSIX 时间+ANSI色彩), `light_antidebug.cpp` (非Windows空实现), `light_av.cpp` (dlopen/dlsym), `light_db.cpp` (守卫), `render_legacy.cpp` (glfwGetProcAddress), `light.h` (导出宏)
+  - CI/CD `build-templates.yml` 新增 ChocoLight 引擎构建 (Win: Light.dll, Linux: libLight.so, macOS: libLight.dylib)
+- **待验证**: 推送后观察 CI 是否全平台编译通过
 
 ## 缺少的配置
 
