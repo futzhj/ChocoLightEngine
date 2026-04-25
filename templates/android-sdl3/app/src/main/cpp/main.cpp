@@ -153,7 +153,9 @@ int main(int argc, char* argv[]) {
     luaopen_Light_Network_Http(L); lua_pop(L, 1);
     luaopen_Light_Network_HttpServer(L); lua_pop(L, 1);
     luaopen_Light_Network_Web(L); lua_pop(L, 1);
-    // Phase 2: Particles + Tilemap + ECS (Input/Physics 不在 Android 编译)
+    // Phase 2 模块 (Input 在 Android 上为空壳, Physics 未编译)
+    LOGI("[DIAG] Phase2: Input (stub)...");
+    luaopen_Light_Input(L); lua_pop(L, 1);
     LOGI("[DIAG] Phase2: Particles...");
     luaopen_Light_Graphics_Particles(L); lua_pop(L, 1);
     LOGI("[DIAG] Phase2: Tilemap...");

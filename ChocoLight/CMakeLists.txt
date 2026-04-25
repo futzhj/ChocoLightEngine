@@ -164,12 +164,12 @@ else()
     )
 endif()
 
-# Input + Physics 源文件 (非 Android, Android 上 Input 导致 MuMu 崩溃)
+# light_input.cpp 内部用 #ifdef __ANDROID__ 提供空壳, 可全平台编译
+list(APPEND LIGHT_SOURCES ${CHOCO_SRC}/light_input.cpp)
+
+# Physics 源文件 (非 Android, 需要 Box2D)
 if(NOT ANDROID)
-    list(APPEND LIGHT_SOURCES
-        ${CHOCO_SRC}/light_input.cpp
-        ${CHOCO_SRC}/light_physics.cpp
-    )
+    list(APPEND LIGHT_SOURCES ${CHOCO_SRC}/light_physics.cpp)
 endif()
 
 # Emscripten/Android: STATIC 库 (链接到最终二进制)

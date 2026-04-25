@@ -1,3 +1,13 @@
+#ifdef __ANDROID__
+// Android 空壳: 完整实现在下方 #else 分支
+#include "light.h"
+#include "platform_window.h"
+void InputProcessEvent(const PlatformWindow::Event&) {}
+int luaopen_Light_Input(lua_State* L) {
+    LT::RegisterModule(L, "Input", nullptr);
+    return 1;
+}
+#else
 /**
  * @file light_input.cpp
  * @brief Light.Input 模块 — 统一输入管理器 (键盘/鼠标/触摸/手柄/虚拟动作)
@@ -470,3 +480,4 @@ int luaopen_Light_Input(lua_State* L) {
 
     return 1;
 }
+#endif // !__ANDROID__
