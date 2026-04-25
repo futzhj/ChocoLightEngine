@@ -31,6 +31,7 @@ target_include_directories(lumen-embedded PUBLIC
 
 target_compile_definitions(lumen-embedded PRIVATE
     LUA_USE_IOS
+    "system(x)=(-1)"   # iOS 没有 system(), 用宏替换为返回 -1
 )
 
 # iOS 应用
