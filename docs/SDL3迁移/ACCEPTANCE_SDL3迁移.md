@@ -2,7 +2,7 @@
  * @Author: Antigravity
  * @LastEditors: 炽热
  * @Date: 2026-04-25 20:52:42
- * @LastEditTime: 2026-04-25 21:15:55
+ * @LastEditTime: 2026-04-25 22:39:56
 -->
 # ACCEPTANCE — SDL3 迁移验收记录
 
