@@ -89,18 +89,19 @@
 
 ---
 
-## S6. GLFW 窗口管理与事件循环
+## S6. SDL3 窗口管理与平台抽象层
 
-**描述**: 基于 GLFW 实现跨平台窗口创建、输入事件处理、帧循环管理。
+**描述**: 基于 SDL3 实现跨平台窗口创建、GL 上下文管理、事件处理、帧循环，替代原 GLFW 方案以支持 Android/iOS 原生平台。
 
 **技术要点**:
-- 窗口创建多重载 (`Open()` / `Open(w)` / `Open(w,h)` / `Open(w,h,title)`)
-- GL 上下文创建: 3.3 Core → 2.1 兼容自动回退
-- GLFW 回调 → Lua 方法转发 (`OnKey/OnMouseButton/OnMousePosition`)
-- 帧循环: `Resume()` → `PollEvents` → `AntiDebug::Check` → `Window:__call` (清屏→Draw→Update(dt)→SwapBuffers)
-- 窗口关闭时自动清理: 渲染/音频/网络后端 Shutdown
+- **PlatformWindow 抽象层**: 统一事件模型 (`PlatformWindow::Event`)，SDL3 后端实现
+- 窗口创建多重载 + GL 上下文: 3.3 Core → ES 3.0 → 2.1 自动回退
+- SDL3 拉模式事件 → 统一 Event 结构 → 分发到 Input 和 Lua 回调
+- 帧循环: `Resume()` → `PollEvent` → `AntiDebug::Check` → `Window:__call`
+- **Android JNI 集成**: `Window:SetOrientation()` 运行时屏幕方向控制
+- 窗口关闭自动清理: 渲染/音频/网络后端 Shutdown
 
-**涉及文件**: `light_ui.cpp`
+**涉及文件**: `light_ui.cpp`, `platform_window.h`, `platform_window_sdl3.cpp`
 
 ---
 
@@ -218,20 +219,134 @@
 
 ---
 
+---
+
+## S14. 统一输入管理器
+
+**描述**: 实现键盘/鼠标/触摸/手柄的统一输入系统，支持虚拟动作映射，跨桌面和移动平台。
+
+**技术要点**:
+- 纯 POD 静态数据结构（避免 Android .so 加载时全局构造函数问题）
+- 键盘: 512 键状态数组 + 帧按下检测 (当前帧 vs 上帧)
+- 鼠标: 按钮状态 + 坐标 + 滚轮增量
+- 触摸: 10 点多触控，槽位分配/释放
+- 手柄: SDL3 Gamepad API，4 手柄并发，按钮/轴/热插拔
+- 动作映射: `AddAction(name, {key, mouseBtn, gamepadBtn})` → `IsActionDown(name)`
+- **Android 精简版**: #ifdef __ANDROID__ 编译 ~90 行精简实现，避免 MuMu .so 段布局崩溃
+
+**涉及文件**: `light_input.cpp`
+
+---
+
+## S15. 2D 粒子系统
+
+**描述**: 实现 GPU 友好的 2D 粒子发射器，支持可配置的粒子属性和批量渲染。
+
+**技术要点**:
+- 发射器参数: 位置/速度/加速度/生命周期/颜色渐变/缩放
+- 对象池管理: 固定大小粒子池，避免运行时分配
+- 批量渲染: 合并粒子绘制调用
+- Lua API: `Particles.New/Emit/Update/Draw/SetProperty`
+
+**涉及文件**: `light_particles.cpp`
+
+---
+
+## S16. Tilemap 瓦片地图
+
+**描述**: 实现 2D 瓦片地图加载、渲染和碰撞查询。
+
+**技术要点**:
+- 多图层支持
+- 瓦片集纹理管理
+- 视口裁剪 (只渲染可见区域)
+- Lua API: `Tilemap.New/Load/Draw/GetTile/SetTile`
+
+**涉及文件**: `light_tilemap.cpp`
+
+---
+
+## S17. Box2D 物理引擎集成
+
+**描述**: 集成 Box2D v3 物理引擎，提供 Lua 层的刚体模拟和碰撞检测。
+
+**技术要点**:
+- Box2D v3 API (与 v2 API 完全不同)
+- World/Body/Shape/Joint 生命周期管理
+- FetchAdd CMake 自动拉取 Box2D 源码
+- Android 平台排除 (v3 不支持 x86_64 翻译层)
+- Lua API: `Physics.NewWorld/CreateBody/AddShape/Step/RayCast`
+
+**涉及文件**: `light_physics.cpp`, `CMakeLists.txt`
+
+---
+
+## S18. 轻量 ECS 实体组件系统
+
+**描述**: 实现轻量级 Entity-Component-System 架构，用于中等规模场景管理。
+
+**技术要点**:
+- Entity: 整数 ID + 组件位掩码
+- Component: 类型化数据存储
+- System: 按组件过滤实体，批量处理
+- Lua API: `ECS.CreateEntity/AddComponent/GetComponent/RegisterSystem/Update`
+
+**涉及文件**: `light_ecs.cpp`
+
+---
+
+## S19. Android NDK 适配与 .so 崩溃排查
+
+**描述**: 解决 Android NDK 构建中的 ABI 兼容性、.so 加载崩溃、模拟器 GPU 驱动问题。
+
+**技术要点**:
+- **MuMu RenderThread 崩溃根因**: .so 代码/数据段大小改变内存布局，触发 `pthread_mutex_lock on destroyed mutex`
+- 解决方案: Android 用 #ifdef 编译精简版模块（~90 行 vs ~470 行）
+- Box2D v3 `Unsupported CPU` 错误: 限制 ABI 为 arm64-v8a + x86_64
+- `aligned_alloc` 兼容性: minSdk 提升到 28
+- 二分法排查: 逐模块启用/禁用定位崩溃源
+- JNI 集成: 运行时调用 Activity 方法 (屏幕方向)
+
+**涉及文件**: `light_input.cpp`, `CMakeLists.txt`, `AndroidManifest.xml`, `main.cpp`
+
+---
+
+## S20. 跨平台渲染后端抽象
+
+**描述**: 设计并实现渲染后端抽象层，支持 GL 3.3 Core (桌面) / GLES 3.0 (移动) / GL 2.1 Legacy (回退) 三级自动切换。
+
+**技术要点**:
+- `RenderBackend` 接口: DrawArrays/BindTexture/SetColor/PushMatrix/PopMatrix 等
+- `GL33Backend`: Shader 管线 (VAO/VBO/Uniform)
+- `LegacyBackend`: 固定管线 (glBegin/glEnd)
+- 运行时 GL 版本探测 + 自动选择
+- `Mat4` 矩阵运算: Identity/Ortho/Translate/Rotate/Scale/Multiply
+
+**涉及文件**: `render_backend.cpp`, `render_backend.h`, `render_gl33.cpp`
+
+---
+
 ## 技能矩阵总览
 
-| 编号 | 技能 | 领域 | 难度 |
-|------|------|------|------|
-| S1 | Lua OOP 框架 | 语言设计 | ⭐⭐⭐ |
-| S2 | C++/Lua 桥接 | 系统编程 | ⭐⭐⭐ |
-| S3 | GL 渲染后端 | 图形学 | ⭐⭐⭐⭐ |
-| S4 | UTF-8 文本渲染 | 图形学 | ⭐⭐⭐ |
-| S5 | FFmpeg 动态加载 | 音视频 | ⭐⭐⭐⭐⭐ |
-| S6 | GLFW 窗口管理 | 系统编程 | ⭐⭐ |
-| S7 | HTTP/WebSocket | 网络编程 | ⭐⭐⭐⭐ |
-| S8 | SQLite + ORM | 数据库 | ⭐⭐⭐ |
-| S9 | 游戏格式逆向 | 逆向工程 | ⭐⭐⭐⭐ |
-| S10 | 反调试+加密 | 安全 | ⭐⭐⭐⭐ |
-| S11 | 跨平台 CI/CD | DevOps | ⭐⭐⭐ |
-| S12 | 二进制缓冲区 | 系统编程 | ⭐⭐ |
-| S13 | IDA 逆向还原 | 逆向工程 | ⭐⭐⭐⭐⭐ |
+| 编号 | 技能 | 领域 | 难度 | 版本 |
+|------|------|------|------|------|
+| S1 | Lua OOP 框架 | 语言设计 | ⭐⭐⭐ | v0.1 |
+| S2 | C++/Lua 桥接 | 系统编程 | ⭐⭐⭐ | v0.1 |
+| S3 | GL 渲染后端 | 图形学 | ⭐⭐⭐⭐ | v0.1 |
+| S4 | UTF-8 文本渲染 | 图形学 | ⭐⭐⭐ | v0.1 |
+| S5 | FFmpeg 动态加载 | 音视频 | ⭐⭐⭐⭐⭐ | v0.1 |
+| S6 | SDL3 窗口+平台抽象 | 系统编程 | ⭐⭐⭐ | v0.2 |
+| S7 | HTTP/WebSocket | 网络编程 | ⭐⭐⭐⭐ | v0.1 |
+| S8 | SQLite + ORM | 数据库 | ⭐⭐⭐ | v0.1 |
+| S9 | 游戏格式逆向 | 逆向工程 | ⭐⭐⭐⭐ | v0.1 |
+| S10 | 反调试+加密 | 安全 | ⭐⭐⭐⭐ | v0.1 |
+| S11 | 跨平台 CI/CD | DevOps | ⭐⭐⭐ | v0.1 |
+| S12 | 二进制缓冲区 | 系统编程 | ⭐⭐ | v0.1 |
+| S13 | IDA 逆向还原 | 逆向工程 | ⭐⭐⭐⭐⭐ | v0.1 |
+| S14 | 统一输入管理器 | 游戏系统 | ⭐⭐⭐ | v0.3 |
+| S15 | 2D 粒子系统 | 图形学 | ⭐⭐⭐ | v0.3 |
+| S16 | Tilemap 瓦片地图 | 游戏系统 | ⭐⭐⭐ | v0.3 |
+| S17 | Box2D 物理集成 | 游戏系统 | ⭐⭐⭐⭐ | v0.3 |
+| S18 | 轻量 ECS | 架构设计 | ⭐⭐⭐ | v0.3 |
+| S19 | Android 适配排查 | 平台工程 | ⭐⭐⭐⭐ | v0.3 |
+| S20 | 渲染后端抽象 | 图形学 | ⭐⭐⭐⭐ | v0.2 |
