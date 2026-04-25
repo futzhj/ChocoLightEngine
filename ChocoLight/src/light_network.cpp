@@ -36,8 +36,8 @@
 
 #include "light.h"
 
-#if defined(__EMSCRIPTEN__) || defined(__ANDROID__)
-// Web/Android: 网络模块不可用 (libuv 不支持), 提供空存根
+#if defined(__EMSCRIPTEN__) || defined(__ANDROID__) || defined(CHOCO_PLATFORM_IOS)
+// Web/Android/iOS: 网络模块不可用 (libuv 不支持), 提供空存根
 int luaopen_Light_Network(lua_State* L) { LT::EnsureLightTable(L); lua_pushstring(L, "Network"); lua_createtable(L, 0, 0); lua_rawset(L, -3); lua_pushstring(L, "Network"); lua_rawget(L, -2); lua_remove(L, -2); return 1; }
 int luaopen_Light_Network_Http(lua_State* L) { return luaopen_Light_Network(L); }
 int luaopen_Light_Network_HttpServer(lua_State* L) { return luaopen_Light_Network(L); }
@@ -898,4 +898,4 @@ int luaopen_Light_Network_Web(lua_State* L) {
     return 1;
 }
 
-#endif // !__EMSCRIPTEN__ && !__ANDROID__
+#endif // !__EMSCRIPTEN__ && !__ANDROID__ && !CHOCO_PLATFORM_IOS

@@ -180,7 +180,7 @@ void* CreateWindow(const char* title, int w, int h, bool fullscreen) {
     if (!s_initialized) return nullptr;
 
     // 设置 OpenGL 属性 (在创建窗口之前)
-#if defined(__EMSCRIPTEN__) || defined(__ANDROID__) || (defined(__APPLE__) && TARGET_OS_IOS)
+#if defined(__EMSCRIPTEN__) || defined(__ANDROID__) || defined(CHOCO_PLATFORM_IOS)
     // 移动/Web: GLES 3.0 (= WebGL2)
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);

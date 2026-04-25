@@ -6,8 +6,7 @@
  */
 
 // 桌面平台编译守卫
-#if !defined(__EMSCRIPTEN__) && !defined(__ANDROID__)
-#if !(defined(__APPLE__) && defined(TARGET_OS_IOS) && TARGET_OS_IOS)
+#if !defined(__EMSCRIPTEN__) && !defined(__ANDROID__) && !defined(CHOCO_PLATFORM_IOS)
 
 #include "video_backend.h"
 #include "ffmpeg_common.h"
@@ -671,11 +670,10 @@ VideoBackend* CreateVideoBackend() {
     return new VideoBackendFFmpeg();
 }
 
-#endif // !iOS
-#endif // !__EMSCRIPTEN__ && !__ANDROID__
+#endif // !__EMSCRIPTEN__ && !__ANDROID__ && !CHOCO_PLATFORM_IOS
 
 // Android/iOS: 视频后端暂不可用, 提供空存根
-#if defined(__ANDROID__) || (defined(__APPLE__) && defined(TARGET_OS_IOS) && TARGET_OS_IOS)
+#if defined(__ANDROID__)
 #include "video_backend.h"
 VideoBackend* CreateVideoBackend() { return nullptr; }
 #endif

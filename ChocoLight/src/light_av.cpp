@@ -71,6 +71,11 @@ bool LoadFFmpeg() {
     CC::Log(CC::LOG_INFO, "FFmpeg: not available on Android");
     return false;
 #endif
+#ifdef CHOCO_PLATFORM_IOS
+    // iOS: FFmpeg 不可用, 视频由 AVPlayer 后端处理
+    CC::Log(CC::LOG_INFO, "FFmpeg: not available on iOS (using AVPlayer backend)");
+    return false;
+#endif
 
 #ifdef _WIN32
     const char* fmtNames[] = { "avformat-59.dll", "avformat.dll", nullptr };

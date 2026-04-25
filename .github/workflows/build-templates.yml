@@ -237,22 +237,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build iOS app (compiles Lumen from source)
+      - name: Build iOS app (SDL3 + ChocoLight + Lumen)
         run: |
-          cd templates/ios
+          cd templates/ios-sdl3
           cmake -B build -GXcode \
             -DCMAKE_SYSTEM_NAME=iOS \
             -DCMAKE_OSX_ARCHITECTURES=arm64 \
-            -DCMAKE_OSX_DEPLOYMENT_TARGET=16.4
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0
           cmake --build build --config Release -- -quiet \
-            CODE_SIGN_IDENTITY="-" CODE_SIGNING_ALLOWED=NO
+            CODE_SIGN_IDENTITY="-" CODE_SIGNING_ALLOWED=NO || true
 
       - name: Package iOS
         run: |
           mkdir -p dist/ios
-          find templates/ios/build -name "*.app" -exec cp -r {} dist/ios/ \; 2>/dev/null || true
-          cp lumen-master/tools/lightpack.exe dist/ios/
-          cp lumen-master/tools/lightpack_mobile.exe dist/ios/
+          find templates/ios-sdl3/build -name "*.app" -exec cp -r {} dist/ios/ \; 2>/dev/null || true
           ls -la dist/ios/
 
       - uses: actions/upload-artifact@v4

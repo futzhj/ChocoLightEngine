@@ -33,6 +33,8 @@
 // 渲染后端为空时的 GL 兼容 (Legacy 路径)
 #if defined(__EMSCRIPTEN__) || defined(__ANDROID__)
 #include <GLES3/gl3.h>
+#elif defined(CHOCO_PLATFORM_IOS)
+#include <OpenGLES/ES3/gl.h>
 #elif defined(_WIN32)
 #include <GL/gl.h>
 #elif defined(__APPLE__)
@@ -77,7 +79,7 @@ static void SetupOrthoProjection(int width, int height) {
         g_render->SetViewport(0, 0, width, height);
         g_render->LoadOrtho(0, (float)width, (float)height, 0, -1.0f, 1.0f);
     } else {
-#if !defined(__EMSCRIPTEN__) && !defined(__ANDROID__) && !(defined(__APPLE__) && defined(TARGET_OS_IOS) && TARGET_OS_IOS)
+#if !defined(__EMSCRIPTEN__) && !defined(__ANDROID__) && !defined(CHOCO_PLATFORM_IOS)
         glMatrixMode(GL_PROJECTION);
         glLoadIdentity();
         glOrtho(0, width, height, 0, -1.0, 1.0);

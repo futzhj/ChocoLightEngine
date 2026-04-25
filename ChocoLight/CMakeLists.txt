@@ -4,6 +4,13 @@ project(ChocoLight LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+    set(CHOCO_IOS ON)
+    enable_language(OBJC OBJCXX)
+else()
+    set(CHOCO_IOS OFF)
+endif()
+
 # ==================== SDL3 (FetchContent) ====================
 # 从官方仓库拉取源码编译, 锁定稳定版 release-3.2.0
 # 静态链接到 Light.dll/so/dylib, 避免运行时动态库依赖
@@ -45,12 +52,12 @@ set(LUA_INCLUDE_DIR "${CMAKE_SOURCE_DIR}/../lumen-master/include")
 set(SQLITE3_DIR "${CMAKE_SOURCE_DIR}/third_party/sqlite3")
 
 # glad GL 3.3 Core Profile 加载器 (桌面专用, GLES3 平台不需要)
-if(NOT EMSCRIPTEN AND NOT ANDROID)
+if(NOT EMSCRIPTEN AND NOT ANDROID AND NOT CHOCO_IOS)
     set(GLAD_DIR "${CMAKE_SOURCE_DIR}/third_party/glad")
 endif()
 
-# libuv 异步 IO 库 (网络抽象, Emscripten/Android 不支持)
-if(NOT EMSCRIPTEN AND NOT ANDROID)
+# libuv 异步 IO 库 (网络抽象, Emscripten/Android/iOS 不支持)
+if(NOT EMSCRIPTEN AND NOT ANDROID AND NOT CHOCO_IOS)
     set(LIBUV_BUILD_SHARED OFF CACHE BOOL "" FORCE)
     add_subdirectory(third_party/libuv EXCLUDE_FROM_ALL)
 endif()
@@ -114,6 +121,9 @@ elseif(ANDROID)
     # Android: FFmpeg 后端内部 __ANDROID__ 守卫会编译为空, 但仍需包含以提供 CreateVideoBackend 存根
     # 无 Legacy GL, 无 glad
     list(APPEND LIGHT_SOURCES src/video_backend_ffmpeg.cpp)
+elseif(CHOCO_IOS)
+    # iOS: 原生视频后端预留, 无 Legacy GL, 无 glad
+    list(APPEND LIGHT_SOURCES src/video_backend_avplayer.mm)
 else()
     # 桌面: FFmpeg 视频后端 + Legacy GL + glad
     list(APPEND LIGHT_SOURCES
@@ -125,7 +135,7 @@ endif()
 
 # Emscripten/Android: STATIC 库 (链接到最终二进制)
 # 桌面: SHARED 库 (Light.dll/so/dylib)
-if(EMSCRIPTEN OR ANDROID)
+if(EMSCRIPTEN OR ANDROID OR CHOCO_IOS)
     add_library(Light STATIC ${LIGHT_SOURCES})
 else()
     add_library(Light SHARED ${LIGHT_SOURCES})
@@ -140,7 +150,7 @@ target_include_directories(Light PRIVATE
     ${CMAKE_SOURCE_DIR}/third_party
 )
 
-if(NOT EMSCRIPTEN AND NOT ANDROID)
+if(NOT EMSCRIPTEN AND NOT ANDROID AND NOT CHOCO_IOS)
     target_include_directories(Light PRIVATE
         ${GLAD_DIR}/include
         ${CMAKE_SOURCE_DIR}/third_party/libuv/include
@@ -162,6 +172,20 @@ elseif(ANDROID)
         SDL3::SDL3
         GLESv3 EGL android log
     )
+elseif(CHOCO_IOS)
+    # iOS: Lumen + SDL3 static + OpenGLES, 无 libuv
+    target_link_libraries(Light PRIVATE
+        ${LUMEN_LIB_PATH}
+        SDL3::SDL3-static
+        "-framework UIKit"
+        "-framework Foundation"
+        "-framework QuartzCore"
+        "-framework CoreVideo"
+        "-framework CoreAudio"
+        "-framework AudioToolbox"
+        "-framework AVFoundation"
+        "-framework OpenGLES"
+    )
 else()
     # 桌面: Lumen + SDL3 static + libuv
     target_link_libraries(Light PRIVATE
@@ -176,7 +200,7 @@ if(WIN32)
     target_link_libraries(Light PRIVATE
         ws2_32 gdi32 user32 shell32 opengl32 winmm
     )
-elseif(APPLE AND NOT EMSCRIPTEN)
+elseif(APPLE AND NOT EMSCRIPTEN AND NOT CHOCO_IOS)
     find_library(COCOA_FRAMEWORK Cocoa)
     find_library(IOKIT_FRAMEWORK IOKit)
     find_library(COREVIDEO_FRAMEWORK CoreVideo)
@@ -188,7 +212,7 @@ elseif(APPLE AND NOT EMSCRIPTEN)
         ${OPENGL_FRAMEWORK} ${COREAUDIO_FRAMEWORK} ${AUDIOTOOLBOX_FRAMEWORK}
         pthread dl
     )
-elseif(NOT EMSCRIPTEN AND NOT ANDROID)
+elseif(NOT EMSCRIPTEN AND NOT ANDROID AND NOT CHOCO_IOS)
     # Linux
     find_package(OpenGL REQUIRED)
     target_link_libraries(Light PRIVATE
@@ -202,6 +226,10 @@ target_compile_definitions(Light PRIVATE LIGHT_EXPORTS SQLITE_THREADSAFE=1)
 
 if(WIN32)
     target_compile_definitions(Light PRIVATE _CRT_SECURE_NO_WARNINGS)
+endif()
+
+if(CHOCO_IOS)
+    target_compile_definitions(Light PRIVATE CHOCO_PLATFORM_IOS=1)
 endif()
 
 # ==================== 输出配置 ====================

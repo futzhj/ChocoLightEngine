@@ -10,8 +10,10 @@
 // GL 头文件: GLES3 (Web/移动) vs glad (桌面)
 #if defined(__EMSCRIPTEN__)
 #include <GLES3/gl3.h>
-#elif defined(__ANDROID__) || (defined(__APPLE__) && TARGET_OS_IOS)
+#elif defined(__ANDROID__)
 #include <GLES3/gl3.h>
+#elif defined(CHOCO_PLATFORM_IOS)
+#include <OpenGLES/ES3/gl.h>
 #else
 #include <glad/gl.h>
 #endif
@@ -23,7 +25,7 @@
 // ==================== 内嵌 Shader 源码 ====================
 
 // GLES3 / GL33 共用 Shader, 仅版本声明不同
-#if defined(__EMSCRIPTEN__) || defined(__ANDROID__) || (defined(__APPLE__) && TARGET_OS_IOS)
+#if defined(__EMSCRIPTEN__) || defined(__ANDROID__) || defined(CHOCO_PLATFORM_IOS)
 static const char* VS_SOURCE = R"(#version 300 es
 precision highp float;
 layout(location=0) in vec3 aPos;
@@ -356,7 +358,7 @@ public:
             }
             glBindTexture(GL_TEXTURE_2D, 0);
             return tex;
-#elif defined(__ANDROID__) || (defined(__APPLE__) && TARGET_OS_IOS)
+#elif defined(__ANDROID__) || defined(CHOCO_PLATFORM_IOS)
             // GLES3: 单独设置 swizzle (GL_TEXTURE_SWIZZLE_RGBA 不在 GLES 3.0 规范中)
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_R, GL_ONE);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_G, GL_ONE);
@@ -500,7 +502,7 @@ RenderBackend* CreateGL33Backend() {
 // ==================== 运行时自动选择工厂 ====================
 
 RenderBackend* CreateRenderBackend() {
-#if defined(__EMSCRIPTEN__) || defined(__ANDROID__) || (defined(__APPLE__) && TARGET_OS_IOS)
+#if defined(__EMSCRIPTEN__) || defined(__ANDROID__) || defined(CHOCO_PLATFORM_IOS)
     // GLES3: 直接创建, 无需 glad 加载
     RenderBackend* gl33 = CreateGL33Backend();
     if (gl33) return gl33;
