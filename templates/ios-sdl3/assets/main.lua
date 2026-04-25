@@ -1,3 +1,9 @@
+--[[
+Author: Antigravity
+LastEditors: 炽热
+Date: 2026-04-25 21:15:36
+LastEditTime: 2026-04-25 22:48:19
+--]]
 -- ChocoLight iOS Demo
 print("ChocoLight Engine v0.3.0 (iOS SDL3)")
 
