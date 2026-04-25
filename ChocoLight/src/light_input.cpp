@@ -72,9 +72,10 @@ static struct {
     // 手柄
     GamepadState gamepads[MAX_GAMEPADS];
     int gamepadCount;
-    // 虚拟动作
-    std::unordered_map<std::string, ActionMapping> actions;
 } s_input = {};
+
+// 虚拟动作映射 (延迟初始化, 避免 .so 加载时全局构造导致 MuMu 崩溃)
+static std::unordered_map<std::string, ActionMapping>* s_actions = nullptr;
 
 // ==================== 内部: 事件处理 ====================
 
@@ -340,15 +341,16 @@ static int l_Input_AddAction(lua_State* L) {
     if (lua_isnumber(L, -1)) m.gpIndex = (int)lua_tointeger(L, -1) - 1;
     lua_pop(L, 1);
 
-    s_input.actions[name] = m;
+    if (s_actions) (*s_actions)[name] = m;
     return 0;
 }
 
 /// Input.IsActionDown(name) → bool
 static int l_Input_IsActionDown(lua_State* L) {
     const char* name = luaL_checkstring(L, 1);
-    auto it = s_input.actions.find(name);
-    if (it == s_input.actions.end()) {
+    if (!s_actions) { lua_pushboolean(L, 0); return 1; }
+    auto it = s_actions->find(name);
+    if (it == s_actions->end()) {
         lua_pushboolean(L, 0);
         return 1;
     }
@@ -402,6 +404,8 @@ static const luaL_Reg input_funcs[] = {
 int luaopen_Light_Input(lua_State* L) {
     // 初始化状态
     memset(&s_input, 0, sizeof(s_input));
+    if (!s_actions) s_actions = new std::unordered_map<std::string, ActionMapping>();
+    s_actions->clear();
 
     LT::RegisterModule(L, "Input", input_funcs);
 
