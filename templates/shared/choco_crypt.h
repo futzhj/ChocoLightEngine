@@ -16,9 +16,9 @@
 #ifndef CHOCO_CRYPT_H
 #define CHOCO_CRYPT_H
 
-#include <cstdint>
-#include <cstdlib>
-#include <cstring>
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
 
 #define CHOCO_MAGIC     "CLPK"
 #define CHOCO_VERSION   1
