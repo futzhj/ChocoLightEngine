@@ -20,10 +20,9 @@ static int l_ios_print(lua_State *L) {
     NSMutableString *line = [NSMutableString string];
 
     for (int i = 1; i <= n; i++) {
-        const char *s = luaL_tolstring(L, i, NULL);
+        const char *s = lua_tostring(L, i);
         if (i > 1) [line appendString:@"\t"];
         [line appendString:s ? [NSString stringWithUTF8String:s] : @"(null)"];
-        lua_pop(L, 1);
     }
     [line appendString:@"\n"];
 

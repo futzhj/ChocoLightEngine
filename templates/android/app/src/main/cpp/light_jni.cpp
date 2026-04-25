@@ -31,10 +31,9 @@ static int l_print(lua_State *L) {
     luaL_buffinit(L, &buf);
 
     for (int i = 1; i <= n; i++) {
-        const char *s = luaL_tolstring(L, i, nullptr);
+        const char *s = lua_tostring(L, i);
         if (i > 1) luaL_addchar(&buf, '\t');
         luaL_addstring(&buf, s ? s : "(null)");
-        lua_pop(L, 1);
     }
     luaL_pushresult(&buf);
     const char *text = lua_tostring(L, -1);
