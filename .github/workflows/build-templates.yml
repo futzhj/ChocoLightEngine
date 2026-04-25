@@ -151,52 +151,23 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Build Lumen native libs
-        run: |
-          cd lumen-master
-          # arm64-v8a
-          cmake -B build-arm64 \
-            -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake \
-            -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-24 \
-            -DCMAKE_BUILD_TYPE=Release -DLUA_USE_COMPAT=ON \
-            -DLUA_BUILD_STATIC_ONLY=1
-          cmake --build build-arm64 -j$(nproc) || true
-          # armeabi-v7a
-          cmake -B build-arm32 \
-            -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake \
-            -DANDROID_ABI=armeabi-v7a -DANDROID_PLATFORM=android-24 \
-            -DCMAKE_BUILD_TYPE=Release -DLUA_USE_COMPAT=ON \
-            -DLUA_BUILD_STATIC_ONLY=1
-          cmake --build build-arm32 -j$(nproc) || true
-
-      - name: Copy native libs to template
-        run: |
-          mkdir -p templates/android/app/src/main/jniLibs/arm64-v8a
-          mkdir -p templates/android/app/src/main/jniLibs/armeabi-v7a
-          find lumen-master/build-arm64 -name "*.so" -exec cp {} templates/android/app/src/main/jniLibs/arm64-v8a/ \; 2>/dev/null || true
-          find lumen-master/build-arm32 -name "*.so" -exec cp {} templates/android/app/src/main/jniLibs/armeabi-v7a/ \; 2>/dev/null || true
-          ls -la templates/android/app/src/main/jniLibs/*/
-
-      - name: Build APK
+      - name: Build APK via Gradle (compiles Lumen from source)
         run: |
           cd templates/android
+          gradle wrapper --gradle-version 8.5 || true
           chmod +x gradlew 2>/dev/null || true
-          gradle wrapper 2>/dev/null || true
-          ./gradlew assembleRelease --no-daemon || gradle assembleRelease --no-daemon || true
+          ./gradlew assembleRelease --no-daemon 2>&1 || gradle assembleRelease --no-daemon 2>&1 || true
 
-      - name: Package Android Template
+      - name: Package Android
         run: |
           mkdir -p dist/android
           find templates/android -name "*.apk" -exec cp {} dist/android/ \; 2>/dev/null || true
-          # Also include raw .so files in case APK build fails
-          find lumen-master/build-arm64 -name "*.so" -exec cp {} dist/android/ \; 2>/dev/null || true
-          find lumen-master/build-arm32 -name "*.so" -exec cp {} dist/android/ \; 2>/dev/null || true
           cp lumen-master/tools/lightpack.py dist/android/
           ls -la dist/android/
 
       - uses: actions/upload-artifact@v4
         with:
-          name: template-android
+          name: template-android-apk
           path: dist/android/
 
   # ==================== iOS (.app unsigned) ====================
@@ -205,27 +176,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build Lumen static lib (iOS arm64)
-        run: |
-          cd lumen-master
-          cmake -B build-ios \
-            -GXcode \
-            -DCMAKE_SYSTEM_NAME=iOS \
-            -DCMAKE_OSX_ARCHITECTURES=arm64 \
-            -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0 \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DLUA_USE_COMPAT=ON \
-            -DLUA_BUILD_STATIC_ONLY=1 \
-            -DLUA_SKIP_INSTALL=ON
-          cmake --build build-ios --config Release -- -quiet || true
-
-      - name: Copy libs to iOS template
-        run: |
-          mkdir -p templates/ios/libs
-          find lumen-master/build-ios -name "*.a" -exec cp {} templates/ios/libs/ \; 2>/dev/null || true
-          ls -la templates/ios/libs/
-
-      - name: Build iOS .app
+      - name: Build iOS app (compiles Lumen from source)
         run: |
           cd templates/ios
           cmake -B build -GXcode \
@@ -235,17 +186,16 @@ jobs:
           cmake --build build --config Release -- -quiet \
             CODE_SIGN_IDENTITY="-" CODE_SIGNING_ALLOWED=NO || true
 
-      - name: Package iOS Template
+      - name: Package iOS
         run: |
           mkdir -p dist/ios
           find templates/ios/build -name "*.app" -exec cp -r {} dist/ios/ \; 2>/dev/null || true
-          find templates/ios/libs -name "*.a" -exec cp {} dist/ios/ \; 2>/dev/null || true
           cp lumen-master/tools/lightpack.py dist/ios/
           ls -la dist/ios/
 
       - uses: actions/upload-artifact@v4
         with:
-          name: template-ios-arm64
+          name: template-ios-app
           path: dist/ios/
 
   # ==================== Release ====================
