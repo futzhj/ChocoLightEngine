@@ -237,12 +237,12 @@ def _jarsigner_sign(input_apk, output_apk, keystore):
 # iOS .app Packing
 # ============================================================
 
-def pack_ios(template_app, lua_source, output_app, sign_identity=None):
+def pack_ios(template_app, lua_source, output_app, sign_identity=None, assets_dirs=None):
     """Inject Lua scripts into template .app bundle"""
     if not os.path.isdir(template_app) and not os.path.isfile(template_app):
         # Maybe it's a .tar.gz or .zip?
         if template_app.endswith(('.zip', '.tar.gz', '.tgz')):
-            return pack_ios_archive(template_app, lua_source, output_app, sign_identity)
+            return pack_ios_archive(template_app, lua_source, output_app, sign_identity, assets_dirs)
         print(f"Error: template .app not found: {template_app}")
         sys.exit(1)
 
@@ -263,6 +263,18 @@ def pack_ios(template_app, lua_source, output_app, sign_identity=None):
         shutil.copy2(src, dst)
         print(f"  + {rel}")
 
+    # Inject additional asset files into bundle
+    for ad in (assets_dirs or []):
+        if os.path.isdir(ad):
+            for root, _, fnames in os.walk(ad):
+                for fn in fnames:
+                    full = os.path.join(root, fn)
+                    rel = os.path.relpath(full, ad)
+                    dst = os.path.join(output_app, rel)
+                    os.makedirs(os.path.dirname(dst), exist_ok=True)
+                    shutil.copy2(full, dst)
+                    print(f"  + {rel} (asset)")
+
     # Re-sign if on macOS and identity provided
     if sign_identity and sys.platform == 'darwin':
         print(f"[lightpack_mobile] Re-signing with: {sign_identity}")
@@ -274,7 +286,7 @@ def pack_ios(template_app, lua_source, output_app, sign_identity=None):
     _print_result_ios(template_app, output_app, lua_files)
 
 
-def pack_ios_archive(archive_path, lua_source, output_app, sign_identity=None):
+def pack_ios_archive(archive_path, lua_source, output_app, sign_identity=None, assets_dirs=None):
     """Extract .app from archive, inject, and repack"""
     with tempfile.TemporaryDirectory() as tmpdir:
         # Extract
@@ -294,7 +306,7 @@ def pack_ios_archive(archive_path, lua_source, output_app, sign_identity=None):
             sys.exit(1)
 
         template = apps[0]
-        pack_ios(template, lua_source, output_app, sign_identity)
+        pack_ios(template, lua_source, output_app, sign_identity, assets_dirs)
 
 
 # ============================================================
@@ -388,6 +400,7 @@ Examples:
     p_ios.add_argument('template', help='Template .app path (or .zip/.tar.gz)')
     p_ios.add_argument('scripts', help='Lua script file or directory')
     p_ios.add_argument('-o', '--output', required=True, help='Output .app path')
+    p_ios.add_argument('--assets', nargs='*', help='Additional asset directories')
     p_ios.add_argument('--sign', help='Codesign identity (macOS only)')
 
     # IPA subcommand
@@ -403,7 +416,7 @@ Examples:
 
     elif args.platform == 'ios':
         print(f"[lightpack_mobile] Packing iOS: {args.template} + {args.scripts}")
-        pack_ios(args.template, args.scripts, args.output, getattr(args, 'sign', None))
+        pack_ios(args.template, args.scripts, args.output, getattr(args, 'sign', None), args.assets)
 
     elif args.platform == 'ipa':
         print(f"[lightpack_mobile] Creating IPA from: {args.app}")
