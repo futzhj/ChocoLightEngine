@@ -1,3 +1,9 @@
+--[[
+Author: Antigravity
+LastEditors: 炽热
+Date: 2026-04-25 12:16:23
+LastEditTime: 2026-04-25 22:53:17
+--]]
 -- ChocoLight Engine Demo
 -- 此脚本打包到 APK/IPA assets 中，启动时自动执行
 
