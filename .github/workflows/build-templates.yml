@@ -218,18 +218,21 @@ jobs:
         run: |
           cd templates/android-sdl3
           gradle wrapper --gradle-version 8.5
-          ./gradlew assembleDebug --no-daemon --info || true
+          ./gradlew assembleDebug --no-daemon --stacktrace
 
       - name: Package Android
         run: |
           mkdir -p dist/android
-          find templates/android-sdl3 -name "*.apk" -exec cp {} dist/android/ \; 2>/dev/null || true
+          echo "=== Searching for APK files ==="
+          find templates/android-sdl3 -name "*.apk" -type f
+          find templates/android-sdl3 -name "*.apk" -exec cp {} dist/android/ \;
           ls -la dist/android/
 
       - uses: actions/upload-artifact@v4
         with:
           name: template-android-apk
           path: dist/android/
+          if-no-files-found: error
 
   # ==================== iOS (.app unsigned) ====================
   build-ios:
@@ -245,18 +248,21 @@ jobs:
             -DCMAKE_OSX_ARCHITECTURES=arm64 \
             -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0
           cmake --build build --config Release -- -quiet \
-            CODE_SIGN_IDENTITY="-" CODE_SIGNING_ALLOWED=NO || true
+            CODE_SIGN_IDENTITY="-" CODE_SIGNING_ALLOWED=NO
 
       - name: Package iOS
         run: |
           mkdir -p dist/ios
-          find templates/ios-sdl3/build -name "*.app" -exec cp -r {} dist/ios/ \; 2>/dev/null || true
+          echo "=== Searching for .app bundles ==="
+          find templates/ios-sdl3/build -name "*.app" -type d
+          find templates/ios-sdl3/build -name "*.app" -type d -exec cp -r {} dist/ios/ \;
           ls -la dist/ios/
 
       - uses: actions/upload-artifact@v4
         with:
           name: template-ios-app
           path: dist/ios/
+          if-no-files-found: error
 
   # ==================== Release ====================
   release:
