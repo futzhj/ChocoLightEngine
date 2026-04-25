@@ -1,30 +1,43 @@
---[[
-Author: Antigravity
-LastEditors: 炽热
-Date: 2026-04-25 21:15:36
-LastEditTime: 2026-04-25 22:48:19
---]]
--- ChocoLight iOS Demo
+-- ChocoLight iOS Demo (最小可运行脚本)
 print("ChocoLight Engine v0.3.0 (iOS SDL3)")
 
-local ok, err = pcall(function()
-    local win = Light(Light.UI.Window):New(800, 600, "ChocoLight")
-    if not win then
-        print("Window creation failed")
-        return
-    end
+local HelloWindow = Light(Light.UI.Window):New()
 
-    Light.UI.Resume(win, {
-        Update = function(dt) end,
-        Draw = function()
-            Light.Graphics.SetColor(0.2, 0.6, 1.0, 1.0)
-            Light.Graphics.Rectangle("fill", 100, 100, 200, 150)
-            Light.Graphics.SetColor(1.0, 1.0, 1.0, 1.0)
-            Light.Graphics.Print("Hello from iOS!", 120, 160)
-        end,
-    })
-end)
+function HelloWindow:OnOpen()
+  print("Window opened!")
+end
 
-if not ok then
-    print("Error: " .. tostring(err))
+function HelloWindow:Update(dt)
+end
+
+function HelloWindow:Draw()
+  Light.Graphics.Rectangle(
+    Light.Graphics.FillMode,
+    100, 100, 0,
+    200, 150, 0,
+    0, 0, 0,
+    1, 1, 1,
+    0, 0, 0
+  )
+
+  Light.Graphics.Circle(
+    Light.Graphics.LineMode,
+    400, 300, 0,
+    50,
+    16,
+    0, 0, 0,
+    1, 1, 1,
+    0, 0, 0
+  )
+end
+
+function HelloWindow:OnKey(key, scanCode, action, mods)
+  print("Key:", key, scanCode, action, mods)
+end
+
+HelloWindow:Open(800, 600, "ChocoLight")
+HelloWindow:SetVSync(true)
+
+while Light.UI.Loop() do
+  Light.UI.Resume()
 end

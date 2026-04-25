@@ -1,26 +1,45 @@
--- ChocoLight Android Demo
+-- ChocoLight Android Demo (最小可运行脚本)
 print("ChocoLight Engine v0.3.0 (Android SDL3)")
-print("Platform: " .. (jit and jit.os or "Lua 5.1"))
 
--- 列出 Light 模块可用的 API
-print("=== Light API ===")
-if Light then
-    for k, v in pairs(Light) do
-        print("  Light." .. tostring(k) .. " = " .. type(v))
-    end
-else
-    print("  Light module not found!")
+local HelloWindow = Light(Light.UI.Window):New()
+
+function HelloWindow:OnOpen()
+  print("Window opened!")
 end
 
--- 简单事件循环保持 App 运行
-print("Entering main loop...")
-local running = true
-while running do
-    local event = Light.PollEvent and Light.PollEvent()
-    if event == "quit" then
-        running = false
-    end
-    -- 简单延时避免 CPU 满载
-    if Light.Sleep then Light.Sleep(16) end
+function HelloWindow:Update(dt)
 end
-print("Done.")
+
+function HelloWindow:Draw()
+  -- 蓝色矩形
+  Light.Graphics.Rectangle(
+    Light.Graphics.FillMode,
+    100, 100, 0,
+    200, 150, 0,
+    0, 0, 0,
+    1, 1, 1,
+    0, 0, 0
+  )
+
+  -- 圆形
+  Light.Graphics.Circle(
+    Light.Graphics.LineMode,
+    400, 300, 0,
+    50,
+    16,
+    0, 0, 0,
+    1, 1, 1,
+    0, 0, 0
+  )
+end
+
+function HelloWindow:OnKey(key, scanCode, action, mods)
+  print("Key:", key, scanCode, action, mods)
+end
+
+HelloWindow:Open(800, 600, "ChocoLight")
+HelloWindow:SetVSync(true)
+
+while Light.UI.Loop() do
+  Light.UI.Resume()
+end
