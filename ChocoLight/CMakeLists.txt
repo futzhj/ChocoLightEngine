@@ -93,6 +93,8 @@ add_library(Light SHARED
     src/render_gl33.cpp
     # 音频后端抽象层
     src/light_audio_backend.cpp
+    # 视频后端抽象层 (桌面: FFmpeg, Web: HTML5, 移动: 原生)
+    src/video_backend_ffmpeg.cpp
     # 网络抽象层 (libuv)
     src/light_platform_net.cpp
     # SQLite3 amalgamation (C 源码)
