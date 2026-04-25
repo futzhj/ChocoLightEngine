@@ -119,12 +119,18 @@ if(EMSCRIPTEN)
     # Web: HTML5 视频后端, 无 Legacy GL, 无 glad
     list(APPEND LIGHT_SOURCES ${CHOCO_SRC}/video_backend_html5.cpp)
 elseif(ANDROID)
-    # Android: FFmpeg 后端内部 __ANDROID__ 守卫会编译为空, 但仍需包含以提供 CreateVideoBackend 存根
-    # 无 Legacy GL, 无 glad
-    list(APPEND LIGHT_SOURCES ${CHOCO_SRC}/video_backend_ffmpeg.cpp)
+    # Android: MediaPlayer + SurfaceTexture → OES → TEXTURE_2D
+    # POSIX socket 网络, 无 Legacy GL, 无 glad
+    list(APPEND LIGHT_SOURCES
+        ${CHOCO_SRC}/video_backend_mediaPlayer.cpp
+        ${CHOCO_SRC}/light_platform_net_mobile.cpp
+    )
 elseif(CHOCO_IOS)
-    # iOS: 原生视频后端预留, 无 Legacy GL, 无 glad
-    list(APPEND LIGHT_SOURCES ${CHOCO_SRC}/video_backend_avplayer.mm)
+    # iOS: AVPlayer 视频 + POSIX socket 网络, 无 Legacy GL, 无 glad
+    list(APPEND LIGHT_SOURCES
+        ${CHOCO_SRC}/video_backend_avplayer.mm
+        ${CHOCO_SRC}/light_platform_net_mobile.cpp
+    )
 else()
     # 桌面: FFmpeg 视频后端 + Legacy GL + glad
     list(APPEND LIGHT_SOURCES

@@ -671,9 +671,3 @@ VideoBackend* CreateVideoBackend() {
 }
 
 #endif // !__EMSCRIPTEN__ && !__ANDROID__ && !CHOCO_PLATFORM_IOS
-
-// Android/iOS: 视频后端暂不可用, 提供空存根
-#if defined(__ANDROID__)
-#include "video_backend.h"
-VideoBackend* CreateVideoBackend() { return nullptr; }
-#endif

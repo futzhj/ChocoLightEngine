@@ -21,6 +21,7 @@
 
 // ChocoLight 模块注册 (声明在 light.h 中)
 #include "light.h"
+#include "light_platform_net.h"
 
 // 脚本解密支持
 #include "choco_crypt.h"
@@ -104,6 +105,9 @@ int main(int argc, char* argv[]) {
     (void)argc; (void)argv;
     LOGI("ChocoLight Engine starting (SDL3 + GLES3)");
 
+    // 网络子系统初始化
+    PlatformNet::Init();
+
     // SDL3 初始化 (Video 子系统, Audio 由 miniaudio 管理)
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS)) {
         LOGE("SDL_Init failed: %s", SDL_GetError());
@@ -162,6 +166,7 @@ int main(int argc, char* argv[]) {
 
     // 清理
     lua_close(L);
+    PlatformNet::Shutdown();
     SDL_Quit();
 
     LOGI("ChocoLight Engine shutdown");

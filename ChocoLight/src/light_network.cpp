@@ -36,16 +36,27 @@
 
 #include "light.h"
 
-#if defined(__EMSCRIPTEN__) || defined(__ANDROID__) || defined(CHOCO_PLATFORM_IOS)
-// Web/Android/iOS: 网络模块不可用 (libuv 不支持), 提供空存根
+#if defined(__EMSCRIPTEN__)
+// Web: 网络模块不可用 (浏览器沙箱限制原始 TCP), 提供空存根
 int luaopen_Light_Network(lua_State* L) { LT::EnsureLightTable(L); lua_pushstring(L, "Network"); lua_createtable(L, 0, 0); lua_rawset(L, -3); lua_pushstring(L, "Network"); lua_rawget(L, -2); lua_remove(L, -2); return 1; }
 int luaopen_Light_Network_Http(lua_State* L) { return luaopen_Light_Network(L); }
 int luaopen_Light_Network_HttpServer(lua_State* L) { return luaopen_Light_Network(L); }
 int luaopen_Light_Network_Web(lua_State* L) { return luaopen_Light_Network(L); }
 #else
+// 桌面 (libuv) + Android/iOS (POSIX socket) 共用完整网络实现
 
 #include "light_platform_net.h"
+#if !defined(__ANDROID__) && !defined(CHOCO_PLATFORM_IOS)
 #include <uv.h>
+#else
+#include <time.h>
+// 移动端替代 uv_hrtime (纳秒精度时间戳)
+static uint64_t uv_hrtime() {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
+}
+#endif
 #include <cstring>
 #include <cstdlib>
 #include <string>
@@ -898,4 +909,4 @@ int luaopen_Light_Network_Web(lua_State* L) {
     return 1;
 }
 
-#endif // !__EMSCRIPTEN__ && !__ANDROID__ && !CHOCO_PLATFORM_IOS
+#endif // !__EMSCRIPTEN__

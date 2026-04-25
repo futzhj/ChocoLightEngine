@@ -17,6 +17,7 @@
 #include "lualib.h"
 #include "lauxlib.h"
 #include "light.h"
+#include "light_platform_net.h"
 #include "choco_crypt.h"
 
 // 自定义 print: 输出到 NSLog
@@ -100,6 +101,9 @@ static int LoadScript(lua_State *L, const char *filename) {
 int main(int argc, char *argv[]) {
     NSLog(@"[ChocoLight] Engine starting (SDL3 + GLES3)");
 
+    // 网络子系统初始化
+    PlatformNet::Init();
+
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS)) {
         NSLog(@"[ChocoLight] SDL_Init failed: %s", SDL_GetError());
         return 1;
@@ -148,6 +152,7 @@ int main(int argc, char *argv[]) {
     int status = LoadScript(L, "main.lua");
 
     lua_close(L);
+    PlatformNet::Shutdown();
     SDL_Quit();
 
     NSLog(@"[ChocoLight] Engine shutdown (status=%d)", status);

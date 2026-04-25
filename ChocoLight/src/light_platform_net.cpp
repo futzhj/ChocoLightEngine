@@ -6,8 +6,8 @@
 #include "light_platform_net.h"
 #include "light.h"
 
-#if defined(__EMSCRIPTEN__) || defined(__ANDROID__) || defined(CHOCO_PLATFORM_IOS)
-// Web/Android/iOS: libuv 不可用, 所有网络操作返回空/失败
+#if defined(__EMSCRIPTEN__)
+// Web: 网络不可用 (libuv 和 POSIX socket 均不适用), 空存根
 namespace PlatformNet {
 bool Init() { return false; }
 void Shutdown() {}
@@ -22,6 +22,9 @@ uv_tcp_s* CreateServer(const char*, uint16_t) { return nullptr; }
 bool Listen(uv_tcp_s*, int, OnAcceptCb) { return false; }
 uv_loop_s* GetLoop() { return nullptr; }
 } // namespace PlatformNet
+// Android/iOS: 由 light_platform_net_mobile.cpp 提供 POSIX socket 实现
+#elif defined(__ANDROID__) || defined(CHOCO_PLATFORM_IOS)
+// 空文件, 实现在 light_platform_net_mobile.cpp
 #else
 
 #include <uv.h>
@@ -296,4 +299,4 @@ uv_loop_s* GetLoop() { return s_loop; }
 
 }  // namespace PlatformNet
 
-#endif // !__EMSCRIPTEN__ && !__ANDROID__ && !CHOCO_PLATFORM_IOS
+#endif // !__EMSCRIPTEN__ && !__ANDROID__ && !CHOCO_PLATFORM_IOS (libuv 桌面实现)
