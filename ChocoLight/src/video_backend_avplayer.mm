@@ -19,6 +19,12 @@
 #include "render_backend.h"
 #include "light.h"
 #include <OpenGLES/ES3/gl.h>
+#include <OpenGLES/ES3/glext.h>
+
+// GLES3 可能不定义 GL_BGRA_EXT (Apple 扩展值 0x80E1)
+#ifndef GL_BGRA_EXT
+#define GL_BGRA_EXT 0x80E1
+#endif
 
 // ==================== VideoBackendAVPlayer ====================
 
