@@ -30,16 +30,16 @@ void InputProcessEvent(const PlatformWindow::Event& ev) {
         case PlatformWindow::Event::MouseUp:
             if (ev.button >= 0 && ev.button < AMAX_MOUSE) a_mouse[ev.button] = false; break;
         case PlatformWindow::Event::MouseMove:
-            a_mx = ev.mx; a_my = ev.my; break;
+            a_mx = (float)ev.x; a_my = (float)ev.y; break;
         case PlatformWindow::Event::MouseWheel:
-            a_wdx += ev.scrollX; a_wdy += ev.scrollY; break;
+            a_wdx += (float)ev.dx; a_wdy += (float)ev.dy; break;
         case PlatformWindow::Event::TouchDown:
         case PlatformWindow::Event::TouchMove:
             if (a_touchCount < AMAX_TOUCHES) {
                 int idx = -1;
                 for (int i = 0; i < a_touchCount; i++) if (a_touches[i].id == ev.touchId) { idx = i; break; }
                 if (idx < 0) { idx = a_touchCount++; }
-                a_touches[idx] = { ev.touchId, ev.mx, ev.my, ev.pressure, true };
+                a_touches[idx] = { ev.touchId, (float)ev.x, (float)ev.y, ev.pressure, true };
             } break;
         case PlatformWindow::Event::TouchUp:
             for (int i = 0; i < a_touchCount; i++) {
