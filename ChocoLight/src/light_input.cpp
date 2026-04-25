@@ -24,7 +24,6 @@
 #include "platform_window.h"
 #include <cstring>
 #include <cmath>
-#include <unordered_map>
 
 // ==================== 输入状态 ====================
 
@@ -50,12 +49,17 @@ struct GamepadState {
     char  name[64];
 };
 
-// 虚拟动作映射
+// 虚拟动作映射 (纯 POD, 无 C++ 标准库依赖)
+static constexpr int MAX_ACTIONS = 64;
+static constexpr int MAX_ACTION_NAME = 32;
+
 struct ActionMapping {
+    char name[MAX_ACTION_NAME];
     int  key;        // 键码 (-1 = 无)
     int  mouseBtn;   // 鼠标按钮 (-1 = 无)
     int  gpButton;   // 手柄按钮 (-1 = 无)
     int  gpIndex;    // 手柄索引 (默认 0)
+    bool used;
 };
 
 static struct {
@@ -74,8 +78,14 @@ static struct {
     int gamepadCount;
 } s_input = {};
 
-// 虚拟动作映射 (延迟初始化, 避免 .so 加载时全局构造导致 MuMu 崩溃)
-static std::unordered_map<std::string, ActionMapping>* s_actions = nullptr;
+static ActionMapping s_actions[MAX_ACTIONS] = {};
+static int s_actionCount = 0;
+
+static ActionMapping* FindAction(const char* name) {
+    for (int i = 0; i < s_actionCount; i++)
+        if (strcmp(s_actions[i].name, name) == 0) return &s_actions[i];
+    return nullptr;
+}
 
 // ==================== 内部: 事件处理 ====================
 
@@ -341,20 +351,27 @@ static int l_Input_AddAction(lua_State* L) {
     if (lua_isnumber(L, -1)) m.gpIndex = (int)lua_tointeger(L, -1) - 1;
     lua_pop(L, 1);
 
-    if (s_actions) (*s_actions)[name] = m;
+    ActionMapping* existing = FindAction(name);
+    if (existing) {
+        *existing = m;
+    } else if (s_actionCount < MAX_ACTIONS) {
+        m.used = true;
+        strncpy(m.name, name, MAX_ACTION_NAME - 1);
+        m.name[MAX_ACTION_NAME - 1] = '\0';
+        s_actions[s_actionCount++] = m;
+    }
     return 0;
 }
 
 /// Input.IsActionDown(name) → bool
 static int l_Input_IsActionDown(lua_State* L) {
     const char* name = luaL_checkstring(L, 1);
-    if (!s_actions) { lua_pushboolean(L, 0); return 1; }
-    auto it = s_actions->find(name);
-    if (it == s_actions->end()) {
+    ActionMapping* am = FindAction(name);
+    if (!am) {
         lua_pushboolean(L, 0);
         return 1;
     }
-    const auto& m = it->second;
+    const ActionMapping& m = *am;
     bool down = false;
     // 键盘
     if (m.key >= 0 && m.key < MAX_KEYS)
@@ -404,8 +421,8 @@ static const luaL_Reg input_funcs[] = {
 int luaopen_Light_Input(lua_State* L) {
     // 初始化状态
     memset(&s_input, 0, sizeof(s_input));
-    if (!s_actions) s_actions = new std::unordered_map<std::string, ActionMapping>();
-    s_actions->clear();
+    memset(s_actions, 0, sizeof(s_actions));
+    s_actionCount = 0;
 
     LT::RegisterModule(L, "Input", input_funcs);
 

@@ -121,7 +121,6 @@ set(LIGHT_SOURCES
     ${CHOCO_SRC}/light_network.cpp
     ${CHOCO_SRC}/light_record.cpp
     ${CHOCO_SRC}/light_plugins.cpp
-    ${CHOCO_SRC}/light_input.cpp
     ${CHOCO_SRC}/light_particles.cpp
     ${CHOCO_SRC}/light_tilemap.cpp
     ${CHOCO_SRC}/light_ecs.cpp
@@ -165,14 +164,11 @@ else()
     )
 endif()
 
-# Phase 2 游戏模块源文件 (非 Android)
+# Input + Physics 源文件 (非 Android, Android 上 Input 导致 MuMu 崩溃)
 if(NOT ANDROID)
     list(APPEND LIGHT_SOURCES
         ${CHOCO_SRC}/light_input.cpp
-        ${CHOCO_SRC}/light_particles.cpp
-        ${CHOCO_SRC}/light_tilemap.cpp
         ${CHOCO_SRC}/light_physics.cpp
-        ${CHOCO_SRC}/light_ecs.cpp
     )
 endif()
 
