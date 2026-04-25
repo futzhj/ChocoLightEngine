@@ -116,7 +116,33 @@ int main(int argc, char *argv[]) {
     lua_pushcfunction(L, l_ios_print);
     lua_setglobal(L, "print");
 
+    // 注册 ChocoLight 所有模块
     luaopen_Light(L); lua_pop(L, 1);
+    luaopen_Light_Debug(L); lua_pop(L, 1);
+    luaopen_Light_Data(L); lua_pop(L, 1);
+    luaopen_Light_Math(L); lua_pop(L, 1);
+    luaopen_Light_UI(L); lua_pop(L, 1);
+    luaopen_Light_UI_Window(L); lua_pop(L, 1);
+    luaopen_Light_Graphics(L); lua_pop(L, 1);
+    luaopen_Light_Graphics_Canvas(L); lua_pop(L, 1);
+    luaopen_Light_Graphics_Image(L); lua_pop(L, 1);
+    luaopen_Light_Graphics_ImageData(L); lua_pop(L, 1);
+    luaopen_Light_Graphics_Font(L); lua_pop(L, 1);
+    luaopen_Light_Graphics_PixelFormat(L); lua_pop(L, 1);
+    luaopen_Light_AV(L); lua_pop(L, 1);
+    luaopen_Light_AV_Audio(L); lua_pop(L, 1);
+    luaopen_Light_AV_AudioData(L); lua_pop(L, 1);
+    luaopen_Light_AV_Video(L); lua_pop(L, 1);
+    luaopen_Light_DB(L); lua_pop(L, 1);
+    luaopen_Light_DB_SQLite(L); lua_pop(L, 1);
+    luaopen_Light_Network(L); lua_pop(L, 1);
+    luaopen_Light_Network_Http(L); lua_pop(L, 1);
+    luaopen_Light_Network_HttpServer(L); lua_pop(L, 1);
+    luaopen_Light_Network_Web(L); lua_pop(L, 1);
+    luaopen_Light_Record(L); lua_pop(L, 1);
+    luaopen_Light_Plugins(L); lua_pop(L, 1);
+    luaopen_Light_Plugins_WDFData(L); lua_pop(L, 1);
+    luaopen_Light_Plugins_NEMData(L); lua_pop(L, 1);
 
     NSLog(@"[ChocoLight] Loading main.lua...");
     int status = LoadScript(L, "main.lua");
