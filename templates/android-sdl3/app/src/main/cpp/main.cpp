@@ -13,6 +13,7 @@
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
 #include <android/log.h>
+#include <unistd.h>
 
 // Lumen (Lua 5.1 兼容)
 #include "lua.h"
@@ -109,6 +110,9 @@ int main(int argc, char* argv[]) {
     LOGI("[DIAG] PlatformNet::Init...");
     PlatformNet::Init();
 
+    // 等待 MuMu 等模拟器 RenderThread 完成初始渲染, 避免 EGL 竞态
+    usleep(200000); // 200ms
+
     // SDL3 初始化 (Video 子系统, Audio 由 miniaudio 管理)
     LOGI("[DIAG] SDL_Init...");
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS)) {
@@ -153,21 +157,16 @@ int main(int argc, char* argv[]) {
     luaopen_Light_Network_Http(L); lua_pop(L, 1);
     luaopen_Light_Network_HttpServer(L); lua_pop(L, 1);
     luaopen_Light_Network_Web(L); lua_pop(L, 1);
-    // [DIAG] 二分法排查: Input/Particles/Tilemap 已启用, Physics/ECS 禁用
     LOGI("[DIAG] Phase2: Input...");
     luaopen_Light_Input(L); lua_pop(L, 1);
     LOGI("[DIAG] Phase2: Particles...");
     luaopen_Light_Graphics_Particles(L); lua_pop(L, 1);
     LOGI("[DIAG] Phase2: Tilemap...");
     luaopen_Light_Graphics_Tilemap(L); lua_pop(L, 1);
-#if 0  // Physics 暂时禁用
     LOGI("[DIAG] Phase2: Physics...");
     luaopen_Light_Physics(L); lua_pop(L, 1);
     LOGI("[DIAG] Phase2: Physics.World...");
     luaopen_Light_Physics_World(L); lua_pop(L, 1);
-#else
-    LOGI("[DIAG] Physics DISABLED");
-#endif
     LOGI("[DIAG] Phase2: ECS...");
     luaopen_Light_ECS(L); lua_pop(L, 1);
     luaopen_Light_Record(L); lua_pop(L, 1);
