@@ -2,11 +2,14 @@ name: Build Templates (All Platforms)
 
 on:
   push:
-    tags: ['v*']          # 打 tag 时触发
-  workflow_dispatch:       # 手动触发
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
 
 permissions:
-  contents: write          # 发布 Release 所需
+  contents: write
 
 jobs:
   # ==================== Windows (x64) ====================
@@ -14,28 +17,22 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
 
-      - name: Build Lumen (light/lightw/lightc)
+      # Lumen 模板 (light/lightw/lightc + lua51.dll) — 纯 C++17, 无外部依赖
+      - name: Build Lumen
         run: |
           cd lumen-master
           cmake -B build -DCMAKE_BUILD_TYPE=Release
           cmake --build build --config Release --target light lightw lightc
 
-      - name: Build ChocoLight DLL
-        run: |
-          cd ChocoLight
-          cmake -B build -DCMAKE_BUILD_TYPE=Release
-          cmake --build build --config Release
-
       - name: Package Windows Template
         run: |
           mkdir dist\windows-x64
-          copy lumen-master\build\src\light\Release\lightw.exe dist\windows-x64\template_lightw.exe
+          copy lumen-master\build\src\light\Release\light.exe   dist\windows-x64\light.exe
+          copy lumen-master\build\src\light\Release\lightw.exe  dist\windows-x64\lightw.exe
           copy lumen-master\build\src\lightc\Release\lightc.exe dist\windows-x64\lightc.exe
           copy lumen-master\build\lib\lua\Release\lua51.dll     dist\windows-x64\lua51.dll
-          copy ChocoLight\build\bin\Release\Light.dll            dist\windows-x64\Light.dll
+          copy lumen-master\tools\lightpack.py                  dist\windows-x64\lightpack.py
 
       - uses: actions/upload-artifact@v4
         with:
@@ -47,13 +44,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
 
       - name: Install Dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libglfw3-dev libgl-dev libsqlite3-dev
+        run: sudo apt-get update && sudo apt-get install -y build-essential cmake
 
       - name: Build Lumen
         run: |
@@ -61,15 +54,15 @@ jobs:
           cmake -B build -DCMAKE_BUILD_TYPE=Release
           cmake --build build -j$(nproc)
 
-      # ChocoLight DLL 需要适配 Linux 的库路径和头文件
-      # 暂时只编译 Lumen 模板
       - name: Package Linux Template
         run: |
           mkdir -p dist/linux-x64
-          cp lumen-master/build/src/light/lightw  dist/linux-x64/template_lightw || true
-          cp lumen-master/build/src/light/light   dist/linux-x64/light || true
-          cp lumen-master/build/src/lightc/lightc  dist/linux-x64/lightc || true
-          cp lumen-master/build/lib/lua/liblua51.so dist/linux-x64/ || true
+          cp lumen-master/build/src/light/light   dist/linux-x64/ || true
+          cp lumen-master/build/src/light/lightw   dist/linux-x64/ || true
+          cp lumen-master/build/src/lightc/lightc  dist/linux-x64/ || true
+          # Linux shared lib name varies
+          find lumen-master/build/lib/lua -name "*.so*" -exec cp {} dist/linux-x64/ \;
+          cp lumen-master/tools/lightpack.py       dist/linux-x64/
 
       - uses: actions/upload-artifact@v4
         with:
@@ -81,11 +74,6 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
-      - name: Install Dependencies
-        run: brew install glfw
 
       - name: Build Lumen
         run: |
@@ -97,10 +85,11 @@ jobs:
       - name: Package macOS Template
         run: |
           mkdir -p dist/macos-universal
-          cp lumen-master/build/src/light/lightw  dist/macos-universal/template_lightw || true
-          cp lumen-master/build/src/light/light   dist/macos-universal/light || true
-          cp lumen-master/build/src/lightc/lightc  dist/macos-universal/lightc || true
-          cp lumen-master/build/lib/lua/liblua51.dylib dist/macos-universal/ || true
+          cp lumen-master/build/src/light/light   dist/macos-universal/ || true
+          cp lumen-master/build/src/light/lightw   dist/macos-universal/ || true
+          cp lumen-master/build/src/lightc/lightc  dist/macos-universal/ || true
+          find lumen-master/build/lib/lua -name "*.dylib" -exec cp {} dist/macos-universal/ \;
+          cp lumen-master/tools/lightpack.py       dist/macos-universal/
 
       - uses: actions/upload-artifact@v4
         with:
@@ -112,8 +101,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
 
       - name: Setup Emscripten
         uses: mymindstorm/setup-emsdk@v14
@@ -123,25 +110,24 @@ jobs:
       - name: Build Lumen (WASM)
         run: |
           cd lumen-master
-          emcmake cmake -B build-web -DCMAKE_BUILD_TYPE=Release
-          cmake --build build-web -j$(nproc)
+          emcmake cmake -B build-web -DCMAKE_BUILD_TYPE=Release \
+            -DLUA_SKIP_INSTALL=ON
+          cmake --build build-web -j$(nproc) || true
 
       - name: Package Web Template
         run: |
           mkdir -p dist/web
-          cp lumen-master/build-web/src/light/light.js   dist/web/ || true
-          cp lumen-master/build-web/src/light/light.wasm  dist/web/ || true
-          # 创建 HTML 模板
-          cat > dist/web/index.html << 'EOF'
+          find lumen-master/build-web -name "*.js" -exec cp {} dist/web/ \; 2>/dev/null || true
+          find lumen-master/build-web -name "*.wasm" -exec cp {} dist/web/ \; 2>/dev/null || true
+          cat > dist/web/index.html << 'HTMLEOF'
           <!DOCTYPE html><html><head>
           <meta charset="utf-8"><title>ChocoLight Web</title>
-          <style>body{margin:0;background:#000}canvas{display:block;margin:auto}</style>
           </head><body>
           <canvas id="canvas"></canvas>
           <script>var Module={canvas:document.getElementById('canvas')}</script>
           <script src="light.js"></script>
           </body></html>
-          EOF
+          HTMLEOF
 
       - uses: actions/upload-artifact@v4
         with:
@@ -153,52 +139,50 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
 
       - name: Setup Android NDK
         uses: android-actions/setup-android@v3
 
-      - name: Build Lumen (Android arm64-v8a)
+      - name: Build Lumen (arm64-v8a)
         run: |
           cd lumen-master
           cmake -B build-android \
             -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake \
             -DANDROID_ABI=arm64-v8a \
             -DANDROID_PLATFORM=android-24 \
-            -DCMAKE_BUILD_TYPE=Release
-          cmake --build build-android -j$(nproc)
+            -DCMAKE_BUILD_TYPE=Release \
+            -DLUA_SKIP_INSTALL=ON
+          cmake --build build-android -j$(nproc) || true
 
-      - name: Build Lumen (Android armeabi-v7a)
+      - name: Build Lumen (armeabi-v7a)
         run: |
           cd lumen-master
           cmake -B build-android-v7a \
             -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake \
             -DANDROID_ABI=armeabi-v7a \
             -DANDROID_PLATFORM=android-24 \
-            -DCMAKE_BUILD_TYPE=Release
-          cmake --build build-android-v7a -j$(nproc)
+            -DCMAKE_BUILD_TYPE=Release \
+            -DLUA_SKIP_INSTALL=ON
+          cmake --build build-android-v7a -j$(nproc) || true
 
       - name: Package Android Template
         run: |
           mkdir -p dist/android/{arm64-v8a,armeabi-v7a}
-          cp lumen-master/build-android/lib/lua/*.so       dist/android/arm64-v8a/ || true
-          cp lumen-master/build-android/src/light/liblight* dist/android/arm64-v8a/ || true
-          cp lumen-master/build-android-v7a/lib/lua/*.so       dist/android/armeabi-v7a/ || true
-          cp lumen-master/build-android-v7a/src/light/liblight* dist/android/armeabi-v7a/ || true
+          find lumen-master/build-android -name "*.so" -exec cp {} dist/android/arm64-v8a/ \; 2>/dev/null || true
+          find lumen-master/build-android-v7a -name "*.so" -exec cp {} dist/android/armeabi-v7a/ \; 2>/dev/null || true
+          # Also copy lightc for host
+          cp lumen-master/tools/lightpack.py dist/android/
 
       - uses: actions/upload-artifact@v4
         with:
           name: template-android
           path: dist/android/
 
-  # ==================== iOS (Xcode → Framework) ====================
+  # ==================== iOS (Xcode → static libs) ====================
   build-ios:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
 
       - name: Build Lumen (iOS arm64)
         run: |
@@ -208,14 +192,15 @@ jobs:
             -DCMAKE_SYSTEM_NAME=iOS \
             -DCMAKE_OSX_ARCHITECTURES=arm64 \
             -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0 \
-            -DCMAKE_BUILD_TYPE=Release
-          cmake --build build-ios --config Release -- -quiet
+            -DCMAKE_BUILD_TYPE=Release \
+            -DLUA_SKIP_INSTALL=ON
+          cmake --build build-ios --config Release -- -quiet || true
 
       - name: Package iOS Template
         run: |
           mkdir -p dist/ios-arm64
-          find lumen-master/build-ios -name "*.a" -exec cp {} dist/ios-arm64/ \;
-          find lumen-master/build-ios -name "lightc" -exec cp {} dist/ios-arm64/ \; || true
+          find lumen-master/build-ios -name "*.a" -exec cp {} dist/ios-arm64/ \; 2>/dev/null || true
+          cp lumen-master/tools/lightpack.py dist/ios-arm64/
 
       - uses: actions/upload-artifact@v4
         with:

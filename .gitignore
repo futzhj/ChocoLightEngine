@@ -36,13 +36,14 @@ CMakeFiles/
 CMakeCache.txt
 cmake_install.cmake
 
-# Generated
-lumen-master/src/light/embedded_scripts.h
+# Generated (keep embedded_scripts.h for CI)
+# lumen-master/src/light/embedded_scripts.h
 
-# Pack outputs (user-generated)
-Light-0.2.3/game.exe
-Light-0.2.3/pack.exe
+# Pack outputs and binaries (user-generated)
+Light-0.2.3/*.exe
+Light-0.2.3/*.dll
 Light-0.2.3/*.luac
+test_embedded/
 
 # Python cache
 __pycache__/
