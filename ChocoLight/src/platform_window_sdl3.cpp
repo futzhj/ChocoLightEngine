@@ -217,14 +217,15 @@ void GetFramebufferSize(void* win, int* w, int* h) {
 
 bool ShouldClose(void* win) {
     if (!win) return true;
-    // SDL3 没有内置 should_close 标志, 用 window data 实现
-    void* flag = SDL_GetWindowData((SDL_Window*)win, "should_close");
-    return flag != nullptr;
+    // SDL3 没有内置 should_close 标志, 用 window properties 实现
+    SDL_PropertiesID props = SDL_GetWindowProperties((SDL_Window*)win);
+    return SDL_GetBooleanProperty(props, "should_close", false);
 }
 
 void SetShouldClose(void* win, bool close) {
     if (!win) return;
-    SDL_SetWindowData((SDL_Window*)win, "should_close", close ? (void*)1 : nullptr);
+    SDL_PropertiesID props = SDL_GetWindowProperties((SDL_Window*)win);
+    SDL_SetBooleanProperty(props, "should_close", close);
 }
 
 // ==================== OpenGL 上下文 ====================
@@ -318,7 +319,10 @@ bool PollEvent(Event* out) {
             // 同时设置 should_close 标志, 让 ShouldClose() 返回 true
             {
                 SDL_Window* w = SDL_GetWindowFromID(e.window.windowID);
-                if (w) SDL_SetWindowData(w, "should_close", (void*)1);
+                if (w) {
+                    SDL_PropertiesID props = SDL_GetWindowProperties(w);
+                    SDL_SetBooleanProperty(props, "should_close", true);
+                }
             }
             return true;
 

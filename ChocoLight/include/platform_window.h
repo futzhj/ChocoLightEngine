@@ -15,6 +15,18 @@
 
 #include <cstdint>
 
+// Windows.h 定义了 CreateWindow / CreateWindowA / CreateWindowW 为宏,
+// 会破坏同名函数声明。在此主动 undef。
+#ifdef CreateWindow
+#undef CreateWindow
+#endif
+#ifdef CreateWindowA
+#undef CreateWindowA
+#endif
+#ifdef CreateWindowW
+#undef CreateWindowW
+#endif
+
 namespace PlatformWindow {
 
 // ==================== 事件类型 ====================
