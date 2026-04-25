@@ -40,6 +40,7 @@ add_subdirectory(${CHOCOLIGHT_DIR} ${CMAKE_BINARY_DIR}/ChocoLight)
 
 # ==================== iOS 应用 ====================
 set(APP_SOURCES main.m)
+set_source_files_properties(main.m PROPERTIES LANGUAGE OBJCXX)
 
 # 资产文件
 set(LUA_ASSETS "${CMAKE_CURRENT_SOURCE_DIR}/assets/main.lua")
