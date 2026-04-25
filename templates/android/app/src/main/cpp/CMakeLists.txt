@@ -35,6 +35,7 @@ add_library(chocolight SHARED
 
 target_include_directories(chocolight PRIVATE
     "${LUMEN_DIR}/include"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../../../../../templates/shared"
 )
 
 target_link_libraries(chocolight PRIVATE

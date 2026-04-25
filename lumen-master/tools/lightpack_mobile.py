@@ -29,7 +29,71 @@ Requirements:
     - iOS: codesign (macOS only, optional for unsigned dev builds)
 """
 
-import sys, os, shutil, zipfile, subprocess, argparse, tempfile, glob
+import sys, os, struct, shutil, zipfile, subprocess, argparse, tempfile, glob
+
+
+# ============================================================
+# Encryption support
+# ============================================================
+
+# Master key — obfuscated (XOR with index)
+# Actual key: "ChocoLight2026!@#"
+_MK_ENC = bytes([
+    0x43^0, 0x68^1, 0x6F^2, 0x63^3, 0x6F^4, 0x4C^5, 0x69^6, 0x67^7,
+    0x68^8, 0x74^9, 0x32^10, 0x30^11, 0x32^12, 0x36^13, 0x21^14, 0x40^15,
+    0x23^16
+])
+MK_LEN = 17
+
+CLPK_MAGIC = b"CLPK"
+CLPK_VERSION = 1
+CLPK_HDR_SIZE = 76
+CLPK_XK_MAX = 63
+
+
+def _get_master_key():
+    return bytes(b ^ i for i, b in enumerate(_MK_ENC))
+
+
+def encrypt_lua_data(data, xor_key='ChocoLight2026'):
+    """Encrypt Lua data into .enc format matching choco_crypt.h
+
+    Format:
+      [4B] magic "CLPK"
+      [4B] version (1)
+      [4B] payload_size
+      [1B] xor_key_len
+      [63B] encrypted xor_key (padded)
+      [payload_size B] XOR-encrypted data
+    """
+    mk = _get_master_key()
+    xk = xor_key.encode('utf-8') if isinstance(xor_key, str) else xor_key
+    xk_len = min(len(xk), CLPK_XK_MAX)
+
+    # Encrypt XOR key with master key
+    enc_xk = bytearray(CLPK_XK_MAX)
+    for i in range(xk_len):
+        enc_xk[i] = xk[i] ^ mk[i % MK_LEN]
+
+    # XOR encrypt payload
+    payload = bytearray(len(data))
+    for i in range(len(data)):
+        payload[i] = data[i] ^ xk[i % xk_len]
+
+    # Build header (76 bytes)
+    hdr = bytearray(CLPK_HDR_SIZE)
+    struct.pack_into('<4sII', hdr, 0, CLPK_MAGIC, CLPK_VERSION, len(payload))
+    hdr[12] = xk_len
+    hdr[13:13+CLPK_XK_MAX] = enc_xk
+
+    return bytes(hdr) + bytes(payload)
+
+
+def encrypt_lua_file(src_path, xor_key='ChocoLight2026'):
+    """Encrypt a single Lua file, returns encrypted bytes"""
+    with open(src_path, 'rb') as f:
+        data = f.read()
+    return encrypt_lua_data(data, xor_key)
 
 
 # ============================================================
@@ -106,7 +170,7 @@ def collect_lua_files(source):
     return files
 
 
-def pack_apk(template_apk, lua_source, output_apk, assets_dirs=None, keystore=None):
+def pack_apk(template_apk, lua_source, output_apk, assets_dirs=None, keystore=None, encrypt_key=None):
     """Inject Lua scripts into template APK"""
     if not os.path.isfile(template_apk):
         print(f"Error: template APK not found: {template_apk}")
@@ -138,10 +202,14 @@ def pack_apk(template_apk, lua_source, output_apk, assets_dirs=None, keystore=No
 
         with zipfile.ZipFile(work_apk, 'r') as zin:
             with zipfile.ZipFile(final_apk, 'w', zipfile.ZIP_DEFLATED) as zout:
-                # Copy existing entries, skipping files we'll replace
+                # Build replacement name set
                 replace_names = set()
                 for src, rel in lua_files:
-                    replace_names.add(f'assets/{rel}')
+                    if encrypt_key:
+                        replace_names.add(f'assets/{rel}')
+                        replace_names.add(f'assets/{rel}.enc')
+                    else:
+                        replace_names.add(f'assets/{rel}')
                 for src, rel in asset_files:
                     replace_names.add(f'assets/{rel}')
 
@@ -154,12 +222,18 @@ def pack_apk(template_apk, lua_source, output_apk, assets_dirs=None, keystore=No
                     data = zin.read(item.filename)
                     zout.writestr(item, data)
 
-                # Add Lua files
+                # Add Lua files (encrypted or plaintext)
                 for src, rel in lua_files:
-                    arcname = f'assets/{rel}'
-                    with open(src, 'rb') as f:
-                        zout.writestr(arcname, f.read())
-                    print(f"  + {arcname}")
+                    if encrypt_key:
+                        enc_data = encrypt_lua_file(src, encrypt_key)
+                        arcname = f'assets/{rel}.enc'
+                        zout.writestr(arcname, enc_data)
+                        print(f"  + {arcname} (encrypted, {len(enc_data)} bytes)")
+                    else:
+                        arcname = f'assets/{rel}'
+                        with open(src, 'rb') as f:
+                            zout.writestr(arcname, f.read())
+                        print(f"  + {arcname}")
 
                 # Add extra asset files
                 for src, rel in asset_files:
@@ -237,12 +311,12 @@ def _jarsigner_sign(input_apk, output_apk, keystore):
 # iOS .app Packing
 # ============================================================
 
-def pack_ios(template_app, lua_source, output_app, sign_identity=None, assets_dirs=None):
+def pack_ios(template_app, lua_source, output_app, sign_identity=None, assets_dirs=None, encrypt_key=None):
     """Inject Lua scripts into template .app bundle"""
     if not os.path.isdir(template_app) and not os.path.isfile(template_app):
         # Maybe it's a .tar.gz or .zip?
         if template_app.endswith(('.zip', '.tar.gz', '.tgz')):
-            return pack_ios_archive(template_app, lua_source, output_app, sign_identity, assets_dirs)
+            return pack_ios_archive(template_app, lua_source, output_app, sign_identity, assets_dirs, encrypt_key)
         print(f"Error: template .app not found: {template_app}")
         sys.exit(1)
 
@@ -256,12 +330,24 @@ def pack_ios(template_app, lua_source, output_app, sign_identity=None, assets_di
         shutil.rmtree(output_app)
     shutil.copytree(template_app, output_app)
 
-    # Replace/add Lua files in bundle root
+    # Replace/add Lua files (encrypted or plaintext)
     for src, rel in lua_files:
-        dst = os.path.join(output_app, rel)
-        os.makedirs(os.path.dirname(dst), exist_ok=True)
-        shutil.copy2(src, dst)
-        print(f"  + {rel}")
+        if encrypt_key:
+            enc_data = encrypt_lua_file(src, encrypt_key)
+            dst = os.path.join(output_app, rel + '.enc')
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            with open(dst, 'wb') as f:
+                f.write(enc_data)
+            # Remove plaintext version if it exists in template
+            plain_dst = os.path.join(output_app, rel)
+            if os.path.exists(plain_dst):
+                os.remove(plain_dst)
+            print(f"  + {rel}.enc (encrypted, {len(enc_data)} bytes)")
+        else:
+            dst = os.path.join(output_app, rel)
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            shutil.copy2(src, dst)
+            print(f"  + {rel}")
 
     # Inject additional asset files into bundle
     for ad in (assets_dirs or []):
@@ -286,7 +372,7 @@ def pack_ios(template_app, lua_source, output_app, sign_identity=None, assets_di
     _print_result_ios(template_app, output_app, lua_files)
 
 
-def pack_ios_archive(archive_path, lua_source, output_app, sign_identity=None, assets_dirs=None):
+def pack_ios_archive(archive_path, lua_source, output_app, sign_identity=None, assets_dirs=None, encrypt_key=None):
     """Extract .app from archive, inject, and repack"""
     with tempfile.TemporaryDirectory() as tmpdir:
         # Extract
@@ -306,7 +392,7 @@ def pack_ios_archive(archive_path, lua_source, output_app, sign_identity=None, a
             sys.exit(1)
 
         template = apps[0]
-        pack_ios(template, lua_source, output_app, sign_identity, assets_dirs)
+        pack_ios(template, lua_source, output_app, sign_identity, assets_dirs, encrypt_key)
 
 
 # ============================================================
@@ -383,6 +469,10 @@ Examples:
 
   # Inject + extra assets
   python lightpack_mobile.py apk template.apk main.lua --assets images/ sounds/ -o game.apk
+
+  # Encrypt Lua scripts
+  python lightpack_mobile.py apk template.apk main.lua --encrypt -o game.apk
+  python lightpack_mobile.py apk template.apk main.lua --encrypt --key "MySecret" -o game.apk
 """)
 
     sub = parser.add_subparsers(dest='platform', required=True)
@@ -394,6 +484,8 @@ Examples:
     p_apk.add_argument('-o', '--output', required=True, help='Output APK path')
     p_apk.add_argument('--assets', nargs='*', help='Additional asset directories')
     p_apk.add_argument('--keystore', help='Custom keystore for signing')
+    p_apk.add_argument('--encrypt', action='store_true', help='Encrypt Lua scripts')
+    p_apk.add_argument('--key', default='ChocoLight2026', help='Encryption key (default: ChocoLight2026)')
 
     # iOS subcommand
     p_ios = sub.add_parser('ios', help='Pack Lua into iOS .app bundle')
@@ -402,6 +494,8 @@ Examples:
     p_ios.add_argument('-o', '--output', required=True, help='Output .app path')
     p_ios.add_argument('--assets', nargs='*', help='Additional asset directories')
     p_ios.add_argument('--sign', help='Codesign identity (macOS only)')
+    p_ios.add_argument('--encrypt', action='store_true', help='Encrypt Lua scripts')
+    p_ios.add_argument('--key', default='ChocoLight2026', help='Encryption key (default: ChocoLight2026)')
 
     # IPA subcommand
     p_ipa = sub.add_parser('ipa', help='Create IPA from .app bundle')
@@ -410,13 +504,17 @@ Examples:
 
     args = parser.parse_args()
 
+    encrypt_key = args.key if getattr(args, 'encrypt', False) else None
+    if encrypt_key:
+        print(f"[lightpack_mobile] 🔒 Encryption enabled")
+
     if args.platform == 'apk':
         print(f"[lightpack_mobile] Packing APK: {args.template} + {args.scripts}")
-        pack_apk(args.template, args.scripts, args.output, args.assets, args.keystore)
+        pack_apk(args.template, args.scripts, args.output, args.assets, args.keystore, encrypt_key)
 
     elif args.platform == 'ios':
         print(f"[lightpack_mobile] Packing iOS: {args.template} + {args.scripts}")
-        pack_ios(args.template, args.scripts, args.output, getattr(args, 'sign', None), args.assets)
+        pack_ios(args.template, args.scripts, args.output, getattr(args, 'sign', None), args.assets, encrypt_key)
 
     elif args.platform == 'ipa':
         print(f"[lightpack_mobile] Creating IPA from: {args.app}")

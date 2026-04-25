@@ -1,6 +1,7 @@
 /**
  * ChocoLight Engine — Android JNI 桥接层
  * 初始化 Lumen Lua VM，从 assets 加载并执行 Lua 脚本
+ * 支持加密脚本 (.enc) 自动解密
  */
 
 #include <jni.h>
@@ -14,6 +15,9 @@
 #include "lua.h"
 #include "lualib.h"
 #include "lauxlib.h"
+
+// Script decryption support
+#include "choco_crypt.h"
 
 #define TAG "ChocoLight"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
@@ -66,6 +70,34 @@ static char* loadAsset(AAssetManager *mgr, const char *name, size_t *outLen) {
     return data;
 }
 
+/**
+ * 加载脚本：优先尝试加密版本 (.enc)，失败则回退到明文
+ * @return 脚本数据（caller 负责 free），scriptLen 存储大小
+ */
+static char* loadScript(AAssetManager *mgr, const char *name, size_t *scriptLen) {
+    // 尝试加载 .enc 加密版本
+    char encName[256];
+    snprintf(encName, sizeof(encName), "%s.enc", name);
+
+    size_t encLen = 0;
+    char *encData = loadAsset(mgr, encName, &encLen);
+    if (encData) {
+        uint8_t *decrypted = nullptr;
+        size_t decLen = 0;
+        if (choco_decrypt((const uint8_t*)encData, encLen, &decrypted, &decLen) == 0) {
+            LOGI("Loaded encrypted script: %s → decrypted %zu bytes", encName, decLen);
+            free(encData);
+            *scriptLen = decLen;
+            return (char*)decrypted;
+        }
+        LOGE("Failed to decrypt %s, trying plaintext fallback", encName);
+        free(encData);
+    }
+
+    // 回退到明文
+    return loadAsset(mgr, name, scriptLen);
+}
+
 extern "C"
 JNIEXPORT jint JNICALL
 Java_com_chocolight_engine_LightActivity_nativeRunScript(
@@ -91,12 +123,12 @@ Java_com_chocolight_engine_LightActivity_nativeRunScript(
     lua_pushcfunction(L, l_print);
     lua_setglobal(L, "print");
 
-    // 从 assets 加载脚本
+    // 从 assets 加载脚本（自动尝试 .enc 解密）
     AAssetManager *mgr = AAssetManager_fromJava(env, assetManager);
     const char *name = env->GetStringUTFChars(scriptName, nullptr);
 
     size_t scriptLen = 0;
-    char *scriptData = loadAsset(mgr, name, &scriptLen);
+    char *scriptData = loadScript(mgr, name, &scriptLen);
 
     int status = -1;
     if (scriptData) {
