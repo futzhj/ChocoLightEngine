@@ -153,6 +153,8 @@ int main(int argc, char* argv[]) {
     luaopen_Light_Network_Http(L); lua_pop(L, 1);
     luaopen_Light_Network_HttpServer(L); lua_pop(L, 1);
     luaopen_Light_Network_Web(L); lua_pop(L, 1);
+    // [DIAG] Phase2 模块临时禁用以排查 MuMu 崩溃
+#if 0
     LOGI("[DIAG] Phase2 modules: Input...");
     luaopen_Light_Input(L); lua_pop(L, 1);
     LOGI("[DIAG] Phase2 modules: Particles...");
@@ -165,6 +167,9 @@ int main(int argc, char* argv[]) {
     luaopen_Light_Physics_World(L); lua_pop(L, 1);
     LOGI("[DIAG] Phase2 modules: ECS...");
     luaopen_Light_ECS(L); lua_pop(L, 1);
+#else
+    LOGI("[DIAG] Phase2 modules DISABLED for MuMu crash diagnosis");
+#endif
     luaopen_Light_Record(L); lua_pop(L, 1);
     luaopen_Light_Plugins(L); lua_pop(L, 1);
     luaopen_Light_Plugins_WDFData(L); lua_pop(L, 1);
