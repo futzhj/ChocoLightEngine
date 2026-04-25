@@ -160,16 +160,16 @@ int main(int argc, char* argv[]) {
     luaopen_Light_Graphics_Particles(L); lua_pop(L, 1);
     LOGI("[DIAG] Phase2: Tilemap...");
     luaopen_Light_Graphics_Tilemap(L); lua_pop(L, 1);
-#if 0  // Physics/ECS 暂时禁用
+#if 0  // Physics 暂时禁用
     LOGI("[DIAG] Phase2: Physics...");
     luaopen_Light_Physics(L); lua_pop(L, 1);
     LOGI("[DIAG] Phase2: Physics.World...");
     luaopen_Light_Physics_World(L); lua_pop(L, 1);
+#else
+    LOGI("[DIAG] Physics DISABLED");
+#endif
     LOGI("[DIAG] Phase2: ECS...");
     luaopen_Light_ECS(L); lua_pop(L, 1);
-#else
-    LOGI("[DIAG] Physics/ECS DISABLED");
-#endif
     luaopen_Light_Record(L); lua_pop(L, 1);
     luaopen_Light_Plugins(L); lua_pop(L, 1);
     luaopen_Light_Plugins_WDFData(L); lua_pop(L, 1);
