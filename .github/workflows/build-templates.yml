@@ -37,14 +37,15 @@ jobs:
           cmake --build build --config Release
 
       - name: Package Windows Template
+        shell: pwsh
         run: |
-          mkdir dist\windows-x64
-          copy lumen-master\build\src\light\Release\light.exe   dist\windows-x64\light.exe
-          copy lumen-master\build\src\light\Release\lightw.exe  dist\windows-x64\lightw.exe
-          copy lumen-master\build\src\lightc\Release\lightc.exe dist\windows-x64\lightc.exe
-          copy lumen-master\build\lib\lua\Release\lua51.dll     dist\windows-x64\lua51.dll
-          copy lumen-master\tools\lightpack.py                  dist\windows-x64\lightpack.py
-          if exist ChocoLight\build\bin\Release\Light.dll copy ChocoLight\build\bin\Release\Light.dll dist\windows-x64\Light.dll
+          New-Item -ItemType Directory -Force -Path dist\windows-x64
+          Copy-Item lumen-master\build\src\light\Release\light.exe   dist\windows-x64\
+          Copy-Item lumen-master\build\src\light\Release\lightw.exe  dist\windows-x64\
+          Copy-Item lumen-master\build\src\lightc\Release\lightc.exe dist\windows-x64\
+          Copy-Item lumen-master\build\lib\lua\Release\lua51.dll     dist\windows-x64\
+          Copy-Item lumen-master\tools\lightpack.py                  dist\windows-x64\
+          if (Test-Path ChocoLight\build\bin\Release\Light.dll) { Copy-Item ChocoLight\build\bin\Release\Light.dll dist\windows-x64\ }
 
       - uses: actions/upload-artifact@v4
         with:
