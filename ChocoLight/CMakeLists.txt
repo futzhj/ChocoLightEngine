@@ -42,16 +42,20 @@ message(STATUS "Lumen lib: ${LUMEN_LIB_PATH}")
 
 # ==================== GLFW3 ====================
 
-if(WIN32)
-    # Windows: 使用预编译静态库
+# 优先通过 find_package 查找 (vcpkg / 系统包管理器)
+# 回退到 third_party 预编译库 (仅 Windows 本地开发)
+find_package(glfw3 3.3 QUIET)
+if(glfw3_FOUND)
+    message(STATUS "GLFW3: found via find_package")
+    set(GLFW_INCLUDE_DIR "")
+    set(GLFW_LIB glfw)
+elseif(WIN32 AND EXISTS "${CMAKE_SOURCE_DIR}/third_party/glfw/glfw3.lib")
+    message(STATUS "GLFW3: using prebuilt third_party/glfw/glfw3.lib")
     set(GLFW_DIR "${CMAKE_SOURCE_DIR}/third_party/glfw")
     set(GLFW_INCLUDE_DIR "${GLFW_DIR}/include")
     set(GLFW_LIB "${GLFW_DIR}/glfw3.lib")
 else()
-    # Linux/macOS: 使用系统安装的 GLFW
-    find_package(glfw3 3.3 REQUIRED)
-    set(GLFW_INCLUDE_DIR "")
-    set(GLFW_LIB glfw)
+    message(FATAL_ERROR "GLFW3 not found. Install via: vcpkg install glfw3 / apt install libglfw3-dev / brew install glfw")
 endif()
 
 # ==================== 源文件 ====================

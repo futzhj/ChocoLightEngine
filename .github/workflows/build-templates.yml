@@ -18,6 +18,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install GLFW (vcpkg)
+        run: |
+          vcpkg install glfw3:x64-windows
+
       # Lumen 模板 (light/lightw/lightc + lua51.dll) — 纯 C++17, 无外部依赖
       - name: Build Lumen
         run: |
@@ -29,7 +33,7 @@ jobs:
       - name: Build ChocoLight Engine
         run: |
           cd ChocoLight
-          cmake -B build -DCMAKE_BUILD_TYPE=Release
+          cmake -B build -DCMAKE_BUILD_TYPE=Release "-DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake"
           cmake --build build --config Release
 
       - name: Package Windows Template
