@@ -39,6 +39,11 @@
 #include <GL/gl.h>
 #endif
 
+// windows.h 宏污染清理 (CreateWindow → CreateWindowA)
+#ifdef CreateWindow
+#undef CreateWindow
+#endif
+
 // ==================== 全局状态 ====================
 
 static bool       g_platformInited = false;

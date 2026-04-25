@@ -14,6 +14,12 @@
 #include <emscripten.h>
 #endif
 
+// windows.h (被 SDL.h/light.h 间接拉入) 将 CreateWindow 定义为宏,
+// 必须在所有 #include 之后 undef, 否则函数定义会被宏展开破坏
+#ifdef CreateWindow
+#undef CreateWindow
+#endif
+
 namespace PlatformWindow {
 
 // ==================== 内部状态 ====================
