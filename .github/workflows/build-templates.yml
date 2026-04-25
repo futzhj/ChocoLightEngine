@@ -165,6 +165,7 @@ jobs:
           mkdir -p dist/android
           find templates/android -name "*.apk" -exec cp {} dist/android/ \; 2>/dev/null || true
           cp lumen-master/tools/lightpack.py dist/android/
+          cp lumen-master/tools/lightpack_mobile.py dist/android/
           ls -la dist/android/
 
       - uses: actions/upload-artifact@v4
@@ -193,6 +194,7 @@ jobs:
           mkdir -p dist/ios
           find templates/ios/build -name "*.app" -exec cp -r {} dist/ios/ \; 2>/dev/null || true
           cp lumen-master/tools/lightpack.py dist/ios/
+          cp lumen-master/tools/lightpack_mobile.py dist/ios/
           ls -la dist/ios/
 
       - uses: actions/upload-artifact@v4
