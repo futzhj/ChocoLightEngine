@@ -48,10 +48,10 @@
 
 ## 中优先级
 
-### 8. 旧模板清理
-- [ ] `templates/android/` (旧 Lua-only 模板) 考虑移到 `templates/legacy/`
-- [ ] `templates/ios/` (旧 Lua-only 模板) 考虑移到 `templates/legacy/`
-- **注意**: 旧模板仍可用于纯 Lua 脚本执行 (不含引擎), 保留可能有价值
+### 8. 旧模板清理 ✅
+- [x] `templates/android/` → `templates/legacy/android/`
+- [x] `templates/ios/` → `templates/legacy/ios/`
+- 旧模板保留在 legacy/ 中, 可用于纯 Lua 脚本执行
 
 ## 低优先级
 
@@ -65,10 +65,10 @@
 - [x] HttpServer: 浏览器不支持, 保留空存根
 - [x] Lua API 与桌面/移动端 100% 兼容
 
-### 11. 反调试模块移动端适配
-- [ ] `light_antidebug.cpp` 当前仅 Windows 有效
-- [ ] Android: 可添加 `ptrace` 检测 + `TracerPid` 检查
-- [ ] iOS: 可添加 `sysctl` 反调试检测
+### 11. 反调试模块移动端适配 ✅
+- [x] Android: TracerPid + ptrace自占位 + 时间异常 + 调试器进程名检测
+- [x] iOS: sysctl P_TRACED + 时间异常 + DYLD_INSERT_LIBRARIES注入检测
+- [x] 策略与 Windows 一致: 渐进式 anomaly factor
 
 ## 缺少的配置
 
