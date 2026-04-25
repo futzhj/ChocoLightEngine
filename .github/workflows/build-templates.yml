@@ -164,7 +164,7 @@ jobs:
         run: |
           mkdir -p dist/android
           find templates/android -name "*.apk" -exec cp {} dist/android/ \; 2>/dev/null || true
-          cp lumen-master/tools/lightpack.py dist/android/
+          cp lumen-master/tools/lightpack.exe dist/android/
           cp lumen-master/tools/lightpack_mobile.exe dist/android/
           ls -la dist/android/
 
@@ -193,7 +193,7 @@ jobs:
         run: |
           mkdir -p dist/ios
           find templates/ios/build -name "*.app" -exec cp -r {} dist/ios/ \; 2>/dev/null || true
-          cp lumen-master/tools/lightpack.py dist/ios/
+          cp lumen-master/tools/lightpack.exe dist/ios/
           cp lumen-master/tools/lightpack_mobile.exe dist/ios/
           ls -la dist/ios/
 
