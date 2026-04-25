@@ -91,7 +91,8 @@ static int LoadScript(lua_State* L, const char* filename) {
 
     // 执行脚本
     if (lua_pcall(L, 0, LUA_MULTRET, 0) != 0) {
-        LOGE("Lua runtime error: %s", lua_tostring(L, -1));
+        const char* err = lua_tostring(L, -1);
+        LOGE("Lua runtime error: %.1024s", err ? err : "(unknown error)");
         lua_pop(L, 1);
         return -1;
     }

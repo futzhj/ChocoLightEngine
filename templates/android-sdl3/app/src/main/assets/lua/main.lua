@@ -1,6 +1,22 @@
 -- ChocoLight Android Demo (最小可运行脚本)
 print("ChocoLight Engine v0.3.0 (Android SDL3)")
 
+-- 诊断 Light 模块
+print("Light type: " .. type(Light))
+if type(Light) == "table" then
+  for k, v in pairs(Light) do
+    print("  Light." .. tostring(k) .. " = " .. type(v))
+  end
+  if Light.UI then
+    print("Light.UI type: " .. type(Light.UI))
+    for k, v in pairs(Light.UI) do
+      print("  Light.UI." .. tostring(k) .. " = " .. type(v))
+    end
+  else
+    print("Light.UI is nil!")
+  end
+end
+
 local HelloWindow = Light(Light.UI.Window):New()
 
 function HelloWindow:OnOpen()
