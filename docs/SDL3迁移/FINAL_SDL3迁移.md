@@ -9,7 +9,7 @@
 | Windows | SDL3 | GL 3.3 (glad) | FFmpeg 动态加载 | libuv | ✅ |
 | Linux | SDL3 | GL 3.3 (glad) | FFmpeg 动态加载 | libuv | ✅ |
 | macOS | SDL3 | GL 3.3 (glad) | FFmpeg 动态加载 | libuv | ✅ |
-| Web/WASM | SDL3 | WebGL2 (GLES3) | HTML5 `<video>` | 空存根 | ✅ |
+| Web/WASM | SDL3 | WebGL2 (GLES3) | HTML5 `<video>` | emscripten_fetch + JS WebSocket | ✅ |
 | Android | SDL3 | GLES 3.0 | MediaPlayer + JNI | POSIX socket | ✅ |
 | iOS | SDL3 | GLES 3.0 (OpenGLES) | AVPlayer + CVPixelBuffer | POSIX socket | ✅ |
 
@@ -82,7 +82,13 @@ CMakeLists.txt 判断:
 ### 4. 视频后端策略
 - 桌面: FFmpeg 动态加载 (保持原有行为)
 - Web: HTML5 `<video>` + EM_JS 桥接
-- Android/iOS: 当前为空存根, 预留原生后端接口
+- Android: MediaPlayer + SurfaceTexture → OES → FBO blit → TEXTURE_2D (JNI)
+- iOS: AVPlayer + AVPlayerItemVideoOutput → CVPixelBuffer → glTexSubImage2D
+
+### 5. 移动端网络策略
+- 桌面: libuv 异步 IO
+- Web: emscripten_fetch (HTTP) + JS WebSocket API (EM_JS 桥接)
+- Android/iOS: POSIX 非阻塞 socket + select (替代 libuv, API 100% 兼容)
 
 ## 文件变更统计
 

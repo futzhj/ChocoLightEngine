@@ -59,10 +59,11 @@
 - [ ] 当前锁定 `release-3.2.0`, 后续可升级到更新版本
 - [ ] 升级时需要测试所有平台
 
-### 10. Emscripten 网络模块
-- [ ] 当前网络模块在 Web/Android/iOS 为空存根
-- [ ] Web 可通过 Emscripten fetch API 实现 HTTP
-- [ ] Android/iOS 可通过原生 HTTP 库实现
+### 10. Emscripten 网络模块 
+- [x] HTTP: emscripten_fetch 操作请求 (GET/POST/PUT/DELETE/HEAD)
+- [x] WebSocket: JS WebSocket API (EM_JS 接口)
+- [x] HttpServer: 浏览器不支持, 保留空存根
+- [x] Lua API 与桌面/移动端 100% 兼容
 
 ### 11. 反调试模块移动端适配
 - [ ] `light_antidebug.cpp` 当前仅 Windows 有效
