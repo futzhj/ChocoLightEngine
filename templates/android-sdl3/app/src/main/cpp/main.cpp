@@ -153,8 +153,9 @@ int main(int argc, char* argv[]) {
     luaopen_Light_Network_Http(L); lua_pop(L, 1);
     luaopen_Light_Network_HttpServer(L); lua_pop(L, 1);
     luaopen_Light_Network_Web(L); lua_pop(L, 1);
-    // Phase 2 模块在 Android 上暂不编译/注册
-    LOGI("[DIAG] Phase2 modules excluded from Android build");
+    // Phase 2 逐步排查: 仅 ECS
+    LOGI("[DIAG] Phase2: ECS only...");
+    luaopen_Light_ECS(L); lua_pop(L, 1);
     luaopen_Light_Record(L); lua_pop(L, 1);
     luaopen_Light_Plugins(L); lua_pop(L, 1);
     luaopen_Light_Plugins_WDFData(L); lua_pop(L, 1);
