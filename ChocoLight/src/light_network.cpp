@@ -34,23 +34,24 @@
  *   Chat                 — WebSocket 聊天客户端
  */
 
-// 必须在 windows.h 之前包含 winsock2.h 避免符号冲突
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#include <winsock2.h>
-#include <ws2tcpip.h>
 #include "light.h"
+#include "light_platform_net.h"
+#include <uv.h>
 #include <cstring>
+#include <cstdlib>
+#include <string>
 
 // ==================== Network 内部状态 ====================
 
 struct HttpContext {
-    SOCKET      fd;
+    uv_tcp_s*   handle;       // libuv TCP 句柄
     char        host[256];
     uint16_t    port;
     bool        connected;
     bool        isWebSocket;
+    int         selfRef;      // Lua 注册表引用 (self 表)
+    lua_State*  L;            // 回调用 Lua 状态
+    std::string recvBuf;      // 接收缓冲区
 };
 
 // 辅助: 从 __instance 取上下文
@@ -122,184 +123,141 @@ static void ParseAndDispatchHttp(lua_State* L, int selfIdx,
     lua_pop(L, 1);  // pop headers 表
 }
 
-/// Network.Resume — 恢复网络IO轮询
-/// 还原自 sub_1800B0620
-/// 使用 select() 检查所有 __lightHttp 中活动连接的可读性
-/// 可读时 recv() 数据并分发到 OnHttp/OnWS 回调
+// 辅助: 分发接收到的数据到 Lua 回调 (在 PlatformNet::Poll 期间触发)
+static void DispatchRecvData(HttpContext* ctx) {
+    if (!ctx || !ctx->L || ctx->selfRef == LUA_NOREF || ctx->recvBuf.empty()) return;
+    lua_State* L = ctx->L;
+
+    // 取出 self 表
+    lua_rawgeti(L, LUA_REGISTRYINDEX, ctx->selfRef);
+    int selfIdx = lua_gettop(L);
+
+    const char* data = ctx->recvBuf.c_str();
+    int len = (int)ctx->recvBuf.size();
+
+    if (ctx->isWebSocket) {
+        // WebSocket 帧解析
+        if (len >= 2) {
+            uint8_t opcode = (uint8_t)(data[0] & 0x0F);
+            int payloadLen = (uint8_t)data[1] & 0x7F;
+            int offset = 2;
+            if (payloadLen == 126 && len >= 4) {
+                payloadLen = ((uint8_t)data[2]<<8) | (uint8_t)data[3];
+                offset = 4;
+            }
+            lua_getfield(L, selfIdx, "OnWS");
+            if (lua_isfunction(L, -1)) {
+                lua_pushvalue(L, selfIdx);
+                lua_pushinteger(L, opcode);
+                lua_pushlstring(L, data + offset, len - offset > 0 ? len - offset : 0);
+                lua_call(L, 3, 0);
+            } else lua_pop(L, 1);
+        }
+    } else {
+        // HTTP 响应
+        ParseAndDispatchHttp(L, selfIdx, data, len);
+    }
+    lua_pop(L, 1);  // pop self
+    ctx->recvBuf.clear();
+}
+
+// libuv 读取回调: 将数据累积到 recvBuf 并分发
+static void OnHttpRead(HttpContext* ctx, const char* data, int len) {
+    if (len > 0 && data) {
+        ctx->recvBuf.append(data, (size_t)len);
+        DispatchRecvData(ctx);
+    } else if (len < 0) {
+        // 连接关闭/错误
+        ctx->connected = false;
+    }
+}
+
+/// @lua_api Light.Network.Resume
+/// @brief 驱动网络 IO 事件循环 (基于 libuv, 每帧调用)
+/// @return number 始终返回 1
 static int l_Network_Resume(lua_State* L) {
-    int waitMs = (int)luaL_optinteger(L, 1, 0);
-
-    // 获取连接池
-    lua_getfield(L, LUA_REGISTRYINDEX, "__lightHttp");
-    if (!lua_istable(L, -1)) { lua_pop(L, 1); lua_pushinteger(L, 1); return 1; }
-    int poolIdx = lua_gettop(L);
-
-    // 构建 fd_set
-    fd_set readfds;
-    FD_ZERO(&readfds);
-    SOCKET maxFd = 0;
-    int fdCount = 0;
-
-    // 遍历连接池收集所有活动 fd
-    lua_pushnil(L);
-    while (lua_next(L, poolIdx)) {
-        // key = fd(integer), value = Http 表
-        if (lua_istable(L, -1)) {
-            lua_getfield(L, -1, "__instance");
-            if (lua_isuserdata(L, -1)) {
-                HttpContext* ctx = (HttpContext*)lua_touserdata(L, -1);
-                if (ctx && ctx->connected && ctx->fd != INVALID_SOCKET) {
-                    FD_SET(ctx->fd, &readfds);
-                    if (ctx->fd > maxFd) maxFd = ctx->fd;
-                    fdCount++;
-                }
-            }
-            lua_pop(L, 1);  // pop __instance
-        }
-        lua_pop(L, 1);  // pop value, keep key
-    }
-
-    // 如果有活动连接, select() 检查可读性
-    if (fdCount > 0) {
-        struct timeval tv;
-        tv.tv_sec = waitMs / 1000;
-        tv.tv_usec = (waitMs % 1000) * 1000;
-        int ready = select((int)(maxFd + 1), &readfds, nullptr, nullptr, &tv);
-
-        if (ready > 0) {
-            // 再次遍历, 对可读的连接执行 recv
-            lua_pushnil(L);
-            while (lua_next(L, poolIdx)) {
-                if (lua_istable(L, -1)) {
-                    int httpIdx = lua_gettop(L);
-                    lua_getfield(L, httpIdx, "__instance");
-                    if (lua_isuserdata(L, -1)) {
-                        HttpContext* ctx = (HttpContext*)lua_touserdata(L, -1);
-                        if (ctx && ctx->connected && ctx->fd != INVALID_SOCKET
-                            && FD_ISSET(ctx->fd, &readfds)) {
-                            char buf[8192];
-                            int n = recv(ctx->fd, buf, sizeof(buf) - 1, 0);
-                            if (n > 0) {
-                                buf[n] = '\0';
-                                if (ctx->isWebSocket) {
-                                    // WebSocket 帧: 分发 OnWS(opcode, payload)
-                                    // 简化: 假设单帧, 跳过帧头 (2-14 字节)
-                                    if (n >= 2) {
-                                        uint8_t opcode = (uint8_t)(buf[0] & 0x0F);
-                                        int payloadLen = (uint8_t)buf[1] & 0x7F;
-                                        int offset = 2;
-                                        if (payloadLen == 126 && n >= 4) {
-                                            payloadLen = ((uint8_t)buf[2]<<8) | (uint8_t)buf[3];
-                                            offset = 4;
-                                        }
-                                        lua_getfield(L, httpIdx, "OnWS");
-                                        if (lua_isfunction(L, -1)) {
-                                            lua_pushvalue(L, httpIdx);
-                                            lua_pushinteger(L, opcode);
-                                            lua_pushlstring(L, buf + offset,
-                                                n - offset > 0 ? n - offset : 0);
-                                            lua_call(L, 3, 0);
-                                        } else lua_pop(L, 1);
-                                    }
-                                } else {
-                                    // HTTP 响应: 解析并分发 OnHttp
-                                    ParseAndDispatchHttp(L, httpIdx, buf, n);
-                                }
-                            } else if (n == 0) {
-                                // 连接关闭
-                                ctx->connected = false;
-                                closesocket(ctx->fd);
-                                ctx->fd = INVALID_SOCKET;
-                            }
-                        }
-                    }
-                    lua_pop(L, 1);  // pop __instance
-                }
-                lua_pop(L, 1);  // pop value, keep key
-            }
-        }
-    }
-
-    lua_pop(L, 1);  // pop pool table
+    PlatformNet::Poll();
     lua_pushinteger(L, 1);
     return 1;
 }
 
 // ==================== Http 函数 ====================
 
-/// Http.Open — 建立 TCP 连接
-/// 还原自 sub_1800B1030
+/// @lua_api Light.Network.Http.Open
+/// @brief 建立 TCP 连接 (异步, libuv 驱动)
+/// @return void
 static int l_Http_Open(lua_State* L) {
     luaL_checktype(L, 1, LUA_TTABLE);
     HttpContext* ctx = GetHttpCtx(L, 1);
     if (!ctx) return 0;
 
-    struct addrinfo hints = {}, *result = nullptr;
-    hints.ai_family = AF_INET;
-    hints.ai_socktype = SOCK_STREAM;
-
-    char portStr[8];
-    sprintf(portStr, "%u", ctx->port);
-
-    if (getaddrinfo(ctx->host, portStr, &hints, &result) == 0 && result) {
-        ctx->fd = socket(result->ai_family, result->ai_socktype, result->ai_protocol);
-        if (ctx->fd != INVALID_SOCKET) {
-            if (connect(ctx->fd, result->ai_addr, (int)result->ai_addrlen) == 0) {
-                ctx->connected = true;
-
-                // 设置非阻塞模式 (用于 select 轮询)
-                u_long nonBlock = 1;
-                ioctlsocket(ctx->fd, FIONBIO, &nonBlock);
-
-                // 更新 __lightHttp 注册: 用真实 fd 作为 key
-                lua_getfield(L, LUA_REGISTRYINDEX, "__lightHttp");
-                if (lua_istable(L, -1)) {
-                    lua_pushinteger(L, (lua_Integer)ctx->fd);
-                    lua_pushvalue(L, 1);
-                    lua_rawset(L, -3);
-                }
-                lua_pop(L, 1);
-
-                // 触发 OnConnect 回调
-                lua_getfield(L, 1, "OnConnect");
-                if (lua_isfunction(L, -1)) {
-                    lua_pushvalue(L, 1);
-                    lua_call(L, 1, 0);
-                } else {
-                    lua_pop(L, 1);
-                }
-            }
-        }
-        freeaddrinfo(result);
+    // 创建 libuv TCP 句柄
+    ctx->handle = PlatformNet::CreateClient();
+    if (!ctx->handle) {
+        CC::Log(CC::LOG_ERROR, "Http.Open: CreateClient failed");
+        return 0;
     }
+
+    // 保存 Lua 状态和 self 引用 (用于异步回调)
+    ctx->L = L;
+    lua_pushvalue(L, 1);
+    ctx->selfRef = luaL_ref(L, LUA_REGISTRYINDEX);
+
+    // 异步连接 (DNS 解析 + TCP 连接)
+    PlatformNet::Connect(ctx->handle, ctx->host, ctx->port,
+        [ctx](int status) {
+            if (status == 0) {
+                ctx->connected = true;
+                // 开始读取数据
+                PlatformNet::StartRead(ctx->handle,
+                    [ctx](const char* data, int len) {
+                        OnHttpRead(ctx, data, len);
+                    });
+                // 触发 OnConnect 回调
+                if (ctx->L && ctx->selfRef != LUA_NOREF) {
+                    lua_rawgeti(ctx->L, LUA_REGISTRYINDEX, ctx->selfRef);
+                    lua_getfield(ctx->L, -1, "OnConnect");
+                    if (lua_isfunction(ctx->L, -1)) {
+                        lua_pushvalue(ctx->L, -2);
+                        lua_call(ctx->L, 1, 0);
+                    } else lua_pop(ctx->L, 1);
+                    lua_pop(ctx->L, 1);
+                }
+            } else {
+                CC::Log(CC::LOG_WARN, "Http.Open: connect to %s:%u failed (%d)",
+                        ctx->host, ctx->port, status);
+            }
+        });
     return 0;
 }
 
-/// Http.Close — 关闭连接
-/// 还原自 sub_1800B0D50
+/// @lua_api Light.Network.Http.Close
+/// @brief 关闭 TCP 连接
+/// @return void
 static int l_Http_Close(lua_State* L) {
     luaL_checktype(L, 1, LUA_TTABLE);
     HttpContext* ctx = GetHttpCtx(L, 1);
     if (ctx) {
-        // 从 __lightHttp 连接池移除
-        if (ctx->fd != INVALID_SOCKET) {
-            lua_getfield(L, LUA_REGISTRYINDEX, "__lightHttp");
-            if (lua_istable(L, -1)) {
-                lua_pushinteger(L, (lua_Integer)ctx->fd);
-                lua_pushnil(L);
-                lua_rawset(L, -3);
-            }
-            lua_pop(L, 1);
-            closesocket(ctx->fd);
+        if (ctx->handle) {
+            PlatformNet::Close(ctx->handle);
+            ctx->handle = nullptr;
         }
-        ctx->fd = INVALID_SOCKET;
+        if (ctx->selfRef != LUA_NOREF) {
+            luaL_unref(L, LUA_REGISTRYINDEX, ctx->selfRef);
+            ctx->selfRef = LUA_NOREF;
+        }
         ctx->connected = false;
+        ctx->recvBuf.clear();
     }
     return 0;
 }
 
-/// Http.SendRequest — 发送 HTTP 请求
-/// 还原自 sub_1800B13E0
+/// @lua_api Light.Network.Http.SendRequest
+/// @brief 发送 HTTP 请求
+/// @param method string HTTP 方法 (GET/POST/PUT/DELETE)
+/// @param path string 请求路径
+/// @param body string? 请求体
+/// @return void
 static int l_Http_SendRequest(lua_State* L) {
     luaL_checktype(L, 1, LUA_TTABLE);
     int method = (int)luaL_checkinteger(L, 2);
@@ -323,13 +281,15 @@ static int l_Http_SendRequest(lua_State* L) {
         "%s",
         m, path, ctx->host, ctx->port, strlen(body), body);
 
-    send(ctx->fd, buf, len, 0);
+    PlatformNet::Write(ctx->handle, buf, (size_t)len);
     return 0;
 }
 
-/// Http.SendMessage — 发送 WebSocket 消息
-/// 还原自 sub_1800B1270
-/// RFC 6455 帧格式: FIN+opcode, MASK+len, masking-key(4), payload
+/// @lua_api Light.Network.Http.SendMessage
+/// @brief 发送 WebSocket 消息
+/// @param msg string 消息内容
+/// @param opcode number? 操作码 (1=文本, 2=二进制, 默认 1)
+/// @return void
 static int l_Http_SendMessage(lua_State* L) {
     luaL_checktype(L, 1, LUA_TTABLE);
     size_t msgLen = 0;
@@ -361,7 +321,7 @@ static int l_Http_SendMessage(lua_State* L) {
 
     // masking key (4 字节随机)
     unsigned char maskKey[4];
-    unsigned int seed = (unsigned int)GetTickCount();
+    unsigned int seed = (unsigned int)uv_hrtime();
     for (int i = 0; i < 4; ++i) {
         seed = seed * 1103515245 + 12345;
         maskKey[i] = (unsigned char)(seed >> 16);
@@ -370,21 +330,23 @@ static int l_Http_SendMessage(lua_State* L) {
     headerLen += 4;
 
     // 发送帧头
-    send(ctx->fd, (const char*)header, headerLen, 0);
+    PlatformNet::Write(ctx->handle, (const char*)header, (size_t)headerLen);
 
     // 发送经 XOR mask 的 payload
     if (msgLen > 0) {
         char* masked = (char*)malloc(msgLen);
         for (size_t i = 0; i < msgLen; ++i)
             masked[i] = msg[i] ^ maskKey[i & 3];
-        send(ctx->fd, masked, (int)msgLen, 0);
+        PlatformNet::Write(ctx->handle, masked, msgLen);
         free(masked);
     }
     return 0;
 }
 
-/// Http.Upgrade — HTTP 升级到 WebSocket
-/// 还原自 sub_1800B1760
+/// @lua_api Light.Network.Http.Upgrade
+/// @brief HTTP 升级到 WebSocket
+/// @param path string? 升级路径 (默认 "/")
+/// @return void
 static int l_Http_Upgrade(lua_State* L) {
     luaL_checktype(L, 1, LUA_TTABLE);
     const char* path = luaL_checkstring(L, 2);
@@ -402,22 +364,26 @@ static int l_Http_Upgrade(lua_State* L) {
         "Sec-WebSocket-Version: 13\r\n"
         "\r\n",
         path, ctx->host, ctx->port);
-    send(ctx->fd, buf, len, 0);
+    PlatformNet::Write(ctx->handle, buf, (size_t)len);
     ctx->isWebSocket = true;
     return 0;
 }
 
-/// Http.GetFD — 获取 socket fd
-/// 还原自 sub_1800B0E40
+/// @lua_api Light.Network.Http.GetFD
+/// @brief 获取底层句柄指针 (兼容旧接口)
+/// @return number
 static int l_Http_GetFD(lua_State* L) {
     luaL_checktype(L, 1, LUA_TTABLE);
     HttpContext* ctx = GetHttpCtx(L, 1);
-    lua_pushinteger(L, ctx ? (lua_Integer)ctx->fd : -1);
+    lua_pushinteger(L, ctx && ctx->handle ? (lua_Integer)(intptr_t)ctx->handle : -1);
     return 1;
 }
 
-/// Http.__call — 构造函数, 创建 Http 连接实例
-/// 还原自 sub_1800B0EB0
+/// @lua_api Light.Network.Http.__call
+/// @brief 构造函数, 创建 HTTP 客户端实例
+/// @param ip string 服务器 IP/域名
+/// @param port number 端口
+/// @return void
 static int l_Http_Call(lua_State* L) {
     luaL_checktype(L, 1, LUA_TTABLE);
     const char* ip = luaL_checkstring(L, 2);
@@ -427,18 +393,13 @@ static int l_Http_Call(lua_State* L) {
     memset(ctx, 0, sizeof(HttpContext));
     strncpy(ctx->host, ip, sizeof(ctx->host) - 1);
     ctx->port = (uint16_t)port;
-    ctx->fd = INVALID_SOCKET;
+    ctx->handle = nullptr;
+    ctx->selfRef = LUA_NOREF;
+    ctx->L = nullptr;
+    // 就地构造 std::string (userdata 内存已 memset 0, 手动初始化)
+    new (&ctx->recvBuf) std::string();
 
     lua_setfield(L, 1, "__instance");
-
-    // 注册到全局 __lightHttp 表
-    lua_getfield(L, LUA_REGISTRYINDEX, "__lightHttp");
-    if (lua_istable(L, -1)) {
-        lua_pushinteger(L, (lua_Integer)ctx->fd);
-        lua_pushvalue(L, 1);
-        lua_rawset(L, -3);
-    }
-    lua_pop(L, 1);
     return 0;
 }
 
@@ -451,94 +412,84 @@ static int l_Http_Tostring(lua_State* L) {
 
 // ==================== HttpServer 函数 ====================
 
-/// HttpServer.Open — 启动服务器 (accept 客户��连接)
-/// 还原自 sub_1800B24F0
+/// @lua_api Light.Network.HttpServer.Open
+/// @brief 启动服务器监听 (基于 libuv, 新连接通过 OnAccept 回调分发)
+/// @return boolean 监听是否成功
 static int l_HttpServer_Open(lua_State* L) {
     luaL_checktype(L, 1, LUA_TTABLE);
-    lua_getfield(L, 1, "__server_fd");
-    if (lua_isnumber(L, -1)) {
-        SOCKET listenSock = (SOCKET)(lua_Integer)lua_tonumber(L, -1);
-        if (listenSock != INVALID_SOCKET) {
-            // 非阻塞 accept — 仅尝试一次
-            struct sockaddr_in clientAddr;
-            int addrLen = sizeof(clientAddr);
-            SOCKET client = accept(listenSock, (struct sockaddr*)&clientAddr, &addrLen);
-            if (client != INVALID_SOCKET) {
-                CC::Log(CC::LOG_INFO, "HttpServer: accepted client (fd=%lld)", (long long)client);
-                lua_pushinteger(L, (lua_Integer)client);
-                return 1;
-            }
+    lua_getfield(L, 1, "__server_handle");
+    if (lua_islightuserdata(L, -1)) {
+        uv_tcp_s* server = (uv_tcp_s*)lua_touserdata(L, -1);
+        lua_pop(L, 1);
+
+        // 保存 Lua 状态和 self 引用
+        lua_pushvalue(L, 1);
+        int selfRef = luaL_ref(L, LUA_REGISTRYINDEX);
+        lua_State* Lref = L;
+
+        bool ok = PlatformNet::Listen(server, 128,
+            [Lref, selfRef](uv_tcp_s* client) {
+                // 新连接回调
+                lua_rawgeti(Lref, LUA_REGISTRYINDEX, selfRef);
+                lua_getfield(Lref, -1, "OnAccept");
+                if (lua_isfunction(Lref, -1)) {
+                    lua_pushvalue(Lref, -2);
+                    lua_pushlightuserdata(Lref, client);
+                    lua_call(Lref, 2, 0);
+                } else {
+                    lua_pop(Lref, 1);
+                    PlatformNet::Close(client);
+                }
+                lua_pop(Lref, 1);
+            });
+        lua_pushboolean(L, ok ? 1 : 0);
+        return 1;
+    }
+    lua_pop(L, 1);
+    lua_pushboolean(L, 0);
+    return 1;
+}
+
+/// @lua_api Light.Network.HttpServer.Close
+/// @brief 关闭服务器
+/// @return void
+static int l_HttpServer_Close(lua_State* L) {
+    luaL_checktype(L, 1, LUA_TTABLE);
+    lua_getfield(L, 1, "__server_handle");
+    if (lua_islightuserdata(L, -1)) {
+        uv_tcp_s* server = (uv_tcp_s*)lua_touserdata(L, -1);
+        if (server) {
+            PlatformNet::Close(server);
+            CC::Log(CC::LOG_INFO, "HttpServer: closed");
         }
     }
     lua_pop(L, 1);
     lua_pushnil(L);
-    return 1;
-}
-
-/// HttpServer.Close — 关闭服务器
-/// 还原自 sub_1800B2270
-static int l_HttpServer_Close(lua_State* L) {
-    luaL_checktype(L, 1, LUA_TTABLE);
-    lua_getfield(L, 1, "__server_fd");
-    if (lua_isnumber(L, -1)) {
-        SOCKET s = (SOCKET)(lua_Integer)lua_tonumber(L, -1);
-        if (s != INVALID_SOCKET) {
-            closesocket(s);
-            CC::Log(CC::LOG_INFO, "HttpServer: closed (fd=%lld)", (long long)s);
-        }
-    }
-    lua_pop(L, 1);
-    lua_pushinteger(L, (lua_Integer)INVALID_SOCKET);
-    lua_setfield(L, 1, "__server_fd");
+    lua_setfield(L, 1, "__server_handle");
     return 0;
 }
 
-/// HttpServer.__call — 构造函数, 创建监听 socket
-/// 还原自 sub_1800B2360
+/// @lua_api Light.Network.HttpServer.__call
+/// @brief 构造函数, 创建 HTTP 服务器 (基于 libuv)
+/// @param ip string 监听 IP (如 "0.0.0.0")
+/// @param port number 监听端口
+/// @return void
 static int l_HttpServer_Call(lua_State* L) {
     luaL_checktype(L, 1, LUA_TTABLE);
     const char* ip = luaL_checkstring(L, 2);
     int port = (int)luaL_checkinteger(L, 3);
 
-    // 创建监听 socket
-    SOCKET listenSock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    if (listenSock == INVALID_SOCKET) {
-        CC::Log(CC::LOG_ERROR, "HttpServer: socket() failed (%d)", WSAGetLastError());
+    uv_tcp_s* server = PlatformNet::CreateServer(ip, (uint16_t)port);
+    if (!server) {
+        CC::Log(CC::LOG_ERROR, "HttpServer: CreateServer(%s:%d) failed", ip, port);
         return 0;
     }
-
-    // 允许端口复用
-    int opt = 1;
-    setsockopt(listenSock, SOL_SOCKET, SO_REUSEADDR, (const char*)&opt, sizeof(opt));
-
-    struct sockaddr_in addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons((u_short)port);
-#pragma warning(suppress: 4996)  // inet_addr deprecated
-    addr.sin_addr.s_addr = inet_addr(ip);
-
-    if (bind(listenSock, (struct sockaddr*)&addr, sizeof(addr)) == SOCKET_ERROR) {
-        CC::Log(CC::LOG_ERROR, "HttpServer: bind(%s:%d) failed (%d)", ip, port, WSAGetLastError());
-        closesocket(listenSock);
-        return 0;
-    }
-
-    if (listen(listenSock, SOMAXCONN) == SOCKET_ERROR) {
-        CC::Log(CC::LOG_ERROR, "HttpServer: listen() failed (%d)", WSAGetLastError());
-        closesocket(listenSock);
-        return 0;
-    }
-
-    // 设置非阻塞模式
-    u_long nonBlock = 1;
-    ioctlsocket(listenSock, FIONBIO, &nonBlock);
 
     // 存入 Lua 表
-    lua_pushinteger(L, (lua_Integer)listenSock);
-    lua_setfield(L, 1, "__server_fd");
+    lua_pushlightuserdata(L, server);
+    lua_setfield(L, 1, "__server_handle");
 
-    CC::Log(CC::LOG_INFO, "HttpServer: listening on %s:%d (fd=%lld)", ip, port, (long long)listenSock);
+    CC::Log(CC::LOG_INFO, "HttpServer: bound on %s:%d", ip, port);
     return 0;
 }
 

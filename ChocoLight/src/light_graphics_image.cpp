@@ -30,15 +30,10 @@
  */
 
 #include "light.h"
+#include "render_backend.h"
 #include <cstring>
-#include <GLFW/glfw3.h>     // OpenGL 函数
 #include "stb_image.h"      // 图像解码
 #include "stb_truetype.h"   // 字体解码
-
-// GL 1.x 头文件可能缺少此常量
-#ifndef GL_CLAMP_TO_EDGE
-#define GL_CLAMP_TO_EDGE 0x812F
-#endif
 
 // ==================== 共享上下文结构 ====================
 
@@ -61,7 +56,9 @@ static ImageContext* GetImageCtx(lua_State* L, int idx) {
 
 // ==================== Image 函数 ====================
 
-/// Image.GetWidth  — 还原自 sub_1800AD6A0
+/// @lua_api Light.Graphics.Image.GetWidth
+/// @brief 获取图像宽度
+/// @return number 宽度(像素)
 static int l_Image_GetWidth(lua_State* L) {
     luaL_checktype(L, 1, LUA_TTABLE);
     ImageContext* ctx = GetImageCtx(L, 1);
@@ -69,7 +66,9 @@ static int l_Image_GetWidth(lua_State* L) {
     return 1;
 }
 
-/// Image.GetHeight — 还原自 sub_1800AD620
+/// @lua_api Light.Graphics.Image.GetHeight
+/// @brief 获取图像高度
+/// @return number 高度(像素)
 static int l_Image_GetHeight(lua_State* L) {
     luaL_checktype(L, 1, LUA_TTABLE);
     ImageContext* ctx = GetImageCtx(L, 1);
@@ -77,7 +76,9 @@ static int l_Image_GetHeight(lua_State* L) {
     return 1;
 }
 
-/// Image.GetDepth  — 还原自 sub_1800AD4D0
+/// @lua_api Light.Graphics.Image.GetDepth
+/// @brief 获取图像通道数
+/// @return number 通道数(3=RGB,4=RGBA)
 static int l_Image_GetDepth(lua_State* L) {
     luaL_checktype(L, 1, LUA_TTABLE);
     ImageContext* ctx = GetImageCtx(L, 1);
@@ -85,7 +86,9 @@ static int l_Image_GetDepth(lua_State* L) {
     return 1;
 }
 
-/// Image.GetDimensions — 还原自 sub_1800AD550 (返回 w, h, depth 三值)
+/// @lua_api Light.Graphics.Image.GetDimensions
+/// @brief 获取图像尺寸和通道数
+/// @return number,number,number w,h,depth
 static int l_Image_GetDimensions(lua_State* L) {
     luaL_checktype(L, 1, LUA_TTABLE);
     ImageContext* ctx = GetImageCtx(L, 1);
@@ -95,9 +98,12 @@ static int l_Image_GetDimensions(lua_State* L) {
     return 3;
 }
 
-/// Image.__call — 构造函数
-/// 还原自 sub_1800AD720
-/// 使用 stb_image 加载文件 → 创建 OpenGL 纹理
+/// @lua_api Light.Graphics.Image.__call
+/// @brief 构造函数, 从文件加载图像
+/// @param path string 图像文件路径 (PNG/JPG/BMP/TGA)
+/// @return void
+/// @example
+/// local img = Light(Light.Graphics.Image):New("hero.png")
 static int l_Image_Call(lua_State* L) {
     luaL_checktype(L, 1, LUA_TTABLE);
 
@@ -117,16 +123,8 @@ static int l_Image_Call(lua_State* L) {
             ctx->height   = h;
             ctx->channels = 4;
 
-            // 创建 OpenGL 纹理
-            glGenTextures(1, &ctx->texId);
-            glBindTexture(GL_TEXTURE_2D, ctx->texId);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0,
-                         GL_RGBA, GL_UNSIGNED_BYTE, pixels);
-            glBindTexture(GL_TEXTURE_2D, 0);
+            // 创建纹理 (通过渲染后端)
+            ctx->texId = g_render->CreateTexture(w, h, 4, pixels);
 
             CC::Log(CC::LOG_INFO, "Image loaded: %s (%dx%d, texId=%u)", path, w, h, ctx->texId);
             stbi_image_free(pixels);
@@ -148,7 +146,9 @@ static int l_Image_Tostring(lua_State* L) {
 
 // ==================== ImageData 函数 ====================
 
-/// ImageData.GetWidth — 还原自 sub_1800ADD60
+/// @lua_api Light.Graphics.ImageData.GetWidth
+/// @brief 获取数据宽度
+/// @return number
 static int l_ImageData_GetWidth(lua_State* L) {
     luaL_checktype(L, 1, LUA_TTABLE);
     ImageContext* ctx = GetImageCtx(L, 1);
@@ -156,7 +156,9 @@ static int l_ImageData_GetWidth(lua_State* L) {
     return 1;
 }
 
-/// ImageData.GetHeight — 还原自 sub_1800ADC50
+/// @lua_api Light.Graphics.ImageData.GetHeight
+/// @brief 获取数据高度
+/// @return number
 static int l_ImageData_GetHeight(lua_State* L) {
     luaL_checktype(L, 1, LUA_TTABLE);
     ImageContext* ctx = GetImageCtx(L, 1);
@@ -164,7 +166,9 @@ static int l_ImageData_GetHeight(lua_State* L) {
     return 1;
 }
 
-/// ImageData.GetDepth — 还原自 sub_1800ADBC0
+/// @lua_api Light.Graphics.ImageData.GetDepth
+/// @brief 获取像素位深/通道数
+/// @return number
 static int l_ImageData_GetDepth(lua_State* L) {
     luaL_checktype(L, 1, LUA_TTABLE);
     ImageContext* ctx = GetImageCtx(L, 1);
@@ -172,7 +176,9 @@ static int l_ImageData_GetDepth(lua_State* L) {
     return 1;
 }
 
-/// ImageData.GetPointer — 还原自 sub_1800ADCE0 (共享)
+/// @lua_api Light.Graphics.ImageData.GetPointer
+/// @brief 获取原始像素数据指针
+/// @return lightuserdata,number 指针,字节数
 static int l_ImageData_GetPointer(lua_State* L) {
     luaL_checktype(L, 1, LUA_TTABLE);
     ImageContext* ctx = GetImageCtx(L, 1);
@@ -185,7 +191,9 @@ static int l_ImageData_GetPointer(lua_State* L) {
     return 1;
 }
 
-/// ImageData.Count — 还原自 sub_1800ADAF0
+/// @lua_api Light.Graphics.ImageData.Count
+/// @brief 获取像素总数
+/// @return number
 static int l_ImageData_Count(lua_State* L) {
     luaL_checktype(L, 1, LUA_TTABLE);
     ImageContext* ctx = GetImageCtx(L, 1);
@@ -204,12 +212,13 @@ static int l_ImageData_GC(lua_State* L) {
     return 0;
 }
 
-/// ImageData.__call — 构造函数
-/// 精确还原自 sub_1800AF210 (sub_1800ADDF0 → 实际入口)
-/// 支持3种创建方式:
-///   __call(self, filename)              — 2参数, 从文件加载
-///   __call(self, pointer, size)         — 3参数, 从 cdata/userdata 缓冲区
-///   __call(self, w, h, depth, format)   — 5参数, 指定尺寸格式创建
+/// @lua_api Light.Graphics.ImageData.__call
+/// @brief 构造函数 (支持 3 种创建方式)
+/// @param filename_or_w string|number 文件名或宽度
+/// @return void
+/// @note __call(self, filename) — 从文件加载
+/// @note __call(self, pointer, size) — 从缓冲区创建
+/// @note __call(self, w, h, depth, format) — 指定尺寸创建
 static int l_ImageData_Call(lua_State* L) {
     int argc = lua_gettop(L);
     luaL_checktype(L, 1, LUA_TTABLE);
@@ -374,10 +383,8 @@ struct FontContext {
 
         stbtt_FreeBitmap(bmp, nullptr);
 
-        // 更新 GL 纹理 (不主动 unbind, 留给调用方管理)
-        glBindTexture(GL_TEXTURE_2D, texId);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_ALPHA, atlasW, atlasH, 0,
-                     GL_ALPHA, GL_UNSIGNED_BYTE, atlasBitmap);
+        // 更新图集纹理 (通过渲染后端)
+        g_render->ReplaceTexture(texId, atlasW, atlasH, 1, atlasBitmap);
 
         return gi;
     }
@@ -395,14 +402,18 @@ static int l_Font_GC(lua_State* L) {
     if (fc) {
         if (fc->ttfBuffer) { free(fc->ttfBuffer); fc->ttfBuffer = nullptr; }
         if (fc->atlasBitmap) { free(fc->atlasBitmap); fc->atlasBitmap = nullptr; }
-        if (fc->texId) { glDeleteTextures(1, &fc->texId); fc->texId = 0; }
+        if (fc->texId && g_render) { g_render->DeleteTexture(fc->texId); fc->texId = 0; }
     }
     return 0;
 }
 
-/// Font.__call — 构造函数, 加载字体
-/// 还原自 sub_1800AE4C0
-/// 支持 Unicode/CJK 动态字形缓存
+/// @lua_api Light.Graphics.Font.__call
+/// @brief 构造函数, 加载 TTF 字体
+/// @param path string 字体文件路径 (.ttf)
+/// @param size number? 字号 (默认 16)
+/// @return void
+/// @example
+/// local font = Light(Light.Graphics.Font):New("font.ttf", 24)
 static int l_Font_Call(lua_State* L) {
     luaL_checktype(L, 1, LUA_TTABLE);
     const char* path = luaL_checkstring(L, 2);
@@ -444,14 +455,8 @@ static int l_Font_Call(lua_State* L) {
     // 分配空图集位图
     fc->atlasBitmap = (unsigned char*)calloc(fc->atlasW * fc->atlasH, 1);
 
-    // 创建 GL 纹理 (空, 后续动态填充)
-    glGenTextures(1, &fc->texId);
-    glBindTexture(GL_TEXTURE_2D, fc->texId);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_ALPHA, fc->atlasW, fc->atlasH, 0,
-                 GL_ALPHA, GL_UNSIGNED_BYTE, fc->atlasBitmap);
-    glBindTexture(GL_TEXTURE_2D, 0);
+    // 创建图集纹理 (单通道, 通过渲染后端)
+    fc->texId = g_render->CreateTexture(fc->atlasW, fc->atlasH, 1, fc->atlasBitmap);
 
     // 设置 __gc 元表
     lua_createtable(L, 0, 1);

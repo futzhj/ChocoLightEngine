@@ -19,6 +19,9 @@
 
 #include "light.h"
 #include "light_antidebug.h"
+#include "render_backend.h"
+#include "light_audio_backend.h"
+#include "light_platform_net.h"
 #include <cstdint>
 
 // GLFW 头文件
@@ -124,16 +127,25 @@ static void glfw_cursor_pos_callback(GLFWwindow* win, double x, double y) {
 
 /// 设置 2D 正交投影 (原点左上角, Y 轴向下)
 static void SetupOrthoProjection(int width, int height) {
-    glMatrixMode(GL_PROJECTION);
-    glLoadIdentity();
-    glOrtho(0, width, height, 0, -1.0, 1.0);  // 左上角原点
-    glMatrixMode(GL_MODELVIEW);
-    glLoadIdentity();
+    if (g_render) {
+        g_render->SetViewport(0, 0, width, height);
+        g_render->LoadOrtho(0, (float)width, (float)height, 0, -1.0f, 1.0f);
+    } else {
+        glMatrixMode(GL_PROJECTION);
+        glLoadIdentity();
+        glOrtho(0, width, height, 0, -1.0, 1.0);
+        glMatrixMode(GL_MODELVIEW);
+        glLoadIdentity();
+    }
 }
 
 /// 窗口大小回调 → 更新视口和投影
 static void glfw_framebuffer_size_callback(GLFWwindow* win, int width, int height) {
-    glViewport(0, 0, width, height);
+    if (g_render) {
+        g_render->SetViewport(0, 0, width, height);
+    } else {
+        glViewport(0, 0, width, height);
+    }
     SetupOrthoProjection(width, height);
 }
 
@@ -164,14 +176,30 @@ static int l_Window_Open(lua_State* L) {
         return 1;
     }
 
-    // GLFW 窗口 hints
+    // ======== 运行时检测: 先尝试 GL 3.3 Core, 失败回退默认 ========
     glfwDefaultWindowHints();
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 2);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 1);
     glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
 
-    // 创建窗口
+    // 策略 1: 尝试 GL 3.3 Core Profile
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
+    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+#ifdef __APPLE__
+    glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
+#endif
+
     g_mainWindow = glfwCreateWindow(width, height, title, nullptr, nullptr);
+
+    if (!g_mainWindow) {
+        // 策略 2: 回退到默认兼容模式 (GL 2.1)
+        CC::Log(CC::LOG_INFO, "GL 3.3 Core not available, falling back to Legacy");
+        glfwDefaultWindowHints();
+        glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 2);
+        glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 1);
+        glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
+        g_mainWindow = glfwCreateWindow(width, height, title, nullptr, nullptr);
+    }
+
     if (!g_mainWindow) {
         CC::Log(CC::LOG_ERROR, "Failed to create window %dx%d", width, height);
         lua_pushboolean(L, 0);
@@ -181,23 +209,40 @@ static int l_Window_Open(lua_State* L) {
     glfwMakeContextCurrent(g_mainWindow);
     glfwSwapInterval(1);  // VSync on by default
 
+    // ======== 初始化渲染后端 (自动检测 GL 版本) ========
+    g_render = CreateRenderBackend();
+    if (!g_render) {
+        CC::Log(CC::LOG_ERROR, "No render backend available, aborting");
+        glfwDestroyWindow(g_mainWindow);
+        g_mainWindow = nullptr;
+        lua_pushboolean(L, 0);
+        return 1;
+    }
+    CC::Log(CC::LOG_INFO, "Render backend: %s", g_render->GetName());
+
+    // ======== 初始化音频后端 ========
+    if (!AudioBackend::Init()) {
+        CC::Log(CC::LOG_WARN, "AudioBackend: init failed, audio will be unavailable");
+    }
+
+    // ======== 初始化网络后端 ========
+    if (!PlatformNet::Init()) {
+        CC::Log(CC::LOG_WARN, "PlatformNet: init failed, network will be unavailable");
+    }
+
     // 设置回调
     glfwSetKeyCallback(g_mainWindow, glfw_key_callback);
     glfwSetMouseButtonCallback(g_mainWindow, glfw_mouse_button_callback);
     glfwSetCursorPosCallback(g_mainWindow, glfw_cursor_pos_callback);
     glfwSetFramebufferSizeCallback(g_mainWindow, glfw_framebuffer_size_callback);
 
-    // 初始视口 + 2D 正交投影
+    // 初始视口 + 2D 正交投影 (通过渲染后端)
     int fbW, fbH;
     glfwGetFramebufferSize(g_mainWindow, &fbW, &fbH);
-    glViewport(0, 0, fbW, fbH);
     SetupOrthoProjection(fbW, fbH);
 
-    // OpenGL 状态初始化
-    glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);  // 黑色背景
-    glColor4f(1.0f, 1.0f, 1.0f, 1.0f);     // 默认白色
+    // 初始颜色
+    g_render->SetColor(1.0f, 1.0f, 1.0f, 1.0f);
 
     // 保存 Lua 状态和 Window 实例引用 (用于回调)
     g_callbackL = L;
@@ -337,9 +382,13 @@ static int l_Window_Call(lua_State* L) {
     double dt = nowTime - lastTime;
     lastTime = nowTime;
 
-    // 每帧清屏 + 重置矩阵
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-    glLoadIdentity();
+    // 每帧清屏 + 重置矩阵 (通过渲染后端)
+    if (g_render) {
+        g_render->BeginFrame(0, 0, 0, 1);
+    } else {
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        glLoadIdentity();
+    }
 
     // Draw 回调
     lua_getfield(L, 1, "Draw");
@@ -366,7 +415,8 @@ static int l_Window_Call(lua_State* L) {
         lua_pop(L, 1);
     }
 
-    // 交换缓冲区
+    // 结束帧 + 交换缓冲区
+    if (g_render) g_render->EndFrame();
     glfwSwapBuffers(g_mainWindow);
 
     lua_pushboolean(L, 1);
@@ -407,6 +457,16 @@ static int l_UI_Resume(lua_State* L) {
             if (g_windowRef != LUA_NOREF) {
                 luaL_unref(L, LUA_REGISTRYINDEX, g_windowRef);
                 g_windowRef = LUA_NOREF;
+            }
+            // 释放网络后端
+            PlatformNet::Shutdown();
+            // 释放音频后端
+            AudioBackend::Shutdown();
+            // 释放渲染后端
+            if (g_render) {
+                g_render->Shutdown();
+                delete g_render;
+                g_render = nullptr;
             }
             glfwDestroyWindow(g_mainWindow);
             g_mainWindow = nullptr;

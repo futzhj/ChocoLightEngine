@@ -23,11 +23,9 @@
  */
 
 #include "light.h"
+#include "render_backend.h"
 #include <cmath>
 #include <cstring>
-
-// OpenGL 1.x/2.x 头文件 (由 GLFW 间接包含或直接引���)
-#include <GLFW/glfw3.h>
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -61,12 +59,12 @@ static void ApplyTransform(float rx, float ry, float rz,
                            float sx, float sy, float sz,
                            float ox, float oy, float oz) {
     if (ox != 0 || oy != 0 || oz != 0)
-        glTranslatef(-ox, -oy, -oz);
-    if (rx != 0) glRotatef(rx, 1, 0, 0);
-    if (ry != 0) glRotatef(ry, 0, 1, 0);
-    if (rz != 0) glRotatef(rz, 0, 0, 1);
+        g_render->Translate(-ox, -oy, -oz);
+    if (rx != 0) g_render->Rotate(rx, 1, 0, 0);
+    if (ry != 0) g_render->Rotate(ry, 0, 1, 0);
+    if (rz != 0) g_render->Rotate(rz, 0, 0, 1);
     if (sx != 1 || sy != 1 || sz != 1)
-        glScalef(sx, sy, sz);
+        g_render->Scale(sx, sy, sz);
 }
 
 // ��� Lua 栈的 base 偏移读取 9 个变换参数 (rx,ry,rz,sx,sy,sz,ox,oy,oz)
@@ -85,68 +83,96 @@ static void ReadTransform(lua_State* L, int base,
     *oz = (float)luaL_optnumber(L, base + 8, 0.0);
 }
 
-// 设置 GL 颜色为当前 drawColor
+// 设置当前绘制颜色 (通过渲染后端)
 static void ApplyDrawColor() {
-    glColor4f(g_ctx.drawColor[0], g_ctx.drawColor[1],
-              g_ctx.drawColor[2], g_ctx.drawColor[3]);
+    g_render->SetColor(g_ctx.drawColor[0], g_ctx.drawColor[1],
+                       g_ctx.drawColor[2], g_ctx.drawColor[3]);
 }
 
 // ==================== 变换矩阵操作 ====================
 
-/// Graphics.Push() — glPushMatrix
+/// @lua_api Light.Graphics.Push
+/// @brief 保存当前变换矩阵到栈
+/// @return void
 static int l_Push(lua_State* L) {
-    glPushMatrix();
+    g_render->PushMatrix();
     return 0;
 }
 
-/// Graphics.Pop() — glPopMatrix
+/// @lua_api Light.Graphics.Pop
+/// @brief 从栈恢复上一个变换矩阵
+/// @return void
 static int l_Pop(lua_State* L) {
-    glPopMatrix();
+    g_render->PopMatrix();
     return 0;
 }
 
-/// Graphics.Translate(x, y, z)
+/// @lua_api Light.Graphics.Translate
+/// @brief 平移变换
+/// @param x number 水平偏移
+/// @param y number 垂直偏移
+/// @param z number? 深度偏移 (默认 0)
+/// @return void
 static int l_Translate(lua_State* L) {
     float x = (float)luaL_checknumber(L, 1);
     float y = (float)luaL_checknumber(L, 2);
     float z = (float)luaL_optnumber(L, 3, 0.0);
-    glTranslatef(x, y, z);
+    g_render->Translate(x, y, z);
     return 0;
 }
 
-/// Graphics.Rotate(angle, x, y, z)
+/// @lua_api Light.Graphics.Rotate
+/// @brief 旋转变换
+/// @param angle number 旋转角度 (度)
+/// @param x number? 旋转轴 X (默认 0)
+/// @param y number? 旋转轴 Y (默认 0)
+/// @param z number? 旋转轴 Z (默认 1)
+/// @return void
 static int l_Rotate(lua_State* L) {
     float angle = (float)luaL_checknumber(L, 1);
     float x = (float)luaL_optnumber(L, 2, 0.0);
     float y = (float)luaL_optnumber(L, 3, 0.0);
     float z = (float)luaL_optnumber(L, 4, 1.0);
-    glRotatef(angle, x, y, z);
+    g_render->Rotate(angle, x, y, z);
     return 0;
 }
 
-/// Graphics.Scale(sx, sy, sz)
+/// @lua_api Light.Graphics.Scale
+/// @brief 缩放变换
+/// @param sx number X 缩放比
+/// @param sy number? Y 缩放比 (默认同 sx)
+/// @param sz number? Z 缩放比 (默认 1)
+/// @return void
 static int l_Scale(lua_State* L) {
     float sx = (float)luaL_checknumber(L, 1);
     float sy = (float)luaL_optnumber(L, 2, sx);
     float sz = (float)luaL_optnumber(L, 3, 1.0);
-    glScalef(sx, sy, sz);
+    g_render->Scale(sx, sy, sz);
     return 0;
 }
 
 // ==================== 颜色 / 画布 / 裁剪 ====================
 
-/// Graphics.SetColor(r, g, b, a) — 还原自 sub_1800ACF10
+/// @lua_api Light.Graphics.SetColor
+/// @brief 设置当前绘制颜色
+/// @param r number 红色 (0~1)
+/// @param g number 绿色 (0~1)
+/// @param b number 蓝色 (0~1)
+/// @param a number? 透明度 (默认 1)
+/// @return void
 static int l_SetColor(lua_State* L) {
     g_ctx.drawColor[0] = (float)luaL_checknumber(L, 1);
     g_ctx.drawColor[1] = (float)luaL_checknumber(L, 2);
     g_ctx.drawColor[2] = (float)luaL_checknumber(L, 3);
     g_ctx.drawColor[3] = (float)luaL_optnumber(L, 4, 1.0);
-    glColor4f(g_ctx.drawColor[0], g_ctx.drawColor[1],
-              g_ctx.drawColor[2], g_ctx.drawColor[3]);
+    g_render->SetColor(g_ctx.drawColor[0], g_ctx.drawColor[1],
+                       g_ctx.drawColor[2], g_ctx.drawColor[3]);
     return 0;
 }
 
-/// Graphics.GetColor() — 返回 r, g, b, a
+/// @lua_api Light.Graphics.GetColor
+/// @brief 获取当前绘制颜色
+/// @return number,number,number,number r,g,b,a
 static int l_GetColor(lua_State* L) {
     lua_pushnumber(L, g_ctx.drawColor[0]);
     lua_pushnumber(L, g_ctx.drawColor[1]);
@@ -155,40 +181,28 @@ static int l_GetColor(lua_State* L) {
     return 4;
 }
 
-/// Graphics.SetCanvas(canvas) — 设置当前渲染目标为 Canvas FBO
-/// canvas 为 nil: 恢复默认 framebuffer + 恢复窗口 viewport
-/// canvas 为 Canvas 表: 提取 CanvasContext, 绑定 FBO + 设置 Canvas viewport
+/// @lua_api Light.Graphics.SetCanvas
+/// @brief 设置当前渲染目标
+/// @param canvas Canvas|nil Canvas 离屏画布, nil 恢复默认
+/// @return void
 static int l_SetCanvas(lua_State* L) {
-    // 延迟加载 glBindFramebuffer
-    typedef void (APIENTRY *PFN_glBindFramebuffer)(unsigned int, unsigned int);
-    static PFN_glBindFramebuffer glBindFB = nullptr;
-    static bool loaded = false;
-    static int savedViewport[4] = {0, 0, 800, 600};  // 保存窗口 viewport
-    if (!loaded) {
-        loaded = true;
-#ifdef _WIN32
-        glBindFB = (PFN_glBindFramebuffer)wglGetProcAddress("glBindFramebuffer");
-#endif
-    }
+    static int savedViewport[4] = {0, 0, 800, 600};
 
     if (lua_isnoneornil(L, 1)) {
-        // 恢复默认 framebuffer + 窗口 viewport
-        if (glBindFB) glBindFB(0x8D40 /*GL_FRAMEBUFFER*/, 0);
-        glViewport(savedViewport[0], savedViewport[1],
-                   savedViewport[2], savedViewport[3]);
+        g_render->UnbindFBO();
+        g_render->SetViewport(savedViewport[0], savedViewport[1],
+                              savedViewport[2], savedViewport[3]);
         g_ctx.currentCanvas = nullptr;
     } else if (lua_istable(L, 1)) {
-        // 保存当前 viewport (用于恢复)
-        glGetIntegerv(GL_VIEWPORT, savedViewport);
-
-        // 提取 Canvas.__instance → CanvasContext { fbo, texture, depthRB, w, h }
+        // 保存当前 viewport
+        // TODO: 当前简化处理, 后续可扩展 RenderBackend::GetViewport
         lua_getfield(L, 1, "__instance");
         if (lua_isuserdata(L, -1)) {
             struct CanvasCtx { unsigned int fbo, texture, depthRB; int w, h; };
             CanvasCtx* cc = (CanvasCtx*)lua_touserdata(L, -1);
-            if (cc && cc->fbo && glBindFB) {
-                glBindFB(0x8D40 /*GL_FRAMEBUFFER*/, cc->fbo);
-                glViewport(0, 0, cc->w, cc->h);
+            if (cc && cc->fbo) {
+                g_render->BindFBO(cc->fbo);
+                g_render->SetViewport(0, 0, cc->w, cc->h);
                 g_ctx.currentCanvas = cc;
             }
         }
@@ -197,7 +211,9 @@ static int l_SetCanvas(lua_State* L) {
     return 0;
 }
 
-/// Graphics.GetCanvas() — 返回当前 Canvas 或 nil
+/// @lua_api Light.Graphics.GetCanvas
+/// @brief 获取当前渲染目标
+/// @return Canvas|nil
 static int l_GetCanvas(lua_State* L) {
     if (g_ctx.currentCanvas) {
         lua_pushlightuserdata(L, g_ctx.currentCanvas);
@@ -207,7 +223,13 @@ static int l_GetCanvas(lua_State* L) {
     return 1;
 }
 
-/// Graphics.SetScissor(x, y, w, h)
+/// @lua_api Light.Graphics.SetScissor
+/// @brief 设置裁剪区域 (无参数时禁用裁剪)
+/// @param x number? 裁剪区域左上 X
+/// @param y number? 裁剪区域左上 Y
+/// @param w number? 裁剪区域宽
+/// @param h number? 裁剪区域高
+/// @return void
 static int l_SetScissor(lua_State* L) {
     if (lua_gettop(L) >= 4) {
         g_ctx.scissor[0] = (int)luaL_checkinteger(L, 1);
@@ -215,17 +237,18 @@ static int l_SetScissor(lua_State* L) {
         g_ctx.scissor[2] = (int)luaL_checkinteger(L, 3);
         g_ctx.scissor[3] = (int)luaL_checkinteger(L, 4);
         g_ctx.scissorEnabled = true;
-        glEnable(GL_SCISSOR_TEST);
-        glScissor(g_ctx.scissor[0], g_ctx.scissor[1],
-                  g_ctx.scissor[2], g_ctx.scissor[3]);
+        g_render->SetScissor(true, g_ctx.scissor[0], g_ctx.scissor[1],
+                             g_ctx.scissor[2], g_ctx.scissor[3]);
     } else {
         g_ctx.scissorEnabled = false;
-        glDisable(GL_SCISSOR_TEST);
+        g_render->SetScissor(false, 0, 0, 0, 0);
     }
     return 0;
 }
 
-/// Graphics.GetScissor() — 返回 x, y, w, h
+/// @lua_api Light.Graphics.GetScissor
+/// @brief 获取当前裁剪区域
+/// @return number,number,number,number x,y,w,h
 static int l_GetScissor(lua_State* L) {
     lua_pushinteger(L, g_ctx.scissor[0]);
     lua_pushinteger(L, g_ctx.scissor[1]);
@@ -281,8 +304,17 @@ static bool GetDrawableTexture(lua_State* L, int idx,
     return true;
 }
 
-/// Graphics.Draw(drawable, x, y, z, [rx,ry,rz, sx,sy,sz, ox,oy,oz])
-/// 绘制纹理/图像 — 还原自 sub_1800A9AB0
+/// @lua_api Light.Graphics.Draw
+/// @brief 绘制纹理/图像到屏幕
+/// @param drawable Image|Canvas 可绘制对象
+/// @param x number? 水平位置 (默认 0)
+/// @param y number? 垂直位置 (默认 0)
+/// @param z number? 深度 (默认 0)
+/// @param rx number? X 旋转 (后续 9 个变换参数可选)
+/// @return void
+/// @example
+/// local img = Light(Light.Graphics.Image):New("hero.png")
+/// Light.Graphics.Draw(img, 100, 200)
 static int l_Draw(lua_State* L) {
     unsigned int texId = 0;
     int imgW = 64, imgH = 64;
@@ -295,37 +327,49 @@ static int l_Draw(lua_State* L) {
     float rx, ry, rz, sx, sy, sz, ox, oy, oz;
     ReadTransform(L, 5, &rx, &ry, &rz, &sx, &sy, &sz, &ox, &oy, &oz);
 
-    glPushMatrix();
-    glTranslatef(x, y, z);
+    g_render->PushMatrix();
+    g_render->Translate(x, y, z);
     ApplyTransform(rx, ry, rz, sx, sy, sz, ox, oy, oz);
     ApplyDrawColor();
 
     float fw = (float)imgW, fh = (float)imgH;
+    float cr = g_ctx.drawColor[0], cg = g_ctx.drawColor[1];
+    float cb = g_ctx.drawColor[2], ca = g_ctx.drawColor[3];
 
     if (hasTex) {
-        glEnable(GL_TEXTURE_2D);
-        glBindTexture(GL_TEXTURE_2D, texId);
-        glBegin(GL_QUADS);
-        glTexCoord2f(0, 0); glVertex3f(0,  0,  0);
-        glTexCoord2f(1, 0); glVertex3f(fw, 0,  0);
-        glTexCoord2f(1, 1); glVertex3f(fw, fh, 0);
-        glTexCoord2f(0, 1); glVertex3f(0,  fh, 0);
-        glEnd();
-        glBindTexture(GL_TEXTURE_2D, 0);
-        glDisable(GL_TEXTURE_2D);
+        g_render->BindTexture(texId);
+        RenderVertex verts[4] = {
+            {0,  0,  0,  0, 0,  cr, cg, cb, ca},
+            {fw, 0,  0,  1, 0,  cr, cg, cb, ca},
+            {fw, fh, 0,  1, 1,  cr, cg, cb, ca},
+            {0,  fh, 0,  0, 1,  cr, cg, cb, ca},
+        };
+        g_render->DrawArrays(DrawMode::Quads, verts, 4);
+        g_render->UnbindTexture();
     } else {
-        // 无纹理时绘制占位矩形
-        glBegin(GL_QUADS);
-        glVertex3f(0, 0, 0); glVertex3f(fw, 0, 0);
-        glVertex3f(fw, fh, 0); glVertex3f(0, fh, 0);
-        glEnd();
+        RenderVertex verts[4] = {
+            {0,  0,  0,  0, 0,  cr, cg, cb, ca},
+            {fw, 0,  0,  0, 0,  cr, cg, cb, ca},
+            {fw, fh, 0,  0, 0,  cr, cg, cb, ca},
+            {0,  fh, 0,  0, 0,  cr, cg, cb, ca},
+        };
+        g_render->DrawArrays(DrawMode::Quads, verts, 4);
     }
-    glPopMatrix();
+    g_render->PopMatrix();
     return 0;
 }
 
-/// Graphics.DrawQuad(drawable, x, y, z, qx, qy, qw, qh, [rx...])
-/// 绘制纹理子区域 — 还原自 sub_1800A9DD0
+/// @lua_api Light.Graphics.DrawQuad
+/// @brief 绘制纹理子区域 (sprite sheet 裁切)
+/// @param drawable Image|Canvas 可绘制对象
+/// @param x number? 屏幕位置 X
+/// @param y number? 屏幕位置 Y
+/// @param z number? 深度
+/// @param qx number? 子区域左上 X
+/// @param qy number? 子区域左上 Y
+/// @param qw number? 子区域宽
+/// @param qh number? 子区域高
+/// @return void
 static int l_DrawQuad(lua_State* L) {
     unsigned int texId = 0;
     int imgW = 64, imgH = 64;
@@ -339,31 +383,35 @@ static int l_DrawQuad(lua_State* L) {
     float qw = (float)luaL_optnumber(L, 7, 64.0);
     float qh = (float)luaL_optnumber(L, 8, 64.0);
 
-    glPushMatrix();
-    glTranslatef(x, y, z);
+    g_render->PushMatrix();
+    g_render->Translate(x, y, z);
     ApplyDrawColor();
 
+    float cr = g_ctx.drawColor[0], cg = g_ctx.drawColor[1];
+    float cb = g_ctx.drawColor[2], ca = g_ctx.drawColor[3];
+
     if (hasTex) {
-        // 子区域 UV 坐标
         float u0 = qx / imgW, v0 = qy / imgH;
         float u1 = (qx + qw) / imgW, v1 = (qy + qh) / imgH;
-        glEnable(GL_TEXTURE_2D);
-        glBindTexture(GL_TEXTURE_2D, texId);
-        glBegin(GL_QUADS);
-        glTexCoord2f(u0, v0); glVertex3f(0,  0,  0);
-        glTexCoord2f(u1, v0); glVertex3f(qw, 0,  0);
-        glTexCoord2f(u1, v1); glVertex3f(qw, qh, 0);
-        glTexCoord2f(u0, v1); glVertex3f(0,  qh, 0);
-        glEnd();
-        glBindTexture(GL_TEXTURE_2D, 0);
-        glDisable(GL_TEXTURE_2D);
+        g_render->BindTexture(texId);
+        RenderVertex verts[4] = {
+            {0,  0,  0,  u0, v0,  cr, cg, cb, ca},
+            {qw, 0,  0,  u1, v0,  cr, cg, cb, ca},
+            {qw, qh, 0,  u1, v1,  cr, cg, cb, ca},
+            {0,  qh, 0,  u0, v1,  cr, cg, cb, ca},
+        };
+        g_render->DrawArrays(DrawMode::Quads, verts, 4);
+        g_render->UnbindTexture();
     } else {
-        glBegin(GL_QUADS);
-        glVertex3f(0, 0, 0); glVertex3f(qw, 0, 0);
-        glVertex3f(qw, qh, 0); glVertex3f(0, qh, 0);
-        glEnd();
+        RenderVertex verts[4] = {
+            {0,  0,  0,  0, 0,  cr, cg, cb, ca},
+            {qw, 0,  0,  0, 0,  cr, cg, cb, ca},
+            {qw, qh, 0,  0, 0,  cr, cg, cb, ca},
+            {0,  qh, 0,  0, 0,  cr, cg, cb, ca},
+        };
+        g_render->DrawArrays(DrawMode::Quads, verts, 4);
     }
-    glPopMatrix();
+    g_render->PopMatrix();
     return 0;
 }
 
@@ -390,8 +438,19 @@ static int DecodeUTF8(const char** p) {
     return cp;
 }
 
-/// Graphics.Print(text, font, x, y, z, [rx,ry,rz, sx,sy,sz, ox,oy,oz])
-/// 文字渲染 — 还原自 sub_1800AA170
+/// @lua_api Light.Graphics.Print
+/// @brief 文字渲染 (支持 Unicode/CJK)
+/// @param text string 要渲染的文本
+/// @param font Font 字体对象
+/// @param x number? 水平位置
+/// @param y number? 垂直位置
+/// @param z number? 深度
+/// @return void
+/// @example
+/// local font = Light(Light.Graphics.Font):New("Arial.ttf", 24)
+/// Light.Graphics.Print("Hello World", font, 10, 10)
+///
+/// 还原自 sub_1800AA170
 /// 支持 Unicode/CJK: UTF-8 解码 + FontGetGlyph 动态字形查询
 /// 两遍策略: 第一遍预烘焙所有字形 (glTexImage2D 必须在 glBegin 外),
 ///           第二遍一次性渲染所有四边形
@@ -417,15 +476,18 @@ static int l_Print(lua_State* L) {
         lua_pop(L, 1);
     }
 
-    glPushMatrix();
-    glTranslatef(x, y, z);
+    g_render->PushMatrix();
+    g_render->Translate(x, y, z);
     ApplyTransform(rx, ry, rz, sx, sy, sz, ox, oy, oz);
     ApplyDrawColor();
+
+    float cr = g_ctx.drawColor[0], cg = g_ctx.drawColor[1];
+    float cb = g_ctx.drawColor[2], ca = g_ctx.drawColor[3];
 
     if (fch && fch->texId && rawFontCtx) {
         float baseLine = fch->fontSize;
 
-        // ====== 第一遍: 预烘焙所有字形 (必须在 glBegin 外调用) ======
+        // ====== 第一遍: 预烘焙所有字形 ======
         {
             const char* p = text;
             while (*p) {
@@ -433,22 +495,20 @@ static int l_Print(lua_State* L) {
                 if (cp <= 0) continue;
                 FontGlyphResult gr;
                 FontGetGlyph(rawFontCtx, cp, &gr);
-                // 触发 BakeGlyph → glTexImage2D, 不关心返回值
             }
         }
 
-        // ====== 第二遍: 渲染所有字形四边形 ======
-        glEnable(GL_TEXTURE_2D);
-        glBindTexture(GL_TEXTURE_2D, fch->texId);
+        // ====== 第二遍: 收集所有字形顶点后一次提交 ======
+        g_render->BindTexture(fch->texId);
+        std::vector<RenderVertex> glyphVerts;
+        glyphVerts.reserve(128);
 
         float cx = 0;
         const char* p = text;
-        glBegin(GL_QUADS);
         while (*p) {
             int cp = DecodeUTF8(&p);
             if (cp <= 0) continue;
 
-            // 此时所有字形已在第一遍中烘焙, 不会触发 glTexImage2D
             FontGlyphResult gr;
             FontGetGlyph(rawFontCtx, cp, &gr);
 
@@ -462,29 +522,38 @@ static int l_Print(lua_State* L) {
             float gx1 = gx0 + gr.width;
             float gy1 = gy0 + gr.height;
 
-            glTexCoord2f(gr.u0, gr.v0); glVertex3f(gx0, gy0, 0);
-            glTexCoord2f(gr.u1, gr.v0); glVertex3f(gx1, gy0, 0);
-            glTexCoord2f(gr.u1, gr.v1); glVertex3f(gx1, gy1, 0);
-            glTexCoord2f(gr.u0, gr.v1); glVertex3f(gx0, gy1, 0);
+            glyphVerts.push_back({gx0, gy0, 0, gr.u0, gr.v0, cr, cg, cb, ca});
+            glyphVerts.push_back({gx1, gy0, 0, gr.u1, gr.v0, cr, cg, cb, ca});
+            glyphVerts.push_back({gx1, gy1, 0, gr.u1, gr.v1, cr, cg, cb, ca});
+            glyphVerts.push_back({gx0, gy1, 0, gr.u0, gr.v1, cr, cg, cb, ca});
             cx += gr.xadvance;
         }
-        glEnd();
-        glBindTexture(GL_TEXTURE_2D, 0);
-        glDisable(GL_TEXTURE_2D);
+        if (!glyphVerts.empty())
+            g_render->DrawArrays(DrawMode::Quads, glyphVerts.data(), (int)glyphVerts.size());
+        g_render->UnbindTexture();
     } else {
-        // 无字体时绘制占位矩形
         float tw = (float)(strlen(text) * 10);
-        glBegin(GL_QUADS);
-        glVertex3f(0, 0, 0); glVertex3f(tw, 0, 0);
-        glVertex3f(tw, 18, 0); glVertex3f(0, 18, 0);
-        glEnd();
+        RenderVertex verts[4] = {
+            {0,  0,  0,  0, 0, cr, cg, cb, ca},
+            {tw, 0,  0,  0, 0, cr, cg, cb, ca},
+            {tw, 18, 0,  0, 0, cr, cg, cb, ca},
+            {0,  18, 0,  0, 0, cr, cg, cb, ca},
+        };
+        g_render->DrawArrays(DrawMode::Quads, verts, 4);
     }
-    glPopMatrix();
+    g_render->PopMatrix();
     return 0;
 }
 
-/// Graphics.Line(x1,y1,z1, x2,y2,z2, [rx,ry,rz, sx,sy,sz, ox,oy,oz])
-/// 直线 — 15个参数, 无 mode, 无 self
+/// @lua_api Light.Graphics.Line
+/// @brief 绘制直线
+/// @param x1 number 起点 X
+/// @param y1 number 起点 Y
+/// @param z1 number 起点 Z
+/// @param x2 number 终点 X
+/// @param y2 number 终点 Y
+/// @param z2 number 终点 Z
+/// @return void
 static int l_Line(lua_State* L) {
     float x1 = (float)luaL_checknumber(L, 1);
     float y1 = (float)luaL_checknumber(L, 2);
@@ -496,19 +565,27 @@ static int l_Line(lua_State* L) {
     float rx, ry, rz, sx, sy, sz, ox, oy, oz;
     ReadTransform(L, 7, &rx, &ry, &rz, &sx, &sy, &sz, &ox, &oy, &oz);
 
-    glPushMatrix();
+    g_render->PushMatrix();
     ApplyTransform(rx, ry, rz, sx, sy, sz, ox, oy, oz);
     ApplyDrawColor();
-    glBegin(GL_LINES);
-    glVertex3f(x1, y1, z1);
-    glVertex3f(x2, y2, z2);
-    glEnd();
-    glPopMatrix();
+    float cr = g_ctx.drawColor[0], cg = g_ctx.drawColor[1];
+    float cb = g_ctx.drawColor[2], ca = g_ctx.drawColor[3];
+    RenderVertex verts[2] = {
+        {x1, y1, z1, 0, 0, cr, cg, cb, ca},
+        {x2, y2, z2, 0, 0, cr, cg, cb, ca},
+    };
+    g_render->DrawArrays(DrawMode::Lines, verts, 2);
+    g_render->PopMatrix();
     return 0;
 }
 
-/// Graphics.Triangle(mode, x1,y1,z1, x2,y2,z2, x3,y3,z3, [rx...])
-/// 三角形 — mode 是 FillMode(2) 或 LineMode(1)
+/// @lua_api Light.Graphics.Triangle
+/// @brief 绘制三角形
+/// @param mode number 1=线框(LineMode) 2=填充(FillMode)
+/// @param x1 number 顶点 1 X
+/// @param y1 number 顶点 1 Y
+/// @param z1 number 顶点 1 Z
+/// @return void
 static int l_Triangle(lua_State* L) {
     int mode = (int)luaL_checkinteger(L, 1);
     float v[9];
@@ -518,19 +595,32 @@ static int l_Triangle(lua_State* L) {
     float rx, ry, rz, sx, sy, sz, ox, oy, oz;
     ReadTransform(L, 11, &rx, &ry, &rz, &sx, &sy, &sz, &ox, &oy, &oz);
 
-    glPushMatrix();
+    g_render->PushMatrix();
     ApplyTransform(rx, ry, rz, sx, sy, sz, ox, oy, oz);
     ApplyDrawColor();
-    glBegin(mode == 1 ? GL_LINE_LOOP : GL_TRIANGLES);
-    glVertex3f(v[0], v[1], v[2]);
-    glVertex3f(v[3], v[4], v[5]);
-    glVertex3f(v[6], v[7], v[8]);
-    glEnd();
-    glPopMatrix();
+    float cr = g_ctx.drawColor[0], cg = g_ctx.drawColor[1];
+    float cb = g_ctx.drawColor[2], ca = g_ctx.drawColor[3];
+    RenderVertex verts[3] = {
+        {v[0], v[1], v[2], 0, 0, cr, cg, cb, ca},
+        {v[3], v[4], v[5], 0, 0, cr, cg, cb, ca},
+        {v[6], v[7], v[8], 0, 0, cr, cg, cb, ca},
+    };
+    DrawMode dm = (mode == 1) ? DrawMode::LineLoop : DrawMode::Triangles;
+    g_render->DrawArrays(dm, verts, 3);
+    g_render->PopMatrix();
     return 0;
 }
 
-/// Graphics.Rectangle(mode, x,y,z, w,h,d, [rx...])
+/// @lua_api Light.Graphics.Rectangle
+/// @brief 绘制矩形
+/// @param mode number 1=线框 2=填充
+/// @param x number 左上 X
+/// @param y number 左上 Y
+/// @param z number 深度
+/// @param w number 宽度
+/// @param h number 高度
+/// @param d number? 深度尺寸 (默认 0)
+/// @return void
 static int l_Rectangle(lua_State* L) {
     int mode = (int)luaL_checkinteger(L, 1);
     float x = (float)luaL_checknumber(L, 2);
@@ -543,21 +633,35 @@ static int l_Rectangle(lua_State* L) {
     float rx, ry, rz, sx, sy, sz, ox, oy, oz;
     ReadTransform(L, 8, &rx, &ry, &rz, &sx, &sy, &sz, &ox, &oy, &oz);
 
-    glPushMatrix();
-    glTranslatef(x, y, z);
+    g_render->PushMatrix();
+    g_render->Translate(x, y, z);
     ApplyTransform(rx, ry, rz, sx, sy, sz, ox, oy, oz);
     ApplyDrawColor();
-    glBegin(mode == 1 ? GL_LINE_LOOP : GL_QUADS);
-    glVertex3f(0, 0, 0);
-    glVertex3f(w, 0, 0);
-    glVertex3f(w, h, d);
-    glVertex3f(0, h, d);
-    glEnd();
-    glPopMatrix();
+    float cr = g_ctx.drawColor[0], cg = g_ctx.drawColor[1];
+    float cb = g_ctx.drawColor[2], ca = g_ctx.drawColor[3];
+    RenderVertex verts[4] = {
+        {0, 0, 0, 0, 0, cr, cg, cb, ca},
+        {w, 0, 0, 0, 0, cr, cg, cb, ca},
+        {w, h, d, 0, 0, cr, cg, cb, ca},
+        {0, h, d, 0, 0, cr, cg, cb, ca},
+    };
+    DrawMode dm = (mode == 1) ? DrawMode::LineLoop : DrawMode::Quads;
+    g_render->DrawArrays(dm, verts, 4);
+    g_render->PopMatrix();
     return 0;
 }
 
-/// Graphics.RoundedRectangle(mode, x,y,z, w,h, r, segments, [rx...])
+/// @lua_api Light.Graphics.RoundedRectangle
+/// @brief 绘制圆角矩形
+/// @param mode number 1=线框 2=填充
+/// @param x number 左上 X
+/// @param y number 左上 Y
+/// @param z number 深度
+/// @param w number 宽度
+/// @param h number 高度
+/// @param r number? 圆角半径 (默认 5)
+/// @param segments number? 圆弧段数 (默认 8)
+/// @return void
 static int l_RoundedRectangle(lua_State* L) {
     int mode = (int)luaL_checkinteger(L, 1);
     float x = (float)luaL_checknumber(L, 2);
@@ -571,33 +675,39 @@ static int l_RoundedRectangle(lua_State* L) {
     float rx2, ry2, rz2, sx2, sy2, sz2, ox2, oy2, oz2;
     ReadTransform(L, 9, &rx2, &ry2, &rz2, &sx2, &sy2, &sz2, &ox2, &oy2, &oz2);
 
-    glPushMatrix();
-    glTranslatef(x, y, z);
+    g_render->PushMatrix();
+    g_render->Translate(x, y, z);
     ApplyTransform(rx2, ry2, rz2, sx2, sy2, sz2, ox2, oy2, oz2);
     ApplyDrawColor();
+    float cr = g_ctx.drawColor[0], cg = g_ctx.drawColor[1];
+    float cb = g_ctx.drawColor[2], ca = g_ctx.drawColor[3];
 
-    // 圆角矩形由 4 段弧 + 4 条直线组成
-    GLenum glMode = (mode == 1) ? GL_LINE_LOOP : GL_TRIANGLE_FAN;
-    glBegin(glMode);
-    if (mode == 2) glVertex3f(w / 2, h / 2, 0);  // 中心点 (扇形)
+    std::vector<RenderVertex> verts;
+    verts.reserve(4 * segs + 8);
+    if (mode == 2) verts.push_back({w / 2, h / 2, 0, 0, 0, cr, cg, cb, ca});
 
-    auto emitArc = [&](float cx, float cy, float startDeg, float endDeg) {
+    auto emitArc = [&](float acx, float acy, float startDeg, float endDeg) {
         for (int i = 0; i <= segs; ++i) {
             float t = startDeg + (endDeg - startDeg) * i / segs;
             float rad = (float)(t * M_PI / 180.0);
-            glVertex3f(cx + r * cosf(rad), cy + r * sinf(rad), 0);
+            verts.push_back({acx + r * cosf(rad), acy + r * sinf(rad), 0, 0, 0, cr, cg, cb, ca});
         }
     };
-    emitArc(w - r, r,     -90.0f, 0.0f);    // 右上
-    emitArc(w - r, h - r,  0.0f,  90.0f);   // 右下
-    emitArc(r,     h - r,  90.0f, 180.0f);  // 左下
-    emitArc(r,     r,      180.0f, 270.0f); // 左上
-    glEnd();
-    glPopMatrix();
+    emitArc(w - r, r,     -90.0f, 0.0f);
+    emitArc(w - r, h - r,  0.0f,  90.0f);
+    emitArc(r,     h - r,  90.0f, 180.0f);
+    emitArc(r,     r,      180.0f, 270.0f);
+
+    DrawMode dm = (mode == 1) ? DrawMode::LineLoop : DrawMode::TriangleFan;
+    g_render->DrawArrays(dm, verts.data(), (int)verts.size());
+    g_render->PopMatrix();
     return 0;
 }
 
-/// Graphics.Quad(mode, x1..z1, x2..z2, x3..z3, x4..z4, [rx...])
+/// @lua_api Light.Graphics.Quad
+/// @brief 绘制任意四边形
+/// @param mode number 1=线框 2=填充
+/// @return void
 static int l_Quad(lua_State* L) {
     int mode = (int)luaL_checkinteger(L, 1);
     float v[12];
@@ -607,41 +717,64 @@ static int l_Quad(lua_State* L) {
     float rx, ry, rz, sx, sy, sz, ox, oy, oz;
     ReadTransform(L, 14, &rx, &ry, &rz, &sx, &sy, &sz, &ox, &oy, &oz);
 
-    glPushMatrix();
+    g_render->PushMatrix();
     ApplyTransform(rx, ry, rz, sx, sy, sz, ox, oy, oz);
     ApplyDrawColor();
-    glBegin(mode == 1 ? GL_LINE_LOOP : GL_QUADS);
-    glVertex3f(v[0], v[1],  v[2]);
-    glVertex3f(v[3], v[4],  v[5]);
-    glVertex3f(v[6], v[7],  v[8]);
-    glVertex3f(v[9], v[10], v[11]);
-    glEnd();
-    glPopMatrix();
+    float cr = g_ctx.drawColor[0], cg = g_ctx.drawColor[1];
+    float cb = g_ctx.drawColor[2], ca = g_ctx.drawColor[3];
+    RenderVertex verts[4] = {
+        {v[0], v[1],  v[2],  0, 0, cr, cg, cb, ca},
+        {v[3], v[4],  v[5],  0, 0, cr, cg, cb, ca},
+        {v[6], v[7],  v[8],  0, 0, cr, cg, cb, ca},
+        {v[9], v[10], v[11], 0, 0, cr, cg, cb, ca},
+    };
+    DrawMode dm = (mode == 1) ? DrawMode::LineLoop : DrawMode::Quads;
+    g_render->DrawArrays(dm, verts, 4);
+    g_render->PopMatrix();
     return 0;
 }
 
-/// Graphics.Polygon(mode, x1,y1,z1, x2,y2,z2, ...) — 可变顶点
+/// @lua_api Light.Graphics.Polygon
+/// @brief 绘制多边形 (可变顶点数)
+/// @param mode number 1=线框 2=填充
+/// @return void
 static int l_Polygon(lua_State* L) {
     int mode = (int)luaL_checkinteger(L, 1);
     int argc = lua_gettop(L);
     int numCoords = argc - 1;
     int numVerts = numCoords / 3;
 
-    glPushMatrix();
+    g_render->PushMatrix();
     ApplyDrawColor();
-    glBegin(mode == 1 ? GL_LINE_LOOP : GL_POLYGON);
+    float cr = g_ctx.drawColor[0], cg = g_ctx.drawColor[1];
+    float cb = g_ctx.drawColor[2], ca = g_ctx.drawColor[3];
+    std::vector<RenderVertex> verts(numVerts);
     for (int i = 0; i < numVerts; ++i) {
-        float vx = (float)luaL_checknumber(L, 2 + i * 3);
-        float vy = (float)luaL_checknumber(L, 3 + i * 3);
-        float vz = (float)luaL_checknumber(L, 4 + i * 3);
-        glVertex3f(vx, vy, vz);
+        verts[i] = {
+            (float)luaL_checknumber(L, 2 + i * 3),
+            (float)luaL_checknumber(L, 3 + i * 3),
+            (float)luaL_checknumber(L, 4 + i * 3),
+            0, 0, cr, cg, cb, ca
+        };
     }
-    glEnd();
-    glPopMatrix();
+    // GL_POLYGON → TriangleFan (GL 3.3 Core 无 GL_POLYGON)
+    DrawMode dm = (mode == 1) ? DrawMode::LineLoop : DrawMode::TriangleFan;
+    g_render->DrawArrays(dm, verts.data(), numVerts);
+    g_render->PopMatrix();
     return 0;
 }
 
-/// Graphics.Arc(mode, x,y,z, radius, startAngle, endAngle, segments, [rx...])
+/// @lua_api Light.Graphics.Arc
+/// @brief 绘制圆弧
+/// @param mode number 1=线框 2=填充
+/// @param x number 中心 X
+/// @param y number 中心 Y
+/// @param z number 深度
+/// @param radius number 半径
+/// @param startAngle number 起始角度 (度)
+/// @param endAngle number 结束角度 (度)
+/// @param segments number 圆弧段数
+/// @return void
 static int l_Arc(lua_State* L) {
     int mode = (int)luaL_checkinteger(L, 1);
     float cx     = (float)luaL_checknumber(L, 2);
@@ -655,25 +788,36 @@ static int l_Arc(lua_State* L) {
     float rx, ry, rz, sx, sy, sz, ox, oy, oz;
     ReadTransform(L, 9, &rx, &ry, &rz, &sx, &sy, &sz, &ox, &oy, &oz);
 
-    glPushMatrix();
-    glTranslatef(cx, cy, cz);
+    g_render->PushMatrix();
+    g_render->Translate(cx, cy, cz);
     ApplyTransform(rx, ry, rz, sx, sy, sz, ox, oy, oz);
     ApplyDrawColor();
+    float cr = g_ctx.drawColor[0], cg = g_ctx.drawColor[1];
+    float cb = g_ctx.drawColor[2], ca = g_ctx.drawColor[3];
 
-    GLenum glMode = (mode == 1) ? GL_LINE_STRIP : GL_TRIANGLE_FAN;
-    glBegin(glMode);
-    if (mode == 2) glVertex3f(0, 0, 0);  // 中心点
+    std::vector<RenderVertex> verts;
+    verts.reserve(segs + 2);
+    if (mode == 2) verts.push_back({0, 0, 0, 0, 0, cr, cg, cb, ca});
     for (int i = 0; i <= segs; ++i) {
         float t = start + (end - start) * i / segs;
         float rad = (float)(t * M_PI / 180.0);
-        glVertex3f(radius * cosf(rad), radius * sinf(rad), 0);
+        verts.push_back({radius * cosf(rad), radius * sinf(rad), 0, 0, 0, cr, cg, cb, ca});
     }
-    glEnd();
-    glPopMatrix();
+    DrawMode dm = (mode == 1) ? DrawMode::LineStrip : DrawMode::TriangleFan;
+    g_render->DrawArrays(dm, verts.data(), (int)verts.size());
+    g_render->PopMatrix();
     return 0;
 }
 
-/// Graphics.Circle(mode, x,y,z, radius, segments, [rx...])
+/// @lua_api Light.Graphics.Circle
+/// @brief 绘制圆形
+/// @param mode number 1=线框 2=填充
+/// @param x number 中心 X
+/// @param y number 中心 Y
+/// @param z number 深度
+/// @param radius number 半径
+/// @param segments number 分段数
+/// @return void
 static int l_Circle(lua_State* L) {
     int mode = (int)luaL_checkinteger(L, 1);
     float cx     = (float)luaL_checknumber(L, 2);
@@ -685,20 +829,23 @@ static int l_Circle(lua_State* L) {
     float rx, ry, rz, sx, sy, sz, ox, oy, oz;
     ReadTransform(L, 7, &rx, &ry, &rz, &sx, &sy, &sz, &ox, &oy, &oz);
 
-    glPushMatrix();
-    glTranslatef(cx, cy, cz);
+    g_render->PushMatrix();
+    g_render->Translate(cx, cy, cz);
     ApplyTransform(rx, ry, rz, sx, sy, sz, ox, oy, oz);
     ApplyDrawColor();
+    float cr = g_ctx.drawColor[0], cg = g_ctx.drawColor[1];
+    float cb = g_ctx.drawColor[2], ca = g_ctx.drawColor[3];
 
-    GLenum glMode = (mode == 1) ? GL_LINE_LOOP : GL_TRIANGLE_FAN;
-    glBegin(glMode);
-    if (mode == 2) glVertex3f(0, 0, 0);
+    std::vector<RenderVertex> verts;
+    verts.reserve(segs + 2);
+    if (mode == 2) verts.push_back({0, 0, 0, 0, 0, cr, cg, cb, ca});
     for (int i = 0; i <= segs; ++i) {
         float t = (float)(2.0 * M_PI * i / segs);
-        glVertex3f(radius * cosf(t), radius * sinf(t), 0);
+        verts.push_back({radius * cosf(t), radius * sinf(t), 0, 0, 0, cr, cg, cb, ca});
     }
-    glEnd();
-    glPopMatrix();
+    DrawMode dm = (mode == 1) ? DrawMode::LineLoop : DrawMode::TriangleFan;
+    g_render->DrawArrays(dm, verts.data(), (int)verts.size());
+    g_render->PopMatrix();
     return 0;
 }
 
@@ -718,8 +865,14 @@ static int l_Graphics_Tostring(lua_State* L) {
 // ==================== 函数注册表 ====================
 // 精确匹配 IDA off_18025AD60 的顺序 (21个函数 + 2元方法)
 
-/// Graphics.DrawSprite(spriteData, frameIdx, x, y, [rx,ry,rz, sx,sy,sz, ox,oy,oz])
-/// 绘制 WAS 精灵帧 — 从 GetSpriteImagesData 返回的表中取帧
+/// @lua_api Light.Graphics.DrawSprite
+/// @brief 绘制 WAS 精灵帧
+/// @param spriteData table GetSpriteImagesData 返回的精灵数据
+/// @param frameIdx number 帧索引 (1-based)
+/// @param x number? 屏幕位置 X
+/// @param y number? 屏幕位置 Y
+/// @return void
+/// @note 懒加载: 首次绘制时将 pixels 上传为纹理, 缓存在 frame.__texId
 /// spriteData.frames[frameIdx] = { x, y, w, h, pixels(userdata) }
 /// 懒加载: 首次绘制时将 pixels 上传为 GL 纹理, 缓存在 frame.__texId
 static int l_DrawSprite(lua_State* L) {
@@ -758,17 +911,11 @@ static int l_DrawSprite(lua_State* L) {
     lua_pop(L, 1);
 
     if (texId == 0) {
-        // 懒创建: 从 pixels userdata 上传 GL 纹理
+        // 懒创建: 从 pixels userdata 上传纹理 (通过渲染后端)
         lua_getfield(L, frameTableIdx, "pixels");
         if (lua_isuserdata(L, -1)) {
             const void* pixels = lua_touserdata(L, -1);
-            glGenTextures(1, &texId);
-            glBindTexture(GL_TEXTURE_2D, texId);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, fw, fh, 0,
-                         GL_RGBA, GL_UNSIGNED_BYTE, pixels);
-            glBindTexture(GL_TEXTURE_2D, 0);
+            texId = g_render->CreateTexture(fw, fh, 4, pixels);
 
             // 缓存 texId 到帧表
             lua_pushnumber(L, (lua_Number)texId);
@@ -790,24 +937,25 @@ static int l_DrawSprite(lua_State* L) {
     float rx, ry, rz, tsx, tsy, tsz, tox, toy, toz;
     ReadTransform(L, 6, &rx, &ry, &rz, &tsx, &tsy, &tsz, &tox, &toy, &toz);
 
-    // 渲染
-    glPushMatrix();
-    glTranslatef(x + ox, y + oy, z);
+    // 渲染 (通过渲染后端)
+    g_render->PushMatrix();
+    g_render->Translate(x + ox, y + oy, z);
     ApplyTransform(rx, ry, rz, tsx, tsy, tsz, tox, toy, toz);
     ApplyDrawColor();
 
     float ffW = (float)fw, ffH = (float)fh;
-    glEnable(GL_TEXTURE_2D);
-    glBindTexture(GL_TEXTURE_2D, texId);
-    glBegin(GL_QUADS);
-    glTexCoord2f(0, 0); glVertex3f(0,   0,   0);
-    glTexCoord2f(1, 0); glVertex3f(ffW, 0,   0);
-    glTexCoord2f(1, 1); glVertex3f(ffW, ffH, 0);
-    glTexCoord2f(0, 1); glVertex3f(0,   ffH, 0);
-    glEnd();
-    glBindTexture(GL_TEXTURE_2D, 0);
-    glDisable(GL_TEXTURE_2D);
-    glPopMatrix();
+    float cr = g_ctx.drawColor[0], cg = g_ctx.drawColor[1];
+    float cb = g_ctx.drawColor[2], ca = g_ctx.drawColor[3];
+    g_render->BindTexture(texId);
+    RenderVertex verts[4] = {
+        {0,   0,   0,  0, 0,  cr, cg, cb, ca},
+        {ffW, 0,   0,  1, 0,  cr, cg, cb, ca},
+        {ffW, ffH, 0,  1, 1,  cr, cg, cb, ca},
+        {0,   ffH, 0,  0, 1,  cr, cg, cb, ca},
+    };
+    g_render->DrawArrays(DrawMode::Quads, verts, 4);
+    g_render->UnbindTexture();
+    g_render->PopMatrix();
 
     lua_pop(L, 2);  // pop frame + frames
     return 0;

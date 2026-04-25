@@ -1,5 +1,3 @@
-require "Light"           -- 加载 Light.dll，触发 luaopen_Light
-require "Light.Graphics"  -- 加载图形子模块
 -- ... 然后正常使用
 local HelloWindow = Light(Light.UI.Window):New()
 

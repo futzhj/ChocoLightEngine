@@ -1,0 +1,278 @@
+/**
+ * @file light_platform_net.cpp
+ * @brief PlatformNet 实现 — 基于 libuv 的跨平台网络抽象
+ */
+
+#include "light_platform_net.h"
+#include "light.h"
+#include <uv.h>
+#include <cstring>
+#include <cstdlib>
+
+// ==================== 内部状态 ====================
+
+static uv_loop_t* s_loop = nullptr;
+
+// 回调上下文: 附着在 uv_handle_t::data 上
+struct NetHandleData {
+    PlatformNet::OnReadCb   readCb;
+    PlatformNet::OnConnectCb connectCb;
+    PlatformNet::OnAcceptCb  acceptCb;
+};
+
+static NetHandleData* GetData(uv_tcp_s* h) {
+    return h ? (NetHandleData*)((uv_handle_t*)h)->data : nullptr;
+}
+
+static NetHandleData* EnsureData(uv_tcp_s* h) {
+    auto* hh = (uv_handle_t*)h;
+    if (!hh->data) {
+        hh->data = new NetHandleData{};
+    }
+    return (NetHandleData*)hh->data;
+}
+
+// ==================== libuv 回调 ====================
+
+// 内存分配回调 (libuv 读取时调用)
+static void alloc_cb(uv_handle_t*, size_t suggested, uv_buf_t* buf) {
+    buf->base = (char*)malloc(suggested);
+    buf->len  = (unsigned long)suggested;
+}
+
+// 读取回调
+static void read_cb(uv_stream_t* stream, ssize_t nread, const uv_buf_t* buf) {
+    auto* nd = (NetHandleData*)((uv_handle_t*)stream)->data;
+    if (nd && nd->readCb) {
+        if (nread > 0) {
+            nd->readCb(buf->base, (int)nread);
+        } else if (nread < 0) {
+            // EOF 或错误
+            nd->readCb(nullptr, (int)nread);
+        }
+    }
+    if (buf->base) free(buf->base);
+}
+
+// 连接回调
+static void connect_cb(uv_connect_t* req, int status) {
+    auto* handle = (uv_tcp_s*)req->handle;
+    auto* nd = GetData(handle);
+    if (nd && nd->connectCb) {
+        nd->connectCb(status);
+    }
+    free(req);
+}
+
+// 写完成回调
+struct WriteReq {
+    uv_write_t req;
+    uv_buf_t   buf;
+};
+
+static void write_cb(uv_write_t* req, int /*status*/) {
+    auto* wr = (WriteReq*)req;
+    free(wr->buf.base);
+    free(wr);
+}
+
+// 关闭回调: 释放 NetHandleData
+static void close_cb(uv_handle_t* handle) {
+    if (handle->data) {
+        delete (NetHandleData*)handle->data;
+        handle->data = nullptr;
+    }
+    free(handle);
+}
+
+// 服务器连接回调
+static void connection_cb(uv_stream_t* server, int status) {
+    if (status < 0) return;
+    auto* nd = (NetHandleData*)((uv_handle_t*)server)->data;
+    if (!nd || !nd->acceptCb) return;
+
+    auto* client = (uv_tcp_t*)malloc(sizeof(uv_tcp_t));
+    uv_tcp_init(s_loop, client);
+    ((uv_handle_t*)client)->data = nullptr;
+
+    if (uv_accept(server, (uv_stream_t*)client) == 0) {
+        nd->acceptCb(client);
+    } else {
+        uv_close((uv_handle_t*)client, close_cb);
+    }
+}
+
+// DNS 解析回调上下文
+struct ResolveCtx {
+    uv_getaddrinfo_t req;
+    uv_tcp_s*        handle;
+    uint16_t         port;
+};
+
+static void resolve_cb(uv_getaddrinfo_t* req, int status, struct addrinfo* res) {
+    auto* ctx = (ResolveCtx*)req->data;
+    if (status < 0 || !res) {
+        auto* nd = GetData(ctx->handle);
+        if (nd && nd->connectCb) nd->connectCb(status);
+        free(ctx);
+        if (res) uv_freeaddrinfo(res);
+        return;
+    }
+
+    // 构建目标地址
+    struct sockaddr_storage addr;
+    memcpy(&addr, res->ai_addr, res->ai_addrlen);
+    // 设置端口 (IPv4/IPv6)
+    if (addr.ss_family == AF_INET) {
+        ((struct sockaddr_in*)&addr)->sin_port = htons(ctx->port);
+    } else if (addr.ss_family == AF_INET6) {
+        ((struct sockaddr_in6*)&addr)->sin6_port = htons(ctx->port);
+    }
+
+    auto* creq = (uv_connect_t*)malloc(sizeof(uv_connect_t));
+    uv_tcp_connect(creq, ctx->handle, (const struct sockaddr*)&addr, connect_cb);
+
+    uv_freeaddrinfo(res);
+    free(ctx);
+}
+
+// ==================== PlatformNet 实现 ====================
+
+namespace PlatformNet {
+
+bool Init() {
+    if (s_loop) return true;
+    s_loop = (uv_loop_t*)malloc(sizeof(uv_loop_t));
+    if (uv_loop_init(s_loop) != 0) {
+        free(s_loop);
+        s_loop = nullptr;
+        CC::Log(CC::LOG_ERROR, "PlatformNet: uv_loop_init failed");
+        return false;
+    }
+    CC::Log(CC::LOG_INFO, "PlatformNet: initialized (libuv %s)", uv_version_string());
+    return true;
+}
+
+void Shutdown() {
+    if (!s_loop) return;
+    // 关闭所有活跃句柄
+    uv_walk(s_loop, [](uv_handle_t* h, void*) {
+        if (!uv_is_closing(h)) uv_close(h, close_cb);
+    }, nullptr);
+    // 运行直到所有句柄关闭
+    while (uv_loop_alive(s_loop)) {
+        uv_run(s_loop, UV_RUN_ONCE);
+    }
+    uv_loop_close(s_loop);
+    free(s_loop);
+    s_loop = nullptr;
+    CC::Log(CC::LOG_INFO, "PlatformNet: shutdown");
+}
+
+void Poll() {
+    if (s_loop) uv_run(s_loop, UV_RUN_NOWAIT);
+}
+
+uv_tcp_s* CreateClient() {
+    if (!s_loop) return nullptr;
+    auto* h = (uv_tcp_t*)malloc(sizeof(uv_tcp_t));
+    if (uv_tcp_init(s_loop, h) != 0) {
+        free(h);
+        return nullptr;
+    }
+    ((uv_handle_t*)h)->data = nullptr;
+    return h;
+}
+
+void Connect(uv_tcp_s* handle, const char* host, uint16_t port, OnConnectCb cb) {
+    if (!handle || !s_loop) return;
+    auto* nd = EnsureData(handle);
+    nd->connectCb = cb;
+
+    // 尝试直接解析为 IP
+    struct sockaddr_in addr4;
+    struct sockaddr_in6 addr6;
+    if (uv_ip4_addr(host, port, &addr4) == 0) {
+        auto* req = (uv_connect_t*)malloc(sizeof(uv_connect_t));
+        uv_tcp_connect(req, handle, (const struct sockaddr*)&addr4, connect_cb);
+        return;
+    }
+    if (uv_ip6_addr(host, port, &addr6) == 0) {
+        auto* req = (uv_connect_t*)malloc(sizeof(uv_connect_t));
+        uv_tcp_connect(req, handle, (const struct sockaddr*)&addr6, connect_cb);
+        return;
+    }
+
+    // DNS 异步解析
+    auto* ctx = (ResolveCtx*)malloc(sizeof(ResolveCtx));
+    ctx->handle = handle;
+    ctx->port   = port;
+    ctx->req.data = ctx;
+
+    struct addrinfo hints = {};
+    hints.ai_family   = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    uv_getaddrinfo(s_loop, &ctx->req, resolve_cb, host, nullptr, &hints);
+}
+
+void StartRead(uv_tcp_s* handle, OnReadCb cb) {
+    if (!handle) return;
+    auto* nd = EnsureData(handle);
+    nd->readCb = cb;
+    uv_read_start((uv_stream_t*)handle, alloc_cb, read_cb);
+}
+
+void StopRead(uv_tcp_s* handle) {
+    if (handle) uv_read_stop((uv_stream_t*)handle);
+}
+
+void Write(uv_tcp_s* handle, const char* data, size_t len) {
+    if (!handle || !data || len == 0) return;
+    auto* wr = (WriteReq*)malloc(sizeof(WriteReq));
+    wr->buf.base = (char*)malloc(len);
+    memcpy(wr->buf.base, data, len);
+    wr->buf.len = (unsigned long)len;
+    uv_write(&wr->req, (uv_stream_t*)handle, &wr->buf, 1, write_cb);
+}
+
+void Close(uv_tcp_s* handle) {
+    if (!handle) return;
+    if (!uv_is_closing((uv_handle_t*)handle)) {
+        uv_close((uv_handle_t*)handle, close_cb);
+    }
+}
+
+uv_tcp_s* CreateServer(const char* ip, uint16_t port) {
+    if (!s_loop) return nullptr;
+    auto* h = (uv_tcp_t*)malloc(sizeof(uv_tcp_t));
+    if (uv_tcp_init(s_loop, h) != 0) {
+        free(h);
+        return nullptr;
+    }
+    ((uv_handle_t*)h)->data = nullptr;
+
+    struct sockaddr_in addr;
+    uv_ip4_addr(ip, port, &addr);
+    if (uv_tcp_bind(h, (const struct sockaddr*)&addr, 0) != 0) {
+        CC::Log(CC::LOG_ERROR, "PlatformNet: bind %s:%u failed", ip, port);
+        uv_close((uv_handle_t*)h, close_cb);
+        return nullptr;
+    }
+    return h;
+}
+
+bool Listen(uv_tcp_s* server, int backlog, OnAcceptCb cb) {
+    if (!server) return false;
+    auto* nd = EnsureData(server);
+    nd->acceptCb = cb;
+    int r = uv_listen((uv_stream_t*)server, backlog, connection_cb);
+    if (r != 0) {
+        CC::Log(CC::LOG_ERROR, "PlatformNet: listen failed (%s)", uv_strerror(r));
+        return false;
+    }
+    return true;
+}
+
+uv_loop_s* GetLoop() { return s_loop; }
+
+}  // namespace PlatformNet

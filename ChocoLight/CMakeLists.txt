@@ -14,6 +14,13 @@ set(SQLITE3_DIR "${CMAKE_SOURCE_DIR}/third_party/sqlite3")
 # GLFW3 静态库 (窗口管理 + OpenGL context)
 set(GLFW_DIR "${CMAKE_SOURCE_DIR}/third_party/glfw")
 
+# glad GL 3.3 Core Profile 加载器
+set(GLAD_DIR "${CMAKE_SOURCE_DIR}/third_party/glad")
+
+# libuv 异步 IO 库 (网络抽象)
+set(LIBUV_BUILD_SHARED OFF CACHE BOOL "" FORCE)
+add_subdirectory(third_party/libuv EXCLUDE_FROM_ALL)
+
 # 输出 Light.dll
 add_library(Light SHARED
     src/cc_core.cpp
@@ -32,10 +39,22 @@ add_library(Light SHARED
     src/light_record.cpp
     src/light_plugins.cpp
     src/light_antidebug.cpp
+    # 渲染后端抽象层
+    src/render_backend.cpp
+    src/render_legacy.cpp
+    src/render_gl33.cpp
+    # 音频后端抽象层
+    src/light_audio_backend.cpp
+    # 网络抽象层 (libuv)
+    src/light_platform_net.cpp
     # SQLite3 amalgamation (C 源码)
     ${SQLITE3_DIR}/sqlite3.c
     # stb 库实现 (stb_image + stb_truetype)
     ${CMAKE_SOURCE_DIR}/third_party/stb_impl.c
+    # glad GL 3.3 Core Profile 加载器
+    ${GLAD_DIR}/src/gl.c
+    # miniaudio 音频库实现
+    ${CMAKE_SOURCE_DIR}/third_party/miniaudio_impl.c
 )
 
 target_include_directories(Light PRIVATE
@@ -43,13 +62,16 @@ target_include_directories(Light PRIVATE
     ${LUA_INCLUDE_DIR}
     ${SQLITE3_DIR}
     ${GLFW_DIR}/include
+    ${GLAD_DIR}/include
     ${CMAKE_SOURCE_DIR}/third_party
+    ${CMAKE_SOURCE_DIR}/third_party/libuv/include
 )
 
-# Lua 5.1 + GLFW3 链接
+# Lua 5.1 + GLFW3 + libuv 链接
 target_link_libraries(Light PRIVATE
     ${CMAKE_SOURCE_DIR}/../lumen-master/build/lib/lua/Release/lua51.lib
     ${GLFW_DIR}/glfw3.lib
+    uv_a
 )
 
 # 系统库

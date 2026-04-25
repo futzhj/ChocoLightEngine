@@ -75,9 +75,10 @@ static int sqlite3_exec_callback(void* userData, int colCount, char** colValues,
 
 // ==================== SQLite 函数 ====================
 
-/// SQLite.Execute(self, sql) — 执行 SQL 语句
-/// 还原自 sub_1800AFBF0
-/// 返回: (affected_rows, {row1, row2, ...})
+/// @lua_api Light.DB.SQLite.Execute
+/// @brief 执行 SQL 语句
+/// @param sql string SQL 语句
+/// @return number,table affected_rows, 结果行数组
 static int l_SQLite_Execute(lua_State* L) {
     luaL_checktype(L, 1, LUA_TTABLE);
     const char* sql = luaL_checkstring(L, 2);
@@ -113,8 +114,10 @@ static int l_SQLite_Execute(lua_State* L) {
     return 2;
 }
 
-/// SQLite.Escape(str) — SQL ��符串转义 (单引号双写)
-/// 还原自 sub_1800AFB60
+/// @lua_api Light.DB.SQLite.Escape
+/// @brief SQL 字符串转义 (单引号双写)
+/// @param str string 要转义的字符串
+/// @return string
 static int l_SQLite_Escape(lua_State* L) {
     size_t len = 0;
     const char* str = luaL_checklstring(L, 1, &len);
@@ -130,8 +133,10 @@ static int l_SQLite_Escape(lua_State* L) {
     return 1;
 }
 
-/// SQLite.Blob(data) — 创建 X'AABBCC...' 格式 BLOB 字面量
-/// 还原自 sub_1800AFAA0
+/// @lua_api Light.DB.SQLite.Blob
+/// @brief 创建 X'AABBCC...' 格式 BLOB 字面量
+/// @param data string 二进制数据
+/// @return string SQL BLOB 字面量
 static int l_SQLite_Blob(lua_State* L) {
     size_t len = 0;
     const char* data = luaL_checklstring(L, 1, &len);
@@ -149,9 +154,10 @@ static int l_SQLite_Blob(lua_State* L) {
     return 1;
 }
 
-/// SQLite.TypeName(typeId) — Record ORM 字段类型 ID 转 SQL DDL 类型名
-/// 还原自 sub_1800B0350
-/// Serial=0 ~ TimeStamp=13
+/// @lua_api Light.DB.SQLite.TypeName
+/// @brief Record ORM 字段类型 ID 转 SQL DDL 类型名
+/// @param typeId number 类型 ID (0=Serial ~ 13=TimeStamp)
+/// @return string SQL 类型名
 static int l_SQLite_TypeName(lua_State* L) {
     int typeId = (int)luaL_checkinteger(L, 1);
 
@@ -190,8 +196,12 @@ static int l_SQLite_GC(lua_State* L) {
     return 0;
 }
 
-/// SQLite.__call(self, path) — 构造函数, 打开 SQLite 数据库
-/// 还原自 sub_1800B0040
+/// @lua_api Light.DB.SQLite.__call
+/// @brief 构造函数, 打开 SQLite 数据库
+/// @param path string 数据库文件路径
+/// @return void
+/// @example
+/// local db = Light(Light.DB.SQLite):New("game.db")
 static int l_SQLite_Call(lua_State* L) {
     luaL_checktype(L, 1, LUA_TTABLE);
     const char* path = luaL_checkstring(L, 2);

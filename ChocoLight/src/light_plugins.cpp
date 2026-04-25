@@ -107,9 +107,10 @@ static void DecodeWDFResource(uint8_t* data, size_t size) {
     }
 }
 
-/// WDFData.GetData(self, hash) — 按哈希提取原始数据 (不解码)
-/// 还原自 sub_1800B2F10 + sub_1800A0E40
-/// 返回: userdata(原始字节), size  或  nil
+/// @lua_api Light.Plugins.WDFData.GetData
+/// @brief 按哈希提取原始数据 (不解码)
+/// @param hash number 文件哈希
+/// @return userdata,number 原始字节,大小 | nil
 static int l_WDFData_GetData(lua_State* L) {
     luaL_checktype(L, 1, LUA_TTABLE);
     WDFContext* ctx = GetWDFContext(L, 1);
@@ -130,9 +131,10 @@ static int l_WDFData_GetData(lua_State* L) {
     return 1;
 }
 
-/// WDFData.GetTGAData(self, hash) — 提取解码后的 TGA 纹理数据
-/// 还原自 sub_1800B3910
-/// 读取原始数据 → byte-reversal + XOR 0x5A 解码 → 返回 TGA 数据
+/// @lua_api Light.Plugins.WDFData.GetTGAData
+/// @brief 提取解码后的 TGA 纹理数据
+/// @param hash number 文件哈希
+/// @return userdata,number TGA数据,大小 | nil
 static int l_WDFData_GetTGAData(lua_State* L) {
     luaL_checktype(L, 1, LUA_TTABLE);
     WDFContext* ctx = GetWDFContext(L, 1);
@@ -153,9 +155,10 @@ static int l_WDFData_GetTGAData(lua_State* L) {
     return 1;
 }
 
-/// WDFData.GetImageData(self, hash) — 提取解码后的图像数据
-/// 还原自 sub_1800B3030
-/// 读取 → 解码 → stb_image 解码为 RGBA
+/// @lua_api Light.Plugins.WDFData.GetImageData
+/// @brief 提取解码后的图像数据 (RGBA)
+/// @param hash number 文件哈希
+/// @return ImageData|nil
 static int l_WDFData_GetImageData(lua_State* L) {
     luaL_checktype(L, 1, LUA_TTABLE);
     WDFContext* ctx = GetWDFContext(L, 1);
@@ -180,9 +183,10 @@ static int l_WDFData_GetImageData(lua_State* L) {
     return 1;
 }
 
-/// WDFData.GetAudioData(self, hash) — 提取音频数据
-/// 还原自 sub_1800B2CD0
-/// 读取 → 解码 → ���回 PCM/WAV 数据
+/// @lua_api Light.Plugins.WDFData.GetAudioData
+/// @brief 提取解码后的音频数据
+/// @param hash number 文件哈希
+/// @return AudioData|nil
 static int l_WDFData_GetAudioData(lua_State* L) {
     luaL_checktype(L, 1, LUA_TTABLE);
     WDFContext* ctx = GetWDFContext(L, 1);
@@ -203,10 +207,10 @@ static int l_WDFData_GetAudioData(lua_State* L) {
     return 1;
 }
 
-/// WDFData.GetSpriteImagesData(self, hash) — 提取并解析 WAS 精灵帧数据
-/// 还原自 sub_1800B31E0
-/// WAS 格式: 16字节头 + 512字节调色板(256×RGB565) + 帧偏移表 + RLE帧数据
-/// 返回 Lua 表: { directions, framesPerDir, width, height, keyX, keyY, frames={...} }
+/// @lua_api Light.Plugins.WDFData.GetSpriteImagesData
+/// @brief 提取并解析 WAS 精灵帧数据
+/// @param hash number 资源哈希
+/// @return table|nil { directions, framesPerDir, width, height, keyX, keyY, frames }
 static int l_WDFData_GetSpriteImagesData(lua_State* L) {
     luaL_checktype(L, 1, LUA_TTABLE);
     WDFContext* ctx = GetWDFContext(L, 1);
@@ -386,9 +390,10 @@ static int l_WDFData_GC(lua_State* L) {
     return 0;
 }
 
-/// WDFData.__call(self, path) — 构造函数, 打开 WDF 文件
-/// 还原自 sub_1800B3B20
-/// 数据流: path→wchar_t→filesystem::exists→open→parse_header→build_hashtable
+/// @lua_api Light.Plugins.WDFData.__call
+/// @brief 构造函数, 打开 WDF 资源包
+/// @param path string WDF 文件路径
+/// @return void
 static int l_WDFData_Call(lua_State* L) {
     luaL_checktype(L, 1, LUA_TTABLE);
     const char* path = luaL_checkstring(L, 2);
@@ -551,7 +556,9 @@ static int l_NEMData_GC(lua_State* L) {
     return 0;
 }
 
-/// NEMData.GetWidth(self) — 还原自 sub_1800B4960
+/// @lua_api Light.Plugins.NEMData.GetWidth
+/// @brief 获取地图宽度
+/// @return number
 static int l_NEMData_GetWidth(lua_State* L) {
     luaL_checktype(L, 1, LUA_TTABLE);
     NEMContext* ctx = GetNEMContext(L, 1);
@@ -560,7 +567,9 @@ static int l_NEMData_GetWidth(lua_State* L) {
     return 1;
 }
 
-/// NEMData.GetHeight(self) — 还原自 sub_1800B4280
+/// @lua_api Light.Plugins.NEMData.GetHeight
+/// @brief 获取地图高度
+/// @return number
 static int l_NEMData_GetHeight(lua_State* L) {
     luaL_checktype(L, 1, LUA_TTABLE);
     NEMContext* ctx = GetNEMContext(L, 1);
@@ -569,7 +578,9 @@ static int l_NEMData_GetHeight(lua_State* L) {
     return 1;
 }
 
-/// NEMData.GetDimensions(self) → w, h — 还原自 sub_1800B41F0
+/// @lua_api Light.Plugins.NEMData.GetDimensions
+/// @brief 获取地图尺寸
+/// @return number,number w,h
 static int l_NEMData_GetDimensions(lua_State* L) {
     luaL_checktype(L, 1, LUA_TTABLE);
     NEMContext* ctx = GetNEMContext(L, 1);
@@ -579,8 +590,11 @@ static int l_NEMData_GetDimensions(lua_State* L) {
     return 2;
 }
 
-/// NEMData.GetImageData(self, tx, ty) → ImageData — 还原自 sub_1800B42F0
-/// 返回指定 tile 坐标的图像数据 (作为 ImageData 对象)
+/// @lua_api Light.Plugins.NEMData.GetImageData
+/// @brief 获取指定 tile 坐标的图像数据
+/// @param tx number tile X 坐标
+/// @param ty number tile Y 坐标
+/// @return ImageData|nil
 static int l_NEMData_GetImageData(lua_State* L) {
     luaL_checktype(L, 1, LUA_TTABLE);
     NEMContext* ctx = GetNEMContext(L, 1);
@@ -610,7 +624,11 @@ static int l_NEMData_GetImageData(lua_State* L) {
     return 1;
 }
 
-/// NEMData.GetMaskImageData(self, tx, ty) → ImageData — 还原自 sub_1800B44A0
+/// @lua_api Light.Plugins.NEMData.GetMaskImageData
+/// @brief 获取指定 tile 坐标的遮罩图像
+/// @param tx number tile X 坐标
+/// @param ty number tile Y 坐标
+/// @return ImageData|nil
 static int l_NEMData_GetMaskImageData(lua_State* L) {
     luaL_checktype(L, 1, LUA_TTABLE);
     NEMContext* ctx = GetNEMContext(L, 1);
@@ -637,8 +655,13 @@ static int l_NEMData_GetMaskImageData(lua_State* L) {
     return 1;
 }
 
-/// NEMData.GetPath(self, sx, sy, ex, ey) → {{x,y}, ...} — 还原自 sub_1800B46A0
-/// A* 寻路: 返回路径点表, 每个元素 {x, y}
+/// @lua_api Light.Plugins.NEMData.GetPath
+/// @brief A* 寻路
+/// @param sx number 起点 X
+/// @param sy number 起点 Y
+/// @param ex number 终点 X
+/// @param ey number 终点 Y
+/// @return table 路径点数组 {{x,y}, ...}
 static int l_NEMData_GetPath(lua_State* L) {
     luaL_checktype(L, 1, LUA_TTABLE);
     NEMContext* ctx = GetNEMContext(L, 1);
@@ -681,7 +704,11 @@ static int l_NEMData_GetPath(lua_State* L) {
     return 1;
 }
 
-/// NEMData.IsObstacle(self, x, y) → boolean — 还原自 sub_1800B4CD0
+/// @lua_api Light.Plugins.NEMData.IsObstacle
+/// @brief 查询指定位置是否为障碍物
+/// @param x number 地图 X 坐标
+/// @param y number 地图 Y 坐标
+/// @return boolean
 static int l_NEMData_IsObstacle(lua_State* L) {
     luaL_checktype(L, 1, LUA_TTABLE);
     NEMContext* ctx = GetNEMContext(L, 1);
@@ -698,7 +725,10 @@ static int l_NEMData_IsObstacle(lua_State* L) {
     return 1;
 }
 
-/// NEMData.__call — 构造函数, 加载 NEM 文件 — 还原自 sub_1800B49D0
+/// @lua_api Light.Plugins.NEMData.__call
+/// @brief 构造函数, 加载 NEM 地图文件
+/// @param path string NEM 文件路径
+/// @return void
 static int l_NEMData_Call(lua_State* L) {
     luaL_checktype(L, 1, LUA_TTABLE);
     const char* path = luaL_checkstring(L, 2);

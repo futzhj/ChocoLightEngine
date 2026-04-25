@@ -28,13 +28,13 @@
  */
 
 #include "light.h"
+#include "render_backend.h"
+#include "light_audio_backend.h"
 #include <cstring>
 #include <cstdlib>
 #include <windows.h>
-#include <mmsystem.h>
-#include <GL/gl.h>     // Video 模块需要 GL 纹理操作
+#include <mmsystem.h>    // Video 音频同步仍需 waveOut API
 #pragma comment(lib, "winmm.lib")
-#pragma comment(lib, "opengl32.lib")
 
 // ==================== FFmpeg 动态加载 ====================
 
@@ -220,7 +220,7 @@ struct AVContext {
     int   pcmSize;
     bool  playing;
     bool  paused;
-    char  filePath[260]; // 文件路径 (用于 PlaySound)
+    AudioHandle* audioHandle; // miniaudio 音频句柄
 };
 
 static AVContext* GetAVCtx(lua_State* L, int idx) {
@@ -233,48 +233,56 @@ static AVContext* GetAVCtx(lua_State* L, int idx) {
 
 // ==================== Playable 基类函数 ====================
 
-/// AV.Play — 还原自 sub_1800AE8C0
-/// 使用 Windows PlaySound 异步播放 WAV 文件
+/// @lua_api Light.AV.Play
+/// @brief 播放音频
+/// @return void
 static int l_AV_Play(lua_State* L) {
     luaL_checktype(L, 1, LUA_TTABLE);
     AVContext* ctx = GetAVCtx(L, 1);
-    if (ctx && ctx->filePath[0]) {
+    if (ctx && ctx->audioHandle) {
         ctx->playing = true;
         ctx->paused = false;
-        // SND_ASYNC: 异步非阻塞播放, SND_FILENAME: 从文件路径
-        PlaySoundA(ctx->filePath, NULL, SND_FILENAME | SND_ASYNC);
-        CC::Log(CC::LOG_INFO, "AV.Play: playing '%s'", ctx->filePath);
+        AudioBackend::Play(ctx->audioHandle);
     }
     return 0;
 }
 
-/// AV.Pause — 还原自 sub_1800AE880
+/// @lua_api Light.AV.Pause
+/// @brief 暂停播放
+/// @return void
 static int l_AV_Pause(lua_State* L) {
     luaL_checktype(L, 1, LUA_TTABLE);
     AVContext* ctx = GetAVCtx(L, 1);
-    if (ctx) ctx->paused = true;
+    if (ctx && ctx->audioHandle) {
+        ctx->paused = true;
+        AudioBackend::Pause(ctx->audioHandle);
+    }
     return 0;
 }
 
-/// AV.Stop — 还原自 sub_1800AEA50
-/// 停止当前 PlaySound 播放
+/// @lua_api Light.AV.Stop
+/// @brief 停止播放
+/// @return void
 static int l_AV_Stop(lua_State* L) {
     luaL_checktype(L, 1, LUA_TTABLE);
     AVContext* ctx = GetAVCtx(L, 1);
     if (ctx) {
         ctx->playing = false;
         ctx->paused = false;
-        PlaySoundA(NULL, NULL, 0);  // 停止所有 PlaySound
+        if (ctx->audioHandle) AudioBackend::Stop(ctx->audioHandle);
     }
     return 0;
 }
 
 // ==================== Audio 函数 ====================
 
-/// Audio.__gc — 释放 FFmpeg 资源
+/// Audio.__gc — 释放音频资源
 static int l_Audio_GC(lua_State* L) {
     AVContext* ctx = (AVContext*)lua_touserdata(L, 1);
     if (!ctx) return 0;
+    // 释放 AudioBackend 句柄
+    if (ctx->audioHandle) { AudioBackend::Free(ctx->audioHandle); ctx->audioHandle = nullptr; }
+    // 释放 FFmpeg 资源
     if (ctx->codecCtx && g_ff.loaded && g_ff.avcodec_free_context)
         g_ff.avcodec_free_context(&ctx->codecCtx);
     if (ctx->formatCtx && g_ff.loaded && g_ff.avformat_close_input)
@@ -282,9 +290,13 @@ static int l_Audio_GC(lua_State* L) {
     return 0;
 }
 
-/// Audio.__call — 构造函数, 加载音频文件
-/// 还原自 sub_1800AEAF0
-/// FFmpeg: avformat_open_input → avformat_find_stream_info → avcodec_open2
+/// @lua_api Light.AV.Audio.__call
+/// @brief 构造函数, 加载音频文件 (WAV/MP3/FLAC/OGG)
+/// @param path string 音频文件路径
+/// @return void
+/// @example
+/// local audio = Light(Light.AV.Audio):New("bgm.mp3")
+/// Light.AV.Play(audio)
 static int l_Audio_Call(lua_State* L) {
     luaL_checktype(L, 1, LUA_TTABLE);
     const char* path = luaL_checkstring(L, 2);
@@ -318,9 +330,15 @@ static int l_Audio_Call(lua_State* L) {
         CC::Log(CC::LOG_INFO, "Audio: FFmpeg not available, stub mode for '%s'", path);
     }
 
-    // 保存文件路径用于 PlaySound
-    strncpy(ctx->filePath, path, sizeof(ctx->filePath) - 1);
-    ctx->filePath[sizeof(ctx->filePath) - 1] = '\0';
+    // 通过 AudioBackend 加载 (优先 miniaudio 原生, 失败则回退 FFmpeg+PCM)
+    ctx->audioHandle = AudioBackend::LoadFile(path);
+    if (ctx->audioHandle) {
+        CC::Log(CC::LOG_INFO, "Audio: loaded via miniaudio '%s'", path);
+    } else {
+        CC::Log(CC::LOG_INFO, "Audio: miniaudio failed, using FFmpeg fallback for '%s'", path);
+        // T3.4 回退路径: FFmpeg 解码 → PCM → AudioBackend::LoadPCM
+        // 待实现
+    }
 
     lua_setfield(L, 1, "__instance");
     return 0;
@@ -334,7 +352,9 @@ static int l_Audio_Tostring(lua_State* L) {
 
 // ==================== AudioData 函数 ====================
 
-/// AudioData.GetFormat — 还原自 sub_1800AF0F0
+/// @lua_api Light.AV.AudioData.GetFormat
+/// @brief 获取采样格式
+/// @return number
 static int l_AudioData_GetFormat(lua_State* L) {
     luaL_checktype(L, 1, LUA_TTABLE);
     AVContext* ctx = GetAVCtx(L, 1);
@@ -342,7 +362,9 @@ static int l_AudioData_GetFormat(lua_State* L) {
     return 1;
 }
 
-/// AudioData.GetChannels — 还原自 sub_1800AF060
+/// @lua_api Light.AV.AudioData.GetChannels
+/// @brief 获取声道数
+/// @return number
 static int l_AudioData_GetChannels(lua_State* L) {
     luaL_checktype(L, 1, LUA_TTABLE);
     AVContext* ctx = GetAVCtx(L, 1);
@@ -350,7 +372,9 @@ static int l_AudioData_GetChannels(lua_State* L) {
     return 1;
 }
 
-/// AudioData.GetSampleRate — 还原自 sub_1800AF180
+/// @lua_api Light.AV.AudioData.GetSampleRate
+/// @brief 获取采样率
+/// @return number
 static int l_AudioData_GetSampleRate(lua_State* L) {
     luaL_checktype(L, 1, LUA_TTABLE);
     AVContext* ctx = GetAVCtx(L, 1);
@@ -358,7 +382,9 @@ static int l_AudioData_GetSampleRate(lua_State* L) {
     return 1;
 }
 
-/// AudioData.GetPointer — 还原自 sub_1800ADCE0 (共享指针获取)
+/// @lua_api Light.AV.AudioData.GetPointer
+/// @brief 获取原始 PCM 数据指针
+/// @return lightuserdata,number 指针,字节数
 static int l_AudioData_GetPointer(lua_State* L) {
     luaL_checktype(L, 1, LUA_TTABLE);
     AVContext* ctx = GetAVCtx(L, 1);
@@ -371,7 +397,9 @@ static int l_AudioData_GetPointer(lua_State* L) {
     return 1;
 }
 
-/// AudioData.Count — 还原自 sub_1800AEF90
+/// @lua_api Light.AV.AudioData.Count
+/// @brief 获取采样帧数
+/// @return number
 static int l_AudioData_Count(lua_State* L) {
     luaL_checktype(L, 1, LUA_TTABLE);
     AVContext* ctx = GetAVCtx(L, 1);
@@ -398,9 +426,13 @@ static int l_AudioData_GC(lua_State* L) {
     return 0;
 }
 
-/// AudioData.__call — 构造函数
-/// 还原自 sub_1800AF210 (与 ImageData.__call 共享!)
-/// 支持: 2参(文件名), 3参(buffer+size), 5参(rate,ch,fmt,count)
+/// @lua_api Light.AV.AudioData.__call
+/// @brief 构造函数 (支持 3 种创建方式)
+/// @param path_or_rate string|number 文件路径或采样率
+/// @return void
+/// @note __call(self, filename) — 从文件加载
+/// @note __call(self, buffer, size) — 从缓冲区
+/// @note __call(self, rate, ch, fmt, count) — 指定参数创建
 static int l_AudioData_Call(lua_State* L) {
     int argc = lua_gettop(L);
     luaL_checktype(L, 1, LUA_TTABLE);
@@ -667,11 +699,16 @@ static int l_Video_GC(lua_State* L) {
         if (ctx->formatCtx && g_ff.avformat_close_input) g_ff.avformat_close_input(&ctx->formatCtx);
     }
     if (ctx->rgbaBuf) free(ctx->rgbaBuf);
-    if (ctx->texId) glDeleteTextures(1, &ctx->texId);
+    if (ctx->texId && g_render) g_render->DeleteTexture(ctx->texId);
     return 0;
 }
 
-/// Video.__call(self, path) — 打开视频文件, 创建解码器和 GL 纹理
+/// @lua_api Light.AV.Video.__call
+/// @brief 构造函数, 打开视频文件
+/// @param path string 视频文件路径
+/// @return void
+/// @example
+/// local video = Light(Light.AV.Video):New("intro.mp4")
 static int l_Video_Call(lua_State* L) {
     luaL_checktype(L, 1, LUA_TTABLE);
     const char* path = luaL_checkstring(L, 2);
@@ -811,15 +848,9 @@ static int l_Video_Call(lua_State* L) {
         return 0;
     }
 
-    // 创建 GL 纹理
-    CC::Log(CC::LOG_INFO, "Video: step3 - create GL texture (%dx%d)", ctx->width, ctx->height);
-    glGenTextures(1, &ctx->texId);
-    glBindTexture(GL_TEXTURE_2D, ctx->texId);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, ctx->width, ctx->height, 0,
-                 GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
-    glBindTexture(GL_TEXTURE_2D, 0);
+    // 创建视频纹理 (通过渲染后端)
+    CC::Log(CC::LOG_INFO, "Video: step3 - create texture (%dx%d)", ctx->width, ctx->height);
+    ctx->texId = g_render->CreateTexture(ctx->width, ctx->height, 4, nullptr);
 
     // 初始化高精度计时器
     CC::Log(CC::LOG_INFO, "Video: step4 - init timer");
@@ -872,8 +903,9 @@ static int l_Video_Call(lua_State* L) {
     return 0;
 }
 
-/// Video.Update(self) — 解码音视频包并更新 GL 纹理
-/// 每帧调用: 音频始终处理, 视频按帧率门控
+/// @lua_api Light.AV.Video.Update
+/// @brief 解码并更新视频帧 (每帧调用)
+/// @return void
 static int l_Video_Update(lua_State* L) {
     luaL_checktype(L, 1, LUA_TTABLE);
     VideoContext* ctx = GetVideoCtx(L, 1);
@@ -1165,16 +1197,19 @@ static int l_Video_Update(lua_State* L) {
         }
     }
 
-    // 更新 GL 纹理
-    glBindTexture(GL_TEXTURE_2D, ctx->texId);
-    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, ctx->width, ctx->height,
-                    GL_RGBA, GL_UNSIGNED_BYTE, ctx->rgbaBuf);
-    glBindTexture(GL_TEXTURE_2D, 0);
+    // 更新视频纹理 (通过渲染后端)
+    g_render->UpdateTexture(ctx->texId, 0, 0, ctx->width, ctx->height, 4, ctx->rgbaBuf);
 
     return 0;
 }
 
-/// Video.Draw(self, x, y, [w, h]) — 绘制当前视频帧
+/// @lua_api Light.AV.Video.Draw
+/// @brief 绘制当前视频帧
+/// @param x number? 屏幕位置 X (默认 0)
+/// @param y number? 屏幕位置 Y (默认 0)
+/// @param w number? 绘制宽度 (默认视频宽)
+/// @param h number? 绘制高度 (默认视频高)
+/// @return void
 static int l_Video_Draw(lua_State* L) {
     luaL_checktype(L, 1, LUA_TTABLE);
     VideoContext* ctx = GetVideoCtx(L, 1);
@@ -1185,24 +1220,25 @@ static int l_Video_Draw(lua_State* L) {
     float w = (float)luaL_optnumber(L, 4, (double)ctx->width);
     float h = (float)luaL_optnumber(L, 5, (double)ctx->height);
 
-    glPushMatrix();
-    glTranslatef(x, y, 0);
-    glEnable(GL_TEXTURE_2D);
-    glBindTexture(GL_TEXTURE_2D, ctx->texId);
-    glColor4f(1, 1, 1, 1);
-    glBegin(GL_QUADS);
-    glTexCoord2f(0, 0); glVertex2f(0, 0);
-    glTexCoord2f(1, 0); glVertex2f(w, 0);
-    glTexCoord2f(1, 1); glVertex2f(w, h);
-    glTexCoord2f(0, 1); glVertex2f(0, h);
-    glEnd();
-    glBindTexture(GL_TEXTURE_2D, 0);
-    glDisable(GL_TEXTURE_2D);
-    glPopMatrix();
+    g_render->PushMatrix();
+    g_render->Translate(x, y, 0);
+    g_render->SetColor(1, 1, 1, 1);
+    g_render->BindTexture(ctx->texId);
+    RenderVertex verts[4] = {
+        {0, 0, 0,  0, 0,  1, 1, 1, 1},
+        {w, 0, 0,  1, 0,  1, 1, 1, 1},
+        {w, h, 0,  1, 1,  1, 1, 1, 1},
+        {0, h, 0,  0, 1,  1, 1, 1, 1},
+    };
+    g_render->DrawArrays(DrawMode::Quads, verts, 4);
+    g_render->UnbindTexture();
+    g_render->PopMatrix();
     return 0;
 }
 
-/// Video.IsPlaying(self) — 返回播放状态
+/// @lua_api Light.AV.Video.IsPlaying
+/// @brief 返回视频是否正在播放
+/// @return boolean
 static int l_Video_IsPlaying(lua_State* L) {
     luaL_checktype(L, 1, LUA_TTABLE);
     VideoContext* ctx = GetVideoCtx(L, 1);
@@ -1210,19 +1246,26 @@ static int l_Video_IsPlaying(lua_State* L) {
     return 1;
 }
 
-/// Video.GetWidth(self) / GetHeight(self)
+/// @lua_api Light.AV.Video.GetWidth
+/// @brief 获取视频宽度
+/// @return number
 static int l_Video_GetWidth(lua_State* L) {
     VideoContext* ctx = GetVideoCtx(L, 1);
     lua_pushinteger(L, ctx ? ctx->width : 0);
     return 1;
 }
+/// @lua_api Light.AV.Video.GetHeight
+/// @brief 获取视频高度
+/// @return number
 static int l_Video_GetHeight(lua_State* L) {
     VideoContext* ctx = GetVideoCtx(L, 1);
     lua_pushinteger(L, ctx ? ctx->height : 0);
     return 1;
 }
 
-/// Video.Stop(self) — 停止播放
+/// @lua_api Light.AV.Video.Stop
+/// @brief 停止视频播放
+/// @return void
 static int l_Video_Stop(lua_State* L) {
     VideoContext* ctx = GetVideoCtx(L, 1);
     if (ctx) { ctx->playing = false; ctx->finished = true; }

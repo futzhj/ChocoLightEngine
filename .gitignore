@@ -52,3 +52,11 @@ __pycache__/
 # OS
 Thumbs.db
 .DS_Store
+
+# Windsurf / temp artifacts
+.windsurf/
+.windsurf.zip
+*.zip
+
+# Godot experiment (not part of main project)
+cpp_godot/
