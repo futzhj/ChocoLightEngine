@@ -110,9 +110,6 @@ int main(int argc, char* argv[]) {
     LOGI("[DIAG] PlatformNet::Init...");
     PlatformNet::Init();
 
-    // 等待 MuMu 等模拟器 RenderThread 完成初始渲染, 避免 EGL 竞态
-    usleep(200000); // 200ms
-
     // SDL3 初始化 (Video 子系统, Audio 由 miniaudio 管理)
     LOGI("[DIAG] SDL_Init...");
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS)) {
