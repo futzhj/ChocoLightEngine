@@ -116,8 +116,11 @@ set(LIGHT_SOURCES
 
 # 平台条件源文件
 if(EMSCRIPTEN)
-    # Web: HTML5 视频后端, 无 Legacy GL, 无 glad
-    list(APPEND LIGHT_SOURCES ${CHOCO_SRC}/video_backend_html5.cpp)
+    # Web: HTML5 视频后端 + 浏览器原生网络, 无 Legacy GL, 无 glad
+    list(APPEND LIGHT_SOURCES
+        ${CHOCO_SRC}/video_backend_html5.cpp
+        ${CHOCO_SRC}/light_network_web.cpp
+    )
 elseif(ANDROID)
     # Android: MediaPlayer + SurfaceTexture → OES → TEXTURE_2D
     # POSIX socket 网络, 无 Legacy GL, 无 glad
@@ -272,6 +275,7 @@ elseif(EMSCRIPTEN)
         "SHELL:-s USE_WEBGL2=1"
         "SHELL:-s FULL_ES3=1"
         "SHELL:-s ALLOW_MEMORY_GROWTH=1"
+        "SHELL:-s FETCH=1"
         "SHELL:-s EXPORTED_FUNCTIONS=['_main']"
         "SHELL:-s EXPORTED_RUNTIME_METHODS=['ccall','cwrap']"
     )

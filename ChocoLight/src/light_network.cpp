@@ -37,11 +37,7 @@
 #include "light.h"
 
 #if defined(__EMSCRIPTEN__)
-// Web: 网络模块不可用 (浏览器沙箱限制原始 TCP), 提供空存根
-int luaopen_Light_Network(lua_State* L) { LT::EnsureLightTable(L); lua_pushstring(L, "Network"); lua_createtable(L, 0, 0); lua_rawset(L, -3); lua_pushstring(L, "Network"); lua_rawget(L, -2); lua_remove(L, -2); return 1; }
-int luaopen_Light_Network_Http(lua_State* L) { return luaopen_Light_Network(L); }
-int luaopen_Light_Network_HttpServer(lua_State* L) { return luaopen_Light_Network(L); }
-int luaopen_Light_Network_Web(lua_State* L) { return luaopen_Light_Network(L); }
+// Web: 由 light_network_web.cpp 提供 (emscripten_fetch + JS WebSocket)
 #else
 // 桌面 (libuv) + Android/iOS (POSIX socket) 共用完整网络实现
 
