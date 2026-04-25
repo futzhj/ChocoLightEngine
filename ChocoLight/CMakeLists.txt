@@ -121,10 +121,6 @@ set(LIGHT_SOURCES
     ${CHOCO_SRC}/light_network.cpp
     ${CHOCO_SRC}/light_record.cpp
     ${CHOCO_SRC}/light_plugins.cpp
-    ${CHOCO_SRC}/light_input.cpp
-    ${CHOCO_SRC}/light_particles.cpp
-    ${CHOCO_SRC}/light_tilemap.cpp
-    ${CHOCO_SRC}/light_ecs.cpp
     ${CHOCO_SRC}/light_antidebug.cpp
     ${CHOCO_SRC}/platform_window_sdl3.cpp
     ${CHOCO_SRC}/render_backend.cpp
@@ -165,9 +161,15 @@ else()
     )
 endif()
 
-# Box2D physics 源文件 (仅非 Android)
+# Phase 2 游戏模块源文件 (非 Android)
 if(NOT ANDROID)
-    list(APPEND LIGHT_SOURCES ${CHOCO_SRC}/light_physics.cpp)
+    list(APPEND LIGHT_SOURCES
+        ${CHOCO_SRC}/light_input.cpp
+        ${CHOCO_SRC}/light_particles.cpp
+        ${CHOCO_SRC}/light_tilemap.cpp
+        ${CHOCO_SRC}/light_physics.cpp
+        ${CHOCO_SRC}/light_ecs.cpp
+    )
 endif()
 
 # Emscripten/Android: STATIC 库 (链接到最终二进制)

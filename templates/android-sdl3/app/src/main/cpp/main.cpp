@@ -153,16 +153,8 @@ int main(int argc, char* argv[]) {
     luaopen_Light_Network_Http(L); lua_pop(L, 1);
     luaopen_Light_Network_HttpServer(L); lua_pop(L, 1);
     luaopen_Light_Network_Web(L); lua_pop(L, 1);
-    LOGI("[DIAG] Phase2: Input...");
-    luaopen_Light_Input(L); lua_pop(L, 1);
-    LOGI("[DIAG] Phase2: Particles...");
-    luaopen_Light_Graphics_Particles(L); lua_pop(L, 1);
-    LOGI("[DIAG] Phase2: Tilemap...");
-    luaopen_Light_Graphics_Tilemap(L); lua_pop(L, 1);
-    // Physics 模块仅桌面/iOS 可用 (Android 暂未链接 Box2D)
-    LOGI("[DIAG] Phase2: Physics SKIPPED (no Box2D on Android)");
-    LOGI("[DIAG] Phase2: ECS...");
-    luaopen_Light_ECS(L); lua_pop(L, 1);
+    // Phase 2 模块在 Android 上暂不编译/注册
+    LOGI("[DIAG] Phase2 modules excluded from Android build");
     luaopen_Light_Record(L); lua_pop(L, 1);
     luaopen_Light_Plugins(L); lua_pop(L, 1);
     luaopen_Light_Plugins_WDFData(L); lua_pop(L, 1);
