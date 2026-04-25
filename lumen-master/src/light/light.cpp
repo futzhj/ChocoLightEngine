@@ -468,6 +468,8 @@ static void loadLightEngine(Lumen::IState *L) {
     }
 }
 
+#endif // _WIN32 — loadLightEngine is Windows-only
+
 // ==================== Pack Header: load encrypted script from exe tail ====================
 // Format: [exe][encrypted payload][128-byte header with LMPK magic]
 
@@ -641,7 +643,6 @@ static int loadPackedScript(Lumen::IState *L) {
     return status;
 }
 
-#endif // _WIN32
 
 static int pMain(Lumen::IState *L) {
     auto s = reinterpret_cast<MainArgs *>(L->ToUserdata(1));
@@ -675,37 +676,51 @@ static int pMain(Lumen::IState *L) {
     if (has_i)
         dotty(L);
     else if (script == 0 && !has_e && !has_v) {
-#ifdef _WIN32
         // No script specified: auto-detect main.lua or lua/main.lua in exe dir
-        char exeDir[MAX_PATH];
-        DWORD edLen = GetModuleFileNameA(nullptr, exeDir, MAX_PATH);
-        if (edLen > 0) {
-            char *edSep = strrchr(exeDir, '\\');
-            if (!edSep) edSep = strrchr(exeDir, '/');
-            if (edSep) *(edSep + 1) = '\0';
-            else { exeDir[0] = '.'; exeDir[1] = '\\'; exeDir[2] = '\0'; }
+        {
+            char exeDir[4096];
+            bool gotDir = false;
+#ifdef _WIN32
+            DWORD edLen = GetModuleFileNameA(nullptr, exeDir, sizeof(exeDir));
+            gotDir = (edLen > 0);
+#elif defined(__APPLE__)
+            uint32_t edSz = sizeof(exeDir);
+            gotDir = (_NSGetExecutablePath(exeDir, &edSz) == 0);
+#elif defined(__linux__) || defined(__ANDROID__)
+            ssize_t edLen = readlink("/proc/self/exe", exeDir, sizeof(exeDir) - 1);
+            if (edLen > 0) { exeDir[edLen] = '\0'; gotDir = true; }
+#endif
+            if (gotDir) {
+                char *edSep = strrchr(exeDir, '/');
+#ifdef _WIN32
+                if (!edSep) edSep = strrchr(exeDir, '\\');
+#endif
+                if (edSep) *(edSep + 1) = '\0';
+                else { exeDir[0] = '.'; exeDir[1] = '/'; exeDir[2] = '\0'; }
 
-            // Set CWD to exe directory (so relative paths in scripts work)
-            SetCurrentDirectoryA(exeDir);
-
-            // Try main.lua first, then lua/main.lua
-            const char *candidates[] = {"main.lua", "lua\\main.lua", nullptr};
-            for (int ci = 0; candidates[ci]; ++ci) {
-                char probe[MAX_PATH];
-                snprintf(probe, MAX_PATH, "%s%s", exeDir, candidates[ci]);
-                DWORD attr = GetFileAttributesA(probe);
-                if (attr != INVALID_FILE_ATTRIBUTES && !(attr & FILE_ATTRIBUTE_DIRECTORY)) {
-                    s->status = L->DoFile(candidates[ci]);
-                    return 0;
+                // Set CWD to exe directory
+#ifdef _WIN32
+                SetCurrentDirectoryA(exeDir);
+#else
+                (void)chdir(exeDir);
+#endif
+                // Try main.lua first, then lua/main.lua
+                const char *candidates[] = {"main.lua", "lua/main.lua", nullptr};
+                for (int ci = 0; candidates[ci]; ++ci) {
+                    FILE *fp = fopen(candidates[ci], "r");
+                    if (fp) {
+                        fclose(fp);
+                        s->status = L->DoFile(candidates[ci]);
+                        return 0;
+                    }
                 }
             }
-        }
 
-        // Try packed script from exe tail (LMPK format)
-        if (loadPackedScript(L) >= 0) {
-            return 0;
+            // Try packed script from exe tail (LMPK format)
+            if (loadPackedScript(L) >= 0) {
+                return 0;
+            }
         }
-#endif
 
 #if HAS_EMBEDDED_SCRIPTS
         // Fallback: run embedded main.lua script
