@@ -106,9 +106,11 @@ int main(int argc, char* argv[]) {
     LOGI("ChocoLight Engine starting (SDL3 + GLES3)");
 
     // 网络子系统初始化
+    LOGI("[DIAG] PlatformNet::Init...");
     PlatformNet::Init();
 
     // SDL3 初始化 (Video 子系统, Audio 由 miniaudio 管理)
+    LOGI("[DIAG] SDL_Init...");
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS)) {
         LOGE("SDL_Init failed: %s", SDL_GetError());
         return 1;
@@ -151,11 +153,17 @@ int main(int argc, char* argv[]) {
     luaopen_Light_Network_Http(L); lua_pop(L, 1);
     luaopen_Light_Network_HttpServer(L); lua_pop(L, 1);
     luaopen_Light_Network_Web(L); lua_pop(L, 1);
+    LOGI("[DIAG] Phase2 modules: Input...");
     luaopen_Light_Input(L); lua_pop(L, 1);
+    LOGI("[DIAG] Phase2 modules: Particles...");
     luaopen_Light_Graphics_Particles(L); lua_pop(L, 1);
+    LOGI("[DIAG] Phase2 modules: Tilemap...");
     luaopen_Light_Graphics_Tilemap(L); lua_pop(L, 1);
+    LOGI("[DIAG] Phase2 modules: Physics...");
     luaopen_Light_Physics(L); lua_pop(L, 1);
+    LOGI("[DIAG] Phase2 modules: Physics.World...");
     luaopen_Light_Physics_World(L); lua_pop(L, 1);
+    LOGI("[DIAG] Phase2 modules: ECS...");
     luaopen_Light_ECS(L); lua_pop(L, 1);
     luaopen_Light_Record(L); lua_pop(L, 1);
     luaopen_Light_Plugins(L); lua_pop(L, 1);
