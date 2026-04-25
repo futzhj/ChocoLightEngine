@@ -85,9 +85,13 @@ static void DrawLayer(TilemapData* tm, int layerIdx, float ox, float oy) {
             float px = ox + x * tw;
             float py = oy + y * th;
 
-            float verts[] = { px,py,0, px+tw,py,0, px+tw,py+th,0, px,py+th,0 };
-            float uvs[]   = { u0,v0, u1,v0, u1,v1, u0,v1 };
-            g_render->DrawArrays(2, verts, 4, uvs, nullptr);
+            RenderVertex verts[4] = {
+                {px,      py,      0, u0, v0, 1,1,1,1},
+                {px + tw, py,      0, u1, v0, 1,1,1,1},
+                {px + tw, py + th, 0, u1, v1, 1,1,1,1},
+                {px,      py + th, 0, u0, v1, 1,1,1,1},
+            };
+            g_render->DrawArrays(DrawMode::Quads, verts, 4);
         }
     }
     g_render->BindTexture(0);

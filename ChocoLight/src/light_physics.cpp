@@ -78,7 +78,7 @@ static int l_World_Call(lua_State* L) {
     memset(w, 0, sizeof(PhysicsWorld));
 
     b2WorldDef worldDef = b2DefaultWorldDef();
-    worldDef.gravity = (b2Vec2){0.0f, 10.0f};  // 默认向下重力 (像素 y 轴向下)
+    worldDef.gravity = b2Vec2{0.0f, 10.0f};  // 默认向下重力 (像素 y 轴向下)
     w->worldId = b2CreateWorld(&worldDef);
     w->collisionRef = LUA_NOREF;
     w->L = L;
@@ -98,7 +98,7 @@ static int l_World_SetGravity(lua_State* L) {
     if (!w) return 0;
     float gx = (float)luaL_checknumber(L, 2) / PTM;
     float gy = (float)luaL_checknumber(L, 3) / PTM;
-    b2World_SetGravity(w->worldId, (b2Vec2){gx, gy});
+    b2World_SetGravity(w->worldId, b2Vec2{gx, gy});
     return 0;
 }
 
@@ -146,6 +146,107 @@ static int l_World_Step(lua_State* L) {
     return 0;
 }
 
+// ==================== Body 方法 (命名函数, 避免 MSVC lambda-in-static-array 问题) ====================
+
+static int l_Body_AddBox(lua_State* L) {
+    auto* b = CheckBody(L, 1);
+    if (!b) return 0;
+    float hw = (float)luaL_checknumber(L, 2) / PTM * 0.5f;
+    float hh = (float)luaL_checknumber(L, 3) / PTM * 0.5f;
+    b2ShapeDef shapeDef = b2DefaultShapeDef();
+    b2Polygon box = b2MakeBox(hw, hh);
+    b2CreatePolygonShape(b->bodyId, &shapeDef, &box);
+    return 0;
+}
+
+static int l_Body_AddCircle(lua_State* L) {
+    auto* b = CheckBody(L, 1);
+    if (!b) return 0;
+    float r = (float)luaL_checknumber(L, 2) / PTM;
+    b2ShapeDef shapeDef = b2DefaultShapeDef();
+    b2Circle circle = {b2Vec2{0, 0}, r};
+    b2CreateCircleShape(b->bodyId, &shapeDef, &circle);
+    return 0;
+}
+
+static int l_Body_GetPosition(lua_State* L) {
+    auto* b = CheckBody(L, 1);
+    if (!b) { lua_pushnumber(L, 0); lua_pushnumber(L, 0); return 2; }
+    b2Vec2 pos = b2Body_GetPosition(b->bodyId);
+    lua_pushnumber(L, pos.x * PTM);
+    lua_pushnumber(L, pos.y * PTM);
+    return 2;
+}
+
+static int l_Body_GetAngle(lua_State* L) {
+    auto* b = CheckBody(L, 1);
+    float angle = 0.0f;
+    if (b) {
+        b2Rot rot = b2Body_GetRotation(b->bodyId);
+        angle = b2Rot_GetAngle(rot);
+    }
+    lua_pushnumber(L, angle);
+    return 1;
+}
+
+static int l_Body_SetPosition(lua_State* L) {
+    auto* b = CheckBody(L, 1);
+    if (!b) return 0;
+    float x = (float)luaL_checknumber(L, 2) / PTM;
+    float y = (float)luaL_checknumber(L, 3) / PTM;
+    b2Body_SetTransform(b->bodyId, b2Vec2{x, y}, b2Body_GetRotation(b->bodyId));
+    return 0;
+}
+
+static int l_Body_SetLinearVelocity(lua_State* L) {
+    auto* b = CheckBody(L, 1);
+    if (!b) return 0;
+    float vx = (float)luaL_checknumber(L, 2) / PTM;
+    float vy = (float)luaL_checknumber(L, 3) / PTM;
+    b2Body_SetLinearVelocity(b->bodyId, b2Vec2{vx, vy});
+    return 0;
+}
+
+static int l_Body_GetLinearVelocity(lua_State* L) {
+    auto* b = CheckBody(L, 1);
+    if (!b) { lua_pushnumber(L, 0); lua_pushnumber(L, 0); return 2; }
+    b2Vec2 v = b2Body_GetLinearVelocity(b->bodyId);
+    lua_pushnumber(L, v.x * PTM);
+    lua_pushnumber(L, v.y * PTM);
+    return 2;
+}
+
+static int l_Body_ApplyForce(lua_State* L) {
+    auto* b = CheckBody(L, 1);
+    if (!b) return 0;
+    float fx = (float)luaL_checknumber(L, 2) / PTM;
+    float fy = (float)luaL_checknumber(L, 3) / PTM;
+    b2Body_ApplyForceToCenter(b->bodyId, b2Vec2{fx, fy}, true);
+    return 0;
+}
+
+static int l_Body_ApplyImpulse(lua_State* L) {
+    auto* b = CheckBody(L, 1);
+    if (!b) return 0;
+    float ix = (float)luaL_checknumber(L, 2) / PTM;
+    float iy = (float)luaL_checknumber(L, 3) / PTM;
+    b2Body_ApplyLinearImpulseToCenter(b->bodyId, b2Vec2{ix, iy}, true);
+    return 0;
+}
+
+static const luaL_Reg g_body_funcs[] = {
+    {"AddBox",             l_Body_AddBox},
+    {"AddCircle",          l_Body_AddCircle},
+    {"GetPosition",        l_Body_GetPosition},
+    {"GetAngle",           l_Body_GetAngle},
+    {"SetPosition",        l_Body_SetPosition},
+    {"SetLinearVelocity",  l_Body_SetLinearVelocity},
+    {"GetLinearVelocity",  l_Body_GetLinearVelocity},
+    {"ApplyForce",         l_Body_ApplyForce},
+    {"ApplyImpulse",       l_Body_ApplyImpulse},
+    {NULL, NULL}
+};
+
 /// World:CreateBody(type, x, y)
 static int l_World_CreateBody(lua_State* L) {
     auto* w = CheckWorld(L, 1);
@@ -155,7 +256,7 @@ static int l_World_CreateBody(lua_State* L) {
     float py = (float)luaL_checknumber(L, 4) / PTM;
 
     b2BodyDef bodyDef = b2DefaultBodyDef();
-    bodyDef.position = (b2Vec2){px, py};
+    bodyDef.position = b2Vec2{px, py};
 
     if (strcmp(typeStr, "dynamic") == 0) bodyDef.type = b2_dynamicBody;
     else if (strcmp(typeStr, "kinematic") == 0) bodyDef.type = b2_kinematicBody;
@@ -172,83 +273,8 @@ static int l_World_CreateBody(lua_State* L) {
     pb->selfRef = LUA_NOREF;
     lua_setfield(L, -2, "__body");
 
-    // 注册 body 方法
-    static const luaL_Reg body_funcs[] = {
-        {"AddBox", [](lua_State* Ls) -> int {
-            auto* b = CheckBody(Ls, 1);
-            if (!b) return 0;
-            float hw = (float)luaL_checknumber(Ls, 2) / PTM * 0.5f;
-            float hh = (float)luaL_checknumber(Ls, 3) / PTM * 0.5f;
-            b2ShapeDef shapeDef = b2DefaultShapeDef();
-            b2Polygon box = b2MakeBox(hw, hh);
-            b2CreatePolygonShape(b->bodyId, &shapeDef, &box);
-            return 0;
-        }},
-        {"AddCircle", [](lua_State* Ls) -> int {
-            auto* b = CheckBody(Ls, 1);
-            if (!b) return 0;
-            float r = (float)luaL_checknumber(Ls, 2) / PTM;
-            b2ShapeDef shapeDef = b2DefaultShapeDef();
-            b2Circle circle = {{0, 0}, r};
-            b2CreateCircleShape(b->bodyId, &shapeDef, &circle);
-            return 0;
-        }},
-        {"GetPosition", [](lua_State* Ls) -> int {
-            auto* b = CheckBody(Ls, 1);
-            if (!b) { lua_pushnumber(Ls, 0); lua_pushnumber(Ls, 0); return 2; }
-            b2Vec2 pos = b2Body_GetPosition(b->bodyId);
-            lua_pushnumber(Ls, pos.x * PTM);
-            lua_pushnumber(Ls, pos.y * PTM);
-            return 2;
-        }},
-        {"GetAngle", [](lua_State* Ls) -> int {
-            auto* b = CheckBody(Ls, 1);
-            lua_pushnumber(Ls, b ? b2Body_GetAngle(b->bodyId) : 0);
-            return 1;
-        }},
-        {"SetPosition", [](lua_State* Ls) -> int {
-            auto* b = CheckBody(Ls, 1);
-            if (!b) return 0;
-            float x = (float)luaL_checknumber(Ls, 2) / PTM;
-            float y = (float)luaL_checknumber(Ls, 3) / PTM;
-            b2Body_SetTransform(b->bodyId, (b2Vec2){x, y}, b2Body_GetRotation(b->bodyId));
-            return 0;
-        }},
-        {"SetLinearVelocity", [](lua_State* Ls) -> int {
-            auto* b = CheckBody(Ls, 1);
-            if (!b) return 0;
-            float vx = (float)luaL_checknumber(Ls, 2) / PTM;
-            float vy = (float)luaL_checknumber(Ls, 3) / PTM;
-            b2Body_SetLinearVelocity(b->bodyId, (b2Vec2){vx, vy});
-            return 0;
-        }},
-        {"GetLinearVelocity", [](lua_State* Ls) -> int {
-            auto* b = CheckBody(Ls, 1);
-            if (!b) { lua_pushnumber(Ls, 0); lua_pushnumber(Ls, 0); return 2; }
-            b2Vec2 v = b2Body_GetLinearVelocity(b->bodyId);
-            lua_pushnumber(Ls, v.x * PTM);
-            lua_pushnumber(Ls, v.y * PTM);
-            return 2;
-        }},
-        {"ApplyForce", [](lua_State* Ls) -> int {
-            auto* b = CheckBody(Ls, 1);
-            if (!b) return 0;
-            float fx = (float)luaL_checknumber(Ls, 2) / PTM;
-            float fy = (float)luaL_checknumber(Ls, 3) / PTM;
-            b2Body_ApplyForceToCenter(b->bodyId, (b2Vec2){fx, fy}, true);
-            return 0;
-        }},
-        {"ApplyImpulse", [](lua_State* Ls) -> int {
-            auto* b = CheckBody(Ls, 1);
-            if (!b) return 0;
-            float ix = (float)luaL_checknumber(Ls, 2) / PTM;
-            float iy = (float)luaL_checknumber(Ls, 3) / PTM;
-            b2Body_ApplyLinearImpulseToCenter(b->bodyId, (b2Vec2){ix, iy}, true);
-            return 0;
-        }},
-        {NULL, NULL}
-    };
-    luaL_setfuncs(L, body_funcs, 0);
+    // 注册 body 方法 (使用 luaL_Reg 数组 + 命名函数)
+    luaL_setfuncs(L, g_body_funcs, 0);
 
     // 保存 body Lua 表引用
     lua_pushvalue(L, -1);

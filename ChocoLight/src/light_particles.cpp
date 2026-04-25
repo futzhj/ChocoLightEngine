@@ -140,18 +140,20 @@ static void EmitterDraw(ParticleEmitter* em) {
     for (int i = 0; i < em->capacity; i++) {
         const Particle& p = em->pool[i];
         if (!p.active) continue;
-        g_render->SetColor(p.r, p.g, p.b, p.a);
         float hs = p.size * 0.5f;
-        // 简单填充矩形 (无旋转优化, 足够 2D 粒子)
-        g_render->PushMatrix();
-        g_render->Translate(p.x, p.y, 0);
-        if (p.rotation != 0) g_render->Rotate(p.rotation, 0, 0, 1);
-        float verts[] = { -hs,-hs,0, hs,-hs,0, hs,hs,0, -hs,hs,0 };
-        g_render->DrawArrays(2, verts, 4, nullptr, nullptr); // mode 2 = fill quads
-        g_render->PopMatrix();
+        // 构建 4 个 RenderVertex (矩形)
+        RenderVertex verts[4];
+        float offsets[4][2] = { {-hs,-hs}, {hs,-hs}, {hs,hs}, {-hs,hs} };
+        for (int v = 0; v < 4; v++) {
+            verts[v].x = p.x + offsets[v][0];
+            verts[v].y = p.y + offsets[v][1];
+            verts[v].z = 0;
+            verts[v].u = 0; verts[v].v = 0;
+            verts[v].r = p.r; verts[v].g = p.g;
+            verts[v].b = p.b; verts[v].a = p.a;
+        }
+        g_render->DrawArrays(DrawMode::Quads, verts, 4);
     }
-    // 恢复白色
-    g_render->SetColor(1, 1, 1, 1);
 }
 
 // ==================== Lua 绑定 ====================
