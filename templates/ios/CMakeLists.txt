@@ -1,7 +1,14 @@
 cmake_minimum_required(VERSION 3.16)
+
+# 在 project() 之前设置部署目标
+set(CMAKE_OSX_DEPLOYMENT_TARGET "16.4" CACHE STRING "" FORCE)
+
 project(ChocoLightIOS LANGUAGES C CXX OBJC)
 
 set(CMAKE_CXX_STANDARD 17)
+
+# 抑制 sprintf deprecated 警告和 availability 错误
+add_compile_options(-Wno-deprecated-declarations -Wno-unguarded-availability-new)
 
 # Lumen 源码目录（CI 中由上层复制或软链接）
 set(LUMEN_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../lumen-master")
