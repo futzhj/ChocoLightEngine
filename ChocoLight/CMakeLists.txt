@@ -38,12 +38,16 @@ set(LUA_INCLUDE_DIR "${CMAKE_SOURCE_DIR}/../lumen-master/include")
 # SQLite3 amalgamation
 set(SQLITE3_DIR "${CMAKE_SOURCE_DIR}/third_party/sqlite3")
 
-# glad GL 3.3 Core Profile 加载器
-set(GLAD_DIR "${CMAKE_SOURCE_DIR}/third_party/glad")
+# glad GL 3.3 Core Profile 加载器 (桌面专用, Emscripten 用 GLES3)
+if(NOT EMSCRIPTEN)
+    set(GLAD_DIR "${CMAKE_SOURCE_DIR}/third_party/glad")
+endif()
 
-# libuv 异步 IO 库 (网络抽象)
-set(LIBUV_BUILD_SHARED OFF CACHE BOOL "" FORCE)
-add_subdirectory(third_party/libuv EXCLUDE_FROM_ALL)
+# libuv 异步 IO 库 (网络抽象, Emscripten 不支持)
+if(NOT EMSCRIPTEN)
+    set(LIBUV_BUILD_SHARED OFF CACHE BOOL "" FORCE)
+    add_subdirectory(third_party/libuv EXCLUDE_FROM_ALL)
+endif()
 
 # ==================== Lumen (lua51) 库路径 ====================
 
@@ -68,7 +72,8 @@ message(STATUS "Lumen lib: ${LUMEN_LIB_PATH}")
 
 # ==================== 源文件 ====================
 
-add_library(Light SHARED
+# 通用源文件 (所有平台)
+set(LIGHT_SOURCES
     src/cc_core.cpp
     src/light_module.cpp
     src/light_debug.cpp
@@ -85,27 +90,36 @@ add_library(Light SHARED
     src/light_record.cpp
     src/light_plugins.cpp
     src/light_antidebug.cpp
-    # 平台窗口/事件抽象层 (SDL3)
     src/platform_window_sdl3.cpp
-    # 渲染后端抽象层
     src/render_backend.cpp
-    src/render_legacy.cpp
     src/render_gl33.cpp
-    # 音频后端抽象层
     src/light_audio_backend.cpp
-    # 视频后端抽象层 (桌面: FFmpeg, Web: HTML5, 移动: 原生)
-    src/video_backend_ffmpeg.cpp
-    # 网络抽象层 (libuv)
     src/light_platform_net.cpp
-    # SQLite3 amalgamation (C 源码)
     ${SQLITE3_DIR}/sqlite3.c
-    # stb 库实现 (stb_image + stb_truetype)
     ${CMAKE_SOURCE_DIR}/third_party/stb_impl.c
-    # glad GL 3.3 Core Profile 加载器
-    ${GLAD_DIR}/src/gl.c
-    # miniaudio 音频库实现
     ${CMAKE_SOURCE_DIR}/third_party/miniaudio_impl.c
 )
+
+# 平台条件源文件
+if(EMSCRIPTEN)
+    # Web: HTML5 视频后端, 无 Legacy GL, 无 glad
+    list(APPEND LIGHT_SOURCES src/video_backend_html5.cpp)
+else()
+    # 桌面: FFmpeg 视频后端 + Legacy GL + glad
+    list(APPEND LIGHT_SOURCES
+        src/video_backend_ffmpeg.cpp
+        src/render_legacy.cpp
+        ${GLAD_DIR}/src/gl.c
+    )
+endif()
+
+# Emscripten: STATIC 库 (链接到最终 .html/.js)
+# 桌面: SHARED 库 (Light.dll/so/dylib)
+if(EMSCRIPTEN)
+    add_library(Light STATIC ${LIGHT_SOURCES})
+else()
+    add_library(Light SHARED ${LIGHT_SOURCES})
+endif()
 
 # ==================== 头文件搜索路径 ====================
 
@@ -113,26 +127,39 @@ target_include_directories(Light PRIVATE
     include
     ${LUA_INCLUDE_DIR}
     ${SQLITE3_DIR}
-    ${GLAD_DIR}/include
     ${CMAKE_SOURCE_DIR}/third_party
-    ${CMAKE_SOURCE_DIR}/third_party/libuv/include
 )
+
+if(NOT EMSCRIPTEN)
+    target_include_directories(Light PRIVATE
+        ${GLAD_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/libuv/include
+    )
+endif()
 
 # ==================== 链接库 ====================
 
-# 核心库: Lumen + SDL3 + libuv
-target_link_libraries(Light PRIVATE
-    ${LUMEN_LIB_PATH}
-    SDL3::SDL3-static
-    uv_a
-)
+if(EMSCRIPTEN)
+    # Web: Lumen + SDL3, 无 libuv
+    target_link_libraries(Light PRIVATE
+        ${LUMEN_LIB_PATH}
+        SDL3::SDL3-static
+    )
+else()
+    # 桌面: Lumen + SDL3 + libuv
+    target_link_libraries(Light PRIVATE
+        ${LUMEN_LIB_PATH}
+        SDL3::SDL3-static
+        uv_a
+    )
+endif()
 
 # 平台系统库
 if(WIN32)
     target_link_libraries(Light PRIVATE
         ws2_32 gdi32 user32 shell32 opengl32 winmm
     )
-elseif(APPLE)
+elseif(APPLE AND NOT EMSCRIPTEN)
     find_library(COCOA_FRAMEWORK Cocoa)
     find_library(IOKIT_FRAMEWORK IOKit)
     find_library(COREVIDEO_FRAMEWORK CoreVideo)
@@ -144,7 +171,7 @@ elseif(APPLE)
         ${OPENGL_FRAMEWORK} ${COREAUDIO_FRAMEWORK} ${AUDIOTOOLBOX_FRAMEWORK}
         pthread dl
     )
-else()
+elseif(NOT EMSCRIPTEN)
     # Linux
     find_package(OpenGL REQUIRED)
     target_link_libraries(Light PRIVATE
@@ -172,6 +199,19 @@ set_target_properties(Light PROPERTIES
 
 if(MSVC)
     target_compile_options(Light PRIVATE /utf-8 /W3)
+elseif(EMSCRIPTEN)
+    # Emscripten: WebGL2 + GLES3, 允许内存增长
+    target_compile_options(Light PRIVATE
+        -Wall -Wno-unused-function -Wno-missing-field-initializers
+        "SHELL:-s USE_SDL=0"  # 不使用 Emscripten ports 的 SDL, 我们用 FetchContent
+    )
+    target_link_options(Light PRIVATE
+        "SHELL:-s USE_WEBGL2=1"
+        "SHELL:-s FULL_ES3=1"
+        "SHELL:-s ALLOW_MEMORY_GROWTH=1"
+        "SHELL:-s EXPORTED_FUNCTIONS=['_main']"
+        "SHELL:-s EXPORTED_RUNTIME_METHODS=['ccall','cwrap']"
+    )
 else()
     target_compile_options(Light PRIVATE -Wall -Wno-unused-function -Wno-missing-field-initializers)
 endif()

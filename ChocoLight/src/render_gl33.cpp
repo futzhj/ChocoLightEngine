@@ -6,13 +6,55 @@
 
 #include "render_backend.h"
 #include "light.h"
+
+// GL 头文件: GLES3 (Web/移动) vs glad (桌面)
+#if defined(__EMSCRIPTEN__)
+#include <GLES3/gl3.h>
+#elif defined(__ANDROID__) || (defined(__APPLE__) && TARGET_OS_IOS)
+#include <GLES3/gl3.h>
+#else
 #include <glad/gl.h>
+#endif
+
 #include "platform_window.h"
 #include <vector>
 #include <cstring>
 
 // ==================== 内嵌 Shader 源码 ====================
 
+// GLES3 / GL33 共用 Shader, 仅版本声明不同
+#if defined(__EMSCRIPTEN__) || defined(__ANDROID__) || (defined(__APPLE__) && TARGET_OS_IOS)
+static const char* VS_SOURCE = R"(#version 300 es
+precision highp float;
+layout(location=0) in vec3 aPos;
+layout(location=1) in vec2 aTexCoord;
+layout(location=2) in vec4 aColor;
+uniform mat4 uMVP;
+out vec2 vTexCoord;
+out vec4 vColor;
+void main() {
+    gl_Position = uMVP * vec4(aPos, 1.0);
+    vTexCoord = aTexCoord;
+    vColor = aColor;
+}
+)";
+
+static const char* FS_SOURCE = R"(#version 300 es
+precision mediump float;
+in vec2 vTexCoord;
+in vec4 vColor;
+uniform sampler2D uTexture;
+uniform int uUseTexture;
+layout(location=0) out vec4 FragColor;
+void main() {
+    if (uUseTexture == 1) {
+        FragColor = vColor * texture(uTexture, vTexCoord);
+    } else {
+        FragColor = vColor;
+    }
+}
+)";
+#else
 static const char* VS_SOURCE = R"(
 #version 330 core
 layout(location=0) in vec3 aPos;
@@ -49,6 +91,7 @@ void main() {
     }
 }
 )";
+#endif
 
 // ==================== GL33Backend ====================
 
@@ -298,8 +341,25 @@ public:
         glTexImage2D(GL_TEXTURE_2D, 0, intFmt, w, h, 0, fmt, GL_UNSIGNED_BYTE, pixels);
         // 单通道纹理: 映射 RED → ALPHA, RGB=1 (兼容旧 GL_ALPHA 行为, 用于字体图集)
         if (channels == 1) {
+#if defined(__EMSCRIPTEN__)
+            // WebGL2 不支持 texture swizzle, 展开 R8 → RGBA (白底 + alpha)
+            if (pixels) {
+                std::vector<uint8_t> rgba(w * h * 4);
+                const uint8_t* src = (const uint8_t*)pixels;
+                for (int i = 0; i < w * h; ++i) {
+                    rgba[i*4+0] = 255; rgba[i*4+1] = 255;
+                    rgba[i*4+2] = 255; rgba[i*4+3] = src[i];
+                }
+                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba.data());
+            } else {
+                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+            }
+            glBindTexture(GL_TEXTURE_2D, 0);
+            return tex;
+#else
             GLint swizzle[] = {GL_ONE, GL_ONE, GL_ONE, GL_RED};
             glTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_RGBA, swizzle);
+#endif
         }
         glBindTexture(GL_TEXTURE_2D, 0);
         return tex;
@@ -320,17 +380,53 @@ public:
     void UpdateTexture(uint32_t texId, int x, int y, int w, int h,
                        int channels, const void* pixels) override {
         glBindTexture(GL_TEXTURE_2D, texId);
+#if defined(__EMSCRIPTEN__)
+        if (channels == 1 && pixels) {
+            // 内部纹理已为 RGBA8, 展开后上传
+            std::vector<uint8_t> rgba(w * h * 4);
+            const uint8_t* src = (const uint8_t*)pixels;
+            for (int i = 0; i < w * h; ++i) {
+                rgba[i*4+0] = 255; rgba[i*4+1] = 255;
+                rgba[i*4+2] = 255; rgba[i*4+3] = src[i];
+            }
+            glTexSubImage2D(GL_TEXTURE_2D, 0, x, y, w, h, GL_RGBA, GL_UNSIGNED_BYTE, rgba.data());
+        } else {
+            GLenum fmt = (channels == 4) ? GL_RGBA : (channels == 3) ? GL_RGB : GL_RED;
+            glTexSubImage2D(GL_TEXTURE_2D, 0, x, y, w, h, fmt, GL_UNSIGNED_BYTE, pixels);
+        }
+#else
         GLenum fmt = (channels == 4) ? GL_RGBA : (channels == 3) ? GL_RGB : GL_RED;
         glTexSubImage2D(GL_TEXTURE_2D, 0, x, y, w, h, fmt, GL_UNSIGNED_BYTE, pixels);
+#endif
         glBindTexture(GL_TEXTURE_2D, 0);
     }
     void ReplaceTexture(uint32_t texId, int w, int h, int channels, const void* pixels) override {
         glBindTexture(GL_TEXTURE_2D, texId);
+#if defined(__EMSCRIPTEN__)
+        if (channels == 1) {
+            if (pixels) {
+                std::vector<uint8_t> rgba(w * h * 4);
+                const uint8_t* src = (const uint8_t*)pixels;
+                for (int i = 0; i < w * h; ++i) {
+                    rgba[i*4+0] = 255; rgba[i*4+1] = 255;
+                    rgba[i*4+2] = 255; rgba[i*4+3] = src[i];
+                }
+                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba.data());
+            } else {
+                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+            }
+        } else {
+            GLenum intFmt = (channels == 4) ? GL_RGBA8 : GL_RGB8;
+            GLenum fmt    = (channels == 4) ? GL_RGBA  : GL_RGB;
+            glTexImage2D(GL_TEXTURE_2D, 0, intFmt, w, h, 0, fmt, GL_UNSIGNED_BYTE, pixels);
+        }
+#else
         GLenum intFmt, fmt;
         if (channels == 4) { intFmt = GL_RGBA8; fmt = GL_RGBA; }
         else if (channels == 3) { intFmt = GL_RGB8; fmt = GL_RGB; }
         else { intFmt = GL_R8; fmt = GL_RED; }
         glTexImage2D(GL_TEXTURE_2D, 0, intFmt, w, h, 0, fmt, GL_UNSIGNED_BYTE, pixels);
+#endif
         glBindTexture(GL_TEXTURE_2D, 0);
     }
 
@@ -397,13 +493,17 @@ RenderBackend* CreateGL33Backend() {
 
 // ==================== 运行时自动选择工厂 ====================
 
-// 前置声明 Legacy 工厂 (在 render_legacy.cpp 中定义)
-extern RenderBackend* CreateLegacyBackend();
-
 RenderBackend* CreateRenderBackend() {
-    // 先尝试 GL 3.3 Core (glad 在 GL context 创建后加载)
+#if defined(__EMSCRIPTEN__) || defined(__ANDROID__) || (defined(__APPLE__) && TARGET_OS_IOS)
+    // GLES3: 直接创建, 无需 glad 加载
+    RenderBackend* gl33 = CreateGL33Backend();
+    if (gl33) return gl33;
+    CC::Log(CC::LOG_ERROR, "GLES3 backend init failed!");
+    return nullptr;
+#else
+    // 桌面: glad 加载 + Legacy 回退
+    extern RenderBackend* CreateLegacyBackend();
     if (gladLoadGL((GLADloadfunc)PlatformWindow::GetGLProcAddress)) {
-        // 检查实际版本是否 >= 3.3
         if (GLAD_GL_VERSION_3_3) {
             RenderBackend* gl33 = CreateGL33Backend();
             if (gl33) return gl33;
@@ -414,9 +514,9 @@ RenderBackend* CreateRenderBackend() {
     } else {
         CC::Log(CC::LOG_WARN, "glad failed to load GL, using Legacy backend");
     }
-    // 回退到 Legacy
     RenderBackend* legacy = CreateLegacyBackend();
     if (legacy) return legacy;
     CC::Log(CC::LOG_ERROR, "No render backend available!");
     return nullptr;
+#endif
 }

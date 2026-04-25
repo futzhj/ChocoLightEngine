@@ -5,6 +5,25 @@
 
 #include "light_platform_net.h"
 #include "light.h"
+
+#ifdef __EMSCRIPTEN__
+// Web 平台: libuv 不可用, 所有网络操作返回空/失败
+namespace PlatformNet {
+bool Init() { return false; }
+void Shutdown() {}
+void Poll() {}
+uv_tcp_s* CreateClient() { return nullptr; }
+void Connect(uv_tcp_s*, const char*, uint16_t, OnConnectCb) {}
+void StartRead(uv_tcp_s*, OnReadCb) {}
+void StopRead(uv_tcp_s*) {}
+void Write(uv_tcp_s*, const char*, size_t) {}
+void Close(uv_tcp_s*) {}
+uv_tcp_s* CreateServer(const char*, uint16_t) { return nullptr; }
+bool Listen(uv_tcp_s*, int, OnAcceptCb) { return false; }
+uv_loop_s* GetLoop() { return nullptr; }
+} // namespace PlatformNet
+#else
+
 #include <uv.h>
 #include <cstring>
 #include <cstdlib>
@@ -276,3 +295,5 @@ bool Listen(uv_tcp_s* server, int backlog, OnAcceptCb cb) {
 uv_loop_s* GetLoop() { return s_loop; }
 
 }  // namespace PlatformNet
+
+#endif // !__EMSCRIPTEN__

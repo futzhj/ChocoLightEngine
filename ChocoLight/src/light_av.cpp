@@ -36,7 +36,12 @@
 #include <cstdlib>
 
 // DynLoad/DynSym 宏定义 (LoadFFmpeg 使用)
-#ifdef _WIN32
+#if defined(__EMSCRIPTEN__)
+// Emscripten: 无动态库加载, FFmpeg 不可用
+#define DynLoad(name) ((void*)0)
+#define DynSym(lib, name) ((void*)0)
+#define DynFree(lib) ((void)0)
+#elif defined(_WIN32)
 #define DynLoad(name) LoadLibraryA(name)
 #define DynSym(lib, name) GetProcAddress(lib, name)
 #define DynFree(lib) FreeLibrary(lib)
@@ -56,6 +61,11 @@ FFmpegLib g_ff = {};
 bool LoadFFmpeg() {
     if (g_ff.attempted) return g_ff.loaded;
     g_ff.attempted = true;
+#ifdef __EMSCRIPTEN__
+    // Web 平台: FFmpeg 不可用, 视频由 HTML5 <video> 后端处理
+    CC::Log(CC::LOG_INFO, "FFmpeg: not available on Web (using HTML5 video backend)");
+    return false;
+#endif
 
 #ifdef _WIN32
     const char* fmtNames[] = { "avformat-59.dll", "avformat.dll", nullptr };

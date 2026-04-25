@@ -31,7 +31,9 @@
 #include <cstdlib>
 
 // 渲染后端为空时的 GL 兼容 (Legacy 路径)
-#ifdef _WIN32
+#if defined(__EMSCRIPTEN__)
+#include <GLES3/gl3.h>
+#elif defined(_WIN32)
 #include <GL/gl.h>
 #elif defined(__APPLE__)
 #include <OpenGL/gl.h>
