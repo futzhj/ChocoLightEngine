@@ -10,8 +10,8 @@
 | Linux | SDL3 | GL 3.3 (glad) | FFmpeg 动态加载 | libuv | ✅ |
 | macOS | SDL3 | GL 3.3 (glad) | FFmpeg 动态加载 | libuv | ✅ |
 | Web/WASM | SDL3 | WebGL2 (GLES3) | HTML5 `<video>` | 空存根 | ✅ |
-| Android | SDL3 | GLES 3.0 | 空存根 (待 MediaPlayer) | 空存根 | ✅ |
-| iOS | SDL3 | GLES 3.0 (OpenGLES) | 空存根 (待 AVPlayer) | 空存根 | ✅ |
+| Android | SDL3 | GLES 3.0 | MediaPlayer + JNI | POSIX socket | ✅ |
+| iOS | SDL3 | GLES 3.0 (OpenGLES) | AVPlayer + CVPixelBuffer | POSIX socket | ✅ |
 
 ## 里程碑完成记录
 
