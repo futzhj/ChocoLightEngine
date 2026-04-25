@@ -10,12 +10,10 @@
 #include <cstdlib>
 #include <cstring>
 
-// Lua 5.1 C API
-extern "C" {
+// Lumen (Lua 5.1 compatible) — C++ headers with built-in extern "C" linkage
 #include "lua.h"
 #include "lualib.h"
 #include "lauxlib.h"
-}
 
 #define TAG "ChocoLight"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)

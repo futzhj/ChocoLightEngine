@@ -55,7 +55,12 @@ static int os_pushresult(lua_State *L, int i, const char *filename) {
 
 
 static int os_execute(lua_State *L) {
+#if defined(LUA_USE_IOS) || defined(__ANDROID__)
+    // system() is unavailable on sandboxed mobile platforms
+    lua_pushinteger(L, -1);
+#else
     lua_pushinteger(L, system(luaL_optstring(L, 1, nullptr)));
+#endif
     return 1;
 }
 
