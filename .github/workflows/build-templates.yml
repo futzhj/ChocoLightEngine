@@ -151,12 +151,14 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Build APK via Gradle (compiles Lumen from source)
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Build APK (compiles Lumen from source via NDK)
         run: |
           cd templates/android
-          gradle wrapper --gradle-version 8.5 || true
-          chmod +x gradlew 2>/dev/null || true
-          ./gradlew assembleRelease --no-daemon 2>&1 || gradle assembleRelease --no-daemon 2>&1 || true
+          gradle wrapper --gradle-version 8.5
+          ./gradlew assembleDebug --no-daemon --info
 
       - name: Package Android
         run: |
@@ -184,7 +186,7 @@ jobs:
             -DCMAKE_OSX_ARCHITECTURES=arm64 \
             -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0
           cmake --build build --config Release -- -quiet \
-            CODE_SIGN_IDENTITY="-" CODE_SIGNING_ALLOWED=NO || true
+            CODE_SIGN_IDENTITY="-" CODE_SIGNING_ALLOWED=NO
 
       - name: Package iOS
         run: |

@@ -3,8 +3,9 @@ project(ChocoLightJNI LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 
-# Lumen 源码目录（CI 中是 ../../../../lumen-master）
-set(LUMEN_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../../../../lumen-master")
+# Lumen 源码目录
+# 从 templates/android/app/src/main/cpp/ 到仓库根: ../../../../../../
+set(LUMEN_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../../../../../lumen-master")
 
 # 直接编译 Lumen 核心源码为静态库（避免 .so 依赖问题）
 file(GLOB LUMEN_CORE_SRC "${LUMEN_DIR}/lib/lumen/*.cpp")
