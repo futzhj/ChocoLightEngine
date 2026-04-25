@@ -1,0 +1,504 @@
+{
+	"auto_complete":
+	{
+		"selected_items":
+		[
+			[
+				"mar",
+				"math.random\t([m [, n]])"
+			],
+			[
+				"stre",
+				"string.reverse\t(s)"
+			],
+			[
+				"guif",
+				"guian_fx\t复选按钮模版"
+			],
+			[
+				"for",
+				"fori\tfor i,v in ipairs()"
+			],
+			[
+				"dkck",
+				"__Lml.dkck\t __L命令.打开窗口 "
+			],
+			[
+				"yqaj",
+				"yq.ajtq\t引擎.按键弹起"
+			],
+			[
+				"debt",
+				"debug.traceback\t debug.traceback "
+			],
+			[
+				"debugt",
+				"debug.traceback\t debug.traceback "
+			],
+			[
+				"det",
+				"debug.traceback\t debug.traceback "
+			],
+			[
+				"yq",
+				"yq.zqp\t引擎.置全屏"
+			],
+			[
+				"yqqsj",
+				"yq.qzsj\t引擎.取帧时间"
+			],
+			[
+				"yqkd",
+				"yq.kd\t 引擎.宽度 "
+			],
+			[
+				"yqqsb",
+				"yq.qsbzb\t引擎.取鼠标坐标"
+			],
+			[
+				"切换",
+				"切换分辨率\t(界面层.lua)"
+			],
+			[
+				"re",
+				"repeat\trepeat until cond"
+			],
+			[
+				"窗口",
+				"窗口层\t(窗口层.lua)"
+			],
+			[
+				"ta",
+				"table.pack\t(...)"
+			],
+			[
+				"zys",
+				"zys\t置颜色"
+			],
+			[
+				"抗",
+				"抗中毒"
+			],
+			[
+				"do",
+				"doend\tdo end"
+			],
+			[
+				"ret",
+				"return\treturn 返回"
+			],
+			[
+				"ggey",
+				"ggeyxl\tgge音效类"
+			]
+		]
+	},
+	"buffers":
+	[
+		{
+			"file": "main.lua",
+			"settings":
+			{
+				"buffer_size": 3656,
+				"encoding": "UTF-8",
+				"line_ending": "Windows"
+			}
+		}
+	],
+	"build_system": "",
+	"build_system_choices":
+	[
+	],
+	"build_varint": "",
+	"command_palette":
+	{
+		"height": 0.0,
+		"last_filter": "",
+		"selected_items":
+		[
+		],
+		"width": 0.0
+	},
+	"console":
+	{
+		"height": 0.0,
+		"history":
+		[
+		]
+	},
+	"distraction_free":
+	{
+		"menu_visible": true,
+		"show_minimap": false,
+		"show_open_files": false,
+		"show_tabs": false,
+		"side_bar_visible": false,
+		"status_bar_visible": false
+	},
+	"expanded_folders":
+	[
+		"/E/jinyiNew/Light/Light-0.2.3"
+	],
+	"file_history":
+	[
+		"/D/GGELUA2581/例子/03-核心/zstd/lua/test.lua",
+		"/D/GGELUA2581/例子/03-核心/zstd/lua/main.lua",
+		"/D/GGELUA25.8.1/例子/03-核心/zstd/lua/test/.lua",
+		"/d/ggelua25.8.1/lua/gge/gge.lua",
+		"/D/GGELUA25.8.1/例子/03-核心/zlib/lua/main.lua",
+		"/D/GGELUA25.8.1/例子/03-核心/zip/lua/main.lua",
+		"/D/GGELUA25.8.1/例子/03-核心/nanoid/lua/main.lua",
+		"/D/GGELUA25.8.1/例子/03-核心/xml/lua/test.lua",
+		"/D/GGELUA25.8.1/例子/03-核心/xml/lua/main.lua",
+		"/D/GGELUA25.8.1/例子/03-核心/xxhash/lua/test.lua",
+		"/D/GGELUA25.8.1/例子/03-核心/xxhash/lua/main.lua",
+		"/D/GGELUA25.8.1/例子/03-核心/xxhash/ggelua.code-workspace",
+		"/D/GGELUA25.8.1/例子/03-核心/rc4/lua/main.lua",
+		"/D/GGELUA1.0b4/项目/转换csv/tocsv.lua",
+		"/D/GGELUA1.0b4/项目/转换csv/main.lua",
+		"/D/GGELUA1.0b4/项目/转换csv/gge.lua",
+		"/D/GGELUA1.0b4/例子/集合HP/PULL模式/PULL服务端/gge.lua",
+		"/I/GGELUA2018/GGELUA/脚本/HP/PullServer.lua",
+		"/I/GGELUA2018/GGELUA/项目/PULL服务端/hp/ggebuf.lua",
+		"/I/GGELUA2018/GGELUA/项目/PULL服务端/main.lua",
+		"/I/GGELUA2018/GGELUA/脚本/HP/PackServer.lua",
+		"/I/GGELUA2018/GGELUA/脚本/服务端/PullServer.lua",
+		"/E/GGELUA/脚本/HP/Client.lua",
+		"/I/GGELUA2018/GGELUA/脚本/hp/PullAgent.lua",
+		"/D/asktao2/袖珍问道/脚本/网络/客户端.lua",
+		"/E/GGELUA/脚本/HP/PullAgent.lua",
+		"/D/asktao2/袖珍问道/脚本/界面/登陆/角色选择.lua",
+		"/D/asktao2/袖珍问道/脚本/通用/角色类.lua",
+		"/D/asktao2/袖珍问道/脚本/界面/界面/功能栏.lua",
+		"/D/asktao2/袖珍问道/脚本/界面/界面/聊天栏.lua",
+		"/D/asktao2/袖珍问道/脚本/界面/窗口/人物/状态.lua",
+		"/D/asktao2/袖珍问道/脚本/通用/主角类.lua",
+		"/D/asktao2/袖珍问道/脚本/界面/窗口/宠物/宠物状态.lua",
+		"/D/asktao2/袖珍问道/脚本/命令网络.lua",
+		"/D/asktao2/袖珍问道/脚本/界面/窗口/宠物/宠物公共.lua",
+		"/D/asktao2/袖珍问道/脚本/命令本地.lua",
+		"/D/asktao2/袖珍问道/脚本/界面/界面层.lua",
+		"/D/asktao2/袖珍问道/脚本/界面/窗口/NPC/技能学习.lua",
+		"/D/asktao2/袖珍问道/脚本/界面/窗口/包裹/包裹_行囊.lua",
+		"/D/asktao2/袖珍问道/脚本/界面/窗口/功能/交易.lua",
+		"/D/asktao2/袖珍问道/脚本/界面/信息层.lua",
+		"/D/asktao2/袖珍问道/脚本/界面/窗口/摆摊/摆摊_卖出.lua",
+		"/D/asktao2/袖珍问道/脚本/网络/封包文本.lua",
+		"/D/asktao2/袖珍问道/脚本/界面/窗口/NPC/NPC窗口.lua",
+		"/D/asktao2/袖珍问道/脚本/战斗/战场_数据.lua",
+		"/E/GGELUA/脚本/GGE库/丰富文本类.lua",
+		"/D/asktao2/袖珍问道/脚本/界面/登陆/角色创建.lua",
+		"/D/asktao2/袖珍问道/脚本/资源/资源类.lua",
+		"/D/asktao2/袖珍问道/脚本/辅助/信息_物品.lua",
+		"/D/asktao2/袖珍问道/gge.lua",
+		"/D/asktao2/袖珍问道/脚本/界面/窗口/包裹/包裹.lua",
+		"/E/GGELUA/脚本/hp/PackAgent.lua",
+		"/E/GGELUA/脚本/hp/Socket.lua",
+		"/E/GGELUA/脚本/hp/Client.lua",
+		"/E/GGELUA/脚本/hp/TcpClient.lua",
+		"/E/GGELUA/脚本/hp/PullClient.lua",
+		"/E/GGELUA/脚本/hp/TcpAgent.lua",
+		"/D/asktao2/袖珍问道/脚本/界面/窗口/功能/商城.lua",
+		"/D/asktao2/袖珍问道/脚本/界面/窗口/鬼斧神工/通用提交.lua",
+		"/D/asktao2/袖珍问道/脚本/界面/窗口/鬼斧神工/鬼斧神工.lua",
+		"/D/asktao2/袖珍问道/脚本/战斗/对象类.lua",
+		"/D/asktao2/袖珍问道/脚本/辅助/精灵战斗数字.lua",
+		"/D/asktao2/袖珍问道/脚本/战斗/战场.lua",
+		"/I/GGELUA2018/GGELUA/脚本/游戏端/gge引擎.lua",
+		"/D/asktao2/袖珍问道/脚本/界面/屏幕类.lua",
+		"/D/asktao2/袖珍问道/脚本/动画/动画类.lua",
+		"/I/GGELUA2018/GGELUA/脚本/游戏端/gge精灵类.lua",
+		"/I/GGELUA2018/GGESRC/ggeluajit/lua_main/main.lua",
+		"/D/asktao2/袖珍问道/脚本/辅助/精灵数字.lua",
+		"/I/GGELUA2018/GGELUA/脚本/gge公共.lua",
+		"/I/GGELUA2018/GGELUA/脚本/游戏端/gge引用.lua",
+		"/D/asktao2/袖珍问道/脚本/界面/窗口/好友/好友查找.lua",
+		"/D/asktao2/袖珍问道/脚本/辅助/精灵下拉.lua",
+		"/D/asktao2/袖珍问道/脚本/辅助/精灵文字.lua",
+		"/I/GGELUA2018/GGELUA/脚本/游戏端/gge界面/基类.lua",
+		"/I/GGELUA2018/GGELUA/脚本/游戏端/gge界面/调试.lua",
+		"/I/GGELUA2018/GGELUA/脚本/游戏端/gge文字类.lua",
+		"/I/GGELUA2018/GGELUA/脚本/游戏端/gge界面/按钮类.lua",
+		"/D/asktao2/袖珍问道/脚本/辅助/精灵横幅.lua",
+		"/D/asktao2/袖珍问道/脚本/辅助/精灵复合.lua",
+		"/D/asktao2/袖珍问道/脚本/界面/窗口/鬼斧神工/2.装备进阶.lua",
+		"/D/asktao2/袖珍问道/脚本/界面/窗口/鬼斧神工/5.宠物打造.lua",
+		"/D/asktao2/袖珍问道/脚本/界面/窗口/战斗/人物菜单.lua",
+		"/I/GGELUA2018/GGELUA/脚本/GGE库/gge函数.lua",
+		"/D/asktao2/袖珍问道/脚本/地图/动画类.lua",
+		"/D/asktao2/袖珍问道/脚本/界面/窗口/好友/头像选择.lua",
+		"/I/GGELUA2018/GGELUA/脚本/游戏端/gge界面/多列表类.lua",
+		"/I/GGELUA2018/GGELUA/编辑器/Data/Packages/Default/symbol.py",
+		"/D/asktao2/袖珍问道/脚本/界面/窗口/组队/组队请求.lua",
+		"/I/GGELUA2018/GGELUA/脚本/游戏端/gge界面/列表类.lua",
+		"/I/GGELUA2018/GGELUA/编辑器/Data/Packages/Default/new_templates.py",
+		"/I/GGELUA2018/GGELUA/编辑器/Data/Packages/Default/history_list.py",
+		"/I/GGELUA2018/GGELUA/编辑器/Data/Packages/Default/auto_indent_tag.py",
+		"/I/GGELUA2018/GGELUA/编辑器/Data/Packages/Default/Context.sublime-menu",
+		"/I/GGELUA2018/GGELUA/编辑器/Data/Packages/Default/Default.sublime-commands",
+		"/I/GGELUA2018/GGELUA/编辑器/Data/Packages/Default/indentation.py",
+		"/D/asktao2/袖珍问道/脚本/网络/回调登录.lua",
+		"/D/asktao2/袖珍问道/脚本/界面/窗口/战斗/自动窗口.lua",
+		"/D/asktao2/袖珍问道/脚本/界面/窗口/人物/技能.lua",
+		"/D/asktao2/袖珍问道/脚本/界面/鼠标层.lua",
+		"/D/asktao2/袖珍问道/脚本/界面/地图层.lua",
+		"/D/asktao2/袖珍问道/脚本/界面/窗口层.lua",
+		"/I/GGELUA2018/GGELUA/脚本/游戏端/gge界面/控件类.lua",
+		"/D/asktao2/袖珍问道/脚本/界面/界面/外部聊天框.lua",
+		"/I/GGELUA2018/GGELUA/脚本/游戏端/gge界面/初始化.lua",
+		"/D/asktao2/袖珍问道/脚本/界面/窗口/战斗/技能窗口.lua",
+		"/D/asktao2/袖珍问道/脚本/战斗/战场_基础.lua",
+		"/D/asktao2/袖珍问道/脚本/界面/窗口/战斗/宠物菜单.lua",
+		"/D/asktao2/袖珍问道/脚本/界面/系统层.lua",
+		"/D/asktao2/袖珍问道/脚本/界面/登陆层.lua",
+		"/D/asktao2/袖珍问道/脚本/界面/窗口/包裹/包裹_元宝.lua",
+		"/D/asktao2/袖珍问道/脚本/界面/窗口/战斗/包裹窗口.lua",
+		"/D/asktao2/袖珍问道/脚本/战斗/信息类.lua",
+		"/D/asktao2/袖珍问道/脚本/音效表.lua",
+		"/D/asktao2/袖珍问道/脚本/配置/INI解析.lua",
+		"/D/asktao2/袖珍问道/脚本/配置/物品文本.lua",
+		"/D/asktao2/袖珍问道/脚本/通用/NPC.lua",
+		"/D/asktao2/袖珍问道/脚本/通用/宠物类.lua",
+		"/D/asktao2/袖珍问道/脚本/通用/传送点.lua",
+		"/D/asktao2/袖珍问道/脚本/辅助/信息_宠物.lua",
+		"/D/asktao2/袖珍问道/脚本/辅助/信息_好友.lua",
+		"/D/asktao2/袖珍问道/脚本/辅助/信息头顶.lua",
+		"/D/asktao2/袖珍问道/脚本/动画/动画控.lua",
+		"/D/asktao2/袖珍问道/脚本/地图/地图类.lua",
+		"/D/asktao2/袖珍问道/脚本/动画/动画集.lua",
+		"/D/asktao2/袖珍问道/脚本/资源/线程.lua",
+		"/D/asktao2/袖珍问道/脚本/资源/MAP类.lua",
+		"/D/asktao2/袖珍问道/脚本/资源/gbits.lua"
+	],
+	"find":
+	{
+		"height": 30.4
+	},
+	"find_in_files":
+	{
+		"height": 130.0,
+		"where_history":
+		[
+		]
+	},
+	"find_state":
+	{
+		"case_sensitive": false,
+		"find_history":
+		[
+		],
+		"highlight": true,
+		"in_selection": false,
+		"preserve_case": false,
+		"regex": false,
+		"replace_history":
+		[
+		],
+		"reverse": false,
+		"scrollbar_highlights": true,
+		"show_context": true,
+		"use_buffer2": true,
+		"use_gitignore": true,
+		"whole_word": false,
+		"wrap": true
+	},
+	"groups":
+	[
+		{
+			"sheets":
+			[
+				{
+					"buffer": 0,
+					"file": "main.lua",
+					"selected": true,
+					"semi_transient": false,
+					"settings":
+					{
+						"buffer_size": 3656,
+						"regions":
+						{
+						},
+						"selection":
+						[
+							[
+								0,
+								0
+							]
+						],
+						"settings":
+						{
+							"bracket_highlighter.busy": false,
+							"bracket_highlighter.locations":
+							{
+								"close":
+								{
+								},
+								"icon":
+								{
+								},
+								"open":
+								{
+								},
+								"unmatched":
+								{
+								}
+							},
+							"bracket_highlighter.regions":
+							[
+								"bh_angle",
+								"bh_angle_center",
+								"bh_angle_open",
+								"bh_angle_close",
+								"bh_angle_content",
+								"bh_c_define",
+								"bh_c_define_center",
+								"bh_c_define_open",
+								"bh_c_define_close",
+								"bh_c_define_content",
+								"bh_curly",
+								"bh_curly_center",
+								"bh_curly_open",
+								"bh_curly_close",
+								"bh_curly_content",
+								"bh_default",
+								"bh_default_center",
+								"bh_default_open",
+								"bh_default_close",
+								"bh_default_content",
+								"bh_double_quote",
+								"bh_double_quote_center",
+								"bh_double_quote_open",
+								"bh_double_quote_close",
+								"bh_double_quote_content",
+								"bh_regex",
+								"bh_regex_center",
+								"bh_regex_open",
+								"bh_regex_close",
+								"bh_regex_content",
+								"bh_round",
+								"bh_round_center",
+								"bh_round_open",
+								"bh_round_close",
+								"bh_round_content",
+								"bh_single_quote",
+								"bh_single_quote_center",
+								"bh_single_quote_open",
+								"bh_single_quote_close",
+								"bh_single_quote_content",
+								"bh_square",
+								"bh_square_center",
+								"bh_square_open",
+								"bh_square_close",
+								"bh_square_content",
+								"bh_tag",
+								"bh_tag_center",
+								"bh_tag_open",
+								"bh_tag_close",
+								"bh_tag_content",
+								"bh_unmatched",
+								"bh_unmatched_center",
+								"bh_unmatched_open",
+								"bh_unmatched_close",
+								"bh_unmatched_content"
+							],
+							"syntax": "Packages/Lua/Lua.sublime-syntax",
+							"tab_size": 2,
+							"translate_tabs_to_spaces": true
+						},
+						"translation.x": 0.0,
+						"translation.y": 3302.4,
+						"zoom_level": 1.0
+					},
+					"stack_index": 0,
+					"stack_multiselect": false,
+					"type": "text"
+				}
+			]
+		}
+	],
+	"incremental_find":
+	{
+		"height": 30.4
+	},
+	"input":
+	{
+		"height": 43.2
+	},
+	"layout":
+	{
+		"cells":
+		[
+			[
+				0,
+				0,
+				1,
+				1
+			]
+		],
+		"cols":
+		[
+			0.0,
+			1.0
+		],
+		"rows":
+		[
+			0.0,
+			1.0
+		]
+	},
+	"menu_visible": true,
+	"output.find_results":
+	{
+		"height": 0.0,
+		"history":
+		[
+		]
+	},
+	"pinned_build_system": "Packages/Lua/GGELUA.sublime-build",
+	"project": "demo.sublime-project",
+	"replace":
+	{
+		"height": 57.6
+	},
+	"save_all_on_build": true,
+	"select_file":
+	{
+		"height": 0.0,
+		"last_filter": "",
+		"selected_items":
+		[
+		],
+		"width": 0.0
+	},
+	"select_project":
+	{
+		"height": 0.0,
+		"last_filter": "",
+		"selected_items":
+		[
+		],
+		"width": 0.0
+	},
+	"select_symbol":
+	{
+		"height": 0.0,
+		"last_filter": "",
+		"selected_items":
+		[
+		],
+		"width": 0.0
+	},
+	"selected_group": 0,
+	"settings":
+	{
+	},
+	"show_minimap": true,
+	"show_open_files": false,
+	"show_tabs": true,
+	"side_bar_visible": true,
+	"side_bar_width": 214.0,
+	"status_bar_visible": true,
+	"template_settings":
+	{
+	}
+}

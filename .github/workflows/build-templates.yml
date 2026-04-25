@@ -1,0 +1,246 @@
+name: Build Templates (All Platforms)
+
+on:
+  push:
+    tags: ['v*']          # 打 tag 时触发
+  workflow_dispatch:       # 手动触发
+
+permissions:
+  contents: write          # 发布 Release 所需
+
+jobs:
+  # ==================== Windows (x64) ====================
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Build Lumen (light/lightw/lightc)
+        run: |
+          cd lumen-master
+          cmake -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --config Release --target light lightw lightc
+
+      - name: Build ChocoLight DLL
+        run: |
+          cd ChocoLight
+          cmake -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --config Release
+
+      - name: Package Windows Template
+        run: |
+          mkdir dist\windows-x64
+          copy lumen-master\build\src\light\Release\lightw.exe dist\windows-x64\template_lightw.exe
+          copy lumen-master\build\src\lightc\Release\lightc.exe dist\windows-x64\lightc.exe
+          copy lumen-master\build\lib\lua\Release\lua51.dll     dist\windows-x64\lua51.dll
+          copy ChocoLight\build\bin\Release\Light.dll            dist\windows-x64\Light.dll
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: template-windows-x64
+          path: dist/windows-x64/
+
+  # ==================== Linux (x64) ====================
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libglfw3-dev libgl-dev libsqlite3-dev
+
+      - name: Build Lumen
+        run: |
+          cd lumen-master
+          cmake -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build -j$(nproc)
+
+      # ChocoLight DLL 需要适配 Linux 的库路径和头文件
+      # 暂时只编译 Lumen 模板
+      - name: Package Linux Template
+        run: |
+          mkdir -p dist/linux-x64
+          cp lumen-master/build/src/light/lightw  dist/linux-x64/template_lightw || true
+          cp lumen-master/build/src/light/light   dist/linux-x64/light || true
+          cp lumen-master/build/src/lightc/lightc  dist/linux-x64/lightc || true
+          cp lumen-master/build/lib/lua/liblua51.so dist/linux-x64/ || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: template-linux-x64
+          path: dist/linux-x64/
+
+  # ==================== macOS (Universal) ====================
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Dependencies
+        run: brew install glfw
+
+      - name: Build Lumen
+        run: |
+          cd lumen-master
+          cmake -B build -DCMAKE_BUILD_TYPE=Release \
+                -DCMAKE_OSX_ARCHITECTURES="x86_64;arm64"
+          cmake --build build -j$(sysctl -n hw.ncpu)
+
+      - name: Package macOS Template
+        run: |
+          mkdir -p dist/macos-universal
+          cp lumen-master/build/src/light/lightw  dist/macos-universal/template_lightw || true
+          cp lumen-master/build/src/light/light   dist/macos-universal/light || true
+          cp lumen-master/build/src/lightc/lightc  dist/macos-universal/lightc || true
+          cp lumen-master/build/lib/lua/liblua51.dylib dist/macos-universal/ || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: template-macos-universal
+          path: dist/macos-universal/
+
+  # ==================== Web (Emscripten → WASM) ====================
+  build-web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup Emscripten
+        uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: 3.1.51
+
+      - name: Build Lumen (WASM)
+        run: |
+          cd lumen-master
+          emcmake cmake -B build-web -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-web -j$(nproc)
+
+      - name: Package Web Template
+        run: |
+          mkdir -p dist/web
+          cp lumen-master/build-web/src/light/light.js   dist/web/ || true
+          cp lumen-master/build-web/src/light/light.wasm  dist/web/ || true
+          # 创建 HTML 模板
+          cat > dist/web/index.html << 'EOF'
+          <!DOCTYPE html><html><head>
+          <meta charset="utf-8"><title>ChocoLight Web</title>
+          <style>body{margin:0;background:#000}canvas{display:block;margin:auto}</style>
+          </head><body>
+          <canvas id="canvas"></canvas>
+          <script>var Module={canvas:document.getElementById('canvas')}</script>
+          <script src="light.js"></script>
+          </body></html>
+          EOF
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: template-web-wasm
+          path: dist/web/
+
+  # ==================== Android (NDK → .so) ====================
+  build-android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup Android NDK
+        uses: android-actions/setup-android@v3
+
+      - name: Build Lumen (Android arm64-v8a)
+        run: |
+          cd lumen-master
+          cmake -B build-android \
+            -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake \
+            -DANDROID_ABI=arm64-v8a \
+            -DANDROID_PLATFORM=android-24 \
+            -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-android -j$(nproc)
+
+      - name: Build Lumen (Android armeabi-v7a)
+        run: |
+          cd lumen-master
+          cmake -B build-android-v7a \
+            -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake \
+            -DANDROID_ABI=armeabi-v7a \
+            -DANDROID_PLATFORM=android-24 \
+            -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-android-v7a -j$(nproc)
+
+      - name: Package Android Template
+        run: |
+          mkdir -p dist/android/{arm64-v8a,armeabi-v7a}
+          cp lumen-master/build-android/lib/lua/*.so       dist/android/arm64-v8a/ || true
+          cp lumen-master/build-android/src/light/liblight* dist/android/arm64-v8a/ || true
+          cp lumen-master/build-android-v7a/lib/lua/*.so       dist/android/armeabi-v7a/ || true
+          cp lumen-master/build-android-v7a/src/light/liblight* dist/android/armeabi-v7a/ || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: template-android
+          path: dist/android/
+
+  # ==================== iOS (Xcode → Framework) ====================
+  build-ios:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Build Lumen (iOS arm64)
+        run: |
+          cd lumen-master
+          cmake -B build-ios \
+            -GXcode \
+            -DCMAKE_SYSTEM_NAME=iOS \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0 \
+            -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-ios --config Release -- -quiet
+
+      - name: Package iOS Template
+        run: |
+          mkdir -p dist/ios-arm64
+          find lumen-master/build-ios -name "*.a" -exec cp {} dist/ios-arm64/ \;
+          find lumen-master/build-ios -name "lightc" -exec cp {} dist/ios-arm64/ \; || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: template-ios-arm64
+          path: dist/ios-arm64/
+
+  # ==================== Release ====================
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [build-windows, build-linux, build-macos, build-web, build-android, build-ios]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create Archives
+        run: |
+          cd artifacts
+          for dir in template-*; do
+            tar czf "${dir}.tar.gz" "$dir"
+          done
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*.tar.gz
+          generate_release_notes: true

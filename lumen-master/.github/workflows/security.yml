@@ -1,0 +1,100 @@
+name: Lumen Security Scan
+
+on:
+  schedule:
+    - cron: '0 0 * * 0'  # 每周日午夜运行
+  workflow_dispatch:  # 允许手动触发
+
+jobs:
+  codeql-analysis:
+    runs-on: ubuntu-22.04
+    permissions:
+      security-events: write
+      
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: 安装依赖
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libreadline-dev libncurses-dev patchelf
+    
+    - name: 初始化 CodeQL
+      uses: github/codeql-action/init@v2
+      with:
+        languages: cpp
+    
+    - name: 配置 CMake
+      run: cmake -B ${{github.workspace}}/build -DCMAKE_BUILD_TYPE=Debug -DCMAKE_INSTALL_PREFIX="${{github.workspace}}/install"
+      
+    - name: 构建
+      run: |
+        cmake --build ${{github.workspace}}/build --config Debug
+        cmake --install ${{github.workspace}}/build --config Debug
+      
+    - name: 执行 CodeQL 分析
+      uses: github/codeql-action/analyze@v2
+  
+  android-codeql-analysis:
+    runs-on: ubuntu-22.04
+    permissions:
+      security-events: write
+      
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: 安装依赖
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y patchelf
+    
+    - name: 设置 Android NDK
+      uses: nttld/setup-ndk@v1
+      with:
+        ndk-version: r25c
+        add-to-path: true
+    
+    - name: 初始化 CodeQL
+      uses: github/codeql-action/init@v2
+      with:
+        languages: cpp
+    
+    - name: 配置 CMake (Android)
+      run: |
+        mkdir -p ${{github.workspace}}/build-android
+        cmake -B ${{github.workspace}}/build-android \
+          -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake \
+          -DANDROID_ABI=arm64-v8a \
+          -DANDROID_PLATFORM=android-21 \
+          -DCMAKE_BUILD_TYPE=Debug \
+          -DCMAKE_INSTALL_PREFIX="${{github.workspace}}/install-android"
+      
+    - name: 构建 (Android)
+      run: |
+        cmake --build ${{github.workspace}}/build-android --config Debug
+        cmake --install ${{github.workspace}}/build-android --config Debug
+      
+    - name: 执行 CodeQL 分析 (Android)
+      uses: github/codeql-action/analyze@v2
+      with:
+        category: android
+      
+  dependency-check:
+    runs-on: ubuntu-22.04
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: 依赖检查
+      uses: dependency-check/Dependency-Check_Action@main
+      with:
+        project: 'Lumen'
+        path: '.'
+        format: 'HTML'
+        out: 'reports'
+        
+    - name: 上传报告
+      uses: actions/upload-artifact@v4
+      with:
+        name: dependency-check-report
+        path: ${{github.workspace}}/reports 

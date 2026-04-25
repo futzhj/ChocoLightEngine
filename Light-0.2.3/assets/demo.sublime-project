@@ -1,0 +1,25 @@
+{
+	"folders":
+	[
+		{
+			"path": ".",
+		}
+	],
+	"settings":
+	{
+		"LSP":
+		{
+			"LSP-lua":
+			{
+				"settings":
+				{
+					"Lua.workspace.library":
+					[
+						".vscode/Light/library"
+					],
+					"Lua.workspace.checkThirdParty": "Disable",
+				},
+			},
+		},
+	},
+}

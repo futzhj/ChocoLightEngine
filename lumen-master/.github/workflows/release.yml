@@ -1,0 +1,193 @@
+name: Lumen Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+# 添加全局权限
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            artifact_name: lumen-linux
+            asset_name: lumen-linux.tar.gz
+            compress_cmd: tar -czvf
+          - os: windows-2022
+            artifact_name: lumen-windows
+            asset_name: lumen-windows.zip
+            compress_cmd: 7z a -tzip
+          - os: macos-14
+            artifact_name: lumen-macos
+            asset_name: lumen-macos.tar.gz
+            compress_cmd: tar -czvf
+          - os: ubuntu-22.04
+            artifact_name: lumen-android
+            asset_name: lumen-android.tar.gz
+            compress_cmd: tar -czvf
+            build_android: true
+          
+    runs-on: ${{ matrix.os }}
+
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: 安装依赖 (Ubuntu)
+      if: matrix.os == 'ubuntu-22.04' && !matrix.build_android
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libreadline-dev libncurses-dev patchelf
+        
+    - name: 安装依赖 (macOS)
+      if: matrix.os == 'macos-14'
+      run: |
+        brew install readline ncurses
+
+    - name: 安装依赖 (Android)
+      if: matrix.build_android
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y patchelf
+    
+    - name: 设置 Android NDK
+      if: matrix.build_android
+      uses: nttld/setup-ndk@v1
+      with:
+        ndk-version: r25c
+        add-to-path: true
+    
+    - name: 配置 CMake (非Windows, 非Android)
+      if: matrix.os != 'windows-2019' && !matrix.build_android
+      run: cmake -B ${{github.workspace}}/build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="${{github.workspace}}/dist"
+      
+    - name: 配置 CMake (Windows)
+      if: matrix.os == 'windows-2019'
+      shell: cmd
+      run: cmake -B "${{github.workspace}}\build" -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="${{github.workspace}}\dist" -G "Visual Studio 17 2022"
+
+    - name: 构建和安装 (非Windows, 非Android)
+      if: matrix.os != 'windows-2019' && !matrix.build_android
+      run: |
+        cmake --build ${{github.workspace}}/build --config Release
+        cmake --install ${{github.workspace}}/build --config Release
+      
+    - name: 构建和安装 (Windows)
+      if: matrix.os == 'windows-2019'
+      shell: cmd
+      run: |
+        cmake --build "${{github.workspace}}\build" --config Release
+        cmake --install "${{github.workspace}}\build" --config Release
+    
+    - name: 构建 Android (多ABI)
+      if: matrix.build_android
+      run: |
+        mkdir -p ${{github.workspace}}/dist/android
+        
+        # 构建 arm64-v8a
+        mkdir -p ${{github.workspace}}/build-android-arm64
+        cmake -B ${{github.workspace}}/build-android-arm64 \
+          -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake \
+          -DANDROID_ABI=arm64-v8a \
+          -DANDROID_PLATFORM=android-21 \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DCMAKE_INSTALL_PREFIX=${{github.workspace}}/dist/android/arm64-v8a
+        cmake --build ${{github.workspace}}/build-android-arm64 --config Release
+        cmake --install ${{github.workspace}}/build-android-arm64 --config Release
+        
+        # 构建 armeabi-v7a
+        mkdir -p ${{github.workspace}}/build-android-arm
+        cmake -B ${{github.workspace}}/build-android-arm \
+          -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake \
+          -DANDROID_ABI=armeabi-v7a \
+          -DANDROID_PLATFORM=android-16 \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DCMAKE_INSTALL_PREFIX=${{github.workspace}}/dist/android/armeabi-v7a
+        cmake --build ${{github.workspace}}/build-android-arm --config Release
+        cmake --install ${{github.workspace}}/build-android-arm --config Release
+        
+        # 构建 x86
+        mkdir -p ${{github.workspace}}/build-android-x86
+        cmake -B ${{github.workspace}}/build-android-x86 \
+          -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake \
+          -DANDROID_ABI=x86 \
+          -DANDROID_PLATFORM=android-16 \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DCMAKE_INSTALL_PREFIX=${{github.workspace}}/dist/android/x86
+        cmake --build ${{github.workspace}}/build-android-x86 --config Release
+        cmake --install ${{github.workspace}}/build-android-x86 --config Release
+        
+        # 构建 x86_64
+        mkdir -p ${{github.workspace}}/build-android-x86_64
+        cmake -B ${{github.workspace}}/build-android-x86_64 \
+          -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake \
+          -DANDROID_ABI=x86_64 \
+          -DANDROID_PLATFORM=android-21 \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DCMAKE_INSTALL_PREFIX=${{github.workspace}}/dist/android/x86_64
+        cmake --build ${{github.workspace}}/build-android-x86_64 --config Release
+        cmake --install ${{github.workspace}}/build-android-x86_64 --config Release
+        
+        # 复制许可证和说明文件
+        cp ${{github.workspace}}/LICENSE ${{github.workspace}}/dist/
+        cp ${{github.workspace}}/README*.md ${{github.workspace}}/dist/
+    
+    - name: 打包 (非Windows, 非Android)
+      if: matrix.os != 'windows-2019' && !matrix.build_android
+      run: |
+        # 复制额外的文件到安装目录
+        cp ${{github.workspace}}/LICENSE ${{github.workspace}}/dist/
+        cp ${{github.workspace}}/README*.md ${{github.workspace}}/dist/
+        # 打包安装目录
+        cd ${{github.workspace}}
+        ${{ matrix.compress_cmd }} ${{ matrix.asset_name }} dist
+    
+    - name: 打包 (Android)
+      if: matrix.build_android
+      run: |
+        cd ${{github.workspace}}
+        ${{ matrix.compress_cmd }} ${{ matrix.asset_name }} dist
+        
+    - name: 打包 (Windows)
+      if: matrix.os == 'windows-2019'
+      shell: cmd
+      run: |
+        copy "${{github.workspace}}\LICENSE" "${{github.workspace}}\dist\"
+        copy "${{github.workspace}}\README*.md" "${{github.workspace}}\dist\"
+        cd "${{github.workspace}}"
+        ${{ matrix.compress_cmd }} ${{ matrix.asset_name }} dist
+        
+    - name: 上传构建产物
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ matrix.artifact_name }}
+        path: ${{ github.workspace }}/${{ matrix.asset_name }}
+        
+  create-release:
+    needs: build
+    runs-on: ubuntu-22.04
+    # 为发布任务添加特定权限
+    permissions:
+      contents: write
+      
+    steps:
+    - name: 下载所有构建产物
+      uses: actions/download-artifact@v4
+    
+    - name: 创建发布
+      uses: softprops/action-gh-release@v1
+      with:
+        files: |
+          lumen-linux/lumen-linux.tar.gz
+          lumen-windows/lumen-windows.zip
+          lumen-macos/lumen-macos.tar.gz
+          lumen-android/lumen-android.tar.gz
+        draft: false
+        prerelease: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} 

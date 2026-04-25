@@ -1,0 +1,53 @@
+# IDE / AI agent configs
+.agent/
+.agents/
+.antigravity/
+.cursor/
+.vs/
+.vscode/
+
+# Build outputs
+build/
+*.obj
+*.o
+*.lib
+*.exp
+*.pdb
+*.ilk
+
+# Platform-specific build dirs
+lumen-master/build/
+lumen-master/build-*/
+ChocoLight/build/
+
+# Nuitka build artifacts
+*.onefile-build/
+*.dist/
+*.build/
+
+# IDE
+.vs/
+.vscode/
+*.suo
+*.user
+*.sln
+*.vcxproj*
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+
+# Generated
+lumen-master/src/light/embedded_scripts.h
+
+# Pack outputs (user-generated)
+Light-0.2.3/game.exe
+Light-0.2.3/pack.exe
+Light-0.2.3/*.luac
+
+# Python cache
+__pycache__/
+*.pyc
+
+# OS
+Thumbs.db
+.DS_Store
