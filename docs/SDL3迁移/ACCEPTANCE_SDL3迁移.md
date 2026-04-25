@@ -54,6 +54,30 @@
 
 ---
 
-## M3: Android SDL3 适配 — 待开始
+## M3: Android SDL3 适配 ✅
+
+| 任务 | 状态 | 交付物 | 验证 |
+|------|------|--------|------|
+| T3.1 CMakeLists Android | ✅ | CMakeLists.txt (SDL3 SHARED, Light STATIC, GLES3) | CI 验证中 |
+| T3.2 GLES3 渲染适配 | ✅ | render_gl33.cpp (单独 swizzle, 无 GL_TEXTURE_SWIZZLE_RGBA) | 编译时验证 |
+| T3.3 VideoBackend 存根 | ✅ | video_backend_ffmpeg.cpp (Android→nullptr) | 编译时验证 |
+| T3.4 模板 + CI | ✅ | templates/android-sdl3/ + CI 更新 | CI 验证中 |
+
+### M3 关键交付物
+
+**新目录 `templates/android-sdl3/`**:
+- `app/build.gradle` — AGP 8.2, NDK 27, minSdk 24, GLES 3.0
+- `app/src/main/cpp/CMakeLists.txt` — Lumen(static) + ChocoLight(static) + SDL3(shared)
+- `app/src/main/cpp/main.cpp` — SDL_main 入口, Lua VM 初始化
+- `ChocoLightActivity.java` — 继承 SDLActivity
+- `setup_sdl3_java.sh` — SDL3 Java 源码提取脚本
+
+**引擎改动**:
+- CMakeLists: Android 条件 (SDL3 SHARED, 无 glad/libuv, GLES3+EGL 链接)
+- 源码: `__ANDROID__` 守卫 (light_av, light_network, light_platform_net, light_ui, render_gl33, video_backend_ffmpeg)
+
+**M3 提交**: `333e26e`
+
+---
 
 ## M4: iOS SDL3 适配 — 待开始
