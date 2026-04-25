@@ -70,11 +70,11 @@ static int LoadScript(lua_State *L, const char *filename) {
     const uint8_t *bytes = (const uint8_t *)data;
     int result;
     if (dataLen > 4 && bytes[0] == 'C' && bytes[1] == 'L' && bytes[2] == 'P' && bytes[3] == 'K') {
+        uint8_t *dec = NULL;
         size_t decLen = 0;
-        uint8_t *dec = choco_decrypt(bytes, dataLen, &decLen);
-        if (dec) {
+        if (choco_decrypt(bytes, dataLen, &dec, &decLen) == 0 && dec) {
             result = luaL_loadbuffer(L, (const char *)dec, decLen, filename);
-            choco_free(dec);
+            free(dec);
         } else {
             SDL_free(data);
             return -1;

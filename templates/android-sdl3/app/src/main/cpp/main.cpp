@@ -67,11 +67,11 @@ static int LoadScript(lua_State* L, const char* filename) {
     int result;
     if (encrypted) {
         // CLPK 解密
+        uint8_t* dec = nullptr;
         size_t decLen = 0;
-        uint8_t* dec = choco_decrypt(bytes, dataLen, &decLen);
-        if (dec) {
+        if (choco_decrypt(bytes, dataLen, &dec, &decLen) == 0 && dec) {
             result = luaL_loadbuffer(L, (const char*)dec, decLen, filename);
-            choco_free(dec);
+            free(dec);
         } else {
             LOGE("Script decryption failed: %s", filename);
             SDL_free(data);
