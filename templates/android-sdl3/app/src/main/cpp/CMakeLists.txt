@@ -5,8 +5,9 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # ==================== 路径配置 ====================
-# 从 templates/android-sdl3/app/src/main/cpp/ 到仓库根: ../../../../../../..
-set(ROOT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../../../../../..")
+# 从 templates/android-sdl3/app/src/main/cpp/ 到仓库根: ../../../../../..
+# templates(1)/android-sdl3(2)/app(3)/src(4)/main(5)/cpp(6) → 6 层
+set(ROOT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../../../../..")
 set(LUMEN_DIR "${ROOT_DIR}/lumen-master")
 set(CHOCOLIGHT_DIR "${ROOT_DIR}/ChocoLight")
 

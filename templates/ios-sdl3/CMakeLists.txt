@@ -1,7 +1,8 @@
 cmake_minimum_required(VERSION 3.20)
 
 # iOS 部署目标
-set(CMAKE_OSX_DEPLOYMENT_TARGET "13.0" CACHE STRING "" FORCE)
+# std::to_chars (Lumen VM) 需要 iOS 16.3+, 与旧模板保持一致用 16.4
+set(CMAKE_OSX_DEPLOYMENT_TARGET "16.4" CACHE STRING "" FORCE)
 
 project(ChocoLightIOS LANGUAGES C CXX OBJC OBJCXX)
 
