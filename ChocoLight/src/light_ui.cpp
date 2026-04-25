@@ -29,12 +29,8 @@
 #include "platform_window.h"
 #include <cstdint>
 
-// Input 模块事件处理 (定义在 light_input.cpp, Android 上未编译)
-#ifdef __ANDROID__
-static inline void InputProcessEvent(const PlatformWindow::Event&) {}
-#else
+// Input 模块事件处理 (定义在 light_input.cpp)
 extern void InputProcessEvent(const PlatformWindow::Event& ev);
-#endif
 #include <cstdlib>
 
 // 渲染后端为空时的 GL 兼容 (Legacy 路径)
