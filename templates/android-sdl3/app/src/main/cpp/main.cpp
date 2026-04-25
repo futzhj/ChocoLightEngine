@@ -151,6 +151,12 @@ int main(int argc, char* argv[]) {
     luaopen_Light_Network_Http(L); lua_pop(L, 1);
     luaopen_Light_Network_HttpServer(L); lua_pop(L, 1);
     luaopen_Light_Network_Web(L); lua_pop(L, 1);
+    luaopen_Light_Input(L); lua_pop(L, 1);
+    luaopen_Light_Graphics_Particles(L); lua_pop(L, 1);
+    luaopen_Light_Graphics_Tilemap(L); lua_pop(L, 1);
+    luaopen_Light_Physics(L); lua_pop(L, 1);
+    luaopen_Light_Physics_World(L); lua_pop(L, 1);
+    luaopen_Light_ECS(L); lua_pop(L, 1);
     luaopen_Light_Record(L); lua_pop(L, 1);
     luaopen_Light_Plugins(L); lua_pop(L, 1);
     luaopen_Light_Plugins_WDFData(L); lua_pop(L, 1);

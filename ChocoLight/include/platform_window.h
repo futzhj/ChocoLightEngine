@@ -46,8 +46,11 @@ struct Event {
         TouchDown   = 9,    // 移动平台
         TouchUp     = 10,
         TouchMove   = 11,
-        TextInput   = 12,   // UTF-8 文本输入 (IME)
-        Quit        = 13    // 应用退出
+        TextInput        = 12,   // UTF-8 文本输入 (IME)
+        Quit             = 13,   // 应用退出
+        GamepadButton    = 14,   // 手柄按钮
+        GamepadAxis      = 15,   // 手柄摇杆/扳机
+        GamepadConnect   = 16,   // 手柄连接/断开
     } type = None;
 
     // 注意: 不使用 union 以避免 ABI 复杂性, 字段直接列出
@@ -62,7 +65,14 @@ struct Event {
     int    width      = 0;       ///< Resize: 新宽度 (像素)
     int    height     = 0;       ///< Resize: 新高度 (像素)
     int    touchId    = 0;       ///< Touch*: 多指触摸 ID
+    float  pressure    = 0.0f;   ///< Touch*: 压力 (0..1)
     char   text[32]   = {0};     ///< TextInput: UTF-8 字符串
+    // 手柄事件
+    int    gamepadId   = 0;      ///< Gamepad*: 手柄索引
+    int    gpButton    = 0;      ///< GamepadButton: 按钮 ID (SDL_GAMEPAD_BUTTON_*)
+    int    gpAction    = 0;      ///< GamepadButton: 1=按下, 0=释放; GamepadConnect: 1=连接, 0=断开
+    int    gpAxis      = 0;      ///< GamepadAxis: 轴 ID (SDL_GAMEPAD_AXIS_*)
+    float  gpAxisValue = 0.0f;   ///< GamepadAxis: 轴值 (-1..1)
 };
 
 // ==================== 生命周期 ====================

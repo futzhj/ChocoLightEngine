@@ -28,6 +28,9 @@
 #include "light_platform_net.h"
 #include "platform_window.h"
 #include <cstdint>
+
+// Input 模块事件处理 (定义在 light_input.cpp)
+extern void InputProcessEvent(const PlatformWindow::Event& ev);
 #include <cstdlib>
 
 // 渲染后端为空时的 GL 兼容 (Legacy 路径)
@@ -170,6 +173,8 @@ static void DispatchEvents(lua_State* L) {
     // 单帧最多处理 256 个事件, 避免事件风暴卡死
     for (int i = 0; i < 256; ++i) {
         if (!PlatformWindow::PollEvent(&ev)) break;
+        // 同步到 Input 模块状态快照
+        InputProcessEvent(ev);
         switch (ev.type) {
             case PlatformWindow::Event::KeyDown:
                 DispatchOnKey(L, ev.keycode, ev.scancode, /*action=*/1, ev.mods);

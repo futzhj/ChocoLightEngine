@@ -158,6 +158,16 @@ LIGHT_API int luaopen_Light_Network_Http(lua_State* L);
 LIGHT_API int luaopen_Light_Network_HttpServer(lua_State* L);
 LIGHT_API int luaopen_Light_Network_Web(lua_State* L);
 
+// 输入模块
+LIGHT_API int luaopen_Light_Input(lua_State* L);
+
+// 游戏模块
+LIGHT_API int luaopen_Light_Graphics_Particles(lua_State* L);
+LIGHT_API int luaopen_Light_Graphics_Tilemap(lua_State* L);
+LIGHT_API int luaopen_Light_Physics(lua_State* L);
+LIGHT_API int luaopen_Light_Physics_World(lua_State* L);
+LIGHT_API int luaopen_Light_ECS(lua_State* L);
+
 // 录制模块
 LIGHT_API int luaopen_Light_Record(lua_State* L);
 

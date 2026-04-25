@@ -156,15 +156,12 @@ static int SDLMouseButtonToGLFW(Uint8 btn) {
 
 bool Init() {
     if (s_initialized) return true;
-    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS)) {
+    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS | SDL_INIT_GAMEPAD)) {
         CC::Log(CC::LOG_ERROR, "PlatformWindow: SDL_Init failed: %s", SDL_GetError());
         return false;
     }
     s_initialized = true;
-    CC::Log(CC::LOG_INFO, "PlatformWindow: SDL3 %d.%d.%d initialized",
-            SDL_VERSIONNUM_MAJOR(SDL_GetVersion()),
-            SDL_VERSIONNUM_MINOR(SDL_GetVersion()),
-            SDL_VERSIONNUM_MICRO(SDL_GetVersion()));
+    CC::Log(CC::LOG_INFO, "PlatformWindow: SDL3 initialized (gamepad enabled)");
     return true;
 }
 
@@ -360,6 +357,44 @@ bool PollEvent(Event* out) {
 
         case SDL_EVENT_QUIT:
             out->type = Event::Quit;
+            return true;
+
+        // ==================== 手柄事件 ====================
+        case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
+            out->type      = Event::GamepadButton;
+            out->gamepadId = (int)e.gbutton.which;
+            out->gpButton  = (int)e.gbutton.button;
+            out->gpAction  = 1;
+            return true;
+
+        case SDL_EVENT_GAMEPAD_BUTTON_UP:
+            out->type      = Event::GamepadButton;
+            out->gamepadId = (int)e.gbutton.which;
+            out->gpButton  = (int)e.gbutton.button;
+            out->gpAction  = 0;
+            return true;
+
+        case SDL_EVENT_GAMEPAD_AXIS_MOTION:
+            out->type        = Event::GamepadAxis;
+            out->gamepadId   = (int)e.gaxis.which;
+            out->gpAxis      = (int)e.gaxis.axis;
+            out->gpAxisValue = (float)e.gaxis.value / 32767.0f;
+            return true;
+
+        case SDL_EVENT_GAMEPAD_ADDED:
+            out->type      = Event::GamepadConnect;
+            out->gamepadId = (int)e.gdevice.which;
+            out->gpAction  = 1;
+            // 自动打开手柄
+            SDL_OpenGamepad(e.gdevice.which);
+            CC::Log(CC::LOG_INFO, "Gamepad connected: %d", (int)e.gdevice.which);
+            return true;
+
+        case SDL_EVENT_GAMEPAD_REMOVED:
+            out->type      = Event::GamepadConnect;
+            out->gamepadId = (int)e.gdevice.which;
+            out->gpAction  = 0;
+            CC::Log(CC::LOG_INFO, "Gamepad disconnected: %d", (int)e.gdevice.which);
             return true;
 
         default:
