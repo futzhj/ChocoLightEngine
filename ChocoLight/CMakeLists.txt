@@ -46,20 +46,20 @@ message(STATUS "SDL3: integrated via FetchContent (release-3.2.0)")
 # ==================== 路径配置 ====================
 
 # Lua 5.1 SDK 路径
-set(LUA_INCLUDE_DIR "${CMAKE_SOURCE_DIR}/../lumen-master/include")
+set(LUA_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../lumen-master/include")
 
 # SQLite3 amalgamation
-set(SQLITE3_DIR "${CMAKE_SOURCE_DIR}/third_party/sqlite3")
+set(SQLITE3_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/sqlite3")
 
 # glad GL 3.3 Core Profile 加载器 (桌面专用, GLES3 平台不需要)
 if(NOT EMSCRIPTEN AND NOT ANDROID AND NOT CHOCO_IOS)
-    set(GLAD_DIR "${CMAKE_SOURCE_DIR}/third_party/glad")
+    set(GLAD_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/glad")
 endif()
 
 # libuv 异步 IO 库 (网络抽象, Emscripten/Android/iOS 不支持)
 if(NOT EMSCRIPTEN AND NOT ANDROID AND NOT CHOCO_IOS)
     set(LIBUV_BUILD_SHARED OFF CACHE BOOL "" FORCE)
-    add_subdirectory(third_party/libuv EXCLUDE_FROM_ALL)
+    add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/third_party/libuv ${CMAKE_CURRENT_BINARY_DIR}/libuv EXCLUDE_FROM_ALL)
 endif()
 
 # ==================== Lumen (lua51) 库路径 ====================
@@ -67,12 +67,12 @@ endif()
 # 允许外部指定, 否则使用默认路径
 if(NOT DEFINED LUMEN_LIB_PATH)
     if(WIN32)
-        set(LUMEN_LIB_PATH "${CMAKE_SOURCE_DIR}/../lumen-master/build/lib/lua/Release/lua51.lib")
+        set(LUMEN_LIB_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../lumen-master/build/lib/lua/Release/lua51.lib")
     else()
         # Linux/macOS: Lumen 静态库名为 liblumen-static.a (未设置 OUTPUT_NAME)
         find_library(LUMEN_LIB_PATH
             NAMES lumen-static lua51 lua5.1 lua
-            PATHS "${CMAKE_SOURCE_DIR}/../lumen-master/build/lib/lua"
+            PATHS "${CMAKE_CURRENT_SOURCE_DIR}/../lumen-master/build/lib/lua"
             NO_DEFAULT_PATH
         )
         if(NOT LUMEN_LIB_PATH)
@@ -85,50 +85,51 @@ message(STATUS "Lumen lib: ${LUMEN_LIB_PATH}")
 
 # ==================== 源文件 ====================
 
-# 通用源文件 (所有平台)
+# 通用源文件 (所有平台) — 使用绝对路径以支持 add_subdirectory 引入
+set(CHOCO_SRC "${CMAKE_CURRENT_SOURCE_DIR}/src")
 set(LIGHT_SOURCES
-    src/cc_core.cpp
-    src/light_module.cpp
-    src/light_debug.cpp
-    src/light_math.cpp
-    src/light_data.cpp
-    src/light_ui.cpp
-    src/light_graphics.cpp
-    src/light_graphics_canvas.cpp
-    src/light_graphics_image.cpp
-    src/light_graphics_font.cpp
-    src/light_av.cpp
-    src/light_db.cpp
-    src/light_network.cpp
-    src/light_record.cpp
-    src/light_plugins.cpp
-    src/light_antidebug.cpp
-    src/platform_window_sdl3.cpp
-    src/render_backend.cpp
-    src/render_gl33.cpp
-    src/light_audio_backend.cpp
-    src/light_platform_net.cpp
+    ${CHOCO_SRC}/cc_core.cpp
+    ${CHOCO_SRC}/light_module.cpp
+    ${CHOCO_SRC}/light_debug.cpp
+    ${CHOCO_SRC}/light_math.cpp
+    ${CHOCO_SRC}/light_data.cpp
+    ${CHOCO_SRC}/light_ui.cpp
+    ${CHOCO_SRC}/light_graphics.cpp
+    ${CHOCO_SRC}/light_graphics_canvas.cpp
+    ${CHOCO_SRC}/light_graphics_image.cpp
+    ${CHOCO_SRC}/light_graphics_font.cpp
+    ${CHOCO_SRC}/light_av.cpp
+    ${CHOCO_SRC}/light_db.cpp
+    ${CHOCO_SRC}/light_network.cpp
+    ${CHOCO_SRC}/light_record.cpp
+    ${CHOCO_SRC}/light_plugins.cpp
+    ${CHOCO_SRC}/light_antidebug.cpp
+    ${CHOCO_SRC}/platform_window_sdl3.cpp
+    ${CHOCO_SRC}/render_backend.cpp
+    ${CHOCO_SRC}/render_gl33.cpp
+    ${CHOCO_SRC}/light_audio_backend.cpp
+    ${CHOCO_SRC}/light_platform_net.cpp
     ${SQLITE3_DIR}/sqlite3.c
-    ${CMAKE_SOURCE_DIR}/third_party/stb_impl.c
-    ${CMAKE_SOURCE_DIR}/third_party/miniaudio_impl.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/stb_impl.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/miniaudio_impl.c
 )
 
 # 平台条件源文件
 if(EMSCRIPTEN)
     # Web: HTML5 视频后端, 无 Legacy GL, 无 glad
-    list(APPEND LIGHT_SOURCES src/video_backend_html5.cpp)
+    list(APPEND LIGHT_SOURCES ${CHOCO_SRC}/video_backend_html5.cpp)
 elseif(ANDROID)
     # Android: FFmpeg 后端内部 __ANDROID__ 守卫会编译为空, 但仍需包含以提供 CreateVideoBackend 存根
     # 无 Legacy GL, 无 glad
-    list(APPEND LIGHT_SOURCES src/video_backend_ffmpeg.cpp)
+    list(APPEND LIGHT_SOURCES ${CHOCO_SRC}/video_backend_ffmpeg.cpp)
 elseif(CHOCO_IOS)
     # iOS: 原生视频后端预留, 无 Legacy GL, 无 glad
-    list(APPEND LIGHT_SOURCES src/video_backend_avplayer.mm)
+    list(APPEND LIGHT_SOURCES ${CHOCO_SRC}/video_backend_avplayer.mm)
 else()
     # 桌面: FFmpeg 视频后端 + Legacy GL + glad
     list(APPEND LIGHT_SOURCES
-        src/video_backend_ffmpeg.cpp
-        src/render_legacy.cpp
+        ${CHOCO_SRC}/video_backend_ffmpeg.cpp
+        ${CHOCO_SRC}/render_legacy.cpp
         ${GLAD_DIR}/src/gl.c
     )
 endif()
@@ -144,16 +145,16 @@ endif()
 # ==================== 头文件搜索路径 ====================
 
 target_include_directories(Light PRIVATE
-    include
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${LUA_INCLUDE_DIR}
     ${SQLITE3_DIR}
-    ${CMAKE_SOURCE_DIR}/third_party
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party
 )
 
 if(NOT EMSCRIPTEN AND NOT ANDROID AND NOT CHOCO_IOS)
     target_include_directories(Light PRIVATE
         ${GLAD_DIR}/include
-        ${CMAKE_SOURCE_DIR}/third_party/libuv/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/third_party/libuv/include
     )
 endif()
 

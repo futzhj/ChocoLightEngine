@@ -1,3 +1,9 @@
+<!--
+ * @Author: Antigravity
+ * @LastEditors: 炽热
+ * @Date: 2026-04-25 21:18:33
+ * @LastEditTime: 2026-04-25 21:22:17
+-->
 # TODO — SDL3 迁移待办事项
 
 ## 高优先级
