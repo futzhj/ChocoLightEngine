@@ -33,6 +33,11 @@
 extern void InputProcessEvent(const PlatformWindow::Event& ev);
 #include <cstdlib>
 
+#ifdef __ANDROID__
+#include <SDL3/SDL.h>
+#include <jni.h>
+#endif
+
 // 渲染后端为空时的 GL 兼容 (Legacy 路径)
 #if defined(__EMSCRIPTEN__) || defined(__ANDROID__)
 #include <GLES3/gl3.h>
@@ -530,6 +535,33 @@ static int l_UI_Resume(lua_State* L) {
     return 1;
 }
 
+// ==================== Window:SetOrientation ====================
+// Lua: Window:SetOrientation("landscape"|"portrait"|"auto")
+// Android: JNI 调用 setRequestedOrientation
+// 其他平台: no-op
+static int l_Window_SetOrientation(lua_State* L) {
+#ifdef __ANDROID__
+    const char* mode = luaL_checkstring(L, 2);
+    // Android ActivityInfo 常量
+    int orient = 6; // 默认 SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+    if (strcmp(mode, "portrait") == 0)       orient = 7;  // SENSOR_PORTRAIT
+    else if (strcmp(mode, "auto") == 0)      orient = 10; // FULL_SENSOR
+    else if (strcmp(mode, "landscape") == 0) orient = 6;  // SENSOR_LANDSCAPE
+
+    JNIEnv* env = (JNIEnv*)SDL_GetAndroidJNIEnv();
+    jobject activity = (jobject)SDL_GetAndroidActivity();
+    if (env && activity) {
+        jclass cls = env->GetObjectClass(activity);
+        jmethodID mid = env->GetMethodID(cls, "setRequestedOrientation", "(I)V");
+        if (mid) env->CallVoidMethod(activity, mid, orient);
+        env->DeleteLocalRef(cls);
+    }
+#else
+    (void)L;
+#endif
+    return 0;
+}
+
 // ==================== luaopen 注册 ====================
 
 static const luaL_Reg ui_funcs[] = {
@@ -565,6 +597,7 @@ int luaopen_Light_UI_Window(lua_State* L) {
             {"SetHeight",     l_Window_SetHeight},
             {"SetDimensions", l_Window_SetDimensions},
             {"SetVSync",      l_Window_SetVSync},
+            {"SetOrientation", l_Window_SetOrientation},
             {"__call",        l_Window_Call},
             {"__tostring",    l_Window_Tostring},
             {NULL, NULL}
