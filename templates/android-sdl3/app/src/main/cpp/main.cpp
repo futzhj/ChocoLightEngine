@@ -153,8 +153,12 @@ int main(int argc, char* argv[]) {
     luaopen_Light_Network_Http(L); lua_pop(L, 1);
     luaopen_Light_Network_HttpServer(L); lua_pop(L, 1);
     luaopen_Light_Network_Web(L); lua_pop(L, 1);
-    // Phase 2 逐步排查: 仅 ECS
-    LOGI("[DIAG] Phase2: ECS only...");
+    // Phase 2 逐步排查: Particles + Tilemap + ECS
+    LOGI("[DIAG] Phase2: Particles...");
+    luaopen_Light_Graphics_Particles(L); lua_pop(L, 1);
+    LOGI("[DIAG] Phase2: Tilemap...");
+    luaopen_Light_Graphics_Tilemap(L); lua_pop(L, 1);
+    LOGI("[DIAG] Phase2: ECS...");
     luaopen_Light_ECS(L); lua_pop(L, 1);
     luaopen_Light_Record(L); lua_pop(L, 1);
     luaopen_Light_Plugins(L); lua_pop(L, 1);

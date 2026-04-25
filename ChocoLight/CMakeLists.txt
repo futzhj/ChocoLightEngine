@@ -121,6 +121,8 @@ set(LIGHT_SOURCES
     ${CHOCO_SRC}/light_network.cpp
     ${CHOCO_SRC}/light_record.cpp
     ${CHOCO_SRC}/light_plugins.cpp
+    ${CHOCO_SRC}/light_particles.cpp
+    ${CHOCO_SRC}/light_tilemap.cpp
     ${CHOCO_SRC}/light_ecs.cpp
     ${CHOCO_SRC}/light_antidebug.cpp
     ${CHOCO_SRC}/platform_window_sdl3.cpp
