@@ -80,4 +80,21 @@
 
 ---
 
-## M4: iOS SDL3 适配 — 待开始
+## M4: iOS SDL3 适配 ✅
+
+| 任务 | 状态 | 交付物 | 验证 |
+|------|------|--------|------|
+| T4.1 CMakeLists iOS | ✅ | CMakeLists.txt (CHOCO_IOS, STATIC, OpenGLES) | CI 验证中 |
+| T4.2 GLES3 适配 | ✅ | render_gl33 + platform_window (CHOCO_PLATFORM_IOS) | 编译时 |
+| T4.3 VideoBackend 存根 | ✅ | video_backend_avplayer.mm (→nullptr) | 编译时 |
+| T4.4 模板 + CI | ✅ | templates/ios-sdl3/ + CI 更新 | CI 验证中 |
+
+### M4 关键改动
+
+**统一 iOS 判断**: 废弃不可靠的 `TARGET_OS_IOS` → 全部使用 CMake 注入的 `CHOCO_PLATFORM_IOS`
+
+**新文件**:
+- `ChocoLight/src/video_backend_avplayer.mm` — iOS 视频存根
+- `templates/ios-sdl3/` — CMake+SDL3 iOS 模板 (main.m, Info.plist, LaunchScreen)
+
+**M4 提交**: `7396b6f`
