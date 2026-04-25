@@ -333,7 +333,8 @@ static int l_Input_AddAction(lua_State* L) {
     const char* name = luaL_checkstring(L, 1);
     luaL_checktype(L, 2, LUA_TTABLE);
 
-    ActionMapping m = { -1, -1, -1, 0 };
+    ActionMapping m = {};
+    m.key = -1; m.mouseBtn = -1; m.gpButton = -1; m.gpIndex = 0;
 
     lua_getfield(L, 2, "key");
     if (lua_isnumber(L, -1)) m.key = (int)lua_tointeger(L, -1);
