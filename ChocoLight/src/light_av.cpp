@@ -66,6 +66,11 @@ bool LoadFFmpeg() {
     CC::Log(CC::LOG_INFO, "FFmpeg: not available on Web (using HTML5 video backend)");
     return false;
 #endif
+#ifdef __ANDROID__
+    // Android: FFmpeg DLL 不自带, 音频由 miniaudio 处理, 视频暂不可用
+    CC::Log(CC::LOG_INFO, "FFmpeg: not available on Android");
+    return false;
+#endif
 
 #ifdef _WIN32
     const char* fmtNames[] = { "avformat-59.dll", "avformat.dll", nullptr };

@@ -673,3 +673,9 @@ VideoBackend* CreateVideoBackend() {
 
 #endif // !iOS
 #endif // !__EMSCRIPTEN__ && !__ANDROID__
+
+// Android/iOS: 视频后端暂不可用, 提供空存根
+#if defined(__ANDROID__) || (defined(__APPLE__) && defined(TARGET_OS_IOS) && TARGET_OS_IOS)
+#include "video_backend.h"
+VideoBackend* CreateVideoBackend() { return nullptr; }
+#endif

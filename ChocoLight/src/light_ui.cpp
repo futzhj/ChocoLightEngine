@@ -31,7 +31,7 @@
 #include <cstdlib>
 
 // 渲染后端为空时的 GL 兼容 (Legacy 路径)
-#if defined(__EMSCRIPTEN__)
+#if defined(__EMSCRIPTEN__) || defined(__ANDROID__)
 #include <GLES3/gl3.h>
 #elif defined(_WIN32)
 #include <GL/gl.h>

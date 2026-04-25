@@ -1,3 +1,9 @@
+<!--
+ * @Author: Antigravity
+ * @LastEditors: 炽热
+ * @Date: 2026-04-25 20:52:42
+ * @LastEditTime: 2026-04-25 21:03:41
+-->
 # ACCEPTANCE — SDL3 迁移验收记录
 
 ## M1: 桌面三平台 SDL3 迁移 ✅

@@ -6,8 +6,8 @@
 #include "light_platform_net.h"
 #include "light.h"
 
-#ifdef __EMSCRIPTEN__
-// Web 平台: libuv 不可用, 所有网络操作返回空/失败
+#if defined(__EMSCRIPTEN__) || defined(__ANDROID__)
+// Web/Android: libuv 不可用, 所有网络操作返回空/失败
 namespace PlatformNet {
 bool Init() { return false; }
 void Shutdown() {}
@@ -296,4 +296,4 @@ uv_loop_s* GetLoop() { return s_loop; }
 
 }  // namespace PlatformNet
 
-#endif // !__EMSCRIPTEN__
+#endif // !__EMSCRIPTEN__ && !__ANDROID__

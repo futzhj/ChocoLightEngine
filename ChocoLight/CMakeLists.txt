@@ -11,14 +11,20 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 include(FetchContent)
 
 # SDL3 编译选项: 只要 video+events+gl, 不要 audio (我们用 miniaudio)/test/examples
-set(SDL_SHARED        OFF CACHE BOOL "" FORCE)
-set(SDL_STATIC        ON  CACHE BOOL "" FORCE)
+if(ANDROID)
+    # Android: SDL3 必须为 SHARED (SDLActivity Java 通过 System.loadLibrary 加载)
+    set(SDL_SHARED        ON  CACHE BOOL "" FORCE)
+    set(SDL_STATIC        OFF CACHE BOOL "" FORCE)
+else()
+    set(SDL_SHARED        OFF CACHE BOOL "" FORCE)
+    set(SDL_STATIC        ON  CACHE BOOL "" FORCE)
+endif()
 set(SDL_TEST_LIBRARY  OFF CACHE BOOL "" FORCE)
 set(SDL_TESTS         OFF CACHE BOOL "" FORCE)
 set(SDL_INSTALL_TESTS OFF CACHE BOOL "" FORCE)
 set(SDL_AUDIO         OFF CACHE BOOL "" FORCE)
 set(SDL_RENDER        OFF CACHE BOOL "" FORCE)  # 我们不用 SDL_Renderer (用 GL)
-set(SDL_GPU           OFF CACHE BOOL "" FORCE)  # M1 不用 SDL_GPU
+set(SDL_GPU           OFF CACHE BOOL "" FORCE)  # 不用 SDL_GPU
 
 FetchContent_Declare(
     SDL3
@@ -38,13 +44,13 @@ set(LUA_INCLUDE_DIR "${CMAKE_SOURCE_DIR}/../lumen-master/include")
 # SQLite3 amalgamation
 set(SQLITE3_DIR "${CMAKE_SOURCE_DIR}/third_party/sqlite3")
 
-# glad GL 3.3 Core Profile 加载器 (桌面专用, Emscripten 用 GLES3)
-if(NOT EMSCRIPTEN)
+# glad GL 3.3 Core Profile 加载器 (桌面专用, GLES3 平台不需要)
+if(NOT EMSCRIPTEN AND NOT ANDROID)
     set(GLAD_DIR "${CMAKE_SOURCE_DIR}/third_party/glad")
 endif()
 
-# libuv 异步 IO 库 (网络抽象, Emscripten 不支持)
-if(NOT EMSCRIPTEN)
+# libuv 异步 IO 库 (网络抽象, Emscripten/Android 不支持)
+if(NOT EMSCRIPTEN AND NOT ANDROID)
     set(LIBUV_BUILD_SHARED OFF CACHE BOOL "" FORCE)
     add_subdirectory(third_party/libuv EXCLUDE_FROM_ALL)
 endif()
@@ -104,6 +110,10 @@ set(LIGHT_SOURCES
 if(EMSCRIPTEN)
     # Web: HTML5 视频后端, 无 Legacy GL, 无 glad
     list(APPEND LIGHT_SOURCES src/video_backend_html5.cpp)
+elseif(ANDROID)
+    # Android: FFmpeg 后端内部 __ANDROID__ 守卫会编译为空, 但仍需包含以提供 CreateVideoBackend 存根
+    # 无 Legacy GL, 无 glad
+    list(APPEND LIGHT_SOURCES src/video_backend_ffmpeg.cpp)
 else()
     # 桌面: FFmpeg 视频后端 + Legacy GL + glad
     list(APPEND LIGHT_SOURCES
@@ -113,9 +123,9 @@ else()
     )
 endif()
 
-# Emscripten: STATIC 库 (链接到最终 .html/.js)
+# Emscripten/Android: STATIC 库 (链接到最终二进制)
 # 桌面: SHARED 库 (Light.dll/so/dylib)
-if(EMSCRIPTEN)
+if(EMSCRIPTEN OR ANDROID)
     add_library(Light STATIC ${LIGHT_SOURCES})
 else()
     add_library(Light SHARED ${LIGHT_SOURCES})
@@ -130,7 +140,7 @@ target_include_directories(Light PRIVATE
     ${CMAKE_SOURCE_DIR}/third_party
 )
 
-if(NOT EMSCRIPTEN)
+if(NOT EMSCRIPTEN AND NOT ANDROID)
     target_include_directories(Light PRIVATE
         ${GLAD_DIR}/include
         ${CMAKE_SOURCE_DIR}/third_party/libuv/include
@@ -140,13 +150,20 @@ endif()
 # ==================== 链接库 ====================
 
 if(EMSCRIPTEN)
-    # Web: Lumen + SDL3, 无 libuv
+    # Web: Lumen + SDL3 static, 无 libuv
     target_link_libraries(Light PRIVATE
         ${LUMEN_LIB_PATH}
         SDL3::SDL3-static
     )
+elseif(ANDROID)
+    # Android: Lumen + SDL3 shared + GLES3, 无 libuv
+    target_link_libraries(Light PRIVATE
+        ${LUMEN_LIB_PATH}
+        SDL3::SDL3
+        GLESv3 EGL android log
+    )
 else()
-    # 桌面: Lumen + SDL3 + libuv
+    # 桌面: Lumen + SDL3 static + libuv
     target_link_libraries(Light PRIVATE
         ${LUMEN_LIB_PATH}
         SDL3::SDL3-static
@@ -171,7 +188,7 @@ elseif(APPLE AND NOT EMSCRIPTEN)
         ${OPENGL_FRAMEWORK} ${COREAUDIO_FRAMEWORK} ${AUDIOTOOLBOX_FRAMEWORK}
         pthread dl
     )
-elseif(NOT EMSCRIPTEN)
+elseif(NOT EMSCRIPTEN AND NOT ANDROID)
     # Linux
     find_package(OpenGL REQUIRED)
     target_link_libraries(Light PRIVATE

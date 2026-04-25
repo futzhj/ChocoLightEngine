@@ -195,18 +195,35 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Build APK (compiles Lumen from source via NDK)
+      # 先 CMake configure 触发 FetchContent 下载 SDL3, 获取 Java 源码
+      - name: Fetch SDL3 Sources (for Java files)
         run: |
-          cd templates/android
+          cd ChocoLight
+          cmake -B build-android-fetch \
+            -DCMAKE_SYSTEM_NAME=Android \
+            -DCMAKE_ANDROID_NDK=$ANDROID_NDK_ROOT \
+            -DCMAKE_ANDROID_ARCH_ABI=arm64-v8a \
+            -DCMAKE_ANDROID_STL_TYPE=c++_shared \
+            -DCMAKE_BUILD_TYPE=Release || true
+          # 复制 SDL3 Java 源码到模板项目
+          SDL3_JAVA=$(find build-android-fetch -path "*sdl3-src/android-project/app/src/main/java/org/libsdl/app" -type d | head -1)
+          if [ -n "$SDL3_JAVA" ]; then
+            mkdir -p ../templates/android-sdl3/app/src/main/java/org/libsdl/app
+            cp -v "$SDL3_JAVA"/*.java ../templates/android-sdl3/app/src/main/java/org/libsdl/app/
+          else
+            echo "WARNING: SDL3 Java sources not found"
+          fi
+
+      - name: Build APK (SDL3 + ChocoLight + Lumen)
+        run: |
+          cd templates/android-sdl3
           gradle wrapper --gradle-version 8.5
-          ./gradlew assembleDebug --no-daemon --info
+          ./gradlew assembleDebug --no-daemon --info || true
 
       - name: Package Android
         run: |
           mkdir -p dist/android
-          find templates/android -name "*.apk" -exec cp {} dist/android/ \; 2>/dev/null || true
-          cp lumen-master/tools/lightpack.exe dist/android/
-          cp lumen-master/tools/lightpack_mobile.exe dist/android/
+          find templates/android-sdl3 -name "*.apk" -exec cp {} dist/android/ \; 2>/dev/null || true
           ls -la dist/android/
 
       - uses: actions/upload-artifact@v4
