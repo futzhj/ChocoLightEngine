@@ -231,6 +231,17 @@ endif()
 
 if(CHOCO_IOS)
     target_compile_definitions(Light PRIVATE CHOCO_PLATFORM_IOS=1)
+    # miniaudio 在 iOS 上 include <AVFoundation/AVFoundation.h> (ObjC),
+    # .c 文件无法解析 @class/@protocol, 必须以 ObjC 编译
+    set_source_files_properties(
+        ${CMAKE_CURRENT_SOURCE_DIR}/third_party/miniaudio_impl.c
+        PROPERTIES LANGUAGE OBJC
+    )
+    # stb_impl.c 同理, 虽然不含 ObjC 头但统一处理避免潜在问题
+    set_source_files_properties(
+        ${CMAKE_CURRENT_SOURCE_DIR}/third_party/stb_impl.c
+        PROPERTIES LANGUAGE OBJC
+    )
 endif()
 
 # ==================== 输出配置 ====================
