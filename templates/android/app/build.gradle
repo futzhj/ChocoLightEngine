@@ -5,6 +5,7 @@ plugins {
 android {
     namespace 'com.chocolight.engine'
     compileSdk 34
+    ndkVersion '27.3.13750724'  // Lumen 需要 std::to_chars 浮点支持 (NDK 27+)
 
     defaultConfig {
         applicationId "com.chocolight.engine"
