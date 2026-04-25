@@ -22,7 +22,7 @@ jobs:
       - name: Build Lumen
         run: |
           cd lumen-master
-          cmake -B build -DCMAKE_BUILD_TYPE=Release
+          cmake -B build -DCMAKE_BUILD_TYPE=Release -DLUA_USE_COMPAT=ON
           cmake --build build --config Release --target light lightw lightc
 
       - name: Package Windows Template
@@ -51,7 +51,7 @@ jobs:
       - name: Build Lumen
         run: |
           cd lumen-master
-          cmake -B build -DCMAKE_BUILD_TYPE=Release
+          cmake -B build -DCMAKE_BUILD_TYPE=Release -DLUA_USE_COMPAT=ON
           cmake --build build -j$(nproc)
 
       - name: Package Linux Template
@@ -79,6 +79,7 @@ jobs:
         run: |
           cd lumen-master
           cmake -B build -DCMAKE_BUILD_TYPE=Release \
+                -DLUA_USE_COMPAT=ON \
                 -DCMAKE_OSX_ARCHITECTURES="x86_64;arm64"
           cmake --build build -j$(sysctl -n hw.ncpu)
 
@@ -111,6 +112,7 @@ jobs:
         run: |
           cd lumen-master
           emcmake cmake -B build-web -DCMAKE_BUILD_TYPE=Release \
+            -DLUA_USE_COMPAT=ON \
             -DLUA_SKIP_INSTALL=ON
           cmake --build build-web -j$(nproc) || true
 
@@ -151,6 +153,7 @@ jobs:
             -DANDROID_ABI=arm64-v8a \
             -DANDROID_PLATFORM=android-24 \
             -DCMAKE_BUILD_TYPE=Release \
+            -DLUA_USE_COMPAT=ON \
             -DLUA_SKIP_INSTALL=ON
           cmake --build build-android -j$(nproc) || true
 
@@ -162,6 +165,7 @@ jobs:
             -DANDROID_ABI=armeabi-v7a \
             -DANDROID_PLATFORM=android-24 \
             -DCMAKE_BUILD_TYPE=Release \
+            -DLUA_USE_COMPAT=ON \
             -DLUA_SKIP_INSTALL=ON
           cmake --build build-android-v7a -j$(nproc) || true
 
@@ -193,6 +197,7 @@ jobs:
             -DCMAKE_OSX_ARCHITECTURES=arm64 \
             -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0 \
             -DCMAKE_BUILD_TYPE=Release \
+            -DLUA_USE_COMPAT=ON \
             -DLUA_SKIP_INSTALL=ON
           cmake --build build-ios --config Release -- -quiet || true
 
