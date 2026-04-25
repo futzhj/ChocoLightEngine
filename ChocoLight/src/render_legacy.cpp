@@ -16,7 +16,7 @@
 #include <GL/gl.h>
 #endif
 
-#include <GLFW/glfw3.h>
+#include "platform_window.h"
 
 // ==================== FBO 扩展函数指针 (从 canvas 迁入) ====================
 
@@ -67,8 +67,8 @@ class LegacyGLBackend : public RenderBackend {
     bool fboAvailable = false;
 
     void LoadFBOExtensions() {
-        // 使用 glfwGetProcAddress 跨平台加载 FBO 扩展
-        auto getProc = [](const char* name) { return glfwGetProcAddress(name); };
+        // 使用 PlatformWindow::GetGLProcAddress 跨平台加载 FBO 扩展
+        auto getProc = [](const char* name) { return PlatformWindow::GetGLProcAddress(name); };
         glGenFB   = (PFN_glGenFramebuffers)getProc("glGenFramebuffers");
         glDelFB   = (PFN_glDeleteFramebuffers)getProc("glDeleteFramebuffers");
         glBindFB  = (PFN_glBindFramebuffer)getProc("glBindFramebuffer");

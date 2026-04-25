@@ -32,7 +32,7 @@
 #include "light_audio_backend.h"
 #include <cstring>
 #include <cstdlib>
-#include <GLFW/glfw3.h>  // glfwGetTime (跨平台高精度计时)
+#include "platform_window.h"  // PlatformWindow::GetTime (跨平台高精度计时)
 
 #ifdef _WIN32
 #include <windows.h>
@@ -901,7 +901,7 @@ static int l_Video_Call(lua_State* L) {
     QueryPerformanceFrequency(&ctx->perfFreq);
     QueryPerformanceCounter(&ctx->lastFrameTime);
 #else
-    ctx->lastFrameTimeSec = glfwGetTime();
+    ctx->lastFrameTimeSec = PlatformWindow::GetTime();
 #endif
 
     ctx->playing = true;
@@ -964,7 +964,7 @@ static int l_Video_Update(lua_State* L) {
     QueryPerformanceCounter(&now);
     double elapsed = (double)(now.QuadPart - ctx->lastFrameTime.QuadPart) / ctx->perfFreq.QuadPart;
 #else
-    double nowSec = glfwGetTime();
+    double nowSec = PlatformWindow::GetTime();
     double elapsed = nowSec - ctx->lastFrameTimeSec;
 #endif
     bool needVideoFrame = (elapsed >= ctx->frameDelay);

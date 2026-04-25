@@ -18,10 +18,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install GLFW (vcpkg)
-        run: |
-          vcpkg install glfw3:x64-windows
-
       # Lumen 模板 (light/lightw/lightc + lua51.dll) — 纯 C++17, 无外部依赖
       - name: Build Lumen
         run: |
@@ -29,11 +25,11 @@ jobs:
           cmake -B build -DCMAKE_BUILD_TYPE=Release -DLUA_USE_COMPAT=ON
           cmake --build build --config Release --target light lightw lightc
 
-      # ChocoLight 引擎 (Light.dll) — 依赖 Lumen lua51.lib
+      # ChocoLight 引擎 (Light.dll) — SDL3 通过 FetchContent 自动获取
       - name: Build ChocoLight Engine
         run: |
           cd ChocoLight
-          cmake -B build -DCMAKE_BUILD_TYPE=Release "-DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake"
+          cmake -B build -DCMAKE_BUILD_TYPE=Release
           cmake --build build --config Release
 
       - name: Package Windows Template
@@ -62,7 +58,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential cmake libreadline-dev \
-            libglfw3-dev libgl-dev libuv1-dev xorg-dev
+            libgl-dev xorg-dev libwayland-dev libxkbcommon-dev
 
       - name: Build Lumen
         run: |
@@ -98,9 +94,6 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install Dependencies
-        run: brew install glfw
 
       - name: Build Lumen
         run: |

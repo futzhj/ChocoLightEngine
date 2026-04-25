@@ -108,7 +108,7 @@ public:
 // ==================== 工厂函数 ====================
 
 /// 创建渲染后端: 优先 GL 3.3, 回退 GL 1.x
-/// 必须在 GLFW 窗口和 GL context 创建之后调用
+/// 必须在 PlatformWindow 创建窗口和 GL context 之后调用
 RenderBackend* CreateRenderBackend();
 
 /// 全局渲染后端实例 (在 light_ui.cpp Window.Open 中初始化)

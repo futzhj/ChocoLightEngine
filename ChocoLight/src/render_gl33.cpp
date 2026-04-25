@@ -7,7 +7,7 @@
 #include "render_backend.h"
 #include "light.h"
 #include <glad/gl.h>
-#include <GLFW/glfw3.h>
+#include "platform_window.h"
 #include <vector>
 #include <cstring>
 
@@ -401,8 +401,8 @@ RenderBackend* CreateGL33Backend() {
 extern RenderBackend* CreateLegacyBackend();
 
 RenderBackend* CreateRenderBackend() {
-    // 先尝试 GL 3.3 Core (glad 已在 GLFW context 创建后加载)
-    if (gladLoadGL((GLADloadfunc)glfwGetProcAddress)) {
+    // 先尝试 GL 3.3 Core (glad 在 GL context 创建后加载)
+    if (gladLoadGL((GLADloadfunc)PlatformWindow::GetGLProcAddress)) {
         // 检查实际版本是否 >= 3.3
         if (GLAD_GL_VERSION_3_3) {
             RenderBackend* gl33 = CreateGL33Backend();

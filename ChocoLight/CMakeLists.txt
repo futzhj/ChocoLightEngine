@@ -1,8 +1,34 @@
-cmake_minimum_required(VERSION 3.16)
+cmake_minimum_required(VERSION 3.20)
 project(ChocoLight LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# ==================== SDL3 (FetchContent) ====================
+# 从官方仓库拉取源码编译, 锁定稳定版 release-3.2.0
+# 静态链接到 Light.dll/so/dylib, 避免运行时动态库依赖
+
+include(FetchContent)
+
+# SDL3 编译选项: 只要 video+events+gl, 不要 audio (我们用 miniaudio)/test/examples
+set(SDL_SHARED        OFF CACHE BOOL "" FORCE)
+set(SDL_STATIC        ON  CACHE BOOL "" FORCE)
+set(SDL_TEST_LIBRARY  OFF CACHE BOOL "" FORCE)
+set(SDL_TESTS         OFF CACHE BOOL "" FORCE)
+set(SDL_INSTALL_TESTS OFF CACHE BOOL "" FORCE)
+set(SDL_AUDIO         OFF CACHE BOOL "" FORCE)
+set(SDL_RENDER        OFF CACHE BOOL "" FORCE)  # 我们不用 SDL_Renderer (用 GL)
+set(SDL_GPU           OFF CACHE BOOL "" FORCE)  # M1 不用 SDL_GPU
+
+FetchContent_Declare(
+    SDL3
+    GIT_REPOSITORY https://github.com/libsdl-org/SDL.git
+    GIT_TAG        release-3.2.0
+    GIT_SHALLOW    TRUE
+)
+FetchContent_MakeAvailable(SDL3)
+
+message(STATUS "SDL3: integrated via FetchContent (release-3.2.0)")
 
 # ==================== 路径配置 ====================
 
@@ -40,24 +66,6 @@ if(NOT DEFINED LUMEN_LIB_PATH)
 endif()
 message(STATUS "Lumen lib: ${LUMEN_LIB_PATH}")
 
-# ==================== GLFW3 ====================
-
-# 优先通过 find_package 查找 (vcpkg / 系统包管理器)
-# 回退到 third_party 预编译库 (仅 Windows 本地开发)
-find_package(glfw3 3.3 QUIET)
-if(glfw3_FOUND)
-    message(STATUS "GLFW3: found via find_package")
-    set(GLFW_INCLUDE_DIR "")
-    set(GLFW_LIB glfw)
-elseif(WIN32 AND EXISTS "${CMAKE_SOURCE_DIR}/third_party/glfw/glfw3.lib")
-    message(STATUS "GLFW3: using prebuilt third_party/glfw/glfw3.lib")
-    set(GLFW_DIR "${CMAKE_SOURCE_DIR}/third_party/glfw")
-    set(GLFW_INCLUDE_DIR "${GLFW_DIR}/include")
-    set(GLFW_LIB "${GLFW_DIR}/glfw3.lib")
-else()
-    message(FATAL_ERROR "GLFW3 not found. Install via: vcpkg install glfw3 / apt install libglfw3-dev / brew install glfw")
-endif()
-
 # ==================== 源文件 ====================
 
 add_library(Light SHARED
@@ -77,6 +85,8 @@ add_library(Light SHARED
     src/light_record.cpp
     src/light_plugins.cpp
     src/light_antidebug.cpp
+    # 平台窗口/事件抽象层 (SDL3)
+    src/platform_window_sdl3.cpp
     # 渲染后端抽象层
     src/render_backend.cpp
     src/render_legacy.cpp
@@ -106,17 +116,12 @@ target_include_directories(Light PRIVATE
     ${CMAKE_SOURCE_DIR}/third_party/libuv/include
 )
 
-# Windows: 额外包含 GLFW 预编译头
-if(WIN32 AND GLFW_INCLUDE_DIR)
-    target_include_directories(Light PRIVATE ${GLFW_INCLUDE_DIR})
-endif()
-
 # ==================== 链接库 ====================
 
-# 核心库: Lumen + GLFW + libuv
+# 核心库: Lumen + SDL3 + libuv
 target_link_libraries(Light PRIVATE
     ${LUMEN_LIB_PATH}
-    ${GLFW_LIB}
+    SDL3::SDL3-static
     uv_a
 )
 
