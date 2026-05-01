@@ -168,6 +168,18 @@ LIGHT_API int luaopen_Light_Physics(lua_State* L);
 LIGHT_API int luaopen_Light_Physics_World(lua_State* L);
 LIGHT_API int luaopen_Light_ECS(lua_State* L);
 
+// 场景管理器 (Phase 3)
+LIGHT_API int luaopen_Light_Scene(lua_State* L);
+
+// 精灵动画 (Phase 3)
+LIGHT_API int luaopen_Light_Graphics_SpriteAnimation(lua_State* L);
+
+// 资源热重载 (Phase 3)
+LIGHT_API int luaopen_Light_HotReload(lua_State* L);
+
+// UI 控件库 (Phase 3)
+LIGHT_API int luaopen_Light_UI_Widget(lua_State* L);
+
 // 录制模块
 LIGHT_API int luaopen_Light_Record(lua_State* L);
 

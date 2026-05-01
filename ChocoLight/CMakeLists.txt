@@ -124,6 +124,10 @@ set(LIGHT_SOURCES
     ${CHOCO_SRC}/light_particles.cpp
     ${CHOCO_SRC}/light_tilemap.cpp
     ${CHOCO_SRC}/light_ecs.cpp
+    ${CHOCO_SRC}/light_scene.cpp
+    ${CHOCO_SRC}/light_graphics_spriteanimation.cpp
+    ${CHOCO_SRC}/light_hotreload.cpp
+    ${CHOCO_SRC}/light_ui_widget.cpp
     ${CHOCO_SRC}/light_antidebug.cpp
     ${CHOCO_SRC}/platform_window_sdl3.cpp
     ${CHOCO_SRC}/render_backend.cpp
