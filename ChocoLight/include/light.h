@@ -183,6 +183,9 @@ LIGHT_API int luaopen_Light_HotReload(lua_State* L);
 // UI 控件库 (Phase 3)
 LIGHT_API int luaopen_Light_UI_Widget(lua_State* L);
 
+// 加密模块 (Phase 3)
+LIGHT_API int luaopen_Light_Crypto(lua_State* L);
+
 // 录制模块
 LIGHT_API int luaopen_Light_Record(lua_State* L);
 

@@ -102,11 +102,9 @@ graph TD
 
 | 不足 | 影响 | 改进方向 |
 |------|------|----------|
-| Box2D 不支持 Android | MuMu x86_64 翻译层不兼容 | Box2D v2 或 Chipmunk2D |
-| 无 Shader 用户 API | 开发者不能自定义 Shader | 暴露 Shader 编译/绑定接口 |
-| 无精灵动画系统 | 帧动画需手动管理 | SpriteAnimation 模块 |
-| 无 UI 控件库 | 按钮/文本框等需自行实现 | imgui 风格 UI 或 Lua UI 框架 |
-| 无资源热重载 | 修改资源需重启 | 文件监视 + 自动重载 |
+| Android 物理后端缺口 | MuMu x86_64 翻译层不兼容 Box2D v3 | Box2D v2 或 Chipmunk2D |
+| 缺少文本输入控件 | 表单/编辑器能力不足 | TextInput + IME 适配 |
+| 缺少高级音频能力 | 空间音频/混音控制有限 | Audio Mixer + 3D Sound |
 
 ---
 
@@ -251,17 +249,17 @@ graph TD
 
 ### Phase 3: 进阶功能 (当前阶段)
 - [ ] Box2D Android 适配 (v2 或 Chipmunk2D)
-- [ ] 用户 Shader API (编译/绑定/Uniform)
-- [ ] 精灵动画系统 (SpriteAnimation)
-- [ ] UI 控件库 (Button/Label/TextInput)
-- [ ] 资源热重载
-- [ ] 场景管理器 (Scene Stack)
+- [x] 用户 Shader API (编译/绑定/Uniform)
+- [x] 精灵动画系统 (SpriteAnimation)
+- [x] UI 控件库 (Button/Label/Panel/CheckBox)
+- [x] 资源热重载
+- [x] 场景管理器 (Scene Stack)
+- [x] AES-256-CBC / SHA-256 / MD5 / Base64 加密模块
 
 ### Phase 4: 高级特性 (长期)
 - [ ] Lumen JIT 编译器
 - [ ] Vulkan / Metal 渲染后端
-- [ ] 可视化编辑器
-- [ ] AES-256 加密替代 XOR
+- [x] 可视化编辑器 Demo
 - [ ] 音频空间化 (3D Sound)
 - [ ] 网络同步框架 (Lockstep / State Sync)
 

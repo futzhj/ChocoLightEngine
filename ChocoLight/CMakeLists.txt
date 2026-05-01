@@ -129,6 +129,7 @@ set(LIGHT_SOURCES
     ${CHOCO_SRC}/light_graphics_shader.cpp
     ${CHOCO_SRC}/light_hotreload.cpp
     ${CHOCO_SRC}/light_ui_widget.cpp
+    ${CHOCO_SRC}/light_crypto.cpp
     ${CHOCO_SRC}/light_antidebug.cpp
     ${CHOCO_SRC}/platform_window_sdl3.cpp
     ${CHOCO_SRC}/render_backend.cpp
@@ -138,6 +139,8 @@ set(LIGHT_SOURCES
     ${SQLITE3_DIR}/sqlite3.c
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/stb_impl.c
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/miniaudio_impl.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/tiny_aes.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/tiny_hash.c
 )
 
 # 平台条件源文件

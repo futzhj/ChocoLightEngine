@@ -162,6 +162,13 @@ int main(int argc, char* argv[]) {
     luaopen_Light_Graphics_Tilemap(L); lua_pop(L, 1);
     LOGI("[DIAG] Phase2: ECS...");
     luaopen_Light_ECS(L); lua_pop(L, 1);
+    LOGI("[DIAG] Phase3: Scene/SpriteAnimation/Shader/HotReload/UI.Widget/Crypto...");
+    luaopen_Light_Scene(L); lua_pop(L, 1);
+    luaopen_Light_Graphics_SpriteAnimation(L); lua_pop(L, 1);
+    luaopen_Light_Graphics_Shader(L); lua_pop(L, 1);
+    luaopen_Light_HotReload(L); lua_pop(L, 1);
+    luaopen_Light_UI_Widget(L); lua_pop(L, 1);
+    luaopen_Light_Crypto(L); lua_pop(L, 1);
     luaopen_Light_Record(L); lua_pop(L, 1);
     luaopen_Light_Plugins(L); lua_pop(L, 1);
     luaopen_Light_Plugins_WDFData(L); lua_pop(L, 1);

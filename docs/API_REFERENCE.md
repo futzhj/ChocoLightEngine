@@ -2,8 +2,8 @@
 
 > 自动从源代码 `/// @lua_api` 注释生成
 
-**API 总数**: 83
-**模块数**: 15
+**API 总数**: 94
+**模块数**: 16
 
 ## 模块目录
 
@@ -11,6 +11,7 @@
 - [Light.AV.Audio](#lightavaudio) (1 个 API)
 - [Light.AV.AudioData](#lightavaudiodata) (6 个 API)
 - [Light.AV.Video](#lightavvideo) (7 个 API)
+- [Light.Crypto](#lightcrypto) (11 个 API)
 - [Light.DB.SQLite](#lightdbsqlite) (5 个 API)
 - [Light.Graphics](#lightgraphics) (23 个 API)
 - [Light.Graphics.Canvas](#lightgraphicscanvas) (1 个 API)
@@ -278,6 +279,231 @@ Light.AV.Play(audio)
 - `void`
 
 <sub>📄 `light_av.cpp:522`</sub>
+
+---
+
+## Light.Crypto
+
+> 共 11 个 API
+
+**函数列表:**
+
+- [`AES256_Decrypt`](#lightcryptoaes256_decrypt) — AES-256-CBC 解密
+- [`AES256_Encrypt`](#lightcryptoaes256_encrypt) — AES-256-CBC 加密 (PKCS7 填充)
+- [`Base64Decode`](#lightcryptobase64decode) — Base64 解码
+- [`Base64Encode`](#lightcryptobase64encode) — Base64 编码
+- [`KeyFromPassword`](#lightcryptokeyfrompassword) — 从密码派生固定长度密钥 (简化 PBKDF: 多轮 SHA-256 链)
+- [`MD5`](#lightcryptomd5) — 计算 MD5 哈希 (hex 字符串)
+- [`MD5_Raw`](#lightcryptomd5_raw) — 计算 MD5 哈希 (原始 16 字节)
+- [`RandomBytes`](#lightcryptorandombytes) — 生成密码学随机字节
+- [`RandomHex`](#lightcryptorandomhex) — 生成随机 hex 字符串
+- [`SHA256`](#lightcryptosha256) — 计算 SHA-256 哈希 (hex 字符串)
+- [`SHA256_Raw`](#lightcryptosha256_raw) — 计算 SHA-256 哈希 (原始 32 字节)
+
+---
+
+### `Light.Crypto.AES256_Decrypt`
+
+**AES-256-CBC 解密**
+
+**参数:**
+
+| 名称 | 类型 | 描述 | 必需 |
+|------|------|------|------|
+| `ciphertext` | `string` | 密文 | 是 |
+| `key` | `string` | 32 字节密钥 | 是 |
+| `iv` | `string` | 16 字节初始向量 | 是 |
+
+**返回:**
+
+- `string` — 明文 (失败返回 nil + 错误信息)
+
+<sub>📄 `light_crypto.cpp:198`</sub>
+
+---
+
+### `Light.Crypto.AES256_Encrypt`
+
+**AES-256-CBC 加密 (PKCS7 填充)**
+
+**参数:**
+
+| 名称 | 类型 | 描述 | 必需 |
+|------|------|------|------|
+| `plaintext` | `string` | 明文 | 是 |
+| `key` | `string` | 32 字节密钥 | 是 |
+| `iv` | `string` | 16 字节初始向量 | 是 |
+
+**返回:**
+
+- `string` — 密文
+
+<sub>📄 `light_crypto.cpp:161`</sub>
+
+---
+
+### `Light.Crypto.Base64Decode`
+
+**Base64 解码**
+
+**参数:**
+
+| 名称 | 类型 | 描述 | 必需 |
+|------|------|------|------|
+| `b64` | `string` | Base64 字符串 | 是 |
+
+**返回:**
+
+- `string` — 原始字节 (失败返回 nil)
+
+<sub>📄 `light_crypto.cpp:260`</sub>
+
+---
+
+### `Light.Crypto.Base64Encode`
+
+**Base64 编码**
+
+**参数:**
+
+| 名称 | 类型 | 描述 | 必需 |
+|------|------|------|------|
+| `data` | `string` | 输入字节 | 是 |
+
+**返回:**
+
+- `string` — Base64 字符串
+
+<sub>📄 `light_crypto.cpp:247`</sub>
+
+---
+
+### `Light.Crypto.KeyFromPassword`
+
+**从密码派生固定长度密钥 (简化 PBKDF: 多轮 SHA-256 链)**
+
+**参数:**
+
+| 名称 | 类型 | 描述 | 必需 |
+|------|------|------|------|
+| `password` | `string` | 密码 | 是 |
+| `salt` | `string` | 盐值 (避免彩虹表) | 是 |
+| `keyLen` | `number` | 输出密钥长度 (1~64) | 是 |
+| `iterations` | `number?` | 迭代次数 (默认 10000) | 是 |
+
+**返回:**
+
+- `string` — 派生密钥
+
+<sub>📄 `light_crypto.cpp:317`</sub>
+
+---
+
+### `Light.Crypto.MD5`
+
+**计算 MD5 哈希 (hex 字符串)**
+
+**参数:**
+
+| 名称 | 类型 | 描述 | 必需 |
+|------|------|------|------|
+| `data` | `string` | 输入数据 | 是 |
+
+**返回:**
+
+- `string` — 32 字符 hex 字符串
+
+<sub>📄 `light_crypto.cpp:132`</sub>
+
+---
+
+### `Light.Crypto.MD5_Raw`
+
+**计算 MD5 哈希 (原始 16 字节)**
+
+**参数:**
+
+| 名称 | 类型 | 描述 | 必需 |
+|------|------|------|------|
+| `data` | `string` | 输入数据 | 是 |
+
+**返回:**
+
+- `string` — 16 字节二进制
+
+<sub>📄 `light_crypto.cpp:146`</sub>
+
+---
+
+### `Light.Crypto.RandomBytes`
+
+**生成密码学随机字节**
+
+**参数:**
+
+| 名称 | 类型 | 描述 | 必需 |
+|------|------|------|------|
+| `n` | `number` | 字节数 (1~4096) | 是 |
+
+**返回:**
+
+- `string` — 随机字节
+
+<sub>📄 `light_crypto.cpp:280`</sub>
+
+---
+
+### `Light.Crypto.RandomHex`
+
+**生成随机 hex 字符串**
+
+**参数:**
+
+| 名称 | 类型 | 描述 | 必需 |
+|------|------|------|------|
+| `n` | `number` | 字节数 (输出长度 = n*2) | 是 |
+
+**返回:**
+
+- `string` — hex 字符串
+
+<sub>📄 `light_crypto.cpp:297`</sub>
+
+---
+
+### `Light.Crypto.SHA256`
+
+**计算 SHA-256 哈希 (hex 字符串)**
+
+**参数:**
+
+| 名称 | 类型 | 描述 | 必需 |
+|------|------|------|------|
+| `data` | `string` | 输入数据 | 是 |
+
+**返回:**
+
+- `string` — 64 字符 hex 字符串
+
+<sub>📄 `light_crypto.cpp:105`</sub>
+
+---
+
+### `Light.Crypto.SHA256_Raw`
+
+**计算 SHA-256 哈希 (原始 32 字节)**
+
+**参数:**
+
+| 名称 | 类型 | 描述 | 必需 |
+|------|------|------|------|
+| `data` | `string` | 输入数据 | 是 |
+
+**返回:**
+
+- `string` — 32 字节二进制
+
+<sub>📄 `light_crypto.cpp:119`</sub>
 
 ---
 
