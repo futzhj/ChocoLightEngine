@@ -103,6 +103,24 @@ public:
 
     // ---- 裁剪 ----
     virtual void SetScissor(bool enable, int x, int y, int w, int h) = 0;
+
+    // ---- 用户 Shader (GL33 支持, Legacy 默认不支持) ----
+    virtual bool SupportsShaders() const { return false; }
+    /// 编译链接顶点+片段着色器, 返回 shader program ID (0 = 失败)
+    virtual uint32_t CreateShader(const char* vertexSrc, const char* fragmentSrc,
+                                  char* errLog, int errLogSize) { return 0; }
+    virtual void DeleteShader(uint32_t shaderId) {}
+    /// 激活用户 shader, false = 切回默认 shader
+    virtual bool UseShader(uint32_t shaderId) { return false; }
+    virtual void UseDefaultShader() {}
+    virtual int  GetUniformLocation(uint32_t shaderId, const char* name) { return -1; }
+    // Uniform 设置 (作用于当前激活的 shader)
+    virtual void SetUniform1f(int loc, float v) {}
+    virtual void SetUniform2f(int loc, float x, float y) {}
+    virtual void SetUniform3f(int loc, float x, float y, float z) {}
+    virtual void SetUniform4f(int loc, float x, float y, float z, float w) {}
+    virtual void SetUniform1i(int loc, int v) {}
+    virtual void SetUniformMat4(int loc, const float* m) {}
 };
 
 // ==================== 工厂函数 ====================

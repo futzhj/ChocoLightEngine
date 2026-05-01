@@ -488,6 +488,103 @@ public:
             glDisable(GL_SCISSOR_TEST);
         }
     }
+
+    // ---- 用户 Shader 支持 ----
+    bool SupportsShaders() const override { return true; }
+
+    uint32_t CreateShader(const char* vertexSrc, const char* fragmentSrc,
+                          char* errLog, int errLogSize) override {
+        if (!vertexSrc || !fragmentSrc) return 0;
+
+        auto tryCompile = [&](GLenum type, const char* src) -> GLuint {
+            GLuint s = glCreateShader(type);
+            glShaderSource(s, 1, &src, nullptr);
+            glCompileShader(s);
+            GLint ok = 0;
+            glGetShaderiv(s, GL_COMPILE_STATUS, &ok);
+            if (!ok) {
+                if (errLog && errLogSize > 0) {
+                    glGetShaderInfoLog(s, errLogSize - 1, nullptr, errLog);
+                    errLog[errLogSize - 1] = '\0';
+                }
+                glDeleteShader(s);
+                return 0;
+            }
+            return s;
+        };
+
+        GLuint vs = tryCompile(GL_VERTEX_SHADER, vertexSrc);
+        if (!vs) return 0;
+        GLuint fs = tryCompile(GL_FRAGMENT_SHADER, fragmentSrc);
+        if (!fs) { glDeleteShader(vs); return 0; }
+
+        GLuint p = glCreateProgram();
+        glAttachShader(p, vs);
+        glAttachShader(p, fs);
+        // 绑定默认属性位置, 让用户 shader 复用引擎的 VAO
+        glBindAttribLocation(p, 0, "aPos");
+        glBindAttribLocation(p, 1, "aTexCoord");
+        glBindAttribLocation(p, 2, "aColor");
+        glLinkProgram(p);
+        GLint ok = 0;
+        glGetProgramiv(p, GL_LINK_STATUS, &ok);
+        glDeleteShader(vs);
+        glDeleteShader(fs);
+        if (!ok) {
+            if (errLog && errLogSize > 0) {
+                glGetProgramInfoLog(p, errLogSize - 1, nullptr, errLog);
+                errLog[errLogSize - 1] = '\0';
+            }
+            glDeleteProgram(p);
+            return 0;
+        }
+        return (uint32_t)p;
+    }
+
+    void DeleteShader(uint32_t shaderId) override {
+        if (shaderId) glDeleteProgram((GLuint)shaderId);
+    }
+
+    bool UseShader(uint32_t shaderId) override {
+        if (!shaderId) return false;
+        glUseProgram((GLuint)shaderId);
+        // 自动上传 MVP 到约定名 uMVP (若存在)
+        GLint locMVPUser = glGetUniformLocation((GLuint)shaderId, "uMVP");
+        if (locMVPUser >= 0) {
+            Mat4 mvp = projection * modelview;
+            glUniformMatrix4fv(locMVPUser, 1, GL_FALSE, mvp.m);
+        }
+        return true;
+    }
+
+    void UseDefaultShader() override {
+        glUseProgram(program);
+        FlushMVP();
+    }
+
+    int GetUniformLocation(uint32_t shaderId, const char* name) override {
+        if (!shaderId || !name) return -1;
+        return glGetUniformLocation((GLuint)shaderId, name);
+    }
+
+    void SetUniform1f(int loc, float v) override {
+        if (loc >= 0) glUniform1f(loc, v);
+    }
+    void SetUniform2f(int loc, float x, float y) override {
+        if (loc >= 0) glUniform2f(loc, x, y);
+    }
+    void SetUniform3f(int loc, float x, float y, float z) override {
+        if (loc >= 0) glUniform3f(loc, x, y, z);
+    }
+    void SetUniform4f(int loc, float x, float y, float z, float w) override {
+        if (loc >= 0) glUniform4f(loc, x, y, z, w);
+    }
+    void SetUniform1i(int loc, int v) override {
+        if (loc >= 0) glUniform1i(loc, v);
+    }
+    void SetUniformMat4(int loc, const float* m) override {
+        if (loc >= 0 && m) glUniformMatrix4fv(loc, 1, GL_FALSE, m);
+    }
 };
 
 // ==================== GL33Backend 工厂 ====================

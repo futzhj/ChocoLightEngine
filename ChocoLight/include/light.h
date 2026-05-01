@@ -174,6 +174,9 @@ LIGHT_API int luaopen_Light_Scene(lua_State* L);
 // 精灵动画 (Phase 3)
 LIGHT_API int luaopen_Light_Graphics_SpriteAnimation(lua_State* L);
 
+// 用户 Shader (Phase 3)
+LIGHT_API int luaopen_Light_Graphics_Shader(lua_State* L);
+
 // 资源热重载 (Phase 3)
 LIGHT_API int luaopen_Light_HotReload(lua_State* L);
 

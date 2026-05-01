@@ -126,6 +126,7 @@ set(LIGHT_SOURCES
     ${CHOCO_SRC}/light_ecs.cpp
     ${CHOCO_SRC}/light_scene.cpp
     ${CHOCO_SRC}/light_graphics_spriteanimation.cpp
+    ${CHOCO_SRC}/light_graphics_shader.cpp
     ${CHOCO_SRC}/light_hotreload.cpp
     ${CHOCO_SRC}/light_ui_widget.cpp
     ${CHOCO_SRC}/light_antidebug.cpp
