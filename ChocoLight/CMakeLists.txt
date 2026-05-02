@@ -43,22 +43,15 @@ FetchContent_MakeAvailable(SDL3)
 
 message(STATUS "SDL3: integrated via FetchContent (release-3.2.0)")
 
-# ==================== Box2D v3 (FetchContent, 非 Android) ====================
-if(NOT ANDROID)
-    set(BOX2D_SAMPLES   OFF CACHE BOOL "" FORCE)
-    set(BOX2D_UNIT_TESTS OFF CACHE BOOL "" FORCE)
-    set(BOX2D_BENCHMARKS OFF CACHE BOOL "" FORCE)
-
-    FetchContent_Declare(
-        box2d
-        GIT_REPOSITORY https://github.com/erincatto/box2d.git
-        GIT_TAG        v3.0.0
-        GIT_SHALLOW    TRUE
-    )
-    FetchContent_MakeAvailable(box2d)
-    message(STATUS "Box2D: integrated via FetchContent (v3.0.0)")
+# ==================== Box2D v2.4.1 (vendored, non-Web) ====================
+if(NOT EMSCRIPTEN)
+    set(BOX2D_BUILD_TESTBED OFF CACHE BOOL "" FORCE)
+    set(BOX2D_BUILD_UNIT_TESTS OFF CACHE BOOL "" FORCE)
+    set(BOX2D_BUILD_DOCS OFF CACHE BOOL "" FORCE)
+    add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/third_party/box2d ${CMAKE_CURRENT_BINARY_DIR}/box2d EXCLUDE_FROM_ALL)
+    message(STATUS "Box2D: integrated via vendored source (v2.4.1)")
 else()
-    message(STATUS "Box2D: SKIPPED on Android (MuMu GPU compat)")
+    message(STATUS "Box2D: disabled on Web; Physics exports stubbed")
 endif()
 
 # ==================== 路径配置 ====================
@@ -175,10 +168,8 @@ endif()
 # light_input.cpp 内部用 #ifdef __ANDROID__ 提供空壳, 可全平台编译
 list(APPEND LIGHT_SOURCES ${CHOCO_SRC}/light_input.cpp)
 
-# Physics 源文件 (非 Android, 需要 Box2D)
-if(NOT ANDROID)
-    list(APPEND LIGHT_SOURCES ${CHOCO_SRC}/light_physics.cpp)
-endif()
+# Physics 源文件: 非 Web 使用 Box2D, Web 保留导出空壳
+list(APPEND LIGHT_SOURCES ${CHOCO_SRC}/light_physics.cpp)
 
 # Emscripten/Android: STATIC 库 (链接到最终二进制)
 # 桌面: SHARED 库 (Light.dll/so/dylib)
@@ -267,11 +258,12 @@ elseif(NOT EMSCRIPTEN AND NOT ANDROID AND NOT CHOCO_IOS)
     )
 endif()
 
-# Box2D (非 Android)
-if(NOT ANDROID)
+# Box2D: desktop/mobile enabled, Web stubbed
+if(NOT EMSCRIPTEN)
     target_link_libraries(Light PRIVATE box2d)
-    target_include_directories(Light PRIVATE ${box2d_SOURCE_DIR}/include)
     target_compile_definitions(Light PRIVATE CHOCO_HAS_BOX2D=1)
+else()
+    target_compile_definitions(Light PRIVATE CHOCO_HAS_BOX2D=0)
 endif()
 
 # ==================== 编译定义 ====================
