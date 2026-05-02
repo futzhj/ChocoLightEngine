@@ -122,25 +122,25 @@ def generate_module_doc(module_name: str, apis: list) -> str:
             lines.append(f"{info['brief']}\n")
 
         if info["params"]:
-            lines.append("### 参数\n")
-            lines.append("| 名称 | 类型 | 说明 |")
+            lines.append("### \u53c2\u6570\n")
+            lines.append("| \u540d\u79f0 | \u7c7b\u578b | \u8bf4\u660e |")
             lines.append("|------|------|------|")
             for p in info["params"]:
                 lines.append(f"| `{p['name']}` | `{p['type']}` | {p['desc']} |")
             lines.append("")
 
         if info["returns"]:
-            lines.append(f"### 返回值\n\n`{info['returns']}`\n")
+            lines.append(f"### \u8fd4\u56de\u503c\n\n`{info['returns']}`\n")
 
         if info["example"]:
-            lines.append("### 示例\n")
+            lines.append("### \u793a\u4f8b\n")
             lines.append("```lua")
             for el in info["example"]:
                 lines.append(el)
             lines.append("```\n")
 
         if info["notes"]:
-            lines.append("### 备注\n")
+            lines.append("### \u5907\u6ce8\n")
             for n in info["notes"]:
                 lines.append(f"- {n}")
             lines.append("")
@@ -166,7 +166,7 @@ def main():
 
     if not all_apis:
         print("Warning: no @lua_api blocks found. Add annotations to generate docs.")
-        print("See docs/引擎升级/API_ANNOTATION_SPEC.md for annotation format.")
+        print("See docs/\u5f15\u64ce\u5347\u7ea7/API_ANNOTATION_SPEC.md for annotation format.")
         sys.exit(0)
 
     # 按模块分组 (取 api_name 的前两段: Light.Graphics.Draw → Light.Graphics)
@@ -180,7 +180,7 @@ def main():
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
     # 生成各模块文档
-    index_lines = ["# ChocoLight Lua API 文档\n", "## 模块列表\n"]
+    index_lines = ["# ChocoLight Lua API \u6587\u6863\n", "## \u6a21\u5757\u5217\u8868\n"]
 
     for module_name in sorted(modules.keys()):
         apis = modules[module_name]
@@ -191,7 +191,7 @@ def main():
         with open(out_path, "w", encoding="utf-8") as f:
             f.write(doc)
 
-        index_lines.append(f"- [{module_name}]({safe_name}.md) ({len(apis)} 个函数)")
+        index_lines.append(f"- [{module_name}]({safe_name}.md) ({len(apis)} \u4e2a\u51fd\u6570)")
         print(f"  Generated: {out_path.relative_to(PROJECT_ROOT)} ({len(apis)} APIs)")
 
     # 生成索引
@@ -199,7 +199,7 @@ def main():
     with open(index_path, "w", encoding="utf-8") as f:
         f.write("\n".join(index_lines) + "\n")
 
-    print(f"\nDone: {len(all_apis)} APIs across {len(modules)} modules → {OUTPUT_DIR.relative_to(PROJECT_ROOT)}/")
+    print(f"\nDone: {len(all_apis)} APIs across {len(modules)} modules -> {OUTPUT_DIR.relative_to(PROJECT_ROOT)}/")
 
 
 if __name__ == "__main__":

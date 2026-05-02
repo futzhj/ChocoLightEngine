@@ -9,7 +9,7 @@ graph TD
     T4[T4: 粒子系统 C++ 核心] --> T5[T5: Light.Graphics.Particles Lua 绑定]
     T6[T6: tinyxml2 集成] --> T7[T7: Tilemap C++ 核心]
     T7 --> T8[T8: Light.Graphics.Tilemap Lua 绑定]
-    T9[T9: Box2D FetchContent] --> T10[T10: Light.Physics Lua 绑定]
+    T9[T9: Box2D v2.4.1 vendored source] --> T10[T10: Light.Physics Lua 绑定]
     T11[T11: Light.ECS 纯 Lua]
     T3 --> T12[T12: 全平台 CI 验证]
     T5 --> T12
@@ -76,10 +76,10 @@ graph TD
 **输出**: `luaopen_Light_Graphics_Tilemap` + Lua API
 **验收**: Lua 加载 tmx 文件并绘制
 
-## T9: Box2D v3.x FetchContent
+## T9: Box2D v2.4.1 vendored source
 
 **输入**: 无
-**输出**: CMakeLists.txt Box2D 集成
+**输出**: `third_party/box2d` vendored source + CMake integration
 **验收**: Box2D 静态库编译通过 (全平台)
 
 ## T10: Light.Physics Lua 绑定

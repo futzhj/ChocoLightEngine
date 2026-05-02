@@ -32,7 +32,7 @@ graph TD
     C --> H[FFmpeg / miniaudio]
     C --> I[SQLite3]
     C --> J[libuv / POSIX socket]
-    C --> K[Box2D v3]
+    C --> K[Box2D v2.4.1]
     
     style A fill:#4CAF50,color:#fff
     style B fill:#2196F3,color:#fff
@@ -79,7 +79,7 @@ graph TD
 | **多层安全** | 反调试 + 脚本加密 + opcode 混淆 |
 | **游戏格式** | WDF/WAS/NEM 格式原生支持 |
 | 🆕 **现代渲染** | GL 3.3 Core + GLES 3.0 Shader 管线 |
-| 🆕 **物理引擎** | Box2D v3 集成 (桌面平台) |
+| 🆕 **物理引擎** | Box2D v2.4.1 集成 (桌面/移动平台) |
 | 🆕 **ECS 架构** | 轻量实体组件系统 |
 | 🆕 **粒子系统** | GPU 友好的 2D 粒子发射器 |
 | 🆕 **输入管理器** | 键盘/鼠标/触摸/手柄统一输入 |
@@ -90,7 +90,7 @@ graph TD
 | 原不足 | 解决方案 | 状态 |
 |--------|---------|:----:|
 | OpenGL 1.x 固定管线 | GL 3.3 Core + ES 3.0 + Legacy 回退 | ✅ |
-| 无物理引擎 | Box2D v3 集成 (桌面) | ✅ |
+| 无物理引擎 | Box2D v2.4.1 集成 (桌面/移动) | ✅ |
 | 无 ECS | 轻量 ECS 实现 | ✅ |
 | 音频仅 PlaySound | miniaudio 跨平台音频后端 | ✅ |
 | 网络仅 WinSock | libuv (桌面) + POSIX socket (移动端) | ✅ |
@@ -102,7 +102,7 @@ graph TD
 
 | 不足 | 影响 | 改进方向 |
 |------|------|----------|
-| Android 物理后端缺口 | MuMu x86_64 翻译层不兼容 Box2D v3 | Box2D v2 或 Chipmunk2D |
+| Android 物理后端缺口 | 已切换 vendored Box2D v2.4.1 | Android/iOS 默认启用 Physics |
 | 缺少文本输入控件 | 表单/编辑器能力不足 | TextInput + IME 适配 |
 | 缺少高级音频能力 | 空间音频/混音控制有限 | Audio Mixer + 3D Sound |
 
@@ -149,11 +149,11 @@ graph TD
 
 ### 4.4 物理引擎 (v0.3 新增)
 
-> Box2D v3.0 | 桌面平台
+> Box2D v2.4.1 | 桌面 + Android/iOS
 
 - `Light.Physics` 模块 — World/Body/Shape/Joint 完整 API
 - 碰撞检测 + 刚体模拟
-- Android 暂不支持 (Box2D v3 CPU 限制)
+- Android/iOS 通过 vendored Box2D v2.4.1 启用
 
 ### 4.5 ECS (v0.3 新增)
 
@@ -196,7 +196,7 @@ Build: Gradle + CMake + NDK (minSdk 28, ABI: arm64-v8a + x86_64)
 
 | 限制 | 原因 | 影响 |
 |------|------|------|
-| Box2D 未编译 | v3 不支持 x86_64 翻译层 | 物理模块不可用 |
+| Box2D 未编译 | 已切换 v2.4.1 vendored 源码 | 需要 Android/iOS CI 继续验证 |
 | Input 为精简版 | .so 段布局触发 MuMu 崩溃 | 无手柄/动作映射 |
 | FFmpeg 不可用 | 动态库加载路径不同 | 视频用 MediaPlayer 替代 |
 
@@ -240,7 +240,7 @@ graph TD
 - [x] API 参考文档生成
 
 ### Phase 2: 游戏能力 ✅ 已完成
-- [x] Box2D v3 物理引擎 (桌面)
+- [x] Box2D v2.4.1 物理引擎 (桌面/移动)
 - [x] ECS 实体组件系统
 - [x] 粒子系统
 - [x] Tilemap 瓦片地图
@@ -248,7 +248,7 @@ graph TD
 - [x] Android APK 构建 + 真机验证
 
 ### Phase 3: 进阶功能 (当前阶段)
-- [ ] Box2D Android 适配 (v2 或 Chipmunk2D)
+- [x] Box2D Android 适配 (vendored Box2D v2.4.1)
 - [x] 用户 Shader API (编译/绑定/Uniform)
 - [x] 精灵动画系统 (SpriteAnimation)
 - [x] UI 控件库 (Button/Label/Panel/CheckBox)

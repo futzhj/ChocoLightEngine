@@ -223,21 +223,33 @@ void PhysicsContactListener::EndContact(b2Contact* contact) {
     world_->contactEvents.push_back({false, contact->GetFixtureA(), contact->GetFixtureB()});
 }
 
+/// @lua_api Light.Physics.Contact.GetBodyA
+/// @brief Get the first Body in a contact event
+/// @return table Body object or nil
 static int l_Contact_GetBodyA(lua_State* L) {
     lua_getfield(L, 1, "__bodyA");
     return 1;
 }
 
+/// @lua_api Light.Physics.Contact.GetBodyB
+/// @brief Get the second Body in a contact event
+/// @return table Body object or nil
 static int l_Contact_GetBodyB(lua_State* L) {
     lua_getfield(L, 1, "__bodyB");
     return 1;
 }
 
+/// @lua_api Light.Physics.Contact.GetFixtureA
+/// @brief Get the first Fixture in a contact event
+/// @return table Fixture object or nil
 static int l_Contact_GetFixtureA(lua_State* L) {
     lua_getfield(L, 1, "__fixtureA");
     return 1;
 }
 
+/// @lua_api Light.Physics.Contact.GetFixtureB
+/// @brief Get the second Fixture in a contact event
+/// @return table Fixture object or nil
 static int l_Contact_GetFixtureB(lua_State* L) {
     lua_getfield(L, 1, "__fixtureB");
     return 1;
@@ -320,6 +332,9 @@ static PhysicsShape* PushShapeTable(lua_State* L, PhysicsShapeType type) {
     return shape;
 }
 
+/// @lua_api Light.Physics.Fixture.GetBody
+/// @brief Get the Body that owns this Fixture
+/// @return table Body object or nil
 static int l_Fixture_GetBody(lua_State* L) {
     auto* fixture = CheckFixture(L, 1);
     if (fixture && PushBodySelf(L, fixture->owner)) return 1;
@@ -327,6 +342,9 @@ static int l_Fixture_GetBody(lua_State* L) {
     return 1;
 }
 
+/// @lua_api Light.Physics.Fixture.SetDensity
+/// @brief Set Fixture density and refresh mass data
+/// @param value number Density
 static int l_Fixture_SetDensity(lua_State* L) {
     auto* fixture = CheckFixture(L, 1);
     if (fixture) {
@@ -336,48 +354,74 @@ static int l_Fixture_SetDensity(lua_State* L) {
     return 0;
 }
 
+/// @lua_api Light.Physics.Fixture.GetDensity
+/// @brief Get Fixture density
+/// @return number Density
 static int l_Fixture_GetDensity(lua_State* L) {
     auto* fixture = CheckFixture(L, 1);
     lua_pushnumber(L, fixture ? fixture->fixture->GetDensity() : 0.0f);
     return 1;
 }
 
+/// @lua_api Light.Physics.Fixture.SetFriction
+/// @brief Set Fixture friction
+/// @param value number Friction
 static int l_Fixture_SetFriction(lua_State* L) {
     auto* fixture = CheckFixture(L, 1);
     if (fixture) fixture->fixture->SetFriction((float)luaL_checknumber(L, 2));
     return 0;
 }
 
+/// @lua_api Light.Physics.Fixture.GetFriction
+/// @brief Get Fixture friction
+/// @return number Friction
 static int l_Fixture_GetFriction(lua_State* L) {
     auto* fixture = CheckFixture(L, 1);
     lua_pushnumber(L, fixture ? fixture->fixture->GetFriction() : 0.0f);
     return 1;
 }
 
+/// @lua_api Light.Physics.Fixture.SetRestitution
+/// @brief Set Fixture restitution
+/// @param value number Restitution
 static int l_Fixture_SetRestitution(lua_State* L) {
     auto* fixture = CheckFixture(L, 1);
     if (fixture) fixture->fixture->SetRestitution((float)luaL_checknumber(L, 2));
     return 0;
 }
 
+/// @lua_api Light.Physics.Fixture.GetRestitution
+/// @brief Get Fixture restitution
+/// @return number Restitution
 static int l_Fixture_GetRestitution(lua_State* L) {
     auto* fixture = CheckFixture(L, 1);
     lua_pushnumber(L, fixture ? fixture->fixture->GetRestitution() : 0.0f);
     return 1;
 }
 
+/// @lua_api Light.Physics.Fixture.SetSensor
+/// @brief Set whether this Fixture is a sensor
+/// @param enabled boolean Sensor flag
 static int l_Fixture_SetSensor(lua_State* L) {
     auto* fixture = CheckFixture(L, 1);
     if (fixture) fixture->fixture->SetSensor(lua_toboolean(L, 2) != 0);
     return 0;
 }
 
+/// @lua_api Light.Physics.Fixture.IsSensor
+/// @brief Check whether this Fixture is a sensor
+/// @return boolean Sensor flag
 static int l_Fixture_IsSensor(lua_State* L) {
     auto* fixture = CheckFixture(L, 1);
     lua_pushboolean(L, fixture && fixture->fixture->IsSensor());
     return 1;
 }
 
+/// @lua_api Light.Physics.Fixture.SetFilterData
+/// @brief Set collision filter data
+/// @param categoryBits number Category bits
+/// @param maskBits number Mask bits
+/// @param groupIndex number Group index
 static int l_Fixture_SetFilterData(lua_State* L) {
     auto* fixture = CheckFixture(L, 1);
     if (!fixture) return 0;
@@ -389,6 +433,9 @@ static int l_Fixture_SetFilterData(lua_State* L) {
     return 0;
 }
 
+/// @lua_api Light.Physics.Fixture.GetFilterData
+/// @brief Get collision filter data
+/// @return number categoryBits, maskBits, groupIndex
 static int l_Fixture_GetFilterData(lua_State* L) {
     auto* fixture = CheckFixture(L, 1);
     if (!fixture) {
@@ -404,6 +451,9 @@ static int l_Fixture_GetFilterData(lua_State* L) {
     return 3;
 }
 
+/// @lua_api Light.Physics.Fixture.SetUserData
+/// @brief Attach Lua user data to this Fixture
+/// @param value any User data, nil clears it
 static int l_Fixture_SetUserData(lua_State* L) {
     auto* fixture = CheckFixture(L, 1);
     if (!fixture) return 0;
@@ -418,6 +468,9 @@ static int l_Fixture_SetUserData(lua_State* L) {
     return 0;
 }
 
+/// @lua_api Light.Physics.Fixture.GetUserData
+/// @brief Get Lua user data attached to this Fixture
+/// @return any User data or nil
 static int l_Fixture_GetUserData(lua_State* L) {
     auto* fixture = CheckFixture(L, 1);
     if (!fixture || fixture->userRef == LUA_NOREF) {
@@ -496,6 +549,11 @@ static int CreateFixtureFromShape(lua_State* L, PhysicsBody* body, PhysicsShape*
     return 1;
 }
 
+/// @lua_api Light.Physics.Body.CreateFixture
+/// @brief Create a Fixture from a Shape
+/// @param shape table Shape object
+/// @param density number Density, defaults to 1.0
+/// @return table Fixture object
 static int l_Body_CreateFixture(lua_State* L) {
     auto* body = CheckBody(L, 1);
     luaL_checktype(L, 2, LUA_TTABLE);
@@ -505,6 +563,9 @@ static int l_Body_CreateFixture(lua_State* L) {
     return CreateFixtureFromShape(L, body, shape, density);
 }
 
+/// @lua_api Light.Physics.Body.DestroyFixture
+/// @brief Destroy a Fixture on this Body
+/// @param fixture table Fixture object
 static int l_Body_DestroyFixture(lua_State* L) {
     auto* body = CheckBody(L, 1);
     luaL_checktype(L, 2, LUA_TTABLE);
@@ -517,6 +578,11 @@ static int l_Body_DestroyFixture(lua_State* L) {
     return 0;
 }
 
+/// @lua_api Light.Physics.Body.AddBox
+/// @brief Compatibility API that adds a rectangle Fixture
+/// @param width number Width in pixels
+/// @param height number Height in pixels
+/// @return table Fixture object
 static int l_Body_AddBox(lua_State* L) {
     auto* body = CheckBody(L, 1);
     if (!body) return 0;
@@ -528,6 +594,10 @@ static int l_Body_AddBox(lua_State* L) {
     return CreateFixtureFromShape(L, body, &shape, 1.0f);
 }
 
+/// @lua_api Light.Physics.Body.AddCircle
+/// @brief Compatibility API that adds a circle Fixture
+/// @param radius number Radius in pixels
+/// @return table Fixture object
 static int l_Body_AddCircle(lua_State* L) {
     auto* body = CheckBody(L, 1);
     if (!body) return 0;
@@ -552,18 +622,27 @@ static const char* BodyTypeName(b2BodyType type) {
     }
 }
 
+/// @lua_api Light.Physics.Body.GetType
+/// @brief Get Body type
+/// @return string static, dynamic, or kinematic
 static int l_Body_GetType(lua_State* L) {
     auto* body = CheckBody(L, 1);
     lua_pushstring(L, body ? BodyTypeName(body->body->GetType()) : "static");
     return 1;
 }
 
+/// @lua_api Light.Physics.Body.SetType
+/// @brief Set Body type
+/// @param type string static, dynamic, or kinematic
 static int l_Body_SetType(lua_State* L) {
     auto* body = CheckBody(L, 1);
     if (body) body->body->SetType(ParseBodyType(luaL_checkstring(L, 2)));
     return 0;
 }
 
+/// @lua_api Light.Physics.Body.GetPosition
+/// @brief Get Body position in pixels
+/// @return number x, y
 static int l_Body_GetPosition(lua_State* L) {
     auto* body = CheckBody(L, 1);
     if (!body) {
@@ -575,6 +654,10 @@ static int l_Body_GetPosition(lua_State* L) {
     return 2;
 }
 
+/// @lua_api Light.Physics.Body.SetPosition
+/// @brief Set Body position in pixels
+/// @param x number X coordinate
+/// @param y number Y coordinate
 static int l_Body_SetPosition(lua_State* L) {
     auto* body = CheckBody(L, 1);
     if (!body) return 0;
@@ -582,18 +665,27 @@ static int l_Body_SetPosition(lua_State* L) {
     return 0;
 }
 
+/// @lua_api Light.Physics.Body.GetAngle
+/// @brief Get Body angle
+/// @return number Angle in radians
 static int l_Body_GetAngle(lua_State* L) {
     auto* body = CheckBody(L, 1);
     lua_pushnumber(L, body ? body->body->GetAngle() : 0.0f);
     return 1;
 }
 
+/// @lua_api Light.Physics.Body.SetAngle
+/// @brief Set Body angle
+/// @param angle number Angle in radians
 static int l_Body_SetAngle(lua_State* L) {
     auto* body = CheckBody(L, 1);
     if (body) body->body->SetTransform(body->body->GetPosition(), (float)luaL_checknumber(L, 2));
     return 0;
 }
 
+/// @lua_api Light.Physics.Body.GetLinearVelocity
+/// @brief Get linear velocity
+/// @return number vx, vy in pixels per second
 static int l_Body_GetLinearVelocity(lua_State* L) {
     auto* body = CheckBody(L, 1);
     if (!body) {
@@ -605,6 +697,10 @@ static int l_Body_GetLinearVelocity(lua_State* L) {
     return 2;
 }
 
+/// @lua_api Light.Physics.Body.SetLinearVelocity
+/// @brief Set linear velocity
+/// @param vx number X velocity in pixels per second
+/// @param vy number Y velocity in pixels per second
 static int l_Body_SetLinearVelocity(lua_State* L) {
     auto* body = CheckBody(L, 1);
     if (!body) return 0;
@@ -612,108 +708,164 @@ static int l_Body_SetLinearVelocity(lua_State* L) {
     return 0;
 }
 
+/// @lua_api Light.Physics.Body.GetAngularVelocity
+/// @brief Get angular velocity
+/// @return number Angular velocity
 static int l_Body_GetAngularVelocity(lua_State* L) {
     auto* body = CheckBody(L, 1);
     lua_pushnumber(L, body ? body->body->GetAngularVelocity() : 0.0f);
     return 1;
 }
 
+/// @lua_api Light.Physics.Body.SetAngularVelocity
+/// @brief Set angular velocity
+/// @param value number Angular velocity
 static int l_Body_SetAngularVelocity(lua_State* L) {
     auto* body = CheckBody(L, 1);
     if (body) body->body->SetAngularVelocity((float)luaL_checknumber(L, 2));
     return 0;
 }
 
+/// @lua_api Light.Physics.Body.ApplyForce
+/// @brief Apply force to the Body center
+/// @param fx number X force
+/// @param fy number Y force
 static int l_Body_ApplyForce(lua_State* L) {
     auto* body = CheckBody(L, 1);
     if (body) body->body->ApplyForceToCenter(ToMeters((float)luaL_checknumber(L, 2), (float)luaL_checknumber(L, 3)), true);
     return 0;
 }
 
+/// @lua_api Light.Physics.Body.ApplyImpulse
+/// @brief Apply linear impulse to the Body center
+/// @param ix number X impulse
+/// @param iy number Y impulse
 static int l_Body_ApplyImpulse(lua_State* L) {
     auto* body = CheckBody(L, 1);
     if (body) body->body->ApplyLinearImpulseToCenter(ToMeters((float)luaL_checknumber(L, 2), (float)luaL_checknumber(L, 3)), true);
     return 0;
 }
 
+/// @lua_api Light.Physics.Body.ApplyTorque
+/// @brief Apply torque to this Body
+/// @param torque number Torque
 static int l_Body_ApplyTorque(lua_State* L) {
     auto* body = CheckBody(L, 1);
     if (body) body->body->ApplyTorque((float)luaL_checknumber(L, 2), true);
     return 0;
 }
 
+/// @lua_api Light.Physics.Body.SetAwake
+/// @brief Set whether this Body is awake
+/// @param enabled boolean Awake flag
 static int l_Body_SetAwake(lua_State* L) {
     auto* body = CheckBody(L, 1);
     if (body) body->body->SetAwake(lua_toboolean(L, 2) != 0);
     return 0;
 }
 
+/// @lua_api Light.Physics.Body.IsAwake
+/// @brief Check whether this Body is awake
+/// @return boolean Awake flag
 static int l_Body_IsAwake(lua_State* L) {
     auto* body = CheckBody(L, 1);
     lua_pushboolean(L, body && body->body->IsAwake());
     return 1;
 }
 
+/// @lua_api Light.Physics.Body.SetActive
+/// @brief Set whether this Body is enabled
+/// @param enabled boolean Enabled flag
 static int l_Body_SetActive(lua_State* L) {
     auto* body = CheckBody(L, 1);
     if (body) body->body->SetEnabled(lua_toboolean(L, 2) != 0);
     return 0;
 }
 
+/// @lua_api Light.Physics.Body.IsActive
+/// @brief Check whether this Body is enabled
+/// @return boolean Enabled flag
 static int l_Body_IsActive(lua_State* L) {
     auto* body = CheckBody(L, 1);
     lua_pushboolean(L, body && body->body->IsEnabled());
     return 1;
 }
 
+/// @lua_api Light.Physics.Body.SetBullet
+/// @brief Enable or disable bullet continuous collision mode
+/// @param enabled boolean Bullet flag
 static int l_Body_SetBullet(lua_State* L) {
     auto* body = CheckBody(L, 1);
     if (body) body->body->SetBullet(lua_toboolean(L, 2) != 0);
     return 0;
 }
 
+/// @lua_api Light.Physics.Body.IsBullet
+/// @brief Check whether this Body uses bullet mode
+/// @return boolean Bullet flag
 static int l_Body_IsBullet(lua_State* L) {
     auto* body = CheckBody(L, 1);
     lua_pushboolean(L, body && body->body->IsBullet());
     return 1;
 }
 
+/// @lua_api Light.Physics.Body.SetLinearDamping
+/// @brief Set linear damping
+/// @param value number Linear damping
 static int l_Body_SetLinearDamping(lua_State* L) {
     auto* body = CheckBody(L, 1);
     if (body) body->body->SetLinearDamping((float)luaL_checknumber(L, 2));
     return 0;
 }
 
+/// @lua_api Light.Physics.Body.GetLinearDamping
+/// @brief Get linear damping
+/// @return number Linear damping
 static int l_Body_GetLinearDamping(lua_State* L) {
     auto* body = CheckBody(L, 1);
     lua_pushnumber(L, body ? body->body->GetLinearDamping() : 0.0f);
     return 1;
 }
 
+/// @lua_api Light.Physics.Body.SetAngularDamping
+/// @brief Set angular damping
+/// @param value number Angular damping
 static int l_Body_SetAngularDamping(lua_State* L) {
     auto* body = CheckBody(L, 1);
     if (body) body->body->SetAngularDamping((float)luaL_checknumber(L, 2));
     return 0;
 }
 
+/// @lua_api Light.Physics.Body.GetAngularDamping
+/// @brief Get angular damping
+/// @return number Angular damping
 static int l_Body_GetAngularDamping(lua_State* L) {
     auto* body = CheckBody(L, 1);
     lua_pushnumber(L, body ? body->body->GetAngularDamping() : 0.0f);
     return 1;
 }
 
+/// @lua_api Light.Physics.Body.GetMass
+/// @brief Get Body mass
+/// @return number Mass
 static int l_Body_GetMass(lua_State* L) {
     auto* body = CheckBody(L, 1);
     lua_pushnumber(L, body ? body->body->GetMass() : 0.0f);
     return 1;
 }
 
+/// @lua_api Light.Physics.Body.GetInertia
+/// @brief Get Body rotational inertia
+/// @return number Rotational inertia
 static int l_Body_GetInertia(lua_State* L) {
     auto* body = CheckBody(L, 1);
     lua_pushnumber(L, body ? body->body->GetInertia() : 0.0f);
     return 1;
 }
 
+/// @lua_api Light.Physics.Body.GetWorldCenter
+/// @brief Get Body world center
+/// @return number x, y in pixels
 static int l_Body_GetWorldCenter(lua_State* L) {
     auto* body = CheckBody(L, 1);
     if (!body) {
@@ -725,6 +877,9 @@ static int l_Body_GetWorldCenter(lua_State* L) {
     return 2;
 }
 
+/// @lua_api Light.Physics.Body.GetLocalCenter
+/// @brief Get Body local center
+/// @return number x, y in pixels
 static int l_Body_GetLocalCenter(lua_State* L) {
     auto* body = CheckBody(L, 1);
     if (!body) {
@@ -736,6 +891,9 @@ static int l_Body_GetLocalCenter(lua_State* L) {
     return 2;
 }
 
+/// @lua_api Light.Physics.Body.SetRestitution
+/// @brief Set restitution for all current Fixtures on this Body
+/// @param value number Restitution
 static int l_Body_SetRestitution(lua_State* L) {
     auto* body = CheckBody(L, 1);
     if (!body) return 0;
@@ -744,6 +902,9 @@ static int l_Body_SetRestitution(lua_State* L) {
     return 0;
 }
 
+/// @lua_api Light.Physics.Body.SetFriction
+/// @brief Set friction for all current Fixtures on this Body
+/// @param value number Friction
 static int l_Body_SetFriction(lua_State* L) {
     auto* body = CheckBody(L, 1);
     if (!body) return 0;
@@ -813,6 +974,8 @@ static void SetWorldGC(lua_State* L) {
     lua_setmetatable(L, -2);
 }
 
+/// @lua_api Light.Physics.World.New
+/// @brief Create a Box2D physics World instance
 static int l_World_Call(lua_State* L) {
     luaL_checktype(L, 1, LUA_TTABLE);
     void* storage = lua_newuserdata(L, sizeof(PhysicsWorld));
@@ -827,12 +990,19 @@ static int l_World_Call(lua_State* L) {
     return 0;
 }
 
+/// @lua_api Light.Physics.World.SetGravity
+/// @brief Set world gravity
+/// @param gx number X gravity in pixels per second squared
+/// @param gy number Y gravity in pixels per second squared
 static int l_World_SetGravity(lua_State* L) {
     auto* world = CheckWorld(L, 1);
     if (world) world->world->SetGravity(ToMeters((float)luaL_checknumber(L, 2), (float)luaL_checknumber(L, 3)));
     return 0;
 }
 
+/// @lua_api Light.Physics.World.GetGravity
+/// @brief Get world gravity
+/// @return number gx, gy in pixels per second squared
 static int l_World_GetGravity(lua_State* L) {
     auto* world = CheckWorld(L, 1);
     if (!world) {
@@ -844,6 +1014,9 @@ static int l_World_GetGravity(lua_State* L) {
     return 2;
 }
 
+/// @lua_api Light.Physics.World.Step
+/// @brief Step the physics world and dispatch queued contact events
+/// @param dt number Time step in seconds
 static int l_World_Step(lua_State* L) {
     auto* world = CheckWorld(L, 1);
     if (!world) return 0;
@@ -852,24 +1025,38 @@ static int l_World_Step(lua_State* L) {
     return 0;
 }
 
+/// @lua_api Light.Physics.World.ClearForces
+/// @brief Clear accumulated world forces
 static int l_World_ClearForces(lua_State* L) {
     auto* world = CheckWorld(L, 1);
     if (world) world->world->ClearForces();
     return 0;
 }
 
+/// @lua_api Light.Physics.World.SetAllowSleeping
+/// @brief Set whether bodies may sleep
+/// @param enabled boolean Allow-sleep flag
 static int l_World_SetAllowSleeping(lua_State* L) {
     auto* world = CheckWorld(L, 1);
     if (world) world->world->SetAllowSleeping(lua_toboolean(L, 2) != 0);
     return 0;
 }
 
+/// @lua_api Light.Physics.World.SetContinuousPhysics
+/// @brief Set whether continuous physics is enabled
+/// @param enabled boolean Continuous-physics flag
 static int l_World_SetContinuousPhysics(lua_State* L) {
     auto* world = CheckWorld(L, 1);
     if (world) world->world->SetContinuousPhysics(lua_toboolean(L, 2) != 0);
     return 0;
 }
 
+/// @lua_api Light.Physics.World.CreateBody
+/// @brief Create a Body
+/// @param type string static, dynamic, or kinematic
+/// @param x number X position in pixels
+/// @param y number Y position in pixels
+/// @return table Body object
 static int l_World_CreateBody(lua_State* L) {
     auto* world = CheckWorld(L, 1);
     if (!world) return 0;
@@ -896,6 +1083,9 @@ static int l_World_CreateBody(lua_State* L) {
     return 1;
 }
 
+/// @lua_api Light.Physics.World.DestroyBody
+/// @brief Destroy a Body
+/// @param body table Body object
 static int l_World_DestroyBody(lua_State* L) {
     auto* world = CheckWorld(L, 1);
     luaL_checktype(L, 2, LUA_TTABLE);
@@ -907,6 +1097,9 @@ static int l_World_DestroyBody(lua_State* L) {
     return 0;
 }
 
+/// @lua_api Light.Physics.World.GetBodyCount
+/// @brief Get the current number of live bodies
+/// @return number Body count
 static int l_World_GetBodyCount(lua_State* L) {
     auto* world = CheckWorld(L, 1);
     int count = 0;
@@ -917,6 +1110,9 @@ static int l_World_GetBodyCount(lua_State* L) {
     return 1;
 }
 
+/// @lua_api Light.Physics.World.OnCollision
+/// @brief Register the legacy collision callback
+/// @param callback function Callback with bodyA, bodyB arguments
 static int l_World_OnCollision(lua_State* L) {
     auto* world = CheckWorld(L, 1);
     if (!world) return 0;
@@ -927,6 +1123,9 @@ static int l_World_OnCollision(lua_State* L) {
     return 0;
 }
 
+/// @lua_api Light.Physics.World.BeginContact
+/// @brief Register the BeginContact callback
+/// @param callback function Callback with a Contact object
 static int l_World_BeginContact(lua_State* L) {
     auto* world = CheckWorld(L, 1);
     if (!world) return 0;
@@ -937,6 +1136,9 @@ static int l_World_BeginContact(lua_State* L) {
     return 0;
 }
 
+/// @lua_api Light.Physics.World.EndContact
+/// @brief Register the EndContact callback
+/// @param callback function Callback with a Contact object
 static int l_World_EndContact(lua_State* L) {
     auto* world = CheckWorld(L, 1);
     if (!world) return 0;
@@ -952,6 +1154,10 @@ static int l_World_Tostring(lua_State* L) {
     return 1;
 }
 
+/// @lua_api Light.Physics.NewCircleShape
+/// @brief Create a circle Shape
+/// @param radius number Radius in pixels
+/// @return table Shape object
 static int l_Physics_NewCircleShape(lua_State* L) {
     PhysicsShape* shape = PushShapeTable(L, PHYSICS_SHAPE_CIRCLE);
     shape->circle.m_radius = (float)luaL_checknumber(L, 1) / PTM;
@@ -959,6 +1165,11 @@ static int l_Physics_NewCircleShape(lua_State* L) {
     return 1;
 }
 
+/// @lua_api Light.Physics.NewRectangleShape
+/// @brief Create a rectangle Shape
+/// @param width number Width in pixels
+/// @param height number Height in pixels
+/// @return table Shape object
 static int l_Physics_NewRectangleShape(lua_State* L) {
     PhysicsShape* shape = PushShapeTable(L, PHYSICS_SHAPE_BOX);
     float width = (float)luaL_checknumber(L, 1) / PTM;
@@ -986,6 +1197,10 @@ static bool ReadVertices(lua_State* L, int idx, std::vector<b2Vec2>& vertices, i
     return true;
 }
 
+/// @lua_api Light.Physics.NewPolygonShape
+/// @brief Create a polygon Shape
+/// @param vertices table Vertex array {x1,y1,x2,y2,...}
+/// @return table Shape object
 static int l_Physics_NewPolygonShape(lua_State* L) {
     std::vector<b2Vec2> vertices;
     if (!ReadVertices(L, 1, vertices, b2_maxPolygonVertices) || vertices.size() < 3) {
@@ -996,6 +1211,13 @@ static int l_Physics_NewPolygonShape(lua_State* L) {
     return 1;
 }
 
+/// @lua_api Light.Physics.NewEdgeShape
+/// @brief Create an edge Shape
+/// @param x1 number Start X position
+/// @param y1 number Start Y position
+/// @param x2 number End X position
+/// @param y2 number End Y position
+/// @return table Shape object
 static int l_Physics_NewEdgeShape(lua_State* L) {
     PhysicsShape* shape = PushShapeTable(L, PHYSICS_SHAPE_EDGE);
     shape->edge.SetTwoSided(ToMeters((float)luaL_checknumber(L, 1), (float)luaL_checknumber(L, 2)),
@@ -1003,6 +1225,11 @@ static int l_Physics_NewEdgeShape(lua_State* L) {
     return 1;
 }
 
+/// @lua_api Light.Physics.NewChainShape
+/// @brief Create a chain Shape
+/// @param vertices table Vertex array {x1,y1,x2,y2,...}
+/// @param loop boolean Whether the chain is closed
+/// @return table Shape object
 static int l_Physics_NewChainShape(lua_State* L) {
     std::vector<b2Vec2> vertices;
     if (!ReadVertices(L, 1, vertices, 0) || vertices.size() < 2) {
