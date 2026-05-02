@@ -469,6 +469,8 @@ static void loadLightEngine(Lumen::IState *L) {
     for (int i = 0; g_lightModules[i].modName; ++i) {
         auto proc = (Lumen::Function)GetProcAddress(hLight, g_lightModules[i].procName);
         if (proc) {
+            fprintf(stdout, "[Light] Preload module: %s\n", g_lightModules[i].modName);
+            fflush(stdout);
             L->Require(g_lightModules[i].modName, proc);
             ++count;
         }
