@@ -78,7 +78,7 @@ endif()
 # 允许外部指定, 否则使用默认路径
 if(NOT DEFINED LUMEN_LIB_PATH)
     if(WIN32)
-        set(LUMEN_LIB_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../lumen-master/build/lib/lua/Release/lua51.lib")
+        set(LUMEN_LIB_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../lumen-master/build/lib/lua/Release/Lumen.lib")
     else()
         # Linux/macOS: Lumen 静态库名为 liblumen-static.a (未设置 OUTPUT_NAME)
         find_library(LUMEN_LIB_PATH
