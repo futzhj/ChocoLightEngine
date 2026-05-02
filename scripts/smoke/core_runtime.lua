@@ -1,34 +1,51 @@
-assert(type(Light) == "table", "Light global table missing")
-assert(type(Light.Debug) == "table", "Light.Debug missing")
-assert(type(Light.Data) == "table", "Light.Data missing")
-assert(type(Light.Math) == "table", "Light.Math missing")
-assert(type(Light.UI) == "table", "Light.UI missing")
-assert(type(Light.Graphics) == "table", "Light.Graphics missing")
-assert(type(Light.AV) == "table", "Light.AV missing")
-assert(type(Light.DB) == "table", "Light.DB missing")
-assert(type(Light.Network) == "table", "Light.Network missing")
-require("Light.Input")
-require("Light.Graphics.Particles")
-require("Light.Graphics.Tilemap")
-require("Light.Physics.World")
-require("Light.ECS")
-require("Light.Scene")
-require("Light.Graphics.SpriteAnimation")
-require("Light.Graphics.Shader")
-require("Light.HotReload")
-require("Light.UI.Widget")
-require("Light.Crypto")
-assert(type(Light.Input) == "table", "Light.Input missing")
-assert(type(Light.Graphics.Particles) == "table", "Light.Graphics.Particles missing")
-assert(type(Light.Graphics.Tilemap) == "table", "Light.Graphics.Tilemap missing")
-assert(type(Light.Physics) == "table", "Light.Physics missing")
-assert(type(Light.Physics.World) == "table", "Light.Physics.World missing")
-assert(type(Light.ECS) == "table", "Light.ECS missing")
-assert(type(Light.Scene) == "table", "Light.Scene missing")
-assert(type(Light.Graphics.SpriteAnimation) == "table", "Light.Graphics.SpriteAnimation missing")
-assert(type(Light.Graphics.Shader) == "table", "Light.Graphics.Shader missing")
-assert(type(Light.HotReload) == "table", "Light.HotReload missing")
-assert(type(Light.UI.Widget) == "table", "Light.UI.Widget missing")
-assert(type(Light.Crypto) == "table", "Light.Crypto missing")
+local function resolve(path)
+  local node = _G
+  local prefix = "_G"
+
+  for part in string.gmatch(path, "[^%.]+") do
+    if type(node) ~= "table" then
+      return nil, prefix .. " is " .. type(node)
+    end
+
+    node = node[part]
+    prefix = prefix .. "." .. part
+  end
+
+  return node, prefix .. " is " .. type(node)
+end
+
+local function check_loaded(path)
+  local node, detail = resolve(path)
+  assert(type(node) == "table", path .. " missing: " .. detail)
+end
+
+local function check_required(path)
+  print("checking module", path)
+  local ok, err = pcall(require, path)
+  assert(ok, "require(" .. path .. ") failed: " .. tostring(err))
+  check_loaded(path)
+end
+
+check_loaded("Light")
+check_loaded("Light.Debug")
+check_loaded("Light.Data")
+check_loaded("Light.Math")
+check_loaded("Light.UI")
+check_loaded("Light.Graphics")
+check_loaded("Light.AV")
+check_loaded("Light.DB")
+check_loaded("Light.Network")
+
+check_required("Light.Input")
+check_required("Light.Graphics.Particles")
+check_required("Light.Graphics.Tilemap")
+check_required("Light.Physics.World")
+check_required("Light.ECS")
+check_required("Light.Scene")
+check_required("Light.Graphics.SpriteAnimation")
+check_required("Light.Graphics.Shader")
+check_required("Light.HotReload")
+check_required("Light.UI.Widget")
+check_required("Light.Crypto")
 
 print("core_runtime smoke ok")
