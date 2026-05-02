@@ -518,8 +518,6 @@ int luaopen_Light_Input(lua_State* L) {
     LT::RegisterModule(L, "Input", input_funcs);
 
     // 注册手柄按钮常量
-    lua_pushstring(L, "Input");
-    lua_rawget(L, -2);
     // SDL_GAMEPAD_BUTTON 常量 (简化名称)
     struct { const char* name; int val; } btn_consts[] = {
         {"BUTTON_A",             0},
@@ -557,7 +555,6 @@ int luaopen_Light_Input(lua_State* L) {
         lua_pushinteger(L, axis_consts[i].val);
         lua_setfield(L, -2, axis_consts[i].name);
     }
-    lua_pop(L, 1);
 
     return 1;
 }
