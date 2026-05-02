@@ -25,12 +25,33 @@ jobs:
           cmake -B build -DCMAKE_BUILD_TYPE=Release -DLUA_USE_COMPAT=ON
           cmake --build build --config Release --target light lightw lightc
 
+      - name: Run smoke script syntax checks
+        shell: pwsh
+        run: |
+          $lightc = "lumen-master\build\src\lightc\Release\lightc.exe"
+          Get-ChildItem scripts\smoke -Filter *.lua | ForEach-Object {
+            & $lightc -p $_.FullName
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+
       # ChocoLight 引擎 (Light.dll) — SDL3 通过 FetchContent 自动获取
       - name: Build ChocoLight Engine
         run: |
           cd ChocoLight
           cmake -B build -DCMAKE_BUILD_TYPE=Release
           cmake --build build --config Release
+
+      - name: Run Windows runtime smoke scripts
+        shell: pwsh
+        run: |
+          $runtimeDir = "lumen-master\build\src\light\Release"
+          $coreSmoke = Resolve-Path "scripts\smoke\core_runtime.lua"
+          $physicsSmoke = Resolve-Path "scripts\smoke\physics_p0_p1.lua"
+          Copy-Item ChocoLight\build\bin\Release\Light.dll $runtimeDir -Force
+          & "$runtimeDir\light.exe" $coreSmoke
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & "$runtimeDir\light.exe" $physicsSmoke
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Package Windows Template
         shell: pwsh
@@ -65,6 +86,12 @@ jobs:
           cd lumen-master
           cmake -B build -DCMAKE_BUILD_TYPE=Release -DLUA_USE_COMPAT=ON
           cmake --build build -j$(nproc)
+
+      - name: Run smoke script syntax checks
+        run: |
+          for script in scripts/smoke/*.lua; do
+            lumen-master/build/src/lightc/lightc -p "$script"
+          done
 
       # ChocoLight 引擎 (libLight.so)
       - name: Build ChocoLight Engine
@@ -102,6 +129,12 @@ jobs:
                 -DLUA_USE_COMPAT=ON \
                 -DCMAKE_OSX_ARCHITECTURES="x86_64;arm64"
           cmake --build build -j$(sysctl -n hw.ncpu)
+
+      - name: Run smoke script syntax checks
+        run: |
+          for script in scripts/smoke/*.lua; do
+            lumen-master/build/src/lightc/lightc -p "$script"
+          done
 
       # ChocoLight 引擎 (libLight.dylib)
       - name: Build ChocoLight Engine
