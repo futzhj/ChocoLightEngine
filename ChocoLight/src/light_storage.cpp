@@ -16,6 +16,10 @@
  *   Light.Storage.User.Exists(path) -> bool
  *   Light.Storage.User.Delete(path) -> ok, err
  *   Light.Storage.User.Size(path) -> bytes, err
+ *   Light.Storage.User.Enumerate(path) -> { name1, name2, ... }, err
+ *   Light.Storage.User.Mkdir(path) -> ok, err
+ *
+ *   Light.Storage.Space() -> bytes_remaining, err     (User 剩余空间)
  *
  * 设计要点:
  *   - Title storage 在 luaopen 时延迟打开 (首次访问)
@@ -27,6 +31,7 @@
 
 #include <SDL3/SDL.h>
 #include <cstdint>
+#include <string>
 #include <vector>
 
 extern "C" {
@@ -211,11 +216,83 @@ static int l_User_Delete(lua_State* L) {
     return 2;
 }
 
+// ==================== Light.Storage.User.Mkdir ====================
+
+static int l_User_Mkdir(lua_State* L) {
+    const char* path = luaL_checkstring(L, 1);
+    if (!g_userStorage || !SDL_StorageReady(g_userStorage)) {
+        lua_pushboolean(L, 0);
+        lua_pushstring(L, "user storage not ready");
+        return 2;
+    }
+    if (!SDL_CreateStorageDirectory(g_userStorage, path)) {
+        lua_pushboolean(L, 0);
+        lua_pushstring(L, SDL_GetError());
+        return 2;
+    }
+    lua_pushboolean(L, 1);
+    lua_pushnil(L);
+    return 2;
+}
+
+// ==================== Light.Storage.User.Enumerate ====================
+
+namespace {
+struct EnumState { std::vector<std::string> names; };
+
+SDL_EnumerationResult SDLCALL EnumDirCallback(void* userdata, const char* /*dirname*/, const char* fname) {
+    if (auto* st = static_cast<EnumState*>(userdata)) {
+        if (fname) st->names.emplace_back(fname);
+    }
+    return SDL_ENUM_CONTINUE;
+}
+} // namespace
+
+static int l_User_Enumerate(lua_State* L) {
+    const char* path = luaL_checkstring(L, 1);
+    if (!g_userStorage || !SDL_StorageReady(g_userStorage)) {
+        lua_pushnil(L);
+        lua_pushstring(L, "user storage not ready");
+        return 2;
+    }
+
+    EnumState st;
+    if (!SDL_EnumerateStorageDirectory(g_userStorage, path, EnumDirCallback, &st)) {
+        lua_pushnil(L);
+        lua_pushstring(L, SDL_GetError());
+        return 2;
+    }
+
+    lua_createtable(L, static_cast<int>(st.names.size()), 0);
+    for (size_t i = 0; i < st.names.size(); ++i) {
+        lua_pushstring(L, st.names[i].c_str());
+        lua_rawseti(L, -2, static_cast<int>(i + 1));
+    }
+    lua_pushnil(L);
+    return 2;
+}
+
+// ==================== Light.Storage.Space ====================
+
+static int l_Storage_Space(lua_State* L) {
+    // 剩余空间仅对 User storage 有意义 (Title 是只读, 不错报)
+    if (!g_userStorage || !SDL_StorageReady(g_userStorage)) {
+        lua_pushnil(L);
+        lua_pushstring(L, "user storage not ready");
+        return 2;
+    }
+    Uint64 remaining = SDL_GetStorageSpaceRemaining(g_userStorage);
+    lua_pushinteger(L, static_cast<lua_Integer>(remaining));
+    lua_pushnil(L);
+    return 2;
+}
+
 // ==================== luaopen_Light_Storage ====================
 
 static const luaL_Reg kRoot[] = {
     { "OpenUser",  l_Storage_OpenUser  },
     { "CloseUser", l_Storage_CloseUser },
+    { "Space",     l_Storage_Space     },
     { nullptr,     nullptr             },
 };
 
@@ -227,12 +304,14 @@ static const luaL_Reg kTitle[] = {
 };
 
 static const luaL_Reg kUser[] = {
-    { "Read",   l_User_Read   },
-    { "Write",  l_User_Write  },
-    { "Exists", l_User_Exists },
-    { "Delete", l_User_Delete },
-    { "Size",   l_User_Size   },
-    { nullptr,  nullptr       },
+    { "Read",      l_User_Read      },
+    { "Write",     l_User_Write     },
+    { "Exists",    l_User_Exists    },
+    { "Delete",    l_User_Delete    },
+    { "Size",      l_User_Size      },
+    { "Mkdir",     l_User_Mkdir     },
+    { "Enumerate", l_User_Enumerate },
+    { nullptr,     nullptr          },
 };
 
 extern "C" LIGHT_API int luaopen_Light_Storage(lua_State* L) {

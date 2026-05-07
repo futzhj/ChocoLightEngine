@@ -46,6 +46,7 @@ end
 local Storage = require_table("Light.Storage")
 assert_function(Storage.OpenUser,  "Light.Storage.OpenUser")
 assert_function(Storage.CloseUser, "Light.Storage.CloseUser")
+assert_function(Storage.Space,     "Light.Storage.Space")
 
 -- Title 子表 (只读, 自动延迟打开)
 assert_type(Storage.Title, "table", "Light.Storage.Title")
@@ -55,11 +56,13 @@ assert_function(Storage.Title.Size,   "Light.Storage.Title.Size")
 
 -- User 子表 (读写, 需先 OpenUser)
 assert_type(Storage.User, "table", "Light.Storage.User")
-assert_function(Storage.User.Read,   "Light.Storage.User.Read")
-assert_function(Storage.User.Write,  "Light.Storage.User.Write")
-assert_function(Storage.User.Exists, "Light.Storage.User.Exists")
-assert_function(Storage.User.Delete, "Light.Storage.User.Delete")
-assert_function(Storage.User.Size,   "Light.Storage.User.Size")
+assert_function(Storage.User.Read,      "Light.Storage.User.Read")
+assert_function(Storage.User.Write,     "Light.Storage.User.Write")
+assert_function(Storage.User.Exists,    "Light.Storage.User.Exists")
+assert_function(Storage.User.Delete,    "Light.Storage.User.Delete")
+assert_function(Storage.User.Size,      "Light.Storage.User.Size")
+assert_function(Storage.User.Mkdir,     "Light.Storage.User.Mkdir")
+assert_function(Storage.User.Enumerate, "Light.Storage.User.Enumerate")
 
 -- User 在未 OpenUser 时调 Write, 应返回 false + err 字符串 (不崩溃)
 local ok, err = Storage.User.Write("__smoke__.txt", "hello")
@@ -67,5 +70,26 @@ if ok then
   fail("Light.Storage.User.Write should fail before OpenUser, but returned ok")
 end
 assert_type(err, "string", "Light.Storage.User.Write error message")
+
+-- Mkdir 未 OpenUser 时 也应安全 返回错误
+local mok, merr = Storage.User.Mkdir("__smoke_dir__")
+if mok then
+  fail("Light.Storage.User.Mkdir should fail before OpenUser, but returned ok")
+end
+assert_type(merr, "string", "Light.Storage.User.Mkdir error message")
+
+-- Enumerate 未 OpenUser 时 返回 nil + err
+local list, eerr = Storage.User.Enumerate(".")
+if list ~= nil then
+  fail("Light.Storage.User.Enumerate should return nil before OpenUser")
+end
+assert_type(eerr, "string", "Light.Storage.User.Enumerate error message")
+
+-- Space 未 OpenUser 时 返回 nil + err
+local space, serr = Storage.Space()
+if space ~= nil then
+  fail("Light.Storage.Space should return nil before OpenUser")
+end
+assert_type(serr, "string", "Light.Storage.Space error message")
 
 print("io_storage ok")
