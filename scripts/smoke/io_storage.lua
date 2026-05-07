@@ -44,9 +44,10 @@ end
 -- ==================== Light.Storage (SDL_Storage) ====================
 
 local Storage = require_table("Light.Storage")
-assert_function(Storage.OpenUser,  "Light.Storage.OpenUser")
-assert_function(Storage.CloseUser, "Light.Storage.CloseUser")
-assert_function(Storage.Space,     "Light.Storage.Space")
+assert_function(Storage.OpenUser,     "Light.Storage.OpenUser")
+assert_function(Storage.OpenLocalDir, "Light.Storage.OpenLocalDir")
+assert_function(Storage.CloseUser,    "Light.Storage.CloseUser")
+assert_function(Storage.Space,        "Light.Storage.Space")
 
 -- Title 子表 (只读, 自动延迟打开)
 assert_type(Storage.Title, "table", "Light.Storage.Title")
@@ -63,6 +64,8 @@ assert_function(Storage.User.Delete,    "Light.Storage.User.Delete")
 assert_function(Storage.User.Size,      "Light.Storage.User.Size")
 assert_function(Storage.User.Mkdir,     "Light.Storage.User.Mkdir")
 assert_function(Storage.User.Enumerate, "Light.Storage.User.Enumerate")
+assert_function(Storage.User.Rename,    "Light.Storage.User.Rename")
+assert_function(Storage.User.Glob,      "Light.Storage.User.Glob")
 
 -- User 在未 OpenUser 时调 Write, 应返回 false + err 字符串 (不崩溃)
 local ok, err = Storage.User.Write("__smoke__.txt", "hello")
@@ -91,5 +94,19 @@ if space ~= nil then
   fail("Light.Storage.Space should return nil before OpenUser")
 end
 assert_type(serr, "string", "Light.Storage.Space error message")
+
+-- Rename 未 OpenUser 时 返回 false + err
+local rok, rerr = Storage.User.Rename("a", "b")
+if rok then
+  fail("Light.Storage.User.Rename should fail before OpenUser, but returned ok")
+end
+assert_type(rerr, "string", "Light.Storage.User.Rename error message")
+
+-- Glob 未 OpenUser 时 返回 nil + err
+local glist, gerr = Storage.User.Glob(".", "*.sav")
+if glist ~= nil then
+  fail("Light.Storage.User.Glob should return nil before OpenUser")
+end
+assert_type(gerr, "string", "Light.Storage.User.Glob error message")
 
 print("io_storage ok")

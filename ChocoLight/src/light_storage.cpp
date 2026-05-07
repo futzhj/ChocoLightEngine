@@ -5,6 +5,9 @@
  * Lua API:
  *   Light.Storage.OpenUser(org, app) -> ok, err
  *     打开/重新打开 User Storage (玩家存档区), 阻塞等待 ready (最多 1 秒)
+ *   Light.Storage.OpenLocalDir(path) -> ok, err
+ *     把任意本地目录当作 User Storage 使用 (mod 加载/外部资源场景)
+ *     与 OpenUser 互斥, 后者会覆盖前者
  *   Light.Storage.CloseUser()
  *
  *   Light.Storage.Title.Read(path) -> data, err     (只读, 游戏资源)
@@ -18,6 +21,8 @@
  *   Light.Storage.User.Size(path) -> bytes, err
  *   Light.Storage.User.Enumerate(path) -> { name1, name2, ... }, err
  *   Light.Storage.User.Mkdir(path) -> ok, err
+ *   Light.Storage.User.Rename(oldpath, newpath) -> ok, err
+ *   Light.Storage.User.Glob(path, pattern) -> { name1, name2, ... }, err
  *
  *   Light.Storage.Space() -> bytes_remaining, err     (User 剩余空间)
  *
@@ -129,6 +134,34 @@ int SizeStorage(lua_State* L, SDL_Storage* st, const char* path) {
 }
 
 } // namespace
+
+// ==================== Light.Storage.OpenLocalDir ====================
+
+static int l_Storage_OpenLocalDir(lua_State* L) {
+    const char* path = luaL_checkstring(L, 1);
+
+    if (g_userStorage) {
+        SDL_CloseStorage(g_userStorage);
+        g_userStorage = nullptr;
+    }
+
+    g_userStorage = SDL_OpenFileStorage(path);
+    if (!g_userStorage) {
+        lua_pushboolean(L, 0);
+        lua_pushstring(L, SDL_GetError());
+        return 2;
+    }
+    if (!WaitReady(g_userStorage)) {
+        SDL_CloseStorage(g_userStorage);
+        g_userStorage = nullptr;
+        lua_pushboolean(L, 0);
+        lua_pushstring(L, "local storage not ready within 1s");
+        return 2;
+    }
+    lua_pushboolean(L, 1);
+    lua_pushnil(L);
+    return 2;
+}
 
 // ==================== Light.Storage.OpenUser ====================
 
@@ -272,6 +305,57 @@ static int l_User_Enumerate(lua_State* L) {
     return 2;
 }
 
+// ==================== Light.Storage.User.Rename ====================
+
+static int l_User_Rename(lua_State* L) {
+    const char* oldp = luaL_checkstring(L, 1);
+    const char* newp = luaL_checkstring(L, 2);
+    if (!g_userStorage || !SDL_StorageReady(g_userStorage)) {
+        lua_pushboolean(L, 0);
+        lua_pushstring(L, "user storage not ready");
+        return 2;
+    }
+    if (!SDL_RenameStoragePath(g_userStorage, oldp, newp)) {
+        lua_pushboolean(L, 0);
+        lua_pushstring(L, SDL_GetError());
+        return 2;
+    }
+    lua_pushboolean(L, 1);
+    lua_pushnil(L);
+    return 2;
+}
+
+// ==================== Light.Storage.User.Glob ====================
+
+static int l_User_Glob(lua_State* L) {
+    const char* path    = luaL_checkstring(L, 1);
+    const char* pattern = luaL_checkstring(L, 2);
+    if (!g_userStorage || !SDL_StorageReady(g_userStorage)) {
+        lua_pushnil(L);
+        lua_pushstring(L, "user storage not ready");
+        return 2;
+    }
+
+    int count = 0;
+    char** matches = SDL_GlobStorageDirectory(g_userStorage, path, pattern, /*flags*/ 0, &count);
+    if (!matches) {
+        lua_pushnil(L);
+        lua_pushstring(L, SDL_GetError());
+        return 2;
+    }
+
+    lua_createtable(L, count, 0);
+    for (int i = 0; i < count; ++i) {
+        if (matches[i]) {
+            lua_pushstring(L, matches[i]);
+            lua_rawseti(L, -2, i + 1);
+        }
+    }
+    SDL_free(matches);  // SDL3 约定: 单块内存, 只释放数组本身
+    lua_pushnil(L);
+    return 2;
+}
+
 // ==================== Light.Storage.Space ====================
 
 static int l_Storage_Space(lua_State* L) {
@@ -290,10 +374,11 @@ static int l_Storage_Space(lua_State* L) {
 // ==================== luaopen_Light_Storage ====================
 
 static const luaL_Reg kRoot[] = {
-    { "OpenUser",  l_Storage_OpenUser  },
-    { "CloseUser", l_Storage_CloseUser },
-    { "Space",     l_Storage_Space     },
-    { nullptr,     nullptr             },
+    { "OpenUser",     l_Storage_OpenUser     },
+    { "OpenLocalDir", l_Storage_OpenLocalDir },
+    { "CloseUser",    l_Storage_CloseUser    },
+    { "Space",        l_Storage_Space        },
+    { nullptr,        nullptr                },
 };
 
 static const luaL_Reg kTitle[] = {
@@ -311,6 +396,8 @@ static const luaL_Reg kUser[] = {
     { "Size",      l_User_Size      },
     { "Mkdir",     l_User_Mkdir     },
     { "Enumerate", l_User_Enumerate },
+    { "Rename",    l_User_Rename    },
+    { "Glob",      l_User_Glob      },
     { nullptr,     nullptr          },
 };
 

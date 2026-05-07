@@ -272,8 +272,13 @@ void MakeCurrent(void* win, void* ctx) {
     if (win && ctx) SDL_GL_MakeCurrent((SDL_Window*)win, (SDL_GLContext)ctx);
 }
 
+// 来自 light_io.cpp 的 drain 入口 (无 IO 使用时立即返回 0)
+extern "C" int Light_IO_DrainQueue();
+
 void SwapBuffers(void* win) {
     if (win) SDL_GL_SwapWindow((SDL_Window*)win);
+    // 每帧自动 drain Light.IO 异步加载完成回调, 用户无需手动调 Light.IO.Poll
+    Light_IO_DrainQueue();
 }
 
 void* GetGLProcAddress(const char* name) {

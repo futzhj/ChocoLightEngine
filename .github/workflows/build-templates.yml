@@ -102,12 +102,12 @@ jobs:
             lumen-master/build/src/lightc/lightc -p "$script"
           done
 
-      # ChocoLight 引擎 (libLight.so)
+      # ChocoLight 引擎 (libLight.so) - 严格模式, 编译失败即中断 CI
       - name: Build ChocoLight Engine
         run: |
           cd ChocoLight
           cmake -B build -DCMAKE_BUILD_TYPE=Release
-          cmake --build build -j$(nproc) || true
+          cmake --build build -j$(nproc)
 
       - name: Package Linux Template
         run: |
@@ -145,13 +145,13 @@ jobs:
             lumen-master/build/src/lightc/lightc -p "$script"
           done
 
-      # ChocoLight 引擎 (libLight.dylib)
+      # ChocoLight 引擎 (libLight.dylib) - 严格模式, 编译失败即中断 CI
       - name: Build ChocoLight Engine
         run: |
           cd ChocoLight
           cmake -B build -DCMAKE_BUILD_TYPE=Release \
                 -DCMAKE_OSX_ARCHITECTURES="x86_64;arm64"
-          cmake --build build -j$(sysctl -n hw.ncpu) || true
+          cmake --build build -j$(sysctl -n hw.ncpu)
 
       - name: Package macOS Template
         run: |
@@ -187,14 +187,14 @@ jobs:
             -DLUA_SKIP_INSTALL=ON
           cmake --build build-web -j$(nproc) || true
 
-      # ChocoLight 引擎 (libLight.a → 链接到最终 WASM)
+      # ChocoLight 引擎 (libLight.a → 链接到最终 WASM) - 严格模式
       - name: Build ChocoLight Engine (WASM)
         run: |
           cd ChocoLight
           LUMEN_LIB=$(find ../lumen-master/build-web -name "*.a" | head -1)
           emcmake cmake -B build-web -DCMAKE_BUILD_TYPE=Release \
             -DLUMEN_LIB_PATH="$LUMEN_LIB"
-          cmake --build build-web -j$(nproc) || true
+          cmake --build build-web -j$(nproc)
 
       - name: Package Web Template
         run: |

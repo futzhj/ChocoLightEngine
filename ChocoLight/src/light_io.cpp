@@ -11,6 +11,7 @@
  *   Light.IO.Poll()
  *     - 主循环每帧调用, 触发已完成请求的 callback
  *     - 返回本次 poll 触发的回调数量
+ *     - 注: ChocoLight 会在 SwapBuffers 中自动调一次, 手动调仅为提高响应性
  *
  * 实现策略:
  *   - 单例 SDL_AsyncIOQueue, 启动延迟创建
@@ -109,11 +110,11 @@ static int l_IO_LoadAsync(lua_State* L) {
 
 // ==================== Light.IO.Poll ====================
 
-static int l_IO_Poll(lua_State* L) {
-    if (!g_queue) {
-        lua_pushinteger(L, 0);
-        return 1;
-    }
+namespace {
+// 内部 helper: 从 queue 抽完成事件 + 推 Lua 回调, 返回触发数。
+// 不修改 lua_State 栈 (由调用者负责 push 返回值)
+int DrainPendingCallbacks(lua_State* L) {
+    if (!g_queue || !L) return 0;
 
     int triggered = 0;
     SDL_AsyncIOOutcome outcome;
@@ -123,7 +124,6 @@ static int l_IO_Poll(lua_State* L) {
 
         const bool ok = (outcome.result == SDL_ASYNCIO_COMPLETE);
 
-        // 推回调
         lua_rawgeti(L, LUA_REGISTRYINDEX, pending->callbackRef);
         if (lua_isfunction(L, -1)) {
             lua_pushboolean(L, ok ? 1 : 0);
@@ -150,9 +150,22 @@ static int l_IO_Poll(lua_State* L) {
         if (pending->path)   SDL_free(pending->path);
         delete pending;
     }
+    return triggered;
+}
+} // namespace
 
+static int l_IO_Poll(lua_State* L) {
+    int triggered = DrainPendingCallbacks(L);
     lua_pushinteger(L, triggered);
     return 1;
+}
+
+// ==================== 主循环自动注入入口 (供 platform_window SwapBuffers 调用) ====================
+
+extern "C" int Light_IO_DrainQueue() {
+    // SwapBuffers 路径上 g_callbackL 已被 LoadAsync 记录过, 未记录时表示未使用过 IO
+    if (!g_callbackL) return 0;
+    return DrainPendingCallbacks(g_callbackL);
 }
 
 // ==================== luaopen_Light_IO ====================

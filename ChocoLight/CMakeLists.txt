@@ -17,6 +17,10 @@ endif()
 
 include(FetchContent)
 
+# Light 是 SHARED 库, 链接的静态依赖 (SDL3/libuv/Box2D) 必须带 -fPIC
+# 否则 Linux ld 报 R_X86_64_PC32 relocation 错误
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
 # SDL3 编译选项: 只要 video+events+gl, 不要 audio (我们用 miniaudio)/test/examples
 if(ANDROID)
     # Android: SDL3 必须为 SHARED (SDLActivity Java 通过 System.loadLibrary 加载)
