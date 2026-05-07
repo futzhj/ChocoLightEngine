@@ -19,6 +19,7 @@
 
 #include "light.h"
 #include "render_backend.h"
+#include "batch_renderer.h"
 #include <cstring>
 #include <cstdlib>
 #include <vector>
@@ -64,7 +65,9 @@ static void DrawLayer(TilemapData* tm, int layerIdx, float ox, float oy) {
     float uStep = tw / (float)tm->texW;
     float vStep = th / (float)tm->texH;
 
-    g_render->BindTexture(tm->texId);
+    // Phase A7: 优先 BatchRenderer (一屏几百 tile 在同一 batch)
+    const bool useBatch = BatchRenderer::IsInited();
+    if (!useBatch) g_render->BindTexture(tm->texId);
 
     for (int y = 0; y < layer.height; y++) {
         for (int x = 0; x < layer.width; x++) {
@@ -91,10 +94,14 @@ static void DrawLayer(TilemapData* tm, int layerIdx, float ox, float oy) {
                 {px + tw, py + th, 0, u1, v1, 1,1,1,1},
                 {px,      py + th, 0, u0, v1, 1,1,1,1},
             };
-            g_render->DrawArrays(DrawMode::Quads, verts, 4);
+            if (useBatch) {
+                BatchRenderer::SubmitQuad(verts, tm->texId);
+            } else {
+                g_render->DrawArrays(DrawMode::Quads, verts, 4);
+            }
         }
     }
-    g_render->BindTexture(0);
+    if (!useBatch) g_render->BindTexture(0);
 }
 
 // ==================== Lua 绑定 ====================

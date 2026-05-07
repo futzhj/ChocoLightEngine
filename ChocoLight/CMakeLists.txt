@@ -36,12 +36,12 @@ set(SDL_GPU           OFF CACHE BOOL "" FORCE)  # 不用 SDL_GPU
 FetchContent_Declare(
     SDL3
     GIT_REPOSITORY https://github.com/libsdl-org/SDL.git
-    GIT_TAG        release-3.2.0
+    GIT_TAG        release-3.2.30
     GIT_SHALLOW    TRUE
 )
 FetchContent_MakeAvailable(SDL3)
 
-message(STATUS "SDL3: integrated via FetchContent (release-3.2.0)")
+message(STATUS "SDL3: integrated via FetchContent (release-3.2.30)")
 
 # ==================== Box2D v2.4.1 (vendored, non-Web) ====================
 if(NOT EMSCRIPTEN)
@@ -133,6 +133,7 @@ set(LIGHT_SOURCES
     ${CHOCO_SRC}/light_antidebug.cpp
     ${CHOCO_SRC}/platform_window_sdl3.cpp
     ${CHOCO_SRC}/render_backend.cpp
+    ${CHOCO_SRC}/batch_renderer.cpp
     ${CHOCO_SRC}/render_gl33.cpp
     ${CHOCO_SRC}/light_audio_backend.cpp
     ${CHOCO_SRC}/light_platform_net.cpp

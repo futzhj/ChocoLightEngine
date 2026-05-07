@@ -100,9 +100,13 @@ void main() {
 class GL33Backend : public RenderBackend {
     GLuint vao = 0;
     GLuint vbo = 0;
+    GLuint ebo = 0;             // Phase A5: 静态索引缓冲, 与 BatchRenderer 配合
     GLuint program = 0;
     GLint  locMVP = -1;
     GLint  locUseTexture = -1;
+
+    // Phase A5: EBO 容量 (索引数), 由 BatchRenderer 一次性上传后永久不变
+    int eboCapacity = 0;
 
     // 当前颜色
     float curColor[4] = {1, 1, 1, 1};
@@ -184,14 +188,17 @@ public:
         locMVP = glGetUniformLocation(program, "uMVP");
         locUseTexture = glGetUniformLocation(program, "uUseTexture");
 
-        // 创建 VAO + VBO
+        // 创建 VAO + VBO + EBO (Phase A5)
         glGenVertexArrays(1, &vao);
         glGenBuffers(1, &vbo);
+        glGenBuffers(1, &ebo);
         glBindVertexArray(vao);
         glBindBuffer(GL_ARRAY_BUFFER, vbo);
         glBufferData(GL_ARRAY_BUFFER, INITIAL_VBO_CAPACITY * sizeof(RenderVertex),
                      nullptr, GL_DYNAMIC_DRAW);
         vboCapacity = INITIAL_VBO_CAPACITY;
+        // EBO 绑定到 VAO, BatchRenderer 首次 DrawIndexed 时上传索引数据
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebo);
 
         // 顶点属性: aPos(0), aTexCoord(1), aColor(2)
         glEnableVertexAttribArray(0);
@@ -222,8 +229,10 @@ public:
     void Shutdown() override {
         if (program) glDeleteProgram(program);
         if (vbo) glDeleteBuffers(1, &vbo);
+        if (ebo) glDeleteBuffers(1, &ebo);
         if (vao) glDeleteVertexArrays(1, &vao);
-        program = vao = vbo = 0;
+        program = vao = vbo = ebo = 0;
+        eboCapacity = 0;
     }
 
     const char* GetName() const override { return "GL33Core"; }
@@ -273,6 +282,49 @@ public:
     void LoadOrtho(float l, float r, float b, float t, float n, float f) override {
         projection = Mat4::Ortho(l, r, b, t, n, f);
         modelview = Mat4::Identity();
+    }
+
+    // ---- Phase A5: 索引绘制 (BatchRenderer 走此路径) ----
+    void DrawIndexed(const RenderVertex* verts, int vertexCount,
+                     const uint16_t* indices, int indexCount,
+                     uint32_t textureId) override {
+        if (!verts || !indices || vertexCount <= 0 || indexCount <= 0) return;
+
+        // 更新 MVP + 纹理 uniform
+        FlushMVP();
+        if (textureId) {
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_2D, (GLuint)textureId);
+            glUniform1i(locUseTexture, 1);
+            boundTex = (GLuint)textureId;
+        } else {
+            glUniform1i(locUseTexture, 0);
+        }
+
+        // 上传顶点数据
+        EnsureVBOCapacity(vertexCount);
+        glBindBuffer(GL_ARRAY_BUFFER, vbo);
+        glBufferSubData(GL_ARRAY_BUFFER, 0, vertexCount * sizeof(RenderVertex), verts);
+
+        // 上传索引数据 (EBO 已在 VAO 中绑定)
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebo);
+        if (indexCount > eboCapacity) {
+            // 扩容 (按 2 倍增长)
+            int newCap = eboCapacity ? eboCapacity : 1024;
+            while (newCap < indexCount) newCap *= 2;
+            glBufferData(GL_ELEMENT_ARRAY_BUFFER, newCap * sizeof(uint16_t),
+                         nullptr, GL_DYNAMIC_DRAW);
+            eboCapacity = newCap;
+        }
+        glBufferSubData(GL_ELEMENT_ARRAY_BUFFER, 0, indexCount * sizeof(uint16_t), indices);
+
+        // 一次性 indexed draw
+        glDrawElements(GL_TRIANGLES, indexCount, GL_UNSIGNED_SHORT, (void*)0);
+
+        if (textureId) {
+            glBindTexture(GL_TEXTURE_2D, 0);
+            boundTex = 0;
+        }
     }
 
     // ---- 绘制 ----

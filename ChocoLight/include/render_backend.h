@@ -85,6 +85,30 @@ public:
     // 提交顶点数组, 由后端决定 GPU 提交方式
     virtual void DrawArrays(DrawMode mode, const RenderVertex* verts, int count) = 0;
 
+    /// Phase A3 新增: 索引绘制 (Triangles 拓扑专用)
+    /// @param verts 顶点数组
+    /// @param vertexCount 顶点数 (uint16 索引上限 65536, 即 16384 quad)
+    /// @param indices 索引数组 (uint16, 必须是 3 的倍数)
+    /// @param indexCount 索引数
+    /// @param textureId 当前批次绑定的纹理 (0 = 纯色)
+    /// @note 默认实现退化为展开顶点 + DrawArrays(Triangles), 后端可重载为 glDrawElements
+    virtual void DrawIndexed(const RenderVertex* verts, int vertexCount,
+                             const uint16_t* indices, int indexCount,
+                             uint32_t textureId) {
+        if (!verts || !indices || indexCount <= 0) return;
+        // 默认实现: 按索引展开三角形顶点, 走 DrawArrays
+        std::vector<RenderVertex> expanded;
+        expanded.reserve(indexCount);
+        for (int i = 0; i < indexCount; ++i) {
+            uint16_t idx = indices[i];
+            if (idx >= (uint16_t)vertexCount) continue; // 安全跳过越界
+            expanded.push_back(verts[idx]);
+        }
+        if (textureId) BindTexture(textureId);
+        DrawArrays(DrawMode::Triangles, expanded.data(), (int)expanded.size());
+        if (textureId) UnbindTexture();
+    }
+
     // ---- 纹理 ----
     virtual uint32_t CreateTexture(int w, int h, int channels, const void* pixels) = 0;
     virtual void DeleteTexture(uint32_t texId) = 0;

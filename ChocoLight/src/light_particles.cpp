@@ -19,6 +19,7 @@
 
 #include "light.h"
 #include "render_backend.h"
+#include "batch_renderer.h"
 #include <cmath>
 #include <cstring>
 #include <cstdlib>
@@ -137,6 +138,8 @@ static void EmitterUpdate(ParticleEmitter* em, float dt) {
 
 static void EmitterDraw(ParticleEmitter* em) {
     if (!em || !g_render) return;
+    // Phase A7: 走 BatchRenderer 批渲染, 1024 粒子 1 draw call
+    const bool useBatch = BatchRenderer::IsInited();
     for (int i = 0; i < em->capacity; i++) {
         const Particle& p = em->pool[i];
         if (!p.active) continue;
@@ -152,7 +155,12 @@ static void EmitterDraw(ParticleEmitter* em) {
             verts[v].r = p.r; verts[v].g = p.g;
             verts[v].b = p.b; verts[v].a = p.a;
         }
-        g_render->DrawArrays(DrawMode::Quads, verts, 4);
+        if (useBatch) {
+            // 纯色粒子, textureId=0
+            BatchRenderer::SubmitQuad(verts, 0);
+        } else {
+            g_render->DrawArrays(DrawMode::Quads, verts, 4);
+        }
     }
 }
 

@@ -24,12 +24,40 @@
 
 #include "light.h"
 #include "render_backend.h"
+#include "batch_renderer.h"
 #include <cmath>
 #include <cstring>
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
 #endif
+
+// ==================== Phase A7: BatchRenderer helper ====================
+//
+// 统一替代 g_render->BindTexture + DrawArrays + UnbindTexture 三步组合:
+//   - BatchRenderer 已就绪: 走批渲染路径 (Quad/Triangles 累积, Lines/不规则立即提交)
+//   - 未就绪: fallback 到 g_render->DrawArrays (保持原有行为)
+//
+// textureId = 0 表示纯色(无纹理), 非 0 表示带纹理 quad/triangle
+static inline void SubmitOrDraw(DrawMode mode, const RenderVertex* verts, int count, uint32_t texId) {
+    if (BatchRenderer::IsInited()) {
+        if (mode == DrawMode::Quads && count == 4) {
+            BatchRenderer::SubmitQuad(verts, texId);
+        } else if (mode == DrawMode::Triangles) {
+            BatchRenderer::SubmitTriangles(verts, count, texId);
+        } else if (mode == DrawMode::Lines) {
+            BatchRenderer::SubmitLines(verts, count);
+        } else {
+            // LineLoop / LineStrip / TriangleFan / 多 quad
+            BatchRenderer::SubmitImmediate(mode, verts, count, texId);
+        }
+        return;
+    }
+    // fallback
+    if (texId) g_render->BindTexture(texId);
+    g_render->DrawArrays(mode, verts, count);
+    if (texId) g_render->UnbindTexture();
+}
 
 // ==================== 图形渲染上下文 ====================
 
@@ -337,15 +365,13 @@ static int l_Draw(lua_State* L) {
     float cb = g_ctx.drawColor[2], ca = g_ctx.drawColor[3];
 
     if (hasTex) {
-        g_render->BindTexture(texId);
         RenderVertex verts[4] = {
             {0,  0,  0,  0, 0,  cr, cg, cb, ca},
             {fw, 0,  0,  1, 0,  cr, cg, cb, ca},
             {fw, fh, 0,  1, 1,  cr, cg, cb, ca},
             {0,  fh, 0,  0, 1,  cr, cg, cb, ca},
         };
-        g_render->DrawArrays(DrawMode::Quads, verts, 4);
-        g_render->UnbindTexture();
+        SubmitOrDraw(DrawMode::Quads, verts, 4, texId); // Phase A7
     } else {
         RenderVertex verts[4] = {
             {0,  0,  0,  0, 0,  cr, cg, cb, ca},
@@ -353,7 +379,7 @@ static int l_Draw(lua_State* L) {
             {fw, fh, 0,  0, 0,  cr, cg, cb, ca},
             {0,  fh, 0,  0, 0,  cr, cg, cb, ca},
         };
-        g_render->DrawArrays(DrawMode::Quads, verts, 4);
+        SubmitOrDraw(DrawMode::Quads, verts, 4, 0); // Phase A7
     }
     g_render->PopMatrix();
     return 0;
@@ -393,15 +419,13 @@ static int l_DrawQuad(lua_State* L) {
     if (hasTex) {
         float u0 = qx / imgW, v0 = qy / imgH;
         float u1 = (qx + qw) / imgW, v1 = (qy + qh) / imgH;
-        g_render->BindTexture(texId);
         RenderVertex verts[4] = {
             {0,  0,  0,  u0, v0,  cr, cg, cb, ca},
             {qw, 0,  0,  u1, v0,  cr, cg, cb, ca},
             {qw, qh, 0,  u1, v1,  cr, cg, cb, ca},
             {0,  qh, 0,  u0, v1,  cr, cg, cb, ca},
         };
-        g_render->DrawArrays(DrawMode::Quads, verts, 4);
-        g_render->UnbindTexture();
+        SubmitOrDraw(DrawMode::Quads, verts, 4, texId); // Phase A7
     } else {
         RenderVertex verts[4] = {
             {0,  0,  0,  0, 0,  cr, cg, cb, ca},
@@ -409,7 +433,7 @@ static int l_DrawQuad(lua_State* L) {
             {qw, qh, 0,  0, 0,  cr, cg, cb, ca},
             {0,  qh, 0,  0, 0,  cr, cg, cb, ca},
         };
-        g_render->DrawArrays(DrawMode::Quads, verts, 4);
+        SubmitOrDraw(DrawMode::Quads, verts, 4, 0); // Phase A7
     }
     g_render->PopMatrix();
     return 0;
@@ -528,9 +552,16 @@ static int l_Print(lua_State* L) {
             glyphVerts.push_back({gx0, gy1, 0, gr.u0, gr.v1, cr, cg, cb, ca});
             cx += gr.xadvance;
         }
-        if (!glyphVerts.empty())
-            g_render->DrawArrays(DrawMode::Quads, glyphVerts.data(), (int)glyphVerts.size());
-        g_render->UnbindTexture();
+        if (!glyphVerts.empty()) {
+            // Phase A7: 文本字符 quad 走批渲染, 同一字体纹理 1 draw call
+            // SubmitOrDraw 内部判断: BatchRenderer 走 SubmitImmediate (多 quad 不能走 SubmitQuad), 未启用走 fallback
+            // 但文本场景下多 quad 同纹理, 最佳是在 BatchRenderer 内拆分 quad. 这里使用多-quad SubmitImmediate 保留原陷状态。
+            // 性能收益在 1000 字符场景仍为 1 draw call。
+            SubmitOrDraw(DrawMode::Quads, glyphVerts.data(), (int)glyphVerts.size(), fch->texId);
+            if (!BatchRenderer::IsInited()) g_render->UnbindTexture();
+        } else {
+            g_render->UnbindTexture();
+        }
     } else {
         float tw = (float)(strlen(text) * 10);
         RenderVertex verts[4] = {
@@ -946,15 +977,13 @@ static int l_DrawSprite(lua_State* L) {
     float ffW = (float)fw, ffH = (float)fh;
     float cr = g_ctx.drawColor[0], cg = g_ctx.drawColor[1];
     float cb = g_ctx.drawColor[2], ca = g_ctx.drawColor[3];
-    g_render->BindTexture(texId);
     RenderVertex verts[4] = {
         {0,   0,   0,  0, 0,  cr, cg, cb, ca},
         {ffW, 0,   0,  1, 0,  cr, cg, cb, ca},
         {ffW, ffH, 0,  1, 1,  cr, cg, cb, ca},
         {0,   ffH, 0,  0, 1,  cr, cg, cb, ca},
     };
-    g_render->DrawArrays(DrawMode::Quads, verts, 4);
-    g_render->UnbindTexture();
+    SubmitOrDraw(DrawMode::Quads, verts, 4, texId); // Phase A7
     g_render->PopMatrix();
 
     lua_pop(L, 2);  // pop frame + frames

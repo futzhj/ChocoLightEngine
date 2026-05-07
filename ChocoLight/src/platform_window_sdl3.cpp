@@ -156,12 +156,34 @@ static int SDLMouseButtonToGLFW(Uint8 btn) {
 
 bool Init() {
     if (s_initialized) return true;
+
+    // ==================== SDL_HINT 配置 (Phase A2) ====================
+    // 性能/兼容/IME 调优, 必须在 SDL_Init 之前调用才生效
+
+    // 双缓冲: 桌面/移动统一启用 (默认即开启, 显式声明意图)
+    SDL_SetHint(SDL_HINT_VIDEO_DOUBLE_BUFFER, "1");
+
+    // 鼠标焦点点击穿透: 焦点切换时第一次点击也可被处理 (UI/编辑器场景必需)
+    SDL_SetHint(SDL_HINT_MOUSE_FOCUS_CLICKTHROUGH, "1");
+
+    // 屏保抑制: 长时间静止画面也不触发屏保 (游戏/视频播放场景)
+    SDL_SetHint(SDL_HINT_VIDEO_ALLOW_SCREENSAVER, "0");
+
+    // App ID: Wayland/某些 Linux 桌面要求, 用于任务栏图标分组
+    SDL_SetHint(SDL_HINT_APP_ID, "com.chocolight.engine");
+
+    // IME: 启用候选词/合成文本 UI (中文/日文/韩文输入必需)
+    SDL_SetHint(SDL_HINT_IME_IMPLEMENTED_UI, "composition,candidates");
+
+    // VSync: 默认关闭, 由用户通过 Window:SetVSync 控制
+    SDL_SetHint(SDL_HINT_RENDER_VSYNC, "0");
+
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS | SDL_INIT_GAMEPAD)) {
         CC::Log(CC::LOG_ERROR, "PlatformWindow: SDL_Init failed: %s", SDL_GetError());
         return false;
     }
     s_initialized = true;
-    CC::Log(CC::LOG_INFO, "PlatformWindow: SDL3 initialized (gamepad enabled)");
+    CC::Log(CC::LOG_INFO, "PlatformWindow: SDL3 initialized (gamepad enabled, IME UI on, app_id=com.chocolight.engine)");
     return true;
 }
 

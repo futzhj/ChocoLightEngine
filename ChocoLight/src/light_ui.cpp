@@ -24,6 +24,7 @@
 #include "light.h"
 #include "light_antidebug.h"
 #include "render_backend.h"
+#include "batch_renderer.h"
 #include "light_audio_backend.h"
 #include "light_platform_net.h"
 #include "platform_window.h"
@@ -279,6 +280,11 @@ static int l_Window_Open(lua_State* L) {
     }
     CC::Log(CC::LOG_INFO, "Render backend: %s", g_render->GetName());
 
+    // Phase A7: 初始化 BatchRenderer (与 g_render 绑定, 失败不致命)
+    if (!BatchRenderer::Init(g_render)) {
+        CC::Log(CC::LOG_WARN, "BatchRenderer init failed, falling back to per-call rendering");
+    }
+
     // 初始化音频后端
     if (!AudioBackend::Init()) {
         CC::Log(CC::LOG_WARN, "AudioBackend: init failed, audio will be unavailable");
@@ -421,6 +427,7 @@ static int l_Window_Call(lua_State* L) {
     if (g_render) {
         g_render->BeginFrame(0, 0, 0, 1);
     }
+    if (BatchRenderer::IsInited()) BatchRenderer::BeginFrame();
 
     // Draw 回调
     lua_getfield(L, 1, "Draw");
@@ -448,6 +455,7 @@ static int l_Window_Call(lua_State* L) {
     }
 
     // 结束帧 + 交换缓冲区
+    if (BatchRenderer::IsInited()) BatchRenderer::EndFrame();
     if (g_render) g_render->EndFrame();
     PlatformWindow::SwapBuffers(g_mainWindow);
 
@@ -490,6 +498,7 @@ static int l_UI_Resume(lua_State* L) {
             }
             PlatformNet::Shutdown();
             AudioBackend::Shutdown();
+            BatchRenderer::Shutdown();
             if (g_render) {
                 g_render->Shutdown();
                 delete g_render;
