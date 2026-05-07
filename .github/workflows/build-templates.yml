@@ -49,6 +49,7 @@ jobs:
           $physicsSmoke = Resolve-Path "scripts\smoke\physics_p0_p1.lua"
           $phase3Smoke = Resolve-Path "scripts\smoke\phase3_runtime.lua"
           $phase3WindowSmoke = Resolve-Path "scripts\smoke\phase3_window_runtime.lua"
+          $ioStorageSmoke = Resolve-Path "scripts\smoke\io_storage.lua"
           Copy-Item ChocoLight\build\bin\Release\Light.dll $runtimeDir -Force
           & "$runtimeDir\light.exe" $coreSmoke
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -57,6 +58,8 @@ jobs:
           & "$runtimeDir\light.exe" $phase3Smoke
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & "$runtimeDir\light.exe" $phase3WindowSmoke
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & "$runtimeDir\light.exe" $ioStorageSmoke
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Package Windows Template

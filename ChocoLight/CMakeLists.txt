@@ -131,6 +131,8 @@ set(LIGHT_SOURCES
     ${CHOCO_SRC}/light_ui_widget.cpp
     ${CHOCO_SRC}/light_crypto.cpp
     ${CHOCO_SRC}/light_antidebug.cpp
+    ${CHOCO_SRC}/light_io.cpp
+    ${CHOCO_SRC}/light_storage.cpp
     ${CHOCO_SRC}/platform_window_sdl3.cpp
     ${CHOCO_SRC}/render_backend.cpp
     ${CHOCO_SRC}/batch_renderer.cpp
