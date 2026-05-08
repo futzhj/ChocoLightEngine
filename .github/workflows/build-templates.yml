@@ -67,6 +67,7 @@ jobs:
           $phaseRSmoke = Resolve-Path "scripts\smoke\pixels.lua"
           $phaseSSmoke = Resolve-Path "scripts\smoke\blendmode.lua"
           $phaseTSmoke = Resolve-Path "scripts\smoke\filesystem.lua"
+          $phaseUSmoke = Resolve-Path "scripts\smoke\cpuinfo.lua"
           Copy-Item ChocoLight\build\bin\Release\Light.dll $runtimeDir -Force
           & "$runtimeDir\light.exe" $coreSmoke
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -111,6 +112,8 @@ jobs:
           & "$runtimeDir\light.exe" $phaseSSmoke
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & "$runtimeDir\light.exe" $phaseTSmoke
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & "$runtimeDir\light.exe" $phaseUSmoke
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Package Windows Template
