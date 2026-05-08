@@ -166,6 +166,7 @@ set(LIGHT_SOURCES
     ${CHOCO_SRC}/light_error.cpp
     ${CHOCO_SRC}/light_loadso.cpp
     ${CHOCO_SRC}/light_version.cpp
+    ${CHOCO_SRC}/light_properties.cpp
     ${CHOCO_SRC}/platform_window_sdl3.cpp
     ${CHOCO_SRC}/render_backend.cpp
     ${CHOCO_SRC}/batch_renderer.cpp
