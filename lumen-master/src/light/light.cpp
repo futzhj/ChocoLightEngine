@@ -469,6 +469,7 @@ static const struct { const char *modName; const char *procName; } g_lightModule
     {"Light.BlendMode",           "luaopen_Light_BlendMode"},
     {"Light.Filesystem",          "luaopen_Light_Filesystem"},
     {"Light.CPUInfo",             "luaopen_Light_CPUInfo"},
+    {"Light.Error",               "luaopen_Light_Error"},
     {"Light.Record",              "luaopen_Light_Record"},
     {"Light.Plugins",             "luaopen_Light_Plugins"},
     {"Light.Plugins.WDFData",     "luaopen_Light_Plugins_WDFData"},
