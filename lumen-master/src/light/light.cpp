@@ -1,4 +1,4 @@
-ï»¿/*!
+/*!
  * @brief Lua stand-alone interpreter
  * @author Lua.org, PUC-Rio, Jakit (https://github.com/jakitliang/lumen)
  * @date 2025/5/13
@@ -16,7 +16,7 @@
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
-// windows.h çš„ Yield å®ä¸ Lumen::IState::Yield() å†²çª
+// windows.h µÄ Yield ºêÓë Lumen::IState::Yield() ³åÍ»
 #undef Yield
 #elif defined(__APPLE__)
 #include <mach-o/dyld.h>  // _NSGetExecutablePath
@@ -443,6 +443,9 @@ static const struct { const char *modName; const char *procName; } g_lightModule
     {"Light.Crypto",              "luaopen_Light_Crypto"},
     {"Light.IO",                  "luaopen_Light_IO"},
     {"Light.Storage",             "luaopen_Light_Storage"},
+    {"Light.Locale",              "luaopen_Light_Locale"},
+    {"Light.Power",               "luaopen_Light_Power"},
+    {"Light.Sensor",              "luaopen_Light_Sensor"},
     {"Light.Record",              "luaopen_Light_Record"},
     {"Light.Plugins",             "luaopen_Light_Plugins"},
     {"Light.Plugins.WDFData",     "luaopen_Light_Plugins_WDFData"},
@@ -482,7 +485,7 @@ static void loadLightEngine(Lumen::IState *L) {
     }
 }
 
-#endif // _WIN32 â€” loadLightEngine is Windows-only
+#endif // _WIN32 ¡ª loadLightEngine is Windows-only
 
 // ==================== Pack Header: load encrypted script from exe tail ====================
 // Format: [exe][encrypted payload][128-byte header with LMPK magic]
@@ -669,7 +672,7 @@ static int pMain(Lumen::IState *L) {
     L->OpenLibs();  /* open libraries */
 
 #ifdef _WIN32
-    loadLightEngine(L);    /* è‡ªåŠ¨é¢„åŠ è½½ Light.dll å¼•æ“æ¨¡å— */
+    loadLightEngine(L);    /* ×Ô¶¯Ô¤¼ÓÔØ Light.dll ÒıÇæÄ£¿é */
 #endif
 
     L->GC(Lumen::GCRestart, 0);
