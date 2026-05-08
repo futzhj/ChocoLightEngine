@@ -118,10 +118,12 @@ local cl = mod.ClearClipboardData()
 assert(type(cl) == "boolean", "ClearClipboardData must return boolean")
 pass("ClearClipboardData returns boolean ok (value=" .. tostring(cl) .. ")")
 
--- 13) Boundary: SetText with non-string raises
-local rok = pcall(mod.SetText, 12345)
-if rok then fail("SetText(number) should raise") end
-pass("SetText(non-string) raises ok")
+-- 13) Boundary: SetText with non-coercible type raises.
+-- NB: Lua 5.1's luaL_checkstring silently coerces numbers via lua_tolstring,
+-- so 12345 -> "12345". Use a table to force a real type error.
+local rok = pcall(mod.SetText, {})
+if rok then fail("SetText(table) should raise") end
+pass("SetText(non-coercible) raises ok")
 
 -- 14) Boundary: GetClipboardData requires mime arg
 local rok2 = pcall(mod.GetClipboardData) -- nil arg
