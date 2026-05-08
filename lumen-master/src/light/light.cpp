@@ -453,6 +453,7 @@ static const struct { const char *modName; const char *procName; } g_lightModule
     {"Light.URL",                 "luaopen_Light_URL"},
     {"Light.Display",             "luaopen_Light_Display"},
     {"Light.Cursor",              "luaopen_Light_Cursor"},
+    {"Light.Gamepad",             "luaopen_Light_Gamepad"},
     {"Light.Record",              "luaopen_Light_Record"},
     {"Light.Plugins",             "luaopen_Light_Plugins"},
     {"Light.Plugins.WDFData",     "luaopen_Light_Plugins_WDFData"},
