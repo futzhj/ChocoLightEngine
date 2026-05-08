@@ -466,6 +466,7 @@ static const struct { const char *modName; const char *procName; } g_lightModule
     {"Light.Endian",              "luaopen_Light_Endian"},
     {"Light.Log",                 "luaopen_Light_Log"},
     {"Light.Pixels",              "luaopen_Light_Pixels"},
+    {"Light.BlendMode",           "luaopen_Light_BlendMode"},
     {"Light.Record",              "luaopen_Light_Record"},
     {"Light.Plugins",             "luaopen_Light_Plugins"},
     {"Light.Plugins.WDFData",     "luaopen_Light_Plugins_WDFData"},
