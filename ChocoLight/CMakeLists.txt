@@ -158,6 +158,7 @@ set(LIGHT_SOURCES
     ${CHOCO_SRC}/light_hints.cpp
     ${CHOCO_SRC}/light_time.cpp
     ${CHOCO_SRC}/light_endian.cpp
+    ${CHOCO_SRC}/light_log.cpp
     ${CHOCO_SRC}/platform_window_sdl3.cpp
     ${CHOCO_SRC}/render_backend.cpp
     ${CHOCO_SRC}/batch_renderer.cpp
