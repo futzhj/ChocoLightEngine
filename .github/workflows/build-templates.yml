@@ -80,6 +80,7 @@ jobs:
           $phaseAESmoke = Resolve-Path "scripts\smoke\iostream.lua"
           $phaseAFSmoke = Resolve-Path "scripts\smoke\surface.lua"
           $phaseAGSmoke = Resolve-Path "scripts\smoke\keyboard.lua"
+          $phaseAHSmoke = Resolve-Path "scripts\smoke\mouse.lua"
           Copy-Item ChocoLight\build\bin\Release\Light.dll $runtimeDir -Force
           & "$runtimeDir\light.exe" $coreSmoke
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -150,6 +151,8 @@ jobs:
           & "$runtimeDir\light.exe" $phaseAFSmoke
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & "$runtimeDir\light.exe" $phaseAGSmoke
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & "$runtimeDir\light.exe" $phaseAHSmoke
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Package Windows Template
