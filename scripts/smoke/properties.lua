@@ -142,13 +142,26 @@ mod.DestroyProperties(src)
 mod.DestroyProperties(dst)
 pass("CopyProperties ok")
 
--- 13) Wrong-type get returns default (SDL silent fallback)
+-- 13) Wrong-type get coerces silently
+-- SDL_GetNumberProperty on a STRING calls SDL_strtoll => "abc" -> 0
+-- (NOT the default value). Just verify the call returns the right Lua type
+-- without raising; exact value depends on SDL's coercion rules.
 mod.SetStringProperty(p, "stringy", "abc")
-assert(mod.GetNumberProperty(p, "stringy", 7) == 7,
-       "wrong-type number get must return default")
-assert(mod.GetBooleanProperty(p, "stringy", false) == false,
-       "wrong-type bool get must return default")
-pass("Wrong-type get falls back to default ok")
+local coerced_n = mod.GetNumberProperty(p, "stringy", 7)
+assert(type(coerced_n) == "number",
+       "wrong-type number get must still return a number, got " .. type(coerced_n))
+local coerced_b = mod.GetBooleanProperty(p, "stringy", false)
+assert(type(coerced_b) == "boolean",
+       "wrong-type bool get must still return a bool, got " .. type(coerced_b))
+-- Numeric coercion of non-numeric string yields 0 (not the default).
+mod.SetStringProperty(p, "garbage", "not-a-number")
+assert(mod.GetNumberProperty(p, "garbage", 999) == 0,
+       "non-numeric string coerces to 0, default is ignored when key exists")
+-- Numeric coercion of a numeric string DOES work.
+mod.SetStringProperty(p, "numstr", "1234")
+assert(mod.GetNumberProperty(p, "numstr", 0) == 1234,
+       "numeric string coerces to its integer value")
+pass("Wrong-type get silently coerces (SDL behavior, not default fallback)")
 
 -- 14) DestroyProperties
 mod.DestroyProperties(p)
