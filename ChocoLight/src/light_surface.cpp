@@ -126,11 +126,15 @@ static int NewHandle(lua_State* L, SDL_Surface* s) {
     lua_setmetatable(L, -2);
     return 1;
 }
-// Try to read a 4-int rect starting at idx. If args[idx] is a number we
-// consume 4 ints and advance next_idx by 4; otherwise we leave next_idx
-// untouched. Returns true when a rect was consumed.
+// Try to read a 4-int rect starting at idx. We only treat the slot as a
+// rect when args[idx..idx+3] are ALL numbers. This avoids ambiguity where
+// FillSurfaceRect(s, color) passes a single number that would otherwise be
+// mistaken for rect.x and crash on the missing rect.y. lua_isnumber on an
+// out-of-range argument is documented as returning 0 (i.e., false), so it
+// is safe to peek past the end of the call.
 static bool TryReadRect(lua_State* L, int idx, SDL_Rect& r, int& next_idx) {
-    if (!lua_isnumber(L, idx)) {
+    if (!lua_isnumber(L, idx)     || !lua_isnumber(L, idx + 1) ||
+        !lua_isnumber(L, idx + 2) || !lua_isnumber(L, idx + 3)) {
         next_idx = idx;
         return false;
     }
