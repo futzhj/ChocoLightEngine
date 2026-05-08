@@ -474,6 +474,7 @@ static const struct { const char *modName; const char *procName; } g_lightModule
     {"Light.Version",             "luaopen_Light_Version"},
     {"Light.Properties",          "luaopen_Light_Properties"},
     {"Light.Misc",                "luaopen_Light_Misc"},
+    {"Light.Rect",                "luaopen_Light_Rect"},
     {"Light.Record",              "luaopen_Light_Record"},
     {"Light.Plugins",             "luaopen_Light_Plugins"},
     {"Light.Plugins.WDFData",     "luaopen_Light_Plugins_WDFData"},
