@@ -154,6 +154,7 @@ set(LIGHT_SOURCES
     ${CHOCO_SRC}/light_hidapi.cpp
     ${CHOCO_SRC}/light_haptic.cpp
     ${CHOCO_SRC}/light_dialog.cpp
+    ${CHOCO_SRC}/light_touch.cpp
     ${CHOCO_SRC}/platform_window_sdl3.cpp
     ${CHOCO_SRC}/render_backend.cpp
     ${CHOCO_SRC}/batch_renderer.cpp
