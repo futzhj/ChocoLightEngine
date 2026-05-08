@@ -16,7 +16,7 @@
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
-// windows.h µÄ Yield ºêÓë Lumen::IState::Yield() ³åÍ»
+// windows.h çš„ Yield å®ä¸ Lumen::IState::Yield() å†²çª
 #undef Yield
 #elif defined(__APPLE__)
 #include <mach-o/dyld.h>  // _NSGetExecutablePath
@@ -461,6 +461,7 @@ static const struct { const char *modName; const char *procName; } g_lightModule
     {"Light.Haptic",              "luaopen_Light_Haptic"},
     {"Light.Dialog",              "luaopen_Light_Dialog"},
     {"Light.Touch",               "luaopen_Light_Touch"},
+    {"Light.Hints",               "luaopen_Light_Hints"},
     {"Light.Record",              "luaopen_Light_Record"},
     {"Light.Plugins",             "luaopen_Light_Plugins"},
     {"Light.Plugins.WDFData",     "luaopen_Light_Plugins_WDFData"},
@@ -500,7 +501,7 @@ static void loadLightEngine(Lumen::IState *L) {
     }
 }
 
-#endif // _WIN32 ¡ª loadLightEngine is Windows-only
+#endif // _WIN32 â€” loadLightEngine is Windows-only
 
 // ==================== Pack Header: load encrypted script from exe tail ====================
 // Format: [exe][encrypted payload][128-byte header with LMPK magic]
@@ -687,7 +688,7 @@ static int pMain(Lumen::IState *L) {
     L->OpenLibs();  /* open libraries */
 
 #ifdef _WIN32
-    loadLightEngine(L);    /* ×Ô¶¯Ô¤¼ÓÔØ Light.dll ÒıÇæÄ£¿é */
+    loadLightEngine(L);    /* è‡ªåŠ¨é¢„åŠ è½½ Light.dll å¼•æ“æ¨¡å— */
 #endif
 
     L->GC(Lumen::GCRestart, 0);
