@@ -52,6 +52,7 @@ jobs:
           $ioStorageSmoke = Resolve-Path "scripts\smoke\io_storage.lua"
           $localeSmoke = Resolve-Path "scripts\smoke\locale_power_sensor.lua"
           $phaseESmoke = Resolve-Path "scripts\smoke\process_camera_messagebox.lua"
+          $phaseFSmoke = Resolve-Path "scripts\smoke\clipboard_url_display_cursor.lua"
           Copy-Item ChocoLight\build\bin\Release\Light.dll $runtimeDir -Force
           & "$runtimeDir\light.exe" $coreSmoke
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -66,6 +67,8 @@ jobs:
           & "$runtimeDir\light.exe" $localeSmoke
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & "$runtimeDir\light.exe" $phaseESmoke
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & "$runtimeDir\light.exe" $phaseFSmoke
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Package Windows Template

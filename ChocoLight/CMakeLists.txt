@@ -143,6 +143,10 @@ set(LIGHT_SOURCES
     ${CHOCO_SRC}/light_process.cpp
     ${CHOCO_SRC}/light_camera.cpp
     ${CHOCO_SRC}/light_messagebox.cpp
+    ${CHOCO_SRC}/light_clipboard.cpp
+    ${CHOCO_SRC}/light_url.cpp
+    ${CHOCO_SRC}/light_display.cpp
+    ${CHOCO_SRC}/light_cursor.cpp
     ${CHOCO_SRC}/platform_window_sdl3.cpp
     ${CHOCO_SRC}/render_backend.cpp
     ${CHOCO_SRC}/batch_renderer.cpp
