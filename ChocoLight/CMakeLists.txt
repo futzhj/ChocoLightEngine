@@ -148,6 +148,8 @@ set(LIGHT_SOURCES
     ${CHOCO_SRC}/light_display.cpp
     ${CHOCO_SRC}/light_cursor.cpp
     ${CHOCO_SRC}/light_gamepad.cpp
+    ${CHOCO_SRC}/light_guid.cpp
+    ${CHOCO_SRC}/light_system.cpp
     ${CHOCO_SRC}/platform_window_sdl3.cpp
     ${CHOCO_SRC}/render_backend.cpp
     ${CHOCO_SRC}/batch_renderer.cpp
