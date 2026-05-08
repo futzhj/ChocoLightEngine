@@ -105,9 +105,15 @@ assert(mod.PointInRectFloat(2.0, 2.0,  0.0, 0.0, 1.0, 1.0) == false)
 pass("PointInRectFloat ok")
 
 -- 11) RectEmptyFloat
-assert(mod.RectEmptyFloat(0, 0, 0, 0) == true)
-assert(mod.RectEmptyFloat(0, 0, 1, 1) == false)
-pass("RectEmptyFloat ok")
+-- NB: SDL_RectEmptyFloat uses STRICT (w < 0 || h < 0), unlike the integer
+-- version which uses (w <= 0 || h <= 0). So a 0x0 float rect is NOT empty.
+assert(mod.RectEmptyFloat(0, 0, 0, 0) == false,
+       "(0,0,0,0) is NOT empty for float (strict < 0)")
+assert(mod.RectEmptyFloat(0, 0, -1, 1) == true,
+       "negative w is empty for float")
+assert(mod.RectEmptyFloat(0, 0, 1, 1) == false,
+       "1x1 is not empty")
+pass("RectEmptyFloat ok (3 cases, asymmetric semantics vs int version)")
 
 -- 12) RectsEqualFloat: bitwise equal
 assert(mod.RectsEqualFloat(1.0, 2.0, 3.0, 4.0, 1.0, 2.0, 3.0, 4.0) == true)
