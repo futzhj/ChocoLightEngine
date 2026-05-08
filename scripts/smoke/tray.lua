@@ -11,7 +11,7 @@ if not ok then fail("require(Light.Tray) failed: " .. tostring(mod)) end
 if type(mod) ~= "table" then fail("Light.Tray not a table") end
 
 for _, k in ipairs({
-    "Create", "Destroy", "SetTooltip",
+    "Create", "Destroy", "SetTooltip", "SetIconFromFile",
     "GetMenu", "AddButton", "AddCheckbox", "AddSeparator", "AddSubmenu",
     "SetEntryLabel", "GetEntryLabel",
     "SetEntryEnabled", "GetEntryEnabled",
@@ -20,7 +20,7 @@ for _, k in ipairs({
 }) do
     if type(mod[k]) ~= "function" then fail("Light.Tray." .. k .. " missing") end
 end
-pass("Light.Tray module ok (17 functions)")
+pass("Light.Tray module ok (18 functions)")
 
 -- ===== 边界路径: 无 handle 的调用应安全返回 nil/false + err =====
 local d, derr = mod.Destroy(nil)
@@ -34,6 +34,11 @@ pass("Light.Tray.SetTooltip(nil) boundary ok: " .. tostring(terr))
 local m, merr = mod.GetMenu(nil)
 if m ~= nil or merr == nil then fail("GetMenu(nil) should be nil+err") end
 pass("Light.Tray.GetMenu(nil) boundary ok: " .. tostring(merr))
+
+-- SetIconFromFile 边界: 无 tray handle / 不存在文件
+local i1, i1err = mod.SetIconFromFile(nil, "x.png")
+if i1 ~= false or i1err == nil then fail("SetIconFromFile(nil) should be false+err") end
+pass("Light.Tray.SetIconFromFile(nil) boundary ok: " .. tostring(i1err))
 
 local b, berr = mod.AddButton(nil, "x")
 if b ~= nil or berr == nil then fail("AddButton(nil) should be nil+err") end
@@ -66,6 +71,11 @@ else
     local ok2, terr2 = mod.SetTooltip(tray, "Updated tooltip")
     if ok2 ~= true then fail("SetTooltip on valid tray failed: " .. tostring(terr2)) end
     pass("Light.Tray.SetTooltip(tray) ok")
+
+    -- SetIconFromFile 不存在文件路径: stb_image 应返 nil + err, Lua 拿到 false + err
+    local i2, i2err = mod.SetIconFromFile(tray, "this_file_definitely_does_not_exist_xyz.png")
+    if i2 ~= false or i2err == nil then fail("SetIconFromFile(missing) should be false+err") end
+    pass("Light.Tray.SetIconFromFile(missing file) boundary ok: " .. tostring(i2err))
 
     -- 创建 menu + 几个 entry
     local menu = mod.GetMenu(tray)

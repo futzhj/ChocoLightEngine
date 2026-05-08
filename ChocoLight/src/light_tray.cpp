@@ -8,10 +8,11 @@
  * 改用 polling 模式: 内部为每个 entry 自动注册 click-count 累加 callback,
  * Lua 端调用 Light.Tray.WasClicked(entry) 拿到 (并清零) 累计次数.
  *
- * Lua API (17 fns):
- *   Light.Tray.Create(tooltip)          -> tray_handle, err            (icon 不支持; 后续 Phase 加)
- *   Light.Tray.Destroy(tray)            -> ok, err
- *   Light.Tray.SetTooltip(tray, str)    -> ok, err
+ * Lua API (18 fns):
+ *   Light.Tray.Create(tooltip)              -> tray_handle, err
+ *   Light.Tray.Destroy(tray)                -> ok, err
+ *   Light.Tray.SetTooltip(tray, str)        -> ok, err
+ *   Light.Tray.SetIconFromFile(tray, path)  -> ok, err   (Phase I.2: PNG/JPG -> SDL_Surface 桥接)
  *
  *   Light.Tray.GetMenu(tray)            -> menu_handle, err            (首次调用会创建 menu)
  *   Light.Tray.AddButton(menu, label)   -> entry_handle, err
@@ -43,9 +44,11 @@
 #include "light.h"
 
 #include <SDL3/SDL.h>
+#include "stb_image.h"
 
 #include <unordered_map>
 #include <mutex>
+#include <cstring>
 
 extern "C" {
 #include "lua.h"
@@ -99,6 +102,53 @@ static int l_Tray_SetTooltip(lua_State* L) {
     if (!tray) { lua_pushboolean(L, 0); lua_pushstring(L, "invalid tray handle"); return 2; }
     const char* s = luaL_checkstring(L, 2);
     SDL_SetTrayTooltip(tray, s);
+    lua_pushboolean(L, 1);
+    lua_pushnil(L);
+    return 2;
+}
+
+// ==================== Light.Tray.SetIconFromFile (Phase I.2) ====================
+//
+// stb_image 加载 PNG/JPG/BMP 为 RGBA pixels -> SDL_CreateSurface(RGBA32) ->
+// 逐行 memcpy (应对 surface->pitch 可能的对齐填充) -> SDL_SetTrayIcon ->
+// 立即 SDL_DestroySurface (SDL3 各平台后端都会复制为 native icon, surface 不需 retain).
+//
+// 平台限制: dummy backend (Web/Android/iOS) 上 SDL_SetTrayIcon 是 noop, 返回 ok.
+static int l_Tray_SetIconFromFile(lua_State* L) {
+    SDL_Tray* tray = CheckTray(L, 1);
+    if (!tray) { lua_pushboolean(L, 0); lua_pushstring(L, "invalid tray handle"); return 2; }
+    const char* path = luaL_checkstring(L, 2);
+
+    int w = 0, h = 0, ch = 0;
+    stbi_set_flip_vertically_on_load(0);
+    unsigned char* pixels = stbi_load(path, &w, &h, &ch, /*force RGBA*/ 4);
+    if (!pixels || w <= 0 || h <= 0) {
+        lua_pushboolean(L, 0);
+        lua_pushfstring(L, "failed to load image '%s': %s", path,
+                        stbi_failure_reason() ? stbi_failure_reason() : "unknown");
+        return 2;
+    }
+
+    // 创建 SDL_Surface (不拾手 stb 内存, 避免 ownership 混乱)
+    SDL_Surface* surface = SDL_CreateSurface(w, h, SDL_PIXELFORMAT_RGBA32);
+    if (!surface) {
+        stbi_image_free(pixels);
+        lua_pushboolean(L, 0);
+        lua_pushstring(L, SDL_GetError());
+        return 2;
+    }
+
+    // 逐行复制 (surface->pitch 可能 != w*4, SDL3 内部可能对齐)
+    const int row_bytes = w * 4;
+    unsigned char* dst = (unsigned char*)surface->pixels;
+    for (int y = 0; y < h; ++y) {
+        std::memcpy(dst + y * surface->pitch, pixels + y * row_bytes, (size_t)row_bytes);
+    }
+    stbi_image_free(pixels);
+
+    SDL_SetTrayIcon(tray, surface);
+    SDL_DestroySurface(surface);  // SDL3 已复制为 native icon
+
     lua_pushboolean(L, 1);
     lua_pushnil(L);
     return 2;
@@ -282,6 +332,7 @@ extern "C" LIGHT_API int luaopen_Light_Tray(lua_State* L) {
         { "Create",           l_Tray_Create           },
         { "Destroy",          l_Tray_Destroy          },
         { "SetTooltip",       l_Tray_SetTooltip       },
+        { "SetIconFromFile",  l_Tray_SetIconFromFile  },
         { "GetMenu",          l_Tray_GetMenu          },
         { "AddButton",        l_Tray_AddButton        },
         { "AddCheckbox",      l_Tray_AddCheckbox      },
