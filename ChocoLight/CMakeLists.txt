@@ -140,6 +140,9 @@ set(LIGHT_SOURCES
     ${CHOCO_SRC}/light_locale.cpp
     ${CHOCO_SRC}/light_power.cpp
     ${CHOCO_SRC}/light_sensor.cpp
+    ${CHOCO_SRC}/light_process.cpp
+    ${CHOCO_SRC}/light_camera.cpp
+    ${CHOCO_SRC}/light_messagebox.cpp
     ${CHOCO_SRC}/platform_window_sdl3.cpp
     ${CHOCO_SRC}/render_backend.cpp
     ${CHOCO_SRC}/batch_renderer.cpp
