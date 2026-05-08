@@ -35,11 +35,26 @@
  *   Light.Tray.WasClicked(entry)        -> int_count_then_reset
  *   Light.Tray.Update()                 -> 每帧调用; 平台 event loop pump
  *
+ *   Phase I.3 — Lua callback (与 WasClicked 轮询模型共存):
+ *     Light.Tray.SetClickCallback(entry, fn|nil)  -> ok, err
+ *       注册主线程 Lua 回调。fn 签名: function(count_int).
+ *       传 nil 取消。
+ *     Light.Tray.PollCallbacks()                  -> dispatched_count
+ *       主线程调用 (通常在 Update 后). 扫描所有已注册回调的 entry,
+ *       count>0 则 pcall(fn, count) 并清零 counter. pcall 异常仅警告, 不中断派发.
+ *
+ * 跨线程安全设计:
+ *   SDL_tray native callback 可能在 OS message 线程触发 (特别是 Windows),
+ *   在那个上下文直接调 lua_pcall 危险 (lua_State 非线程安全). 本模块的
+ *   native trampoline 只同步 ++count (用 mutex), 所有 lua_pcall 都在
+ *   PollCallbacks 主线程调用中执行.
+ *
  * 生命周期:
  *   Light.Tray.Destroy(tray) 会调用 SDL_DestroyTray, SDL3 内部级联销毁 menu/entry.
  *   销毁后所有 entry/menu lightuserdata 失效, Lua 端不应再使用.
- *   click counts map 在 Destroy 时不主动清理 (避免遍历内部 entry tree),
- *   而是在 Update 前判定 entry 是否已死. 简化版本: 直接 leak 几条 int (可忽略).
+ *   click counts 与 callback ref 在 RemoveEntry 时单条清理; 在 Destroy 前
+ *   推荐先 SetClickCallback(entry, nil) 取消所有回调 (避免 Lua ref 泄漏).
+ *   最坏情况: 进程生命期内 leak 几个 int + 几个 Lua function ref, 可接受.
  */
 #include "light.h"
 
@@ -48,6 +63,8 @@
 
 #include <unordered_map>
 #include <mutex>
+#include <vector>
+#include <utility>
 #include <cstring>
 
 extern "C" {
@@ -63,8 +80,18 @@ extern "C" {
 static std::unordered_map<SDL_TrayEntry*, int> g_click_counts;
 static std::mutex g_click_mutex;
 
+// Phase I.3: 另一张 map 存 Lua callback ref
+// 锁顺序约定: 永远先 g_cb_mutex 再 g_click_mutex (实际上本文件不嵌套加锁,仅为安全).
+struct CbSlot {
+    int        lua_ref;  // luaL_ref 在 LUA_REGISTRYINDEX
+    lua_State* L;        // 注册时的 lua_State (主线程)
+};
+static std::unordered_map<SDL_TrayEntry*, CbSlot> g_callbacks;
+static std::mutex g_cb_mutex;
+
 static void SDLCALL TrayClickTrampoline(void* /*userdata*/, SDL_TrayEntry* entry) {
     if (!entry) return;
+    // 只计数, 不调 lua. lua_pcall 推迟到 PollCallbacks (主线程).
     std::lock_guard<std::mutex> lk(g_click_mutex);
     g_click_counts[entry] += 1;
 }
@@ -292,6 +319,21 @@ static int l_Tray_GetEntryChecked(lua_State* L) {
 static int l_Tray_RemoveEntry(lua_State* L) {
     SDL_TrayEntry* e = CheckEntry(L, 1);
     if (!e) { lua_pushboolean(L, 0); lua_pushstring(L, "invalid entry handle"); return 2; }
+
+    // 清理该 entry 对应的 Lua callback ref (Phase I.3)
+    int old_ref = LUA_NOREF;
+    {
+        std::lock_guard<std::mutex> lk(g_cb_mutex);
+        auto it = g_callbacks.find(e);
+        if (it != g_callbacks.end()) {
+            old_ref = it->second.lua_ref;
+            g_callbacks.erase(it);
+        }
+    }
+    if (old_ref != LUA_NOREF) {
+        luaL_unref(L, LUA_REGISTRYINDEX, old_ref);
+    }
+
     {
         std::lock_guard<std::mutex> lk(g_click_mutex);
         g_click_counts.erase(e);
@@ -325,6 +367,107 @@ static int l_Tray_Update(lua_State* /*L*/) {
     return 0;
 }
 
+// ==================== Phase I.3: Lua Callback ====================
+
+// SetClickCallback(entry, function|nil) -> ok, err
+static int l_Tray_SetClickCallback(lua_State* L) {
+    SDL_TrayEntry* e = CheckEntry(L, 1);
+    if (!e) {
+        lua_pushboolean(L, 0);
+        lua_pushstring(L, "invalid entry handle");
+        return 2;
+    }
+    int arg2_type = lua_type(L, 2);
+    if (arg2_type != LUA_TFUNCTION && arg2_type != LUA_TNIL) {
+        lua_pushboolean(L, 0);
+        lua_pushstring(L, "callback must be a function or nil");
+        return 2;
+    }
+
+    // 取老 ref (该 entry 以前的注册)
+    int old_ref = LUA_NOREF;
+    {
+        std::lock_guard<std::mutex> lk(g_cb_mutex);
+        auto it = g_callbacks.find(e);
+        if (it != g_callbacks.end()) {
+            old_ref = it->second.lua_ref;
+        }
+    }
+
+    if (arg2_type == LUA_TNIL) {
+        // 取消注册
+        {
+            std::lock_guard<std::mutex> lk(g_cb_mutex);
+            g_callbacks.erase(e);
+        }
+        if (old_ref != LUA_NOREF) {
+            luaL_unref(L, LUA_REGISTRYINDEX, old_ref);
+        }
+    } else {
+        // 同一 entry 重复注册 -> 先 unref 老的
+        if (old_ref != LUA_NOREF) {
+            luaL_unref(L, LUA_REGISTRYINDEX, old_ref);
+        }
+        // 压一份 function 副本 (luaL_ref 会 pop) -> ref
+        lua_pushvalue(L, 2);
+        int new_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+        {
+            std::lock_guard<std::mutex> lk(g_cb_mutex);
+            g_callbacks[e] = CbSlot{ new_ref, L };
+        }
+    }
+
+    lua_pushboolean(L, 1);
+    lua_pushnil(L);
+    return 2;
+}
+
+// PollCallbacks() -> dispatched_count
+// 主线程调用: 打包 native click counter 交给 Lua callback 处理.
+static int l_Tray_PollCallbacks(lua_State* L) {
+    // 1. snapshot callback map
+    std::vector<std::pair<SDL_TrayEntry*, CbSlot>> snapshot;
+    {
+        std::lock_guard<std::mutex> lk(g_cb_mutex);
+        snapshot.reserve(g_callbacks.size());
+        for (auto& kv : g_callbacks) {
+            snapshot.push_back(kv);
+        }
+    }
+
+    int dispatched = 0;
+    for (auto& kv : snapshot) {
+        SDL_TrayEntry* e = kv.first;
+        const CbSlot& slot = kv.second;
+
+        // 2. 拿并清零 click count
+        int count = 0;
+        {
+            std::lock_guard<std::mutex> lk(g_click_mutex);
+            auto it = g_click_counts.find(e);
+            if (it != g_click_counts.end() && it->second > 0) {
+                count = it->second;
+                it->second = 0;
+            }
+        }
+        if (count <= 0) continue;
+
+        // 3. pcall 注册时的 fn(count) (在注册时的 lua_State 上)
+        lua_State* CL = slot.L ? slot.L : L;
+        lua_rawgeti(CL, LUA_REGISTRYINDEX, slot.lua_ref);
+        lua_pushinteger(CL, count);
+        if (lua_pcall(CL, 1, 0, 0) != 0) {
+            const char* err = lua_tostring(CL, -1);
+            SDL_Log("[Light.Tray] callback error: %s", err ? err : "(no message)");
+            lua_pop(CL, 1);
+        }
+        ++dispatched;
+    }
+
+    lua_pushinteger(L, dispatched);
+    return 1;
+}
+
 // ==================== luaopen_Light_Tray ====================
 
 extern "C" LIGHT_API int luaopen_Light_Tray(lua_State* L) {
@@ -347,6 +490,8 @@ extern "C" LIGHT_API int luaopen_Light_Tray(lua_State* L) {
         { "RemoveEntry",      l_Tray_RemoveEntry      },
         { "WasClicked",       l_Tray_WasClicked       },
         { "Update",           l_Tray_Update           },
+        { "SetClickCallback", l_Tray_SetClickCallback },
+        { "PollCallbacks",    l_Tray_PollCallbacks    },
         { nullptr,            nullptr                 },
     };
     lua_newtable(L);

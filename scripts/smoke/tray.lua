@@ -17,10 +17,12 @@ for _, k in ipairs({
     "SetEntryEnabled", "GetEntryEnabled",
     "SetEntryChecked", "GetEntryChecked",
     "RemoveEntry", "WasClicked", "Update",
+    -- Phase I.3:
+    "SetClickCallback", "PollCallbacks",
 }) do
     if type(mod[k]) ~= "function" then fail("Light.Tray." .. k .. " missing") end
 end
-pass("Light.Tray module ok (18 functions)")
+pass("Light.Tray module ok (20 functions)")
 
 -- ===== 边界路径: 无 handle 的调用应安全返回 nil/false + err =====
 local d, derr = mod.Destroy(nil)
@@ -55,6 +57,21 @@ pass("Light.Tray.GetEntry{Enabled,Checked}(nil) boundary ok")
 if mod.WasClicked(nil) ~= 0 then fail("WasClicked(nil) should be 0") end
 pass("Light.Tray.WasClicked(nil) = 0 ok")
 
+-- Phase I.3 边界: SetClickCallback nil entry / 错误参数类型
+local sc1, sc1err = mod.SetClickCallback(nil, function() end)
+if sc1 ~= false or sc1err == nil then fail("SetClickCallback(nil entry) should be false+err") end
+pass("Light.Tray.SetClickCallback(nil entry) boundary ok: " .. tostring(sc1err))
+
+-- 无 entry 但 fn=nil 也走句柄校验失败路径
+local sc2, sc2err = mod.SetClickCallback(nil, nil)
+if sc2 ~= false or sc2err == nil then fail("SetClickCallback(nil, nil) should be false+err") end
+pass("Light.Tray.SetClickCallback(nil, nil) boundary ok: " .. tostring(sc2err))
+
+-- PollCallbacks 在没注册任何 callback 时应返回 0 (单返回值 int)
+local disp = mod.PollCallbacks()
+if disp ~= 0 then fail("PollCallbacks empty -> should return 0, got " .. tostring(disp)) end
+pass("Light.Tray.PollCallbacks (empty) = 0 ok")
+
 -- Update 不依赖 tray, 任意环境可调
 mod.Update()
 pass("Light.Tray.Update() ok")
@@ -87,6 +104,28 @@ else
         local btn = mod.AddButton(menu, "Quit")
         if btn ~= nil then
             pass("Light.Tray.AddButton ok")
+
+            -- Phase I.3: SetClickCallback / PollCallbacks 真实流程
+            -- 注册一个 Lua 函数, PollCallbacks 应返 0 (没人点击)
+            local hit_count = 0
+            local cb_fn = function(n) hit_count = hit_count + n end
+            local rok, rerr = mod.SetClickCallback(btn, cb_fn)
+            if rok ~= true then fail("SetClickCallback failed: " .. tostring(rerr)) end
+            pass("Light.Tray.SetClickCallback(btn, fn) ok")
+
+            local d0 = mod.PollCallbacks()
+            if d0 ~= 0 then fail("PollCallbacks no-click -> should be 0, got " .. tostring(d0)) end
+            pass("Light.Tray.PollCallbacks (no real click) = 0 ok")
+
+            -- 错误参数类型 -> false + err
+            local bad, baderr = mod.SetClickCallback(btn, "not a function")
+            if bad ~= false or baderr == nil then fail("SetClickCallback(string) should be false+err") end
+            pass("Light.Tray.SetClickCallback(string) type error ok: " .. tostring(baderr))
+
+            -- 取消注册 (传 nil), 之后 PollCallbacks 还是 0
+            local uok, _ = mod.SetClickCallback(btn, nil)
+            if uok ~= true then fail("SetClickCallback(nil) failed") end
+            pass("Light.Tray.SetClickCallback(btn, nil) unregister ok")
             -- SDL3 v3.2.30 Windows 后端存在上游 bug: SDL_GetTrayEntryEnabled 使用
             -- `fState & MFS_ENABLED`, 但 MFS_ENABLED == 0, 表达式恒为 false.
             -- 因此 smoke 只验证调用不崩溃 + 返回 boolean, 不对具体值断言.
