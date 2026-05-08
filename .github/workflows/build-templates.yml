@@ -56,6 +56,7 @@ jobs:
           $phaseGSmoke = Resolve-Path "scripts\smoke\gamepad.lua"
           $phaseHSmoke = Resolve-Path "scripts\smoke\guid_system.lua"
           $phaseISmoke = Resolve-Path "scripts\smoke\tray.lua"
+          $phaseJSmoke = Resolve-Path "scripts\smoke\hidapi.lua"
           Copy-Item ChocoLight\build\bin\Release\Light.dll $runtimeDir -Force
           & "$runtimeDir\light.exe" $coreSmoke
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -78,6 +79,8 @@ jobs:
           & "$runtimeDir\light.exe" $phaseHSmoke
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & "$runtimeDir\light.exe" $phaseISmoke
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & "$runtimeDir\light.exe" $phaseJSmoke
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Package Windows Template
