@@ -609,31 +609,26 @@ public:
         glEnable(GL_BLEND);
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
-        // ---- Phase AS.2 — 编译 3D 默认 shader ----
-        GLuint vs3D = CompileShader(GL_VERTEX_SHADER, VS3D_SOURCE);
-        GLuint fs3D = CompileShader(GL_FRAGMENT_SHADER, FS3D_SOURCE);
-        if (vs3D && fs3D) {
-            program3D = LinkProgram(vs3D, fs3D);
-            if (program3D) {
-                loc3D_MVP        = glGetUniformLocation(program3D, "uMVP");
-                loc3D_Model      = glGetUniformLocation(program3D, "uModel");
-                loc3D_Texture    = glGetUniformLocation(program3D, "uTexture");
-                loc3D_UseTexture = glGetUniformLocation(program3D, "uUseTexture");
-                loc3D_LightDir   = glGetUniformLocation(program3D, "uLightDir");
-                loc3D_LightColor = glGetUniformLocation(program3D, "uLightColor");
-                loc3D_Ambient    = glGetUniformLocation(program3D, "uAmbient");
-            } else {
-                CC::Log(CC::LOG_WARN, "GL33: 3D shader link failed (Mesh:Draw will silently no-op)");
-            }
-        } else {
-            CC::Log(CC::LOG_WARN, "GL33: 3D shader compile failed");
+        // ---- Phase AS.4 — 编译 Unlit + PBR 双 shader ----
+        GLuint vs3D     = CompileShader(GL_VERTEX_SHADER, VS3D_SOURCE);
+        GLuint fsUnlit  = CompileShader(GL_FRAGMENT_SHADER, FS_UNLIT_SOURCE);
+        GLuint fsPBR    = CompileShader(GL_FRAGMENT_SHADER, FS_PBR_SOURCE);
+        if (vs3D && fsUnlit) {
+            programUnlit = LinkProgram(vs3D, fsUnlit);
+            if (!programUnlit) CC::Log(CC::LOG_WARN, "GL33: Unlit shader link failed");
         }
-        if (vs3D) glDeleteShader(vs3D);
-        if (fs3D) glDeleteShader(fs3D);
+        if (vs3D && fsPBR) {
+            programPBR = LinkProgram(vs3D, fsPBR);
+            if (!programPBR) CC::Log(CC::LOG_WARN, "GL33: PBR shader link failed");
+        }
+        if (vs3D)    glDeleteShader(vs3D);
+        if (fsUnlit) glDeleteShader(fsUnlit);
+        if (fsPBR)   glDeleteShader(fsPBR);
 
         CC::Log(CC::LOG_INFO, "RenderBackend: GL33 Core initialized (GL %s)%s",
                 (const char*)glGetString(GL_VERSION),
-                program3D ? ", 3D mesh enabled" : "");
+                (programUnlit && programPBR) ? ", 3D Unlit+PBR enabled" :
+                (programUnlit || programPBR) ? ", partial 3D shader" : "");
         return true;
     }
 
