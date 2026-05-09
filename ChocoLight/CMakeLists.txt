@@ -190,6 +190,7 @@ set(LIGHT_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/miniaudio_impl.c
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/tiny_aes.c
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/tiny_hash.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/cgltf_impl.c
 )
 
 # 平台条件源文件

@@ -53,7 +53,9 @@ if type(Mesh) ~= "table" then fail("Light.Graphics.Mesh not a table") end
 
 if type(Mesh.New) ~= "function" then fail("Mesh.New not function") end
 if type(Mesh.GetVertexFormat) ~= "function" then fail("Mesh.GetVertexFormat not function") end
-pass("Light.Graphics.Mesh module loaded (2 static fns)")
+if type(Mesh.LoadGLTF) ~= "function" then fail("Mesh.LoadGLTF (Phase AS.3) not function") end
+if type(Mesh.GetGLTFMeshCount) ~= "function" then fail("Mesh.GetGLTFMeshCount (Phase AS.3) not function") end
+pass("Light.Graphics.Mesh module loaded (4 static fns)")
 
 -- GetVertexFormat
 local fmt = Mesh.GetVertexFormat()
@@ -123,6 +125,35 @@ if mesh ~= nil then
 else
     pass("Mesh.New(triangle) returned nil in headless (err='" .. tostring(err4) .. "') - expected")
 end
+
+-- ==================== 4b) Phase AS.3 — glTF 加载边界 ====================
+
+-- 不存在的文件 → nil + err
+local g1, gerr1 = Mesh.LoadGLTF("nonexistent_file.gltf")
+if g1 ~= nil then fail("LoadGLTF(nonexistent) should return nil") end
+if type(gerr1) ~= "string" then fail("LoadGLTF err should be string, got " .. type(gerr1)) end
+pass("LoadGLTF(nonexistent.gltf) -> nil, '" .. gerr1 .. "'")
+
+-- 不存在的 .glb → nil + err
+local g2, gerr2 = Mesh.LoadGLTF("nonexistent_file.glb")
+if g2 ~= nil then fail("LoadGLTF(nonexistent.glb) should return nil") end
+pass("LoadGLTF(nonexistent.glb) -> nil, '" .. tostring(gerr2) .. "'")
+
+-- primitive_index 负数 → nil + err
+local g3, gerr3 = Mesh.LoadGLTF("any.gltf", -1)
+if g3 ~= nil then fail("LoadGLTF(_, -1) should return nil") end
+if not gerr3:find("primitive_index") and not gerr3:find("parse failed") then
+    -- 文件不存在或 primitive_index 错都可接受
+    pass("LoadGLTF(_, -1) -> nil with err='" .. gerr3 .. "' (acceptable)")
+else
+    pass("LoadGLTF(_, -1) -> nil, '" .. gerr3 .. "'")
+end
+
+-- GetGLTFMeshCount 不存在文件
+local cnt, cerr = Mesh.GetGLTFMeshCount("nonexistent.gltf")
+if cnt ~= nil then fail("GetGLTFMeshCount(nonexistent) should return nil") end
+if type(cerr) ~= "string" then fail("GetGLTFMeshCount err should be string") end
+pass("GetGLTFMeshCount(nonexistent.gltf) -> nil, '" .. cerr .. "'")
 
 -- ==================== 5) 兼容性回归 ====================
 

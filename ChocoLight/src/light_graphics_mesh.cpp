@@ -24,10 +24,12 @@
 
 #include <vector>
 #include <cstring>
+#include <string>
 
 extern "C" {
 #include "lua.h"
 #include "lauxlib.h"
+#include "cgltf.h"   // Phase AS.3 — glTF 2.0 解析 (single-header in third_party/)
 }
 
 // 每顶点 floats 数 (固定 12 = pos3+normal3+uv2+color4)
@@ -154,6 +156,251 @@ static int l_Mesh_GetVertexFormat(lua_State* L) {
     return 1;
 }
 
+// ==================== Phase AS.3 — cgltf glTF 加载辅助 ====================
+
+// 解析 .gltf/.glb 文件; 失败时填充 errOut. 返回 cgltf_data* 或 nullptr.
+// 调用方负责 cgltf_free(data).
+static cgltf_data* GLTF_ParseAndLoad(const char* path, std::string& errOut) {
+    cgltf_options options = {};  // zero-init: 默认行为
+    cgltf_data* data = nullptr;
+
+    cgltf_result r = cgltf_parse_file(&options, path, &data);
+    if (r != cgltf_result_success) {
+        errOut = "parse failed (cgltf err " + std::to_string((int)r) + ")";
+        return nullptr;
+    }
+    r = cgltf_load_buffers(&options, data, path);
+    if (r != cgltf_result_success) {
+        errOut = "buffer load failed (cgltf err " + std::to_string((int)r) + ")";
+        cgltf_free(data);
+        return nullptr;
+    }
+    return data;
+}
+
+// 计算总 primitive 数 (跨所有 mesh)
+static size_t GLTF_TotalPrimitives(const cgltf_data* data) {
+    size_t total = 0;
+    for (size_t i = 0; i < data->meshes_count; i++) {
+        total += data->meshes[i].primitives_count;
+    }
+    return total;
+}
+
+// 取第 N 个 primitive (跨 mesh 计数, 0-indexed). 越界返回 nullptr.
+static const cgltf_primitive* GLTF_FindPrimitive(const cgltf_data* data, size_t primIdx) {
+    size_t cursor = 0;
+    for (size_t i = 0; i < data->meshes_count; i++) {
+        const cgltf_mesh& m = data->meshes[i];
+        if (primIdx < cursor + m.primitives_count) {
+            return &m.primitives[primIdx - cursor];
+        }
+        cursor += m.primitives_count;
+    }
+    return nullptr;
+}
+
+// 提取 primitive 顶点 + 索引到 RenderVertex3D + uint32 数组. 失败填充 errOut.
+static bool GLTF_ExtractPrimitive(const cgltf_primitive* prim,
+                                   std::vector<RenderVertex3D>& outVerts,
+                                   std::vector<uint32_t>& outIndices,
+                                   std::string& errOut) {
+    // 找各 attribute (POSITION 必须, 其他可选)
+    const cgltf_accessor* accPos   = nullptr;
+    const cgltf_accessor* accNorm  = nullptr;
+    const cgltf_accessor* accUV    = nullptr;
+    const cgltf_accessor* accColor = nullptr;
+
+    for (size_t a = 0; a < prim->attributes_count; a++) {
+        const cgltf_attribute& attr = prim->attributes[a];
+        if (attr.index != 0) continue;  // 仅取第 0 通道 (POSITION_0/NORMAL_0/...)
+        switch (attr.type) {
+            case cgltf_attribute_type_position: accPos   = attr.data; break;
+            case cgltf_attribute_type_normal:   accNorm  = attr.data; break;
+            case cgltf_attribute_type_texcoord: accUV    = attr.data; break;
+            case cgltf_attribute_type_color:    accColor = attr.data; break;
+            default: break;
+        }
+    }
+
+    if (!accPos) {
+        errOut = "primitive has no POSITION attribute";
+        return false;
+    }
+    size_t vCount = accPos->count;
+    if (vCount == 0) {
+        errOut = "primitive has 0 vertices";
+        return false;
+    }
+    if (vCount > 1000000) {
+        errOut = "primitive vertex count " + std::to_string(vCount) + " exceeds 1M soft limit";
+        return false;
+    }
+
+    // 提取 POSITION (vec3 必填)
+    std::vector<float> posData(vCount * 3);
+    cgltf_accessor_unpack_floats(accPos, posData.data(), vCount * 3);
+
+    // NORMAL (可选, vec3)
+    std::vector<float> normData;
+    if (accNorm && accNorm->count == vCount && cgltf_num_components(accNorm->type) == 3) {
+        normData.resize(vCount * 3);
+        cgltf_accessor_unpack_floats(accNorm, normData.data(), vCount * 3);
+    }
+
+    // TEXCOORD_0 (可选, vec2)
+    std::vector<float> uvData;
+    if (accUV && accUV->count == vCount && cgltf_num_components(accUV->type) == 2) {
+        uvData.resize(vCount * 2);
+        cgltf_accessor_unpack_floats(accUV, uvData.data(), vCount * 2);
+    }
+
+    // COLOR_0 (可选, vec3 或 vec4)
+    std::vector<float> colorData;
+    int colorComp = 0;
+    if (accColor && accColor->count == vCount) {
+        size_t comp = cgltf_num_components(accColor->type);
+        if (comp == 3 || comp == 4) {
+            colorComp = (int)comp;
+            colorData.resize(vCount * comp);
+            cgltf_accessor_unpack_floats(accColor, colorData.data(), vCount * comp);
+        }
+    }
+
+    // 构造 RenderVertex3D 数组
+    outVerts.resize(vCount);
+    for (size_t i = 0; i < vCount; i++) {
+        RenderVertex3D& v = outVerts[i];
+        v.x = posData[i * 3 + 0];
+        v.y = posData[i * 3 + 1];
+        v.z = posData[i * 3 + 2];
+        if (!normData.empty()) {
+            v.nx = normData[i * 3 + 0];
+            v.ny = normData[i * 3 + 1];
+            v.nz = normData[i * 3 + 2];
+        } else {
+            v.nx = 0.0f; v.ny = 1.0f; v.nz = 0.0f;
+        }
+        if (!uvData.empty()) {
+            v.u = uvData[i * 2 + 0];
+            v.v = uvData[i * 2 + 1];
+        } else {
+            v.u = 0.0f; v.v = 0.0f;
+        }
+        if (!colorData.empty()) {
+            v.r = colorData[i * colorComp + 0];
+            v.g = colorData[i * colorComp + 1];
+            v.b = colorData[i * colorComp + 2];
+            v.a = (colorComp == 4) ? colorData[i * 4 + 3] : 1.0f;
+        } else {
+            v.r = v.g = v.b = v.a = 1.0f;
+        }
+    }
+
+    // 索引: 有则提取转 uint32, 无则自动生成 (drawArray 模式)
+    if (prim->indices) {
+        size_t iCount = prim->indices->count;
+        if (iCount > 3000000) {
+            errOut = "index count " + std::to_string(iCount) + " exceeds 3M soft limit";
+            return false;
+        }
+        outIndices.resize(iCount);
+        cgltf_accessor_unpack_indices(prim->indices, outIndices.data(),
+                                      sizeof(uint32_t), iCount);
+    } else {
+        // 自动生成 0, 1, 2, ... 序列
+        outIndices.resize(vCount);
+        for (size_t i = 0; i < vCount; i++) {
+            outIndices[i] = (uint32_t)i;
+        }
+    }
+
+    return true;
+}
+
+// ==================== Mesh.LoadGLTF(path, [primitive_index=0]) ====================
+static int l_Mesh_LoadGLTF(lua_State* L) {
+    const char* path = luaL_checkstring(L, 1);
+    int primIdx = (int)luaL_optinteger(L, 2, 0);
+    if (primIdx < 0) {
+        lua_pushnil(L);
+        lua_pushstring(L, "primitive_index must be >= 0");
+        return 2;
+    }
+
+    std::string err;
+    cgltf_data* data = GLTF_ParseAndLoad(path, err);
+    if (!data) {
+        lua_pushnil(L);
+        lua_pushstring(L, err.c_str());
+        return 2;
+    }
+
+    size_t totalPrims = GLTF_TotalPrimitives(data);
+    if ((size_t)primIdx >= totalPrims) {
+        lua_pushnil(L);
+        lua_pushfstring(L, "primitive index %d out of range (have %d)", primIdx, (int)totalPrims);
+        cgltf_free(data);
+        return 2;
+    }
+
+    const cgltf_primitive* prim = GLTF_FindPrimitive(data, (size_t)primIdx);
+    std::vector<RenderVertex3D> verts;
+    std::vector<uint32_t> indices;
+    if (!GLTF_ExtractPrimitive(prim, verts, indices, err)) {
+        lua_pushnil(L);
+        lua_pushstring(L, err.c_str());
+        cgltf_free(data);
+        return 2;
+    }
+    cgltf_free(data);
+
+    // 调 backend 创建 GPU mesh
+    if (!g_render) {
+        lua_pushnil(L);
+        lua_pushstring(L, "no render backend (window not opened?)");
+        return 2;
+    }
+    if (!g_render->Supports3D()) {
+        lua_pushnil(L);
+        lua_pushstring(L, "render backend does not support 3D mesh (need GL 3.3+)");
+        return 2;
+    }
+    uint32_t meshId = g_render->CreateMesh(verts.data(), (int)verts.size(),
+                                            indices.data(), (int)indices.size());
+    if (!meshId) {
+        lua_pushnil(L);
+        lua_pushstring(L, "CreateMesh failed (GPU upload error)");
+        return 2;
+    }
+
+    // 创建 userdata + 元表
+    MeshUserdata* ud = (MeshUserdata*)lua_newuserdata(L, sizeof(MeshUserdata));
+    ud->meshId      = meshId;
+    ud->vertexCount = (int)verts.size();
+    ud->indexCount  = (int)indices.size();
+    luaL_getmetatable(L, MESH_MT);
+    lua_setmetatable(L, -2);
+    return 1;
+}
+
+// ==================== Mesh.GetGLTFMeshCount(path) ====================
+// 返回 .gltf/.glb 中的 primitive 总数 (跨所有 mesh). 失败返回 nil + err.
+static int l_Mesh_GetGLTFMeshCount(lua_State* L) {
+    const char* path = luaL_checkstring(L, 1);
+    std::string err;
+    cgltf_data* data = GLTF_ParseAndLoad(path, err);
+    if (!data) {
+        lua_pushnil(L);
+        lua_pushstring(L, err.c_str());
+        return 2;
+    }
+    size_t total = GLTF_TotalPrimitives(data);
+    cgltf_free(data);
+    lua_pushinteger(L, (lua_Integer)total);
+    return 1;
+}
+
 // ==================== mesh:Draw([textureId]) ====================
 static int l_Mesh_Draw(lua_State* L) {
     MeshUserdata* ud = CheckMesh(L, 1);
@@ -239,8 +486,10 @@ extern "C" LIGHT_API int luaopen_Light_Graphics_Mesh(lua_State* L) {
         lua_pushstring(L, "Mesh");
         lua_createtable(L, 0, 2);
         static const luaL_Reg mesh_funcs[] = {
-            { "New",             l_Mesh_New },
-            { "GetVertexFormat", l_Mesh_GetVertexFormat },
+            { "New",                l_Mesh_New },
+            { "GetVertexFormat",    l_Mesh_GetVertexFormat },
+            { "LoadGLTF",           l_Mesh_LoadGLTF },          // Phase AS.3
+            { "GetGLTFMeshCount",   l_Mesh_GetGLTFMeshCount },  // Phase AS.3
             { nullptr, nullptr },
         };
         luaL_setfuncs(L, mesh_funcs, 0);
