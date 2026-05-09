@@ -1,1 +1,11 @@
 /Light-0.2.3/lib/avcodec-59.dll filter=lfs diff=lfs merge=lfs -text
+/Light-0.2.3/demo_clipboard_url_display_cursor/lib/avcodec-59.dll filter=lfs diff=lfs merge=lfs -text
+/Light-0.2.3/demo_gamepad/lib/avcodec-59.dll filter=lfs diff=lfs merge=lfs -text
+/Light-0.2.3/demo_guid_system/lib/avcodec-59.dll filter=lfs diff=lfs merge=lfs -text
+/Light-0.2.3/demo_haptic/lib/avcodec-59.dll filter=lfs diff=lfs merge=lfs -text
+/Light-0.2.3/demo_hidapi/lib/avcodec-59.dll filter=lfs diff=lfs merge=lfs -text
+/Light-0.2.3/demo_io_storage/lib/avcodec-59.dll filter=lfs diff=lfs merge=lfs -text
+/Light-0.2.3/demo_locale_power_sensor/lib/avcodec-59.dll filter=lfs diff=lfs merge=lfs -text
+/Light-0.2.3/demo_process_messagebox/lib/avcodec-59.dll filter=lfs diff=lfs merge=lfs -text
+/Light-0.2.3/demo_tray/lib/avcodec-59.dll filter=lfs diff=lfs merge=lfs -text
+/Light-0.2.3/perf_benchmark/lib/avcodec-59.dll filter=lfs diff=lfs merge=lfs -text

@@ -145,7 +145,9 @@ struct World3D {
     // Phase AU Step 4.3: world 升级为 SoftRigidDynamicsWorld (派生自 Discrete), 现有 addRigidBody/Constraint/Action 全兼容
     btSoftRigidDynamicsWorld*            world;
     btSoftBodySolver*                    softBodySolver;  // Phase AU Step 4.3
-    btSoftBodyWorldInfo                  softBodyWorldInfo;  // Phase AU Step 4.3 (按值, 不分配)
+    // Phase AU Step 4.3: softBodyWorldInfo 内含 SIMD-aligned btVector3/btSparseSdf,
+    // 必须堆分配 (Lua userdata 仅 8-byte 对齐, 嵌值类型在 MSVC x64 下会因未对齐 SIMD 崩溃)
+    btSoftBodyWorldInfo*                 softBodyWorldInfo;
     btGhostPairCallback*                 ghostPairCb;  // Phase AU Step 3.3
     LuaDebugDrawer*                      debugDrawer;  // Phase AU Step 4.1
     std::vector<Body3D*>                 bodies;
@@ -158,6 +160,7 @@ struct World3D {
     bool                                 alive;
     World3D() : config(nullptr), dispatcher(nullptr), broadphase(nullptr),
                 solver(nullptr), world(nullptr), softBodySolver(nullptr),
+                softBodyWorldInfo(nullptr),
                 ghostPairCb(nullptr), debugDrawer(nullptr),
                 contactRef(LUA_NOREF), L(nullptr), alive(false) {}
 };
@@ -892,15 +895,16 @@ static int l_NewWorld(lua_State* L) {
     // Phase AU Step 4.3: 用 SoftRigidDynamicsWorld (派生自 Discrete)
     w->world = new btSoftRigidDynamicsWorld(w->dispatcher, w->broadphase, w->solver, w->config, w->softBodySolver);
     w->world->setGravity(btVector3(gx, gy, gz));
-    // Phase AU Step 4.3: 初始化 softBodyWorldInfo (rope/cloth Step 时使用)
-    w->softBodyWorldInfo.m_dispatcher = w->dispatcher;
-    w->softBodyWorldInfo.m_broadphase = w->broadphase;
-    w->softBodyWorldInfo.m_gravity.setValue(gx, gy, gz);
-    w->softBodyWorldInfo.air_density = (btScalar)1.2f;
-    w->softBodyWorldInfo.water_density = 0;
-    w->softBodyWorldInfo.water_offset = 0;
-    w->softBodyWorldInfo.water_normal = btVector3(0, 0, 0);
-    w->softBodyWorldInfo.m_sparsesdf.Initialize();
+    // Phase AU Step 4.3: 堆分配 softBodyWorldInfo (16-byte aligned, 避免 Lua userdata 对齐问题)
+    w->softBodyWorldInfo = new btSoftBodyWorldInfo();
+    w->softBodyWorldInfo->m_dispatcher = w->dispatcher;
+    w->softBodyWorldInfo->m_broadphase = w->broadphase;
+    w->softBodyWorldInfo->m_gravity.setValue(gx, gy, gz);
+    w->softBodyWorldInfo->air_density = (btScalar)1.2f;
+    w->softBodyWorldInfo->water_density = 0;
+    w->softBodyWorldInfo->water_offset = 0;
+    w->softBodyWorldInfo->water_normal = btVector3(0, 0, 0);
+    w->softBodyWorldInfo->m_sparsesdf.Initialize();
     // Phase AU Step 3.3: Ghost pair callback (CharacterController 必需)
     w->ghostPairCb = new btGhostPairCallback();
     w->broadphase->getOverlappingPairCache()->setInternalGhostPairCallback(w->ghostPairCb);
@@ -917,8 +921,8 @@ static int l_World_SetGravity(lua_State* L) {
     if (!w->alive) return 0;
     btVector3 g = ReadVec3(L, 2);
     w->world->setGravity(g);
-    // Phase AU Step 4.3: 同步 softBodyWorldInfo.m_gravity
-    w->softBodyWorldInfo.m_gravity = g;
+    // Phase AU Step 4.3: 同步 softBodyWorldInfo->m_gravity
+    if (w->softBodyWorldInfo) w->softBodyWorldInfo->m_gravity = g;
     return 0;
 }
 
@@ -2266,7 +2270,7 @@ static int l_World_NewSoftBodyRope(lua_State* L) {
     lua_getfield(L, 2, "mass");     if (lua_isnumber(L, -1)) mass     = (float)lua_tonumber(L, -1); lua_pop(L, 1);
     if (segments < 1) segments = 1;
 
-    btSoftBody* sb = btSoftBodyHelpers::CreateRope(w->softBodyWorldInfo, p1, p2, segments, fixed);
+    btSoftBody* sb = btSoftBodyHelpers::CreateRope(*w->softBodyWorldInfo, p1, p2, segments, fixed);
     if (!sb) { lua_pushnil(L); lua_pushstring(L, "CreateRope returned null"); return 2; }
     sb->setTotalMass(mass);
     w->world->addSoftBody(sb);
@@ -2296,7 +2300,7 @@ static int l_World_NewSoftBodyPatch(lua_State* L) {
     if (resx < 2) resx = 2;
     if (resy < 2) resy = 2;
 
-    btSoftBody* sb = btSoftBodyHelpers::CreatePatch(w->softBodyWorldInfo, p1, p2, p3, p4,
+    btSoftBody* sb = btSoftBodyHelpers::CreatePatch(*w->softBodyWorldInfo, p1, p2, p3, p4,
                                                     resx, resy, fixed, genDiags);
     if (!sb) { lua_pushnil(L); lua_pushstring(L, "CreatePatch returned null"); return 2; }
     sb->setTotalMass(mass);
@@ -2319,7 +2323,7 @@ static int l_World_NewSoftBodyEllipsoid(lua_State* L) {
     lua_getfield(L, 2, "mass"); if (lua_isnumber(L, -1)) mass = (float)lua_tonumber(L, -1); lua_pop(L, 1);
     if (res < 4) res = 4;
 
-    btSoftBody* sb = btSoftBodyHelpers::CreateEllipsoid(w->softBodyWorldInfo, center, radius, res);
+    btSoftBody* sb = btSoftBodyHelpers::CreateEllipsoid(*w->softBodyWorldInfo, center, radius, res);
     if (!sb) { lua_pushnil(L); lua_pushstring(L, "CreateEllipsoid returned null"); return 2; }
     sb->setTotalMass(mass);
     w->world->addSoftBody(sb);
@@ -2592,8 +2596,9 @@ static void World_ReleaseBullet(lua_State* L, World3D* w) {
         w->world->setDebugDrawer(nullptr);
     }
     delete w->debugDrawer; w->debugDrawer = nullptr;  // Phase AU Step 4.1
-    delete w->world;          w->world = nullptr;
-    delete w->softBodySolver; w->softBodySolver = nullptr;  // Phase AU Step 4.3
+    delete w->world;             w->world = nullptr;
+    delete w->softBodySolver;    w->softBodySolver = nullptr;     // Phase AU Step 4.3
+    delete w->softBodyWorldInfo; w->softBodyWorldInfo = nullptr;  // Phase AU Step 4.3
     delete w->solver;      w->solver = nullptr;
     delete w->broadphase;  w->broadphase = nullptr;
     delete w->dispatcher;  w->dispatcher = nullptr;
