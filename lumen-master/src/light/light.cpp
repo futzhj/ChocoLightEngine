@@ -494,6 +494,8 @@ static const struct { const char *modName; const char *procName; } g_lightModule
     {"Light.Audio.Sound",         "luaopen_Light_Audio_Sound"},
     {"Light.Audio.SoundGroup",    "luaopen_Light_Audio_SoundGroup"},
     {"Light.Audio.Effect",        "luaopen_Light_Audio_Effect"},
+    // Phase AU — 3D Physics (Bullet 3)
+    {"Light.Physics3D",           "luaopen_Light_Physics3D"},
     {nullptr, nullptr}
 };
 

@@ -87,6 +87,8 @@ jobs:
           $phaseAS1Smoke = Resolve-Path "scripts\smoke\canvas_shader_ext.lua"
           $phaseAS2Smoke = Resolve-Path "scripts\smoke\mesh_3d.lua"
           $phaseAS4Smoke = Resolve-Path "scripts\smoke\material_3d.lua"
+          $phaseATSmoke  = Resolve-Path "scripts\smoke\audio_3d_mixer_effect.lua"
+          $phaseAUSmoke  = Resolve-Path "scripts\smoke\physics_3d.lua"
           Copy-Item ChocoLight\build\bin\Release\Light.dll $runtimeDir -Force
           & "$runtimeDir\light.exe" $coreSmoke
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -171,6 +173,10 @@ jobs:
           & "$runtimeDir\light.exe" $phaseAS2Smoke
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & "$runtimeDir\light.exe" $phaseAS4Smoke
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & "$runtimeDir\light.exe" $phaseATSmoke
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & "$runtimeDir\light.exe" $phaseAUSmoke
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Package Windows Template

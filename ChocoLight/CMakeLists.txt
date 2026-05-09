@@ -264,6 +264,9 @@ list(APPEND LIGHT_SOURCES ${CHOCO_SRC}/light_input.cpp)
 # Physics 源文件: 非 Web 使用 Box2D, Web 保留导出空壳
 list(APPEND LIGHT_SOURCES ${CHOCO_SRC}/light_physics.cpp)
 
+# Phase AU — Light.Physics3D (基于 Bullet 3, 全平台含 Web)
+list(APPEND LIGHT_SOURCES ${CHOCO_SRC}/light_physics3d.cpp)
+
 # Emscripten/Android: STATIC 库 (链接到最终二进制)
 # 桌面: SHARED 库 (Light.dll/so/dylib)
 if(EMSCRIPTEN OR ANDROID OR CHOCO_IOS)
