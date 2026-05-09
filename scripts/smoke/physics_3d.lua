@@ -498,7 +498,7 @@ print("[8.8] btRaycastVehicle 4-wheel 车辆")
 if w:GetVehicleCount() ~= 0 then fail("初始 vehicle count != 0") end
 
 -- 1. 创建 chassis (用 box, 长宽高 2x0.5x4 模拟车体)
-local chassisShape = Light.Physics3D.NewBox(1.0, 0.25, 2.0)
+local chassisShape = Phys.NewBox(1.0, 0.25, 2.0)
 local chassis = w:CreateBody({
     type = "dynamic", mass = 800, x = -50, y = 5, z = -50,
     shape = chassisShape,
