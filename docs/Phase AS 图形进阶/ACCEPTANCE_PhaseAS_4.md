@@ -1,6 +1,8 @@
 # Phase AS.4 — 完整材质系统 — 验收文档
 
-> **状态**: 已完成本地实施 + lightc 语法检查通过, 待 GitHub Actions CI 全平台验证
+> **状态**: ✅ **已完成** — 6 平台 CI 全绿 (修复 1 次 = AS.2 残留 shader 编译代码)
+>
+> GitHub Actions run: [25601950040](https://github.com/futzhj/ChocoLightEngine/actions/runs/25601950040) (commit `1701332`, 修复 commit `0d1310b`)
 >
 > **范围**: PBR Cook-Torrance + 法线贴图 (derivatives TBN) + 多光源 (1 dir + 4 point) + Material 资源
 > + alphaMode (opaque/blend/mask) + 向后兼容 mesh:Draw
