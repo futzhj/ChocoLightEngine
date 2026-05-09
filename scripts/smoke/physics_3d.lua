@@ -492,6 +492,166 @@ w:DebugDrawWorld()  -- 现在应不调用回调 (因为 drawer 已被 nil)
 if draw_count ~= 0 then fail("取消 drawer 后仍触发 drawLine") end
 pass("SetDebugDrawer(nil) 取消生效")
 
+-- ==================== 8.8) Vehicle (Phase AU Step 4.2) ====================
+print("[8.8] btRaycastVehicle 4-wheel 车辆")
+
+if w:GetVehicleCount() ~= 0 then fail("初始 vehicle count != 0") end
+
+-- 1. 创建 chassis (用 box, 长宽高 2x0.5x4 模拟车体)
+local chassisShape = Light.Physics3D.NewBox(1.0, 0.25, 2.0)
+local chassis = w:CreateBody({
+    type = "dynamic", mass = 800, x = -50, y = 5, z = -50,
+    shape = chassisShape,
+})
+if not chassis then fail("chassis body 创建失败") end
+pass("chassis body 创建 (1.0x0.25x2.0 box, mass=800)")
+
+-- 2. 创建 vehicle
+local vehicle = w:CreateVehicle({
+    chassis = chassis,
+    -- VehicleTuning 全部用默认值
+    upAxis = 1,        -- Y up
+    forwardAxis = 2,   -- Z forward
+})
+if not vehicle then fail("CreateVehicle 失败") end
+if not vehicle:IsAlive() then fail("vehicle IsAlive=false") end
+pass("CreateVehicle (chassis + 默认 tuning, upY/fwdZ)")
+
+if w:GetVehicleCount() ~= 1 then fail("vehicle count != 1") end
+pass("GetVehicleCount = 1")
+
+-- 3. 加 4 个轮子 (前左/前右/后左/后右)
+local wheel_radius = 0.5
+local rest = 0.6
+-- connection 是相对 chassis 局部坐标
+-- chassis 长 4 (z 方向), 宽 2 (x 方向)
+-- 前轮 z=+1.5, 后轮 z=-1.5; 左轮 x=-1.0, 右轮 x=+1.0
+local idxFL = vehicle:AddWheel({
+    connX = -1.0, connY = 0, connZ = 1.5,
+    dirX = 0, dirY = -1, dirZ = 0,
+    axleX = -1, axleY = 0, axleZ = 0,
+    suspensionRestLength = rest, wheelRadius = wheel_radius,
+    isFrontWheel = true,
+})
+local idxFR = vehicle:AddWheel({
+    connX = 1.0, connY = 0, connZ = 1.5,
+    dirX = 0, dirY = -1, dirZ = 0,
+    axleX = -1, axleY = 0, axleZ = 0,
+    suspensionRestLength = rest, wheelRadius = wheel_radius,
+    isFrontWheel = true,
+})
+local idxRL = vehicle:AddWheel({
+    connX = -1.0, connY = 0, connZ = -1.5,
+    dirX = 0, dirY = -1, dirZ = 0,
+    axleX = -1, axleY = 0, axleZ = 0,
+    suspensionRestLength = rest, wheelRadius = wheel_radius,
+    isFrontWheel = false,
+})
+local idxRR = vehicle:AddWheel({
+    connX = 1.0, connY = 0, connZ = -1.5,
+    dirX = 0, dirY = -1, dirZ = 0,
+    axleX = -1, axleY = 0, axleZ = 0,
+    suspensionRestLength = rest, wheelRadius = wheel_radius,
+    isFrontWheel = false,
+})
+if idxFL ~= 0 or idxFR ~= 1 or idxRL ~= 2 or idxRR ~= 3 then
+    fail(string.format("AddWheel 索引: %d %d %d %d", idxFL, idxFR, idxRL, idxRR))
+end
+pass(string.format("AddWheel x4: FL=%d FR=%d RL=%d RR=%d", idxFL, idxFR, idxRL, idxRR))
+
+if vehicle:GetNumWheels() ~= 4 then
+    fail("GetNumWheels: " .. tostring(vehicle:GetNumWheels()))
+end
+pass("GetNumWheels = 4")
+
+-- 4. 转向 (前轮)
+vehicle:SetSteering(idxFL, 0.3)
+vehicle:SetSteering(idxFR, 0.3)
+local s = vehicle:GetSteering(idxFL)
+if math.abs(s - 0.3) > 0.001 then fail("Steering roundtrip: " .. tostring(s)) end
+pass(string.format("Set/GetSteering(0) = %.3f", s))
+
+-- 5. 引擎 force (后轮)
+vehicle:ApplyEngineForce(idxRL, 1500)
+vehicle:ApplyEngineForce(idxRR, 1500)
+pass("ApplyEngineForce(后轮, 1500)")
+
+-- 6. 刹车 (4 轮初始全 0)
+vehicle:SetBrake(idxFL, 0)
+vehicle:SetBrake(idxFR, 0)
+vehicle:SetBrake(idxRL, 0)
+vehicle:SetBrake(idxRR, 0)
+pass("SetBrake(0) x4")
+
+-- 7. 速度 (初始为 0, 因为还没 step)
+local sp_init = vehicle:GetSpeed()
+pass(string.format("初始速度 = %.2f km/h", sp_init))
+
+-- 8. 模拟 30 帧 (空中下落 + 引擎 force, 但无地面接触, 所以引擎不生效, 仅重力)
+for i = 1, 30 do w:Step(1.0 / 60) end
+local sp_after = vehicle:GetSpeed()
+pass(string.format("30 帧后速度 = %.2f km/h (无地面)", sp_after))
+
+-- 9. 车轮 transform (16 floats column-major)
+local m = { vehicle:GetWheelTransform(idxFL) }
+if #m ~= 16 then fail("GetWheelTransform 没返回 16 floats: " .. #m) end
+pass(string.format("GetWheelTransform(0) 返回 16 floats, [0]=%.2f, [12,13,14]=(%.2f, %.2f, %.2f)",
+    m[1], m[13], m[14], m[15]))
+
+-- 10. 车轮位置 (3 floats)
+local wx, wy, wz = vehicle:GetWheelPosition(idxFL)
+pass(string.format("GetWheelPosition(0) = (%.2f, %.2f, %.2f)", wx, wy, wz))
+
+-- 11. 错误参数: 缺 chassis
+local bad_v, bad_err = w:CreateVehicle({})
+if bad_v ~= nil then fail("缺 chassis 应失败") end
+pass("缺 chassis -> nil + err: " .. tostring(bad_err))
+
+-- 12. 错误参数: chassis 不是 Body
+local bad_v2, bad_err2 = w:CreateVehicle({ chassis = chassisShape })  -- shape, 不是 body
+if bad_v2 ~= nil then fail("chassis 非 Body 应失败") end
+pass("chassis 非 Body -> nil + err: " .. tostring(bad_err2))
+
+-- 13. 越界 wheel index 不崩
+vehicle:SetSteering(99, 0)  -- 越界, 静默忽略
+vehicle:ApplyEngineForce(-1, 100)
+vehicle:SetBrake(99, 1)
+local zw_x, zw_y, zw_z = vehicle:GetWheelPosition(99)  -- 越界返回 (0,0,0)
+if zw_x ~= 0 or zw_y ~= 0 or zw_z ~= 0 then fail("越界 wheel idx 应返回 0,0,0") end
+pass("越界 wheel index 静默忽略 + 返回安全值")
+
+-- 14. tostring
+local _ = tostring(vehicle)
+pass("vehicle:__tostring 不崩")
+
+-- 15. DestroyVehicle
+w:DestroyVehicle(vehicle)
+if w:GetVehicleCount() ~= 0 then fail("after DestroyVehicle, count != 0") end
+if vehicle:IsAlive() then fail("destroyed vehicle should be dead") end
+pass("DestroyVehicle OK")
+
+-- dead vehicle 调方法不崩
+vehicle:SetSteering(0, 0)
+vehicle:ApplyEngineForce(0, 100)
+local sp_dead = vehicle:GetSpeed()
+if sp_dead ~= 0 then fail("dead vehicle GetSpeed != 0") end
+pass("dead vehicle 方法不崩 + 返回安全值")
+
+-- 16. 创建第二个用 :Delete() 测试
+local chassis2 = w:CreateBody({
+    type = "dynamic", mass = 500, x = -60, y = 5, z = -60,
+    shape = chassisShape,
+})
+local v2 = w:CreateVehicle({ chassis = chassis2 })
+v2:AddWheel({ connX=-1, connY=0, connZ=1, dirY=-1, axleX=-1,
+              suspensionRestLength=0.5, wheelRadius=0.4, isFrontWheel=true })
+v2:Delete()
+if w:GetVehicleCount() ~= 0 then fail("after :Delete, vehicle count != 0") end
+pass("vehicle:Delete() OK")
+chassis2:Delete()
+chassis:Delete()
+chassisShape = nil
+
 -- ==================== 9) Body / World 销毁 ====================
 print("[9] 销毁路径")
 local count_before = w:GetBodyCount()

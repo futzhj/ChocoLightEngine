@@ -57,6 +57,9 @@
 // Phase AU Step 3.3: CharacterController + Ghost object
 #include <BulletCollision/CollisionDispatch/btGhostObject.h>
 #include <BulletDynamics/Character/btKinematicCharacterController.h>
+// Phase AU Step 4.2: Vehicle (btRaycastVehicle)
+#include <BulletDynamics/Vehicle/btRaycastVehicle.h>
+#include <BulletDynamics/Vehicle/btVehicleRaycaster.h>
 #endif
 
 #include <cstdint>
@@ -79,6 +82,7 @@ static const char* BODY_MT      = "Light.Physics3D.Body";
 static const char* SHAPE_MT     = "Light.Physics3D.Shape";
 static const char* JOINT_MT     = "Light.Physics3D.Joint";       // Phase AU Step 3.2
 static const char* CHARACTER_MT = "Light.Physics3D.Character";   // Phase AU Step 3.3
+static const char* VEHICLE_MT   = "Light.Physics3D.Vehicle";     // Phase AU Step 4.2
 
 // ==================== userdata 结构 ====================
 
@@ -116,6 +120,8 @@ struct Body3D {
 struct Joint3D;
 // Phase AU Step 3.3: Character 前向声明
 struct Character3D;
+// Phase AU Step 4.2: Vehicle 前向声明
+struct Vehicle3D;
 
 // Phase AU Step 4.1: DebugDraw 接口前向声明
 class LuaDebugDrawer;
@@ -131,6 +137,7 @@ struct World3D {
     std::vector<Body3D*>                 bodies;
     std::vector<Joint3D*>                joints;      // Phase AU Step 3.2
     std::vector<Character3D*>            characters;  // Phase AU Step 3.3
+    std::vector<Vehicle3D*>              vehicles;    // Phase AU Step 4.2
     int                                  contactRef;  // OnContact callback in registry
     lua_State*                           L;
     bool                                 alive;
@@ -171,6 +178,18 @@ struct Character3D {
     bool                            alive;
     Character3D() : ghost(nullptr), ctrl(nullptr), owner(nullptr),
                     shapeRef(LUA_NOREF), selfRef(LUA_NOREF), alive(false) {}
+};
+
+// Phase AU Step 4.2: Vehicle userdata (btRaycastVehicle 4-wheel 车辆)
+struct Vehicle3D {
+    btRaycastVehicle*           vehicle;
+    btDefaultVehicleRaycaster*  raycaster;
+    World3D*                    owner;
+    int                         chassisBodyRef;  // 防 chassis Body udata GC
+    int                         selfRef;
+    bool                        alive;
+    Vehicle3D() : vehicle(nullptr), raycaster(nullptr), owner(nullptr),
+                  chassisBodyRef(LUA_NOREF), selfRef(LUA_NOREF), alive(false) {}
 };
 
 // ==================== Helpers ====================
@@ -1813,6 +1832,287 @@ static int l_World_DebugDrawWorld(lua_State* L) {
     return 0;
 }
 
+// ==================== Phase AU Step 4.2: btRaycastVehicle ====================
+
+static Vehicle3D* CheckVehicle(lua_State* L, int idx) {
+    return (Vehicle3D*)luaL_checkudata(L, idx, VEHICLE_MT);
+}
+static Vehicle3D* CheckLiveVehicle(lua_State* L, int idx) {
+    Vehicle3D* v = CheckVehicle(L, idx);
+    if (!v->alive) return nullptr;
+    return v;
+}
+
+static void InvalidateVehicle(lua_State* L, Vehicle3D* v) {
+    if (!v || !v->alive) return;
+    if (v->owner && v->owner->world && v->vehicle) {
+        v->owner->world->removeAction(v->vehicle);
+    }
+    delete v->vehicle;    v->vehicle   = nullptr;
+    delete v->raycaster;  v->raycaster = nullptr;
+    if (v->chassisBodyRef != LUA_NOREF) {
+        luaL_unref(L, LUA_REGISTRYINDEX, v->chassisBodyRef);
+        v->chassisBodyRef = LUA_NOREF;
+    }
+    if (v->selfRef != LUA_NOREF) {
+        luaL_unref(L, LUA_REGISTRYINDEX, v->selfRef);
+        v->selfRef = LUA_NOREF;
+    }
+    v->alive = false;
+}
+
+// world:CreateVehicle({ chassis, suspensionStiffness, ..., upAxis=1, forwardAxis=2 })
+static int l_World_CreateVehicle(lua_State* L) {
+    World3D* w = CheckWorld(L, 1);
+    if (!w->alive) { lua_pushnil(L); lua_pushstring(L, "world dead"); return 2; }
+    luaL_checktype(L, 2, LUA_TTABLE);
+
+    // chassis (必需, 必须是已创建的 Body3D)
+    lua_getfield(L, 2, "chassis");
+    Body3D* chassis = (Body3D*)luaL_testudata(L, -1, BODY_MT);
+    int chassisStackIdx = lua_gettop(L);
+    if (!chassis || !chassis->alive || !chassis->body) {
+        lua_pop(L, 1);
+        lua_pushnil(L);
+        lua_pushstring(L, "CreateVehicle: missing/invalid 'chassis' (Body3D required)");
+        return 2;
+    }
+    if (chassis->owner != w) {
+        lua_pop(L, 1);
+        lua_pushnil(L);
+        lua_pushstring(L, "CreateVehicle: chassis belongs to a different world");
+        return 2;
+    }
+
+    // chassis 必须 disable 自动 deactivate, 否则停一下就不响应输入
+    chassis->body->setActivationState(DISABLE_DEACTIVATION);
+
+    // VehicleTuning (所有字段都有默认值)
+    btRaycastVehicle::btVehicleTuning tuning;
+    auto readF = [&](const char* k, btScalar& out) {
+        lua_getfield(L, 2, k);
+        if (lua_isnumber(L, -1)) out = (btScalar)lua_tonumber(L, -1);
+        lua_pop(L, 1);
+    };
+    readF("suspensionStiffness",   tuning.m_suspensionStiffness);
+    readF("suspensionCompression", tuning.m_suspensionCompression);
+    readF("suspensionDamping",     tuning.m_suspensionDamping);
+    readF("maxSuspensionTravelCm", tuning.m_maxSuspensionTravelCm);
+    readF("frictionSlip",          tuning.m_frictionSlip);
+    readF("maxSuspensionForce",    tuning.m_maxSuspensionForce);
+
+    // 坐标轴 (默认 up=1(Y), forward=2(Z))
+    lua_getfield(L, 2, "upAxis");
+    int upAxis = lua_isnumber(L, -1) ? (int)lua_tointeger(L, -1) : 1;
+    lua_pop(L, 1);
+    lua_getfield(L, 2, "forwardAxis");
+    int fwdAxis = lua_isnumber(L, -1) ? (int)lua_tointeger(L, -1) : 2;
+    lua_pop(L, 1);
+
+    // 构造 raycaster + vehicle
+    btDefaultVehicleRaycaster* raycaster = new btDefaultVehicleRaycaster(w->world);
+    btRaycastVehicle* veh = new btRaycastVehicle(tuning, chassis->body, raycaster);
+    veh->setCoordinateSystem(0, upAxis, fwdAxis);  // right=0(X), up, forward
+    w->world->addAction(veh);
+
+    // userdata
+    Vehicle3D* v = (Vehicle3D*)lua_newuserdata(L, sizeof(Vehicle3D));
+    new (v) Vehicle3D();
+    v->vehicle   = veh;
+    v->raycaster = raycaster;
+    v->owner     = w;
+    v->alive     = true;
+    luaL_getmetatable(L, VEHICLE_MT);
+    lua_setmetatable(L, -2);
+
+    // 防 chassis Body GC
+    lua_pushvalue(L, chassisStackIdx);
+    v->chassisBodyRef = luaL_ref(L, LUA_REGISTRYINDEX);
+    // 防自身 GC
+    lua_pushvalue(L, -1);
+    v->selfRef = luaL_ref(L, LUA_REGISTRYINDEX);
+
+    w->vehicles.push_back(v);
+
+    // 清理 chassis 临时栈值
+    lua_remove(L, chassisStackIdx);
+    return 1;
+}
+
+static int l_World_DestroyVehicle(lua_State* L) {
+    World3D* w = CheckWorld(L, 1);
+    if (!w->alive) return 0;
+    Vehicle3D* v = CheckVehicle(L, 2);
+    if (v->owner != w || !v->alive) return 0;
+    auto& vec = w->vehicles;
+    vec.erase(std::remove(vec.begin(), vec.end(), v), vec.end());
+    InvalidateVehicle(L, v);
+    return 0;
+}
+
+static int l_World_GetVehicleCount(lua_State* L) {
+    World3D* w = CheckWorld(L, 1);
+    if (!w->alive) { lua_pushinteger(L, 0); return 1; }
+    int count = 0;
+    for (auto* v : w->vehicles) if (v && v->alive) count++;
+    lua_pushinteger(L, count);
+    return 1;
+}
+
+// ---- Vehicle 方法 ----
+
+// vehicle:AddWheel({ connX, connY, connZ, dirX, dirY, dirZ, axleX, axleY, axleZ,
+//                    suspensionRestLength, wheelRadius, isFrontWheel })
+// 返回新车轮的索引 (从 0 开始)
+static int l_Veh_AddWheel(lua_State* L) {
+    Vehicle3D* v = CheckLiveVehicle(L, 1); if (!v) return 0;
+    luaL_checktype(L, 2, LUA_TTABLE);
+
+    auto getF = [&](const char* k, float def) -> float {
+        lua_getfield(L, 2, k);
+        float val = lua_isnumber(L, -1) ? (float)lua_tonumber(L, -1) : def;
+        lua_pop(L, 1);
+        return val;
+    };
+    auto getB = [&](const char* k, bool def) -> bool {
+        lua_getfield(L, 2, k);
+        bool val = lua_isboolean(L, -1) ? (lua_toboolean(L, -1) != 0) : def;
+        lua_pop(L, 1);
+        return val;
+    };
+
+    btVector3 conn(getF("connX", 0),  getF("connY", 0),  getF("connZ", 0));
+    btVector3 dir (getF("dirX", 0),   getF("dirY", -1),  getF("dirZ", 0));
+    btVector3 axle(getF("axleX", -1), getF("axleY", 0),  getF("axleZ", 0));
+    btScalar  rest = getF("suspensionRestLength", 0.6f);
+    btScalar  rad  = getF("wheelRadius", 0.5f);
+    bool      frontWheel = getB("isFrontWheel", false);
+
+    btRaycastVehicle::btVehicleTuning tuning;  // wheel 用默认 tuning (跟 vehicle 不冲突, addWheel 内部会拷贝相关字段)
+    btWheelInfo& wi = v->vehicle->addWheel(conn, dir, axle, rest, rad, tuning, frontWheel);
+    (void)wi;
+    lua_pushinteger(L, v->vehicle->getNumWheels() - 1);
+    return 1;
+}
+
+static int l_Veh_GetNumWheels(lua_State* L) {
+    Vehicle3D* v = CheckLiveVehicle(L, 1);
+    lua_pushinteger(L, v ? v->vehicle->getNumWheels() : 0);
+    return 1;
+}
+
+static int l_Veh_SetSteering(lua_State* L) {
+    Vehicle3D* v = CheckLiveVehicle(L, 1); if (!v) return 0;
+    int   wheel = (int)luaL_checkinteger(L, 2);
+    float angle = (float)luaL_checknumber(L, 3);
+    if (wheel < 0 || wheel >= v->vehicle->getNumWheels()) return 0;
+    v->vehicle->setSteeringValue(angle, wheel);
+    return 0;
+}
+
+static int l_Veh_GetSteering(lua_State* L) {
+    Vehicle3D* v = CheckLiveVehicle(L, 1);
+    int wheel = (int)luaL_checkinteger(L, 2);
+    if (!v || wheel < 0 || wheel >= v->vehicle->getNumWheels()) {
+        lua_pushnumber(L, 0);
+        return 1;
+    }
+    lua_pushnumber(L, v->vehicle->getSteeringValue(wheel));
+    return 1;
+}
+
+static int l_Veh_ApplyEngineForce(lua_State* L) {
+    Vehicle3D* v = CheckLiveVehicle(L, 1); if (!v) return 0;
+    int   wheel = (int)luaL_checkinteger(L, 2);
+    float force = (float)luaL_checknumber(L, 3);
+    if (wheel < 0 || wheel >= v->vehicle->getNumWheels()) return 0;
+    v->vehicle->applyEngineForce(force, wheel);
+    return 0;
+}
+
+static int l_Veh_SetBrake(lua_State* L) {
+    Vehicle3D* v = CheckLiveVehicle(L, 1); if (!v) return 0;
+    int   wheel = (int)luaL_checkinteger(L, 2);
+    float brake = (float)luaL_checknumber(L, 3);
+    if (wheel < 0 || wheel >= v->vehicle->getNumWheels()) return 0;
+    v->vehicle->setBrake(brake, wheel);
+    return 0;
+}
+
+static int l_Veh_GetSpeed(lua_State* L) {
+    Vehicle3D* v = CheckLiveVehicle(L, 1);
+    lua_pushnumber(L, v ? v->vehicle->getCurrentSpeedKmHour() : 0);
+    return 1;
+}
+
+// 返回 16-float column-major matrix 表示 wheel 的世界 transform
+static int l_Veh_GetWheelTransform(lua_State* L) {
+    Vehicle3D* v = CheckLiveVehicle(L, 1);
+    int wheel = (int)luaL_checkinteger(L, 2);
+    if (!v || wheel < 0 || wheel >= v->vehicle->getNumWheels()) {
+        for (int i = 0; i < 16; i++) lua_pushnumber(L, (i % 5 == 0) ? 1 : 0);  // identity
+        return 16;
+    }
+    v->vehicle->updateWheelTransform(wheel, true);
+    const btTransform& t = v->vehicle->getWheelTransformWS(wheel);
+    btScalar m[16];
+    t.getOpenGLMatrix(m);
+    for (int i = 0; i < 16; i++) lua_pushnumber(L, (double)m[i]);
+    return 16;
+}
+
+// 返回车轮位置 (3 floats, 简化版本)
+static int l_Veh_GetWheelPosition(lua_State* L) {
+    Vehicle3D* v = CheckLiveVehicle(L, 1);
+    int wheel = (int)luaL_checkinteger(L, 2);
+    if (!v || wheel < 0 || wheel >= v->vehicle->getNumWheels()) {
+        lua_pushnumber(L, 0); lua_pushnumber(L, 0); lua_pushnumber(L, 0);
+        return 3;
+    }
+    v->vehicle->updateWheelTransform(wheel, true);
+    btVector3 p = v->vehicle->getWheelTransformWS(wheel).getOrigin();
+    PushVec3(L, p);
+    return 3;
+}
+
+static int l_Veh_IsAlive(lua_State* L) {
+    Vehicle3D* v = CheckVehicle(L, 1);
+    lua_pushboolean(L, v->alive);
+    return 1;
+}
+
+static int l_Veh_Delete(lua_State* L) {
+    Vehicle3D* v = CheckVehicle(L, 1);
+    if (!v->alive) return 0;
+    if (v->owner) {
+        auto& vec = v->owner->vehicles;
+        vec.erase(std::remove(vec.begin(), vec.end(), v), vec.end());
+    }
+    InvalidateVehicle(L, v);
+    return 0;
+}
+
+static int l_Veh_GC(lua_State* L) {
+    Vehicle3D* v = CheckVehicle(L, 1);
+    if (v->alive) {
+        if (v->owner) {
+            auto& vec = v->owner->vehicles;
+            vec.erase(std::remove(vec.begin(), vec.end(), v), vec.end());
+        }
+        InvalidateVehicle(L, v);
+    }
+    v->~Vehicle3D();
+    return 0;
+}
+
+static int l_Veh_Tostring(lua_State* L) {
+    Vehicle3D* v = CheckVehicle(L, 1);
+    if (!v->alive) { lua_pushstring(L, "Light.Physics3D.Vehicle(dead)"); return 1; }
+    lua_pushfstring(L, "Light.Physics3D.Vehicle(wheels=%d, speed=%.1fkm/h)",
+                    v->vehicle->getNumWheels(), (double)v->vehicle->getCurrentSpeedKmHour());
+    return 1;
+}
+
 static int l_World_RayCast(lua_State* L) {
     World3D* w = CheckWorld(L, 1);
     if (!w->alive) {
@@ -1857,6 +2157,7 @@ static int l_World_OnContact(lua_State* L) {
 
 // 前向声明 (实现在下方)
 static void InvalidateCharacter(lua_State* L, Character3D* c);
+static void InvalidateVehicle(lua_State* L, Vehicle3D* v);
 
 // 释放 Bullet 资源, 可重复调用 (幂等)
 static void World_ReleaseBullet(lua_State* L, World3D* w) {
@@ -1867,6 +2168,12 @@ static void World_ReleaseBullet(lua_State* L, World3D* w) {
         if (j) j->owner = nullptr;
     }
     w->joints.clear();
+    // Phase AU Step 4.2: vehicles 在 bodies 之前销毁 (vehicle 引用 chassis body)
+    for (auto* v : w->vehicles) {
+        InvalidateVehicle(L, v);
+        if (v) v->owner = nullptr;
+    }
+    w->vehicles.clear();
     // Phase AU Step 3.3: characters 也在 bodies 之前销毁
     for (auto* c : w->characters) {
         InvalidateCharacter(L, c);
@@ -1957,6 +2264,10 @@ static const luaL_Reg kWorldMethods[] = {
     { "SetDebugDrawMode",  l_World_SetDebugDrawMode },
     { "GetDebugDrawMode",  l_World_GetDebugDrawMode },
     { "DebugDrawWorld",    l_World_DebugDrawWorld },
+    // Phase AU Step 4.2 — Vehicle
+    { "CreateVehicle",     l_World_CreateVehicle },
+    { "DestroyVehicle",    l_World_DestroyVehicle },
+    { "GetVehicleCount",   l_World_GetVehicleCount },
     { "RayCast",        l_World_RayCast },
     { "OnContact",      l_World_OnContact },
     { "Delete",         l_World_Delete },
@@ -1992,6 +2303,24 @@ static const luaL_Reg kJointMethods[] = {
     { "Delete",             l_Joint_Delete },
     { "__gc",               l_Joint_GC },
     { "__tostring",         l_Joint_Tostring },
+    { nullptr, nullptr }
+};
+
+// Phase AU Step 4.2: Vehicle 元表方法
+static const luaL_Reg kVehicleMethods[] = {
+    { "AddWheel",          l_Veh_AddWheel },
+    { "GetNumWheels",      l_Veh_GetNumWheels },
+    { "SetSteering",       l_Veh_SetSteering },
+    { "GetSteering",       l_Veh_GetSteering },
+    { "ApplyEngineForce",  l_Veh_ApplyEngineForce },
+    { "SetBrake",          l_Veh_SetBrake },
+    { "GetSpeed",          l_Veh_GetSpeed },
+    { "GetWheelTransform", l_Veh_GetWheelTransform },
+    { "GetWheelPosition",  l_Veh_GetWheelPosition },
+    { "IsAlive",           l_Veh_IsAlive },
+    { "Delete",            l_Veh_Delete },
+    { "__gc",              l_Veh_GC },
+    { "__tostring",        l_Veh_Tostring },
     { nullptr, nullptr }
 };
 
@@ -2091,6 +2420,14 @@ extern "C" LIGHT_API int luaopen_Light_Physics3D(lua_State* L) {
     // Character 元表 (Phase AU Step 3.3)
     if (luaL_newmetatable(L, CHARACTER_MT)) {
         luaL_setfuncs(L, kCharacterMethods, 0);
+        lua_pushvalue(L, -1);
+        lua_setfield(L, -2, "__index");
+    }
+    lua_pop(L, 1);
+
+    // Vehicle 元表 (Phase AU Step 4.2)
+    if (luaL_newmetatable(L, VEHICLE_MT)) {
+        luaL_setfuncs(L, kVehicleMethods, 0);
         lua_pushvalue(L, -1);
         lua_setfield(L, -2, "__index");
     }
