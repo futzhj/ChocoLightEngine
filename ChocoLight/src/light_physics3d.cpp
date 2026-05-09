@@ -736,12 +736,22 @@ static int l_Body_IsAlive(lua_State* L) {
 // ==================== Body 销毁逻辑 ====================
 
 static void InvalidateBody(lua_State* L, Body3D* b) {
+    fprintf(stderr, "[IB] enter b=%p alive=%d compound=%p childRefs=%d\n",
+            (void*)b, b ? (int)b->alive : -1,
+            b ? (void*)b->compound : nullptr,
+            b ? (int)b->childShapeRefs.size() : -1);
+    fflush(stderr);
     if (!b || !b->alive) return;
     if (b->body && b->owner && b->owner->world) {
+        fprintf(stderr, "[IB] pre-removeRigidBody\n"); fflush(stderr);
         b->owner->world->removeRigidBody(b->body);
+        fprintf(stderr, "[IB] post-removeRigidBody\n"); fflush(stderr);
     }
+    fprintf(stderr, "[IB] pre-delete body=%p motion=%p\n", (void*)b->body, (void*)b->motion); fflush(stderr);
     delete b->body;
+    fprintf(stderr, "[IB] body deleted\n"); fflush(stderr);
     delete b->motion;
+    fprintf(stderr, "[IB] motion deleted\n"); fflush(stderr);
     b->body = nullptr;
     b->motion = nullptr;
     if (b->shapeRef != LUA_NOREF) {
@@ -752,9 +762,12 @@ static void InvalidateBody(lua_State* L, Body3D* b) {
         luaL_unref(L, LUA_REGISTRYINDEX, b->selfRef);
         b->selfRef = LUA_NOREF;
     }
+    fprintf(stderr, "[IB] refs unrefed\n"); fflush(stderr);
     // Phase AU Step 4.1: 释放 compound shape + 子 shape refs
     if (b->compound) {
+        fprintf(stderr, "[IB] pre-delete compound=%p\n", (void*)b->compound); fflush(stderr);
         delete b->compound;
+        fprintf(stderr, "[IB] compound deleted\n"); fflush(stderr);
         b->compound = nullptr;
     }
     for (int ref : b->childShapeRefs) {
@@ -762,6 +775,7 @@ static void InvalidateBody(lua_State* L, Body3D* b) {
     }
     b->childShapeRefs.clear();
     b->alive = false;
+    fprintf(stderr, "[IB] done\n"); fflush(stderr);
 }
 
 static int l_Body_Delete(lua_State* L) {
