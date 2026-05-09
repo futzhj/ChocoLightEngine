@@ -40,9 +40,10 @@ cmake_install.cmake
 # lumen-master/src/light/embedded_scripts.h
 
 # Pack outputs and binaries (user-generated)
-Light-0.2.3/*.exe
-Light-0.2.3/*.dll
-Light-0.2.3/*.luac
+Light-0.2.3/**/*.exe
+Light-0.2.3/**/*.dll
+Light-0.2.3/**/*.luac
+Light-0.2.3/demo_*/lib/
 test_embedded/
 
 # Python cache
