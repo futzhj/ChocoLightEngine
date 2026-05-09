@@ -24,6 +24,7 @@
 #include <cstring>
 #include <cstdio>
 #include <cstdlib>
+#include <cstdarg>
 #include <cmath>          // Step 2: sqrt / sin / cos / acos for QuatSlerp + QuatNormalize
 #include <cstdint>        // Step 2: uint8_t / uint32_t (computed flags)
 
@@ -1579,15 +1580,27 @@ static int l_Clip_SetDuration(lua_State* L) {
 //            T/S:        3 floats / keyframe  (LINEAR/STEP)   或 3*3 (CUBICSPLINE: in,value,out)
 //            R:          4 floats / keyframe  (xyzw, glTF 约定; 内部转 wxyz)
 // 自动更新 clip->duration = max(duration, times.back()).
+// 安全 raise helper: 用 snprintf 在 C runtime 内部完成格式化, 然后 lua_pushstring + lua_error.
+// 完全绕开 luaL_error -> luaL_where -> lua_pushvfstring 路径中可能存在的 GC/格式化问题。
+// 调用时本函数所有非 trivial 栈对象必须已经离开作用域 (因为 lua_error 走 longjmp)。
+static int RaiseFormatted(lua_State* L, const char* fmt, ...) {
+    char buf[256];
+    va_list ap;
+    va_start(ap, fmt);
+    std::vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    buf[sizeof(buf) - 1] = '\0';
+    lua_pushstring(L, buf);    // 把已格式化字符串 push 到 Lua 栈
+    return lua_error(L);       // longjmp 抛出 (栈顶字符串作为 error 对象)
+}
+
 static int l_Clip_AddSampler(lua_State* L) {
     AnimationClip* c   = CheckClip(L, 1);
     int jointIdx       = (int)luaL_checkinteger(L, 2) - 1;    // 1-based → 0-based
-    // 关键安全约束:
-    //   1) luaL_error 走 longjmp, 会跳过本地非 trivial-destructor 对象 (std::string/std::vector)
-    //      → 在 MSVC 上是 UB, 触发 SEH access violation, 进程直接崩溃。
-    //   2) luaL_checkstring 返回的 const char* 理论上只在该值还在 Lua 栈时有效,
-    //      luaL_error 内部 luaL_where → lua_pushvfstring 可能动到栈, 让指针失效。
-    //   解决: 用 trivial 栈缓冲 char[] copy 一份, longjmp 安全跳过, 也不依赖 Lua 栈生命期。
+    // Lumen luaconf.h: LUA_THROW = longjmp (即使 C++ 编译). longjmp 跳过 C++ 栈对象析构,
+    // 在 MSVC 上是 UB. 因此所有可能跨越 raise 的栈对象必须是 trivial-destructor 类型 (char[]/POD).
+    // 同时 luaL_error 内部 luaL_where + lua_pushvfstring 解析 %s 时, 在 Lumen 上观测到会崩溃,
+    // 推测与 GC 时机或 va_arg 有关. 改用 RaiseFormatted (snprintf + lua_pushstring) 完全绕开。
     const char* tgtRaw = luaL_checkstring(L, 3);
     const char* modRaw = luaL_checkstring(L, 4);
     char tgtBuf[32]; char modBuf[32];
@@ -1603,7 +1616,7 @@ static int l_Clip_AddSampler(lua_State* L) {
     luaL_checktype(L, 6, LUA_TTABLE);
 
     if (jointIdx < 0) {
-        return luaL_error(L, "joint index must be >= 1 (got %d)", jointIdx + 1);
+        return RaiseFormatted(L, "joint index must be >= 1 (got %d)", jointIdx + 1);
     }
 
     ChannelTarget target = ChannelTarget::UNSUPPORTED;
@@ -1611,7 +1624,7 @@ static int l_Clip_AddSampler(lua_State* L) {
     else if (std::strcmp(tgtBuf, "rotation") == 0)    target = ChannelTarget::ROTATION;
     else if (std::strcmp(tgtBuf, "scale") == 0)       target = ChannelTarget::SCALE;
     else {
-        return luaL_error(L, "unsupported target: %s (expected translation/rotation/scale)", tgtBuf);
+        return RaiseFormatted(L, "unsupported target: %s (expected translation/rotation/scale)", tgtBuf);
     }
 
     InterpMode mode = InterpMode::LINEAR;
@@ -1629,22 +1642,22 @@ static int l_Clip_AddSampler(lua_State* L) {
     else if (ieq(modBuf, "STEP"))        mode = InterpMode::STEP;
     else if (ieq(modBuf, "CUBICSPLINE")) mode = InterpMode::CUBICSPLINE;
     else {
-        return luaL_error(L, "unsupported mode: %s (expected LINEAR/STEP/CUBICSPLINE)", modBuf);
+        return RaiseFormatted(L, "unsupported mode: %s (expected LINEAR/STEP/CUBICSPLINE)", modBuf);
     }
 
     int comps = (target == ChannelTarget::ROTATION) ? FLOATS_R : FLOATS_T;
 
-    // -- 静态尺寸校验 (全部在创建任何栈 std::vector 之前完成, 保证 luaL_error longjmp 不会跳过析构) --
+    // -- 静态尺寸校验 (全部在创建任何栈 std::vector 之前完成, 保证 longjmp 不会跳过析构) --
     int nTimes = (int)lua_objlen(L, 5);
     if (nTimes <= 0) {
-        return luaL_error(L, "times table is empty");
+        return RaiseFormatted(L, "times table is empty");
     }
     int perKey   = (mode == InterpMode::CUBICSPLINE) ? (comps * 3) : comps;
     int nValsExp = nTimes * perKey;
     int nValsGot = (int)lua_objlen(L, 6);
     if (nValsGot != nValsExp) {
-        return luaL_error(L, "values count mismatch: expected %d (%d keys * %d), got %d",
-                           nValsExp, nTimes, perKey, nValsGot);
+        return RaiseFormatted(L, "values count mismatch: expected %d (%d keys * %d), got %d",
+                              nValsExp, nTimes, perKey, nValsGot);
     }
 
     // -- 内容预扫: 在不分配任何 std::vector 的前提下确认所有元素都是 number --
@@ -1653,7 +1666,7 @@ static int l_Clip_AddSampler(lua_State* L) {
         int isNum = lua_isnumber(L, -1);
         lua_pop(L, 1);
         if (!isNum) {
-            return luaL_error(L, "times[%d] is not a number", i + 1);
+            return RaiseFormatted(L, "times[%d] is not a number", i + 1);
         }
     }
     for (int i = 0; i < nValsGot; ++i) {
@@ -1661,7 +1674,7 @@ static int l_Clip_AddSampler(lua_State* L) {
         int isNum = lua_isnumber(L, -1);
         lua_pop(L, 1);
         if (!isNum) {
-            return luaL_error(L, "values[%d] is not a number", i + 1);
+            return RaiseFormatted(L, "values[%d] is not a number", i + 1);
         }
     }
 

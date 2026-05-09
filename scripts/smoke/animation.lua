@@ -485,22 +485,36 @@ if type(Anim.NewEmptySkeleton) == 'function' then
     local r2 = Anim.NewEmptySkeleton(65)
     CHECK(r2 == nil, 'NewEmptySkeleton(65) → nil (exceeds MAX_JOINTS=64)')
 
+    print('  ... 14.3 NewEmptySkeleton(2) + NewEmptyClip')
     local sk2 = Anim.NewEmptySkeleton(2)
     local c2  = Anim.NewEmptyClip('t', 0.0)
+    print(string.format('  ... 14.3 done sk2=%s c2=%s', type(sk2), type(c2)))
 
-    -- AddSampler 各种错误路径
-    -- 注: l_Clip_AddSampler 内部已 copy luaL_checkstring 到 std::string,
-    --     避免 Lumen 在 luaL_error %s 路径上 GC 回收 TString 导致的 dangling pointer 崩溃
-    CHECK(pcall(c2.AddSampler, c2, 0, 'translation', 'LINEAR', {0}, {0,0,0}) == false,
-          'AddSampler jointIdx=0 raises (no-%s path)')
-    CHECK(pcall(c2.AddSampler, c2, 1, 'bad_target', 'LINEAR', {0}, {0,0,0}) == false,
-          'AddSampler unknown target raises (%s path)')
-    CHECK(pcall(c2.AddSampler, c2, 1, 'translation', 'BAD_MODE', {0}, {0,0,0}) == false,
-          'AddSampler unknown mode raises (%s path)')
-    CHECK(pcall(c2.AddSampler, c2, 1, 'translation', 'LINEAR', {0}, {0,0}) == false,
-          'AddSampler values count mismatch raises')
-    CHECK(pcall(c2.AddSampler, c2, 1, 'translation', 'LINEAR', {}, {}) == false,
-          'AddSampler empty times raises')
+    -- AddSampler 各种错误路径 (cpp 改用 RaiseFormatted, 应不再触发 luaL_error %s 崩溃)
+    print('  ... 14.4a pre pcall AddSampler jointIdx=0')
+    local ok14_4a = pcall(c2.AddSampler, c2, 0, 'translation', 'LINEAR', {0}, {0,0,0})
+    print('  ... 14.4a post ok=' .. tostring(ok14_4a))
+    CHECK(ok14_4a == false, 'AddSampler jointIdx=0 raises')
+
+    print('  ... 14.4b pre pcall AddSampler bad_target')
+    local ok14_4b = pcall(c2.AddSampler, c2, 1, 'bad_target', 'LINEAR', {0}, {0,0,0})
+    print('  ... 14.4b post ok=' .. tostring(ok14_4b))
+    CHECK(ok14_4b == false, 'AddSampler unknown target raises')
+
+    print('  ... 14.4c pre pcall AddSampler BAD_MODE')
+    local ok14_4c = pcall(c2.AddSampler, c2, 1, 'translation', 'BAD_MODE', {0}, {0,0,0})
+    print('  ... 14.4c post ok=' .. tostring(ok14_4c))
+    CHECK(ok14_4c == false, 'AddSampler unknown mode raises')
+
+    print('  ... 14.4d pre pcall AddSampler values mismatch')
+    local ok14_4d = pcall(c2.AddSampler, c2, 1, 'translation', 'LINEAR', {0}, {0,0})
+    print('  ... 14.4d post ok=' .. tostring(ok14_4d))
+    CHECK(ok14_4d == false, 'AddSampler values count mismatch raises')
+
+    print('  ... 14.4e pre pcall AddSampler empty times')
+    local ok14_4e = pcall(c2.AddSampler, c2, 1, 'translation', 'LINEAR', {}, {})
+    print('  ... 14.4e post ok=' .. tostring(ok14_4e))
+    CHECK(ok14_4e == false, 'AddSampler empty times raises')
 
     print('  ... 14.9 pcall SetJointName out-of-range')
     CHECK(pcall(sk2.SetJointName, sk2, 99, 'x') == false,
