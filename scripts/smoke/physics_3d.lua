@@ -33,6 +33,7 @@ local function fail(msg) error("FAIL: " .. msg, 2) end
 local function approx(a, b, eps) eps = eps or 1e-3; return math.abs(a - b) <= eps end
 
 -- ==================== 1) 模块加载 ====================
+print("[DBG] before [1]")
 print("[1] 模块加载")
 local fns = {
     "NewBox", "NewSphere", "NewCylinder", "NewCapsule", "NewCone", "NewStaticPlane",
@@ -46,6 +47,7 @@ end
 pass(#fns .. " 个工厂函数都存在")
 
 -- ==================== 2) Shape 工厂 ====================
+print("[DBG] before [2]")
 print("[2] Shape 工厂")
 local box = Phys.NewBox(0.5, 0.5, 0.5)
 if not box then fail("NewBox fail") end
@@ -61,6 +63,7 @@ local _ = tostring(box) .. tostring(plane)
 pass("shape:__tostring 调用不崩")
 
 -- Phase AU Step 3.1: 高级 shape 工厂
+print("[DBG] before [2.1]")
 print("[2.1] 高级 Shape 工厂 (ConvexHull / Heightfield / TriangleMesh)")
 
 -- ConvexHull: 8 个立方体顶点
@@ -107,6 +110,7 @@ if ok_tm then fail("NewTriangleMesh oob should error") end
 pass("NewTriangleMesh 越界 raise: " .. tostring(err_tm))
 
 -- ==================== 3) World 生命周期 ====================
+print("[DBG] before [3] NewWorld")
 print("[3] World 生命周期")
 local w = Phys.NewWorld()  -- 默认重力 (0, -9.81, 0)
 if not w then fail("NewWorld fail") end
