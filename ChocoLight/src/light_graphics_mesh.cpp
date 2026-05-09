@@ -24,13 +24,19 @@
 
 #include <vector>
 #include <cstring>
+#include <cstdio>
+#include <cstdlib>
 #include <string>
 
 extern "C" {
 #include "lua.h"
 #include "lauxlib.h"
 #include "cgltf.h"   // Phase AS.3 — glTF 2.0 解析 (single-header in third_party/)
+#include "stb_image.h"  // Phase AS.4.x — 解码 PNG/JPG/etc. 到 RGBA pixels
 }
+
+// 前向声明: 创建 Material userdata (Phase AS.4.x glTF 材质提取)
+extern "C" int luaopen_Light_Graphics_Material(lua_State* L);
 
 // 每顶点 floats 数 (固定 12 = pos3+normal3+uv2+color4)
 static constexpr int FLOATS_PER_VERTEX = 12;
@@ -318,10 +324,168 @@ static bool GLTF_ExtractPrimitive(const cgltf_primitive* prim,
     return true;
 }
 
-// ==================== Mesh.LoadGLTF(path, [primitive_index=0]) ====================
+// ==================== Phase AS.4.x — glTF 材质提取 ====================
+
+// userdata 元表名 (与 light_graphics_material.cpp 一致, 用于创建 Material userdata)
+static const char* MATERIAL_MT_NAME = "Light.Graphics.Material";
+
+// 取 .gltf 文件所在目录 (含尾部分隔符), 用于解析相对纹理 URI
+static std::string GetGLTFDirectory(const char* gltfPath) {
+    if (!gltfPath) return "";
+    std::string p = gltfPath;
+    // 找最后一个 '/' 或 '\\'
+    size_t pos = p.find_last_of("/\\");
+    if (pos == std::string::npos) return "";
+    return p.substr(0, pos + 1);  // 含分隔符
+}
+
+// 加载 glTF 中的一张 image, 返回 GPU texId (0=失败). 不让 LoadGLTF 整体失败.
+//
+// 来源优先级:
+//   1. image->buffer_view 非空 -> embedded GLB chunk 数据
+//   2. image->uri 是 "data:" URI -> base64 解码
+//   3. image->uri 是文件路径 -> 拼 gltfDir + uri 读文件
+static uint32_t LoadGLTFImage(const cgltf_image* img, const std::string& gltfDir) {
+    if (!img || !g_render) return 0;
+
+    const uint8_t* imgData = nullptr;
+    size_t         imgSize = 0;
+
+    // case 1: GLB embedded buffer_view
+    std::vector<uint8_t> ownedData;  // 负责生命周期管理 (case 2/3 下)
+    if (img->buffer_view) {
+        const uint8_t* bvData = cgltf_buffer_view_data(img->buffer_view);
+        if (!bvData) return 0;
+        imgData = bvData;
+        imgSize = img->buffer_view->size;
+    } else if (img->uri) {
+        if (strncmp(img->uri, "data:", 5) == 0) {
+            // case 2: data URI (data:image/png;base64,XXX)
+            const char* commaPos = strchr(img->uri, ',');
+            if (!commaPos) return 0;
+            const char* b64 = commaPos + 1;
+            size_t b64Len = strlen(b64);
+            // 估计解码后大小 (cgltf_load_buffer_base64 需要确切 size)
+            size_t decodedSize = (b64Len / 4) * 3;
+            // 减去 padding '=' (1 个 = -> -1 字节, 2 个 == -> -2 字节)
+            if (b64Len >= 2 && b64[b64Len - 1] == '=') {
+                decodedSize--;
+                if (b64[b64Len - 2] == '=') decodedSize--;
+            }
+            if (decodedSize == 0) return 0;
+            cgltf_options opts = {};
+            void* dec = nullptr;
+            cgltf_result r = cgltf_load_buffer_base64(&opts, decodedSize, b64, &dec);
+            if (r != cgltf_result_success || !dec) return 0;
+            ownedData.assign((uint8_t*)dec, (uint8_t*)dec + decodedSize);
+            free(dec);  // cgltf 默认用 malloc
+            imgData = ownedData.data();
+            imgSize = decodedSize;
+        } else {
+            // case 3: 相对文件路径
+            std::string fullPath = gltfDir + img->uri;
+            FILE* fp = fopen(fullPath.c_str(), "rb");
+            if (!fp) return 0;
+            fseek(fp, 0, SEEK_END);
+            long sz = ftell(fp);
+            fseek(fp, 0, SEEK_SET);
+            if (sz <= 0) { fclose(fp); return 0; }
+            ownedData.resize((size_t)sz);
+            size_t readBytes = fread(ownedData.data(), 1, (size_t)sz, fp);
+            fclose(fp);
+            if (readBytes != (size_t)sz) return 0;
+            imgData = ownedData.data();
+            imgSize = (size_t)sz;
+        }
+    } else {
+        return 0;  // 既没 buffer_view 也没 uri
+    }
+
+    // 用 stb_image 解码到 RGBA pixels
+    int w = 0, h = 0, ch = 0;
+    stbi_set_flip_vertically_on_load(0);
+    unsigned char* pixels = stbi_load_from_memory(imgData, (int)imgSize, &w, &h, &ch, 4);
+    if (!pixels || w <= 0 || h <= 0) {
+        if (pixels) stbi_image_free(pixels);
+        return 0;
+    }
+
+    uint32_t texId = g_render->CreateTexture(w, h, 4, pixels);
+    stbi_image_free(pixels);
+    return texId;
+}
+
+// 提取 cgltf material 到 MaterialDesc. material 可为 NULL (用默认 PBR).
+static void ExtractMaterial(MaterialDesc& d, const cgltf_material* mat, const std::string& gltfDir) {
+    // 默认 PBR + 白底
+    memset(&d, 0, sizeof(d));
+    d.mode = 1;  // PBR
+    d.color[0] = d.color[1] = d.color[2] = d.color[3] = 1.0f;
+    d.metallic = 0.0f;
+    d.roughness = 1.0f;
+    d.normalScale = 1.0f;
+    d.occlusionStrength = 1.0f;
+    d.alphaMode = 0;
+    d.alphaCutoff = 0.5f;
+    d.doubleSided = 0;
+
+    if (!mat) return;  // primitive 无 material 时返回默认值
+
+    d.mode = mat->unlit ? 0 : 1;
+
+    if (mat->has_pbr_metallic_roughness) {
+        const cgltf_pbr_metallic_roughness& pbr = mat->pbr_metallic_roughness;
+        d.color[0]  = pbr.base_color_factor[0];
+        d.color[1]  = pbr.base_color_factor[1];
+        d.color[2]  = pbr.base_color_factor[2];
+        d.color[3]  = pbr.base_color_factor[3];
+        d.metallic  = pbr.metallic_factor;
+        d.roughness = pbr.roughness_factor;
+        if (pbr.base_color_texture.texture) {
+            d.texBaseColor = LoadGLTFImage(pbr.base_color_texture.texture->image, gltfDir);
+        }
+        if (pbr.metallic_roughness_texture.texture) {
+            d.texMetallicRoughness = LoadGLTFImage(pbr.metallic_roughness_texture.texture->image, gltfDir);
+        }
+    }
+
+    // normal texture (scale 字段)
+    if (mat->normal_texture.texture) {
+        d.texNormal = LoadGLTFImage(mat->normal_texture.texture->image, gltfDir);
+        d.normalScale = mat->normal_texture.scale;
+    }
+
+    // occlusion texture (cgltf 共享 cgltf_texture_view, scale 字段实为 strength)
+    if (mat->occlusion_texture.texture) {
+        d.texOcclusion = LoadGLTFImage(mat->occlusion_texture.texture->image, gltfDir);
+        d.occlusionStrength = mat->occlusion_texture.scale;
+    }
+
+    // emissive
+    d.emissive[0] = mat->emissive_factor[0];
+    d.emissive[1] = mat->emissive_factor[1];
+    d.emissive[2] = mat->emissive_factor[2];
+    if (mat->emissive_texture.texture) {
+        d.texEmissive = LoadGLTFImage(mat->emissive_texture.texture->image, gltfDir);
+    }
+
+    // alphaMode
+    switch (mat->alpha_mode) {
+        case cgltf_alpha_mode_mask:  d.alphaMode = 2; break;
+        case cgltf_alpha_mode_blend: d.alphaMode = 1; break;
+        case cgltf_alpha_mode_opaque:
+        default:                     d.alphaMode = 0; break;
+    }
+    d.alphaCutoff = mat->alpha_cutoff;
+    d.doubleSided = mat->double_sided ? 1 : 0;
+}
+
+// ==================== Mesh.LoadGLTF(path, [primitive_index=0], [with_material=false]) ====================
+// Phase AS.4.x: with_material=true 时返回 (Mesh, Material), 否则只返回 Mesh (向后兼容).
 static int l_Mesh_LoadGLTF(lua_State* L) {
     const char* path = luaL_checkstring(L, 1);
     int primIdx = (int)luaL_optinteger(L, 2, 0);
+    bool withMaterial = lua_toboolean(L, 3) != 0;
     if (primIdx < 0) {
         lua_pushnil(L);
         lua_pushstring(L, "primitive_index must be >= 0");
@@ -353,34 +517,56 @@ static int l_Mesh_LoadGLTF(lua_State* L) {
         cgltf_free(data);
         return 2;
     }
-    cgltf_free(data);
 
-    // 调 backend 创建 GPU mesh
+    // Backend 检查 (g_render + Supports3D), 在 cgltf_free 前
     if (!g_render) {
+        cgltf_free(data);
         lua_pushnil(L);
         lua_pushstring(L, "no render backend (window not opened?)");
         return 2;
     }
     if (!g_render->Supports3D()) {
+        cgltf_free(data);
         lua_pushnil(L);
         lua_pushstring(L, "render backend does not support 3D mesh (need GL 3.3+)");
         return 2;
     }
+
+    // 创建 GPU mesh (失败时也要 free cgltf)
     uint32_t meshId = g_render->CreateMesh(verts.data(), (int)verts.size(),
                                             indices.data(), (int)indices.size());
     if (!meshId) {
+        cgltf_free(data);
         lua_pushnil(L);
         lua_pushstring(L, "CreateMesh failed (GPU upload error)");
         return 2;
     }
 
-    // 创建 userdata + 元表
+    // Phase AS.4.x: with_material=true 时, 提取 material + 加载贴图
+    MaterialDesc matDesc = {};
+    if (withMaterial) {
+        std::string gltfDir = GetGLTFDirectory(path);
+        ExtractMaterial(matDesc, prim->material, gltfDir);
+    }
+
+    cgltf_free(data);  // prim 指针之后不可访问
+
+    // 创建 mesh userdata + 元表
     MeshUserdata* ud = (MeshUserdata*)lua_newuserdata(L, sizeof(MeshUserdata));
     ud->meshId      = meshId;
     ud->vertexCount = (int)verts.size();
     ud->indexCount  = (int)indices.size();
     luaL_getmetatable(L, MESH_MT);
     lua_setmetatable(L, -2);
+
+    // Phase AS.4.x: 附加 Material userdata
+    if (withMaterial) {
+        MaterialDesc* matUd = (MaterialDesc*)lua_newuserdata(L, sizeof(MaterialDesc));
+        *matUd = matDesc;
+        luaL_getmetatable(L, MATERIAL_MT_NAME);
+        lua_setmetatable(L, -2);
+        return 2;  // (Mesh, Material)
+    }
     return 1;
 }
 
@@ -464,6 +650,12 @@ static int l_Mesh_Tostring(lua_State* L) {
 // ==================== Module registration ====================
 
 extern "C" LIGHT_API int luaopen_Light_Graphics_Mesh(lua_State* L) {
+    // Phase AS.4.x — 确保 Material 元表已注册 (LoadGLTF with_material 需要)
+    // 调一次 luaopen_Light_Graphics_Material, 之后弹掉返回值, 不影响后续栈操作
+    int top = lua_gettop(L);
+    luaopen_Light_Graphics_Material(L);
+    lua_settop(L, top);
+
     // 注册 userdata 元表
     if (luaL_newmetatable(L, MESH_MT)) {
         static const luaL_Reg methods[] = {

@@ -246,12 +246,20 @@ for (int i = 0; i < uPointLightCount; i++) {
 
 - [x] `lightc -p scripts/smoke/material_3d.lua` Exit=0 (本地)
 - [x] `lightc -p scripts/smoke/mesh_3d.lua` Exit=0 (回归)
-- [ ] GitHub Actions `Build Templates (All Platforms)` 全绿:
-  - [ ] Windows x64: 编译 + Windows runtime smoke (含 material_3d.lua)
-  - [ ] Linux x64: 编译 + 语法检查
-  - [ ] macOS Universal: 编译 + 语法检查
-  - [ ] Android arm64+x86_64: 编译
-  - [ ] iOS arm64: 编译
-  - [ ] Web WASM: 编译
+- [x] GitHub Actions `Build Templates (All Platforms)` **全绿** (run 25601950040):
+  - [x] Windows x64: 编译 + Windows runtime smoke (含 material_3d.lua) ✅
+  - [x] Linux x64: 编译 ✅
+  - [x] macOS Universal: 编译 ✅
+  - [x] Android arm64+x86_64: 编译 ✅
+  - [x] iOS arm64: 编译 ✅
+  - [x] Web WASM: 编译 ✅
 
-CI 全绿后此子 Phase 才算最终交付完成。
+**Phase AS.4 最终交付完成 (2 个 commit: feat 主体 + fix shader 残留代码)。**
+
+## 失败修复历史 (run 25601838523 → fix 25601950040)
+
+**首次 push (commit `0d1310b`)**: 5/6 平台失败 (windows/macos/linux/android/web)。
+- **错误**: `error: use of undeclared identifier 'FS3D_SOURCE'/'program3D'/'loc3D_*'`
+- **根因**: AS.4 重写时移除了 AS.2 的 `program3D`/`loc3D_*` 类成员, 但 `Init()` 中残留了一段 AS.2 编译代码引用这些已删除的成员。
+- **修复 commit `1701332`**: 替换 `Init()` 中残留的 AS.2 shader 编译代码为 AS.4 双 shader 编译, 6 平台一次通过。
+- **教训**: 大幅重构时需要全文 `grep_search` 确认所有旧引用已删除, 不能仅依赖局部 edit 视角。

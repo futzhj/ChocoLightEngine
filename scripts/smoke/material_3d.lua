@@ -206,6 +206,29 @@ else
     pass("mesh creation skipped (headless), tests degenerate gracefully")
 end
 
+-- ==================== 5b) Phase AS.4.x — LoadGLTF with_material ====================
+
+-- 不存在文件 with_material=true → nil + err (不崩, 与 AS.3 路径一致)
+local mb1, eb1 = Mesh.LoadGLTF("nonexistent.gltf", 0, true)
+if mb1 ~= nil then fail("LoadGLTF(nonexistent, 0, true) should return nil") end
+if type(eb1) ~= "string" then fail("err type for LoadGLTF with_material") end
+pass("LoadGLTF(nonexistent, 0, true) -> nil, '" .. eb1 .. "'")
+
+-- with_material=false 显式 (向后兼容)
+local mb2, eb2 = Mesh.LoadGLTF("nonexistent.gltf", 0, false)
+if mb2 ~= nil then fail("LoadGLTF(_, _, false) should return nil") end
+pass("LoadGLTF(_, _, false) -> nil, '" .. tostring(eb2) .. "'")
+
+-- with_material=nil 缺省 (向后兼容)
+local mb3, eb3 = Mesh.LoadGLTF("nonexistent.gltf", 0)
+if mb3 ~= nil then fail("LoadGLTF(_, 0) should return nil") end
+pass("LoadGLTF(_, 0) (no third arg) -> nil, '" .. tostring(eb3) .. "'")
+
+-- 老调用形式 (单参) 仍可用
+local mb4, eb4 = Mesh.LoadGLTF("nonexistent.gltf")
+if mb4 ~= nil then fail("LoadGLTF(_) one-arg should return nil") end
+pass("LoadGLTF(_) (single arg, AS.3 style) -> nil, '" .. tostring(eb4) .. "'")
+
 -- ==================== 6) 兼容性回归 (前序 Phase) ====================
 
 -- AS.3 LoadGLTF 函数仍存在
