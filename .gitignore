@@ -59,5 +59,13 @@ Thumbs.db
 .windsurf.zip
 *.zip
 
+# CI workflow log downloads (temporary debugging artifacts)
+_win*.txt
+_lin*.txt
+_mac*.txt
+_and*.txt
+_ios*.txt
+_web*.txt
+
 # Godot experiment (not part of main project)
 cpp_godot/
