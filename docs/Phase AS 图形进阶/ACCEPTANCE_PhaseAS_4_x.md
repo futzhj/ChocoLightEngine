@@ -1,6 +1,8 @@
 # Phase AS.4.x — glTF 材质提取 + 自动贴图加载 — 验收文档
 
-> **状态**: 已完成本地实施 + lightc 通过, 待 GitHub Actions CI 全平台验证
+> **状态**: ✅ **已完成** — 6 平台 CI 全绿 (一次成功, 无修复)
+>
+> GitHub Actions run: [25602244329](https://github.com/futzhj/ChocoLightEngine/actions/runs/25602244329) (commit `f5e0d95`)
 >
 > **范围**: LoadGLTF 加 with_material 参数, 完整提取 cgltf 材质 + 加载贴图 (URI 文件 + GLB 嵌入式 + base64 data URI 三种来源)
 
