@@ -471,36 +471,46 @@ end
 print('[14] Phase AV.x: procedural 错误路径')
 
 if type(Anim.NewEmptySkeleton) == 'function' then
-    -- NewEmptySkeleton 越界: 返回 nil + err (不 raise)
+    print('  ... 14.1 NewEmptySkeleton(0)')
     local r1 = Anim.NewEmptySkeleton(0)
     CHECK(r1 == nil, 'NewEmptySkeleton(0) → nil (out of range)')
+    print('  ... 14.2 NewEmptySkeleton(65)')
     local r2 = Anim.NewEmptySkeleton(65)
     CHECK(r2 == nil, 'NewEmptySkeleton(65) → nil (exceeds MAX_JOINTS=64)')
 
+    print('  ... 14.3 NewEmptySkeleton(2) + NewEmptyClip')
     local sk2 = Anim.NewEmptySkeleton(2)
     local c2  = Anim.NewEmptyClip('t', 0.0)
 
-    -- AddSampler 未知 target / mode / 尺寸不匹配 → raise
+    print('  ... 14.4 pcall AddSampler bad_target')
     CHECK(pcall(c2.AddSampler, c2, 1, 'bad_target', 'LINEAR', {0}, {0,0,0}) == false,
           'AddSampler unknown target raises')
+    print('  ... 14.5 pcall AddSampler BAD_MODE')
     CHECK(pcall(c2.AddSampler, c2, 1, 'translation', 'BAD_MODE', {0}, {0,0,0}) == false,
           'AddSampler unknown mode raises')
+    print('  ... 14.6 pcall AddSampler values-mismatch')
     CHECK(pcall(c2.AddSampler, c2, 1, 'translation', 'LINEAR', {0}, {0,0}) == false,
           'AddSampler values count mismatch raises')
+    print('  ... 14.7 pcall AddSampler jointIdx=0')
     CHECK(pcall(c2.AddSampler, c2, 0, 'translation', 'LINEAR', {0}, {0,0,0}) == false,
           'AddSampler jointIdx=0 raises')
+    print('  ... 14.8 pcall AddSampler empty times')
     CHECK(pcall(c2.AddSampler, c2, 1, 'translation', 'LINEAR', {}, {}) == false,
           'AddSampler empty times raises')
 
-    -- Skeleton setter 错误
+    print('  ... 14.9 pcall SetJointName out-of-range')
     CHECK(pcall(sk2.SetJointName, sk2, 99, 'x') == false,
           'SetJointName out-of-range raises')
+    print('  ... 14.10 pcall SetJointParent self-ref')
     CHECK(pcall(sk2.SetJointParent, sk2, 1, 1) == false,
           'SetJointParent self-reference raises')
+    print('  ... 14.11 pcall SetJointParent out-of-range')
     CHECK(pcall(sk2.SetJointParent, sk2, 1, 99) == false,
           'SetJointParent out-of-range parent raises')
+    print('  ... 14.12 pcall SetBindLocalTRS out-of-range')
     CHECK(pcall(sk2.SetBindLocalTRS, sk2, 99, 0,0,0, 1,0,0,0, 1,1,1) == false,
           'SetBindLocalTRS out-of-range raises')
+    print('  ... 14.13 pcall SetInverseBindMatrix short-table')
     CHECK(pcall(sk2.SetInverseBindMatrix, sk2, 1, {1,2,3}) == false,
           'SetInverseBindMatrix short table raises (<16)')
 else
