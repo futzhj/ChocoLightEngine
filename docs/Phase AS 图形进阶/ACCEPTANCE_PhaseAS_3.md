@@ -1,6 +1,8 @@
 # Phase AS.3 — cgltf + .gltf/.glb 加载 — 验收文档
 
-> **状态**: 已完成本地实施 + lightc 语法检查通过, 待 GitHub Actions CI 全平台验证
+> **状态**: ✅ **已完成** — 6 平台 CI 全绿 (一次成功, 无修复)
+>
+> GitHub Actions run: [25596830984](https://github.com/futzhj/ChocoLightEngine/actions/runs/25596830984) (commit `ed3265f`)
 
 ---
 
@@ -139,12 +141,12 @@ cgltf 是纯 C 单文件,无 STL/异常依赖,所有平台 0 修改:
 - [x] cgltf_impl.c 创建
 - [x] CMakeLists.txt 加源
 - [x] `lightc -p scripts/smoke/mesh_3d.lua` Exit=0 (本地)
-- [ ] GitHub Actions `Build Templates (All Platforms)` 全绿:
-  - [ ] Windows x64: cgltf 编译 + Mesh.LoadGLTF 边界 smoke 通过
-  - [ ] Linux x64: cgltf 编译 + 语法检查
-  - [ ] macOS Universal: cgltf 编译 + 语法检查
-  - [ ] Android arm64+x86_64: cgltf 编译
-  - [ ] iOS arm64: cgltf 编译
-  - [ ] Web WASM: cgltf 编译
+- [x] GitHub Actions `Build Templates (All Platforms)` **全绿** (run 25596830984):
+  - [x] Windows x64: cgltf 编译 + Mesh.LoadGLTF 边界 smoke 通过 ✅
+  - [x] Linux x64: cgltf 编译 ✅
+  - [x] macOS Universal: cgltf 编译 ✅
+  - [x] Android arm64+x86_64: cgltf 编译 ✅
+  - [x] iOS arm64: cgltf 编译 ✅
+  - [x] Web WASM: cgltf 编译 ✅
 
-CI 全绿后此子 Phase 才算最终交付完成。
+**Phase AS.3 最终交付完成 (一次提交即全平台通过)。**
