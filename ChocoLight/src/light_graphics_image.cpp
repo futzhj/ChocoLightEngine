@@ -98,6 +98,16 @@ static int l_Image_GetDimensions(lua_State* L) {
     return 3;
 }
 
+/// @lua_api Light.Graphics.Image.GetTextureId
+/// @brief 获取原生 GL 纹理 ID (Phase AS.1, 用于 shader:SetTexture)
+/// @return number 0=未初始化
+static int l_Image_GetTextureId(lua_State* L) {
+    luaL_checktype(L, 1, LUA_TTABLE);
+    ImageContext* ctx = GetImageCtx(L, 1);
+    lua_pushinteger(L, ctx ? (lua_Integer)ctx->texId : 0);
+    return 1;
+}
+
 /// @lua_api Light.Graphics.Image.__call
 /// @brief 构造函数, 从文件加载图像
 /// @param path string 图像文件路径 (PNG/JPG/BMP/TGA)
@@ -543,6 +553,8 @@ int luaopen_Light_Graphics_Image(lua_State* L) {
             {"GetHeight",     l_Image_GetHeight},
             {"GetDepth",      l_Image_GetDepth},
             {"GetDimensions", l_Image_GetDimensions},
+            // Phase AS.1 — 与 Canvas:GetTextureId 对称, 供 shader:SetTexture 使用
+            {"GetTextureId",  l_Image_GetTextureId},
             {"__call",        l_Image_Call},
             {"__tostring",    l_Image_Tostring},
             {NULL, NULL}

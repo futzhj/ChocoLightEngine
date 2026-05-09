@@ -251,6 +251,102 @@ static int l_GetCanvas(lua_State* L) {
     return 1;
 }
 
+// ==================== Phase AS.1 — Canvas 渲染目标栈 ====================
+// 设计: 软限制 8 层栈深度 (Q2 决策),超出仅警告不中断;
+//      Pop 在空栈时也仅警告不中断,确保 Lua 端误用不会崩。
+
+struct CanvasStackEntry {
+    void* canvasCtx;       // CanvasContext* (nullptr = 默认渲染目标)
+    int   viewport[4];     // 入栈时的 viewport 快照
+    int   ref;             // Lua 表 registry ref (用于 PopCanvas 恢复 Lua 端 currentCanvas table 引用)
+};
+
+static const int kCanvasStackMax = 8;
+static CanvasStackEntry g_canvasStack[kCanvasStackMax];
+static int              g_canvasStackTop = 0;
+
+// CanvasContext 内存布局必须与 light_graphics_canvas.cpp 中的定义一致 (内部结构,
+// 此处镜像声明仅用于读取 fbo/texture/width/height,避免跨编译单元 include 一份头)
+struct CanvasCtxMirror {
+    unsigned int fbo;
+    unsigned int texture;
+    unsigned int depthRB;
+    int          width;
+    int          height;
+};
+
+/// @lua_api Light.Graphics.PushCanvas
+/// @brief 入栈当前渲染目标, 切换到给定 canvas (栈式渲染)
+/// @param canvas Canvas 实例
+/// @return void
+static int l_PushCanvas(lua_State* L) {
+    if (g_canvasStackTop >= kCanvasStackMax) {
+        CC::Log(CC::LOG_WARN, "PushCanvas: stack overflow (max %d), ignored", kCanvasStackMax);
+        return 0;
+    }
+    if (!lua_istable(L, 1)) {
+        CC::Log(CC::LOG_WARN, "PushCanvas: argument must be a Canvas table");
+        return 0;
+    }
+
+    // 1) 保存当前状态到栈顶
+    CanvasStackEntry& slot = g_canvasStack[g_canvasStackTop];
+    slot.canvasCtx = g_ctx.currentCanvas;
+    // 简化: viewport 用一个稳定默认值 (与 SetCanvas 中 savedViewport 一致语义)
+    // 真实场景下后端可扩展 GetViewport, 当前保留 placeholder
+    slot.viewport[0] = 0;
+    slot.viewport[1] = 0;
+    slot.viewport[2] = 0;
+    slot.viewport[3] = 0;
+    slot.ref = LUA_NOREF;
+    g_canvasStackTop++;
+
+    // 2) 切换到新 canvas (复用 SetCanvas 逻辑)
+    lua_getfield(L, 1, "__instance");
+    if (lua_isuserdata(L, -1)) {
+        CanvasCtxMirror* cc = (CanvasCtxMirror*)lua_touserdata(L, -1);
+        if (cc && cc->fbo && g_render) {
+            g_render->BindFBO(cc->fbo);
+            g_render->SetViewport(0, 0, cc->width, cc->height);
+            g_ctx.currentCanvas = cc;
+        }
+    }
+    lua_pop(L, 1);
+    return 0;
+}
+
+/// @lua_api Light.Graphics.PopCanvas
+/// @brief 出栈, 恢复上一个渲染目标
+/// @return void
+static int l_PopCanvas(lua_State* L) {
+    if (g_canvasStackTop <= 0) {
+        CC::Log(CC::LOG_WARN, "PopCanvas: stack underflow, ignored");
+        return 0;
+    }
+
+    g_canvasStackTop--;
+    CanvasStackEntry& slot = g_canvasStack[g_canvasStackTop];
+
+    // 恢复上一个 canvas (nullptr = 默认渲染目标)
+    if (slot.canvasCtx == nullptr) {
+        if (g_render) {
+            g_render->UnbindFBO();
+            // viewport 用 800x600 默认 (与 SetCanvas savedViewport 兼容)
+            g_render->SetViewport(0, 0, 800, 600);
+        }
+        g_ctx.currentCanvas = nullptr;
+    } else {
+        CanvasCtxMirror* cc = (CanvasCtxMirror*)slot.canvasCtx;
+        if (cc && cc->fbo && g_render) {
+            g_render->BindFBO(cc->fbo);
+            g_render->SetViewport(0, 0, cc->width, cc->height);
+            g_ctx.currentCanvas = cc;
+        }
+    }
+
+    return 0;
+}
+
 /// @lua_api Light.Graphics.SetScissor
 /// @brief 设置裁剪区域 (无参数时禁用裁剪)
 /// @param x number? 裁剪区域左上 X
@@ -1017,6 +1113,9 @@ static const luaL_Reg graphics_funcs[] = {
     {"SetColor",          l_SetColor},
     {"SetCanvas",         l_SetCanvas},
     {"SetScissor",        l_SetScissor},
+    // Phase AS.1 — Canvas 栈
+    {"PushCanvas",        l_PushCanvas},
+    {"PopCanvas",         l_PopCanvas},
     // --- 元方法 ---
     {"__call",            l_Graphics_Call},
     {"__tostring",        l_Graphics_Tostring},

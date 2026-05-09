@@ -637,6 +637,49 @@ public:
     void SetUniformMat4(int loc, const float* m) override {
         if (loc >= 0 && m) glUniformMatrix4fv(loc, 1, GL_FALSE, m);
     }
+
+    // ---- Phase AS.1 新增 uniform setter ----
+    void SetUniformMat3(int loc, const float* m) override {
+        if (loc >= 0 && m) glUniformMatrix3fv(loc, 1, GL_FALSE, m);
+    }
+    void SetUniform2i(int loc, int x, int y) override {
+        if (loc >= 0) glUniform2i(loc, x, y);
+    }
+    void SetUniform3i(int loc, int x, int y, int z) override {
+        if (loc >= 0) glUniform3i(loc, x, y, z);
+    }
+    void SetUniform4i(int loc, int x, int y, int z, int w) override {
+        if (loc >= 0) glUniform4i(loc, x, y, z, w);
+    }
+    void SetUniform1fv(int loc, int count, const float* v) override {
+        if (loc >= 0 && v && count > 0) glUniform1fv(loc, count, v);
+    }
+    void SetUniform2fv(int loc, int count, const float* v) override {
+        if (loc >= 0 && v && count > 0) glUniform2fv(loc, count, v);
+    }
+    void SetUniformSampler(int loc, int slot, uint32_t texId) override {
+        if (loc < 0 || !texId) return;
+        // 限制 slot 在合理范围 (大多数 GPU 至少支持 16 个 texture unit)
+        if (slot < 0) slot = 0;
+        if (slot > 15) slot = 15;
+        glActiveTexture(GL_TEXTURE0 + (GLenum)slot);
+        glBindTexture(GL_TEXTURE_2D, (GLuint)texId);
+        glUniform1i(loc, slot);
+        // 恢复活动 texture unit 到 slot 0, 与引擎默认绘制一致
+        glActiveTexture(GL_TEXTURE0);
+    }
+    void GenerateMipmap(uint32_t texId) override {
+        if (!texId) return;
+        glBindTexture(GL_TEXTURE_2D, (GLuint)texId);
+        glGenerateMipmap(GL_TEXTURE_2D);
+        // mipmap 生成后, 需要让 min filter 支持 mipmap 才有效
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+        glBindTexture(GL_TEXTURE_2D, 0);
+    }
+    void ClearCurrent(float r, float g, float b, float a) override {
+        glClearColor(r, g, b, a);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    }
 };
 
 // ==================== GL33Backend 工厂 ====================

@@ -169,6 +169,131 @@ static int l_Shader_SetMat4(lua_State* L) {
     return 0;
 }
 
+// ==================== Phase AS.1 — Shader uniform 扩展 (6 setter) ====================
+
+// shader:SetMat3(name, {m00, m01, m02, m10, m11, m12, m20, m21, m22})  // 9 个 float
+static int l_Shader_SetMat3(lua_State* L) {
+    ShaderUserdata* ud = CheckShader(L, 1);
+    const char* name = luaL_checkstring(L, 2);
+    luaL_checktype(L, 3, LUA_TTABLE);
+
+    float m[9];
+    for (int i = 0; i < 9; i++) {
+        lua_rawgeti(L, 3, i + 1);
+        m[i] = (float)luaL_optnumber(L, -1, 0.0);
+        lua_pop(L, 1);
+    }
+    int loc = GetUniformLoc(L, ud, name);
+    if (loc >= 0) g_render->SetUniformMat3(loc, m);
+    return 0;
+}
+
+// shader:SetIVec2(name, x, y)
+static int l_Shader_SetIVec2(lua_State* L) {
+    ShaderUserdata* ud = CheckShader(L, 1);
+    const char* name = luaL_checkstring(L, 2);
+    int x = (int)luaL_checkinteger(L, 3);
+    int y = (int)luaL_checkinteger(L, 4);
+    int loc = GetUniformLoc(L, ud, name);
+    if (loc >= 0) g_render->SetUniform2i(loc, x, y);
+    return 0;
+}
+
+// shader:SetIVec3(name, x, y, z)
+static int l_Shader_SetIVec3(lua_State* L) {
+    ShaderUserdata* ud = CheckShader(L, 1);
+    const char* name = luaL_checkstring(L, 2);
+    int x = (int)luaL_checkinteger(L, 3);
+    int y = (int)luaL_checkinteger(L, 4);
+    int z = (int)luaL_checkinteger(L, 5);
+    int loc = GetUniformLoc(L, ud, name);
+    if (loc >= 0) g_render->SetUniform3i(loc, x, y, z);
+    return 0;
+}
+
+// shader:SetIVec4(name, x, y, z, w)
+static int l_Shader_SetIVec4(lua_State* L) {
+    ShaderUserdata* ud = CheckShader(L, 1);
+    const char* name = luaL_checkstring(L, 2);
+    int x = (int)luaL_checkinteger(L, 3);
+    int y = (int)luaL_checkinteger(L, 4);
+    int z = (int)luaL_checkinteger(L, 5);
+    int w = (int)luaL_checkinteger(L, 6);
+    int loc = GetUniformLoc(L, ud, name);
+    if (loc >= 0) g_render->SetUniform4i(loc, x, y, z, w);
+    return 0;
+}
+
+// shader:SetFloatArray(name, {v1, v2, ...})
+// 软限制: 单次最多 256 个元素 (避免 Lua 端误传巨大表导致拷贝爆栈)
+static int l_Shader_SetFloatArray(lua_State* L) {
+    ShaderUserdata* ud = CheckShader(L, 1);
+    const char* name = luaL_checkstring(L, 2);
+    luaL_checktype(L, 3, LUA_TTABLE);
+
+    int count = (int)lua_objlen(L, 3);
+    if (count <= 0) return 0;
+    if (count > 256) {
+        CC::Log(CC::LOG_WARN, "Shader:SetFloatArray(%s): count=%d exceeds 256, truncated", name, count);
+        count = 256;
+    }
+    float values[256];
+    for (int i = 0; i < count; i++) {
+        lua_rawgeti(L, 3, i + 1);
+        values[i] = (float)luaL_optnumber(L, -1, 0.0);
+        lua_pop(L, 1);
+    }
+    int loc = GetUniformLoc(L, ud, name);
+    if (loc >= 0) g_render->SetUniform1fv(loc, count, values);
+    return 0;
+}
+
+// shader:SetVec2Array(name, {x1, y1, x2, y2, ...})
+// 平铺存储 (2 个 lua 数 = 1 个 vec2), table 长度必须为偶数
+// 软限制: 最多 256 个 vec2 (即 512 个 lua 数)
+static int l_Shader_SetVec2Array(lua_State* L) {
+    ShaderUserdata* ud = CheckShader(L, 1);
+    const char* name = luaL_checkstring(L, 2);
+    luaL_checktype(L, 3, LUA_TTABLE);
+
+    int total = (int)lua_objlen(L, 3);
+    if (total <= 0 || (total % 2) != 0) {
+        CC::Log(CC::LOG_WARN, "Shader:SetVec2Array(%s): table length %d not multiple of 2", name, total);
+        return 0;
+    }
+    if (total > 512) {
+        CC::Log(CC::LOG_WARN, "Shader:SetVec2Array(%s): %d floats exceeds 512, truncated", name, total);
+        total = 512;
+    }
+    int count = total / 2;
+    float values[512];
+    for (int i = 0; i < total; i++) {
+        lua_rawgeti(L, 3, i + 1);
+        values[i] = (float)luaL_optnumber(L, -1, 0.0);
+        lua_pop(L, 1);
+    }
+    int loc = GetUniformLoc(L, ud, name);
+    if (loc >= 0) g_render->SetUniform2fv(loc, count, values);
+    return 0;
+}
+
+// shader:SetTexture(name, tex_id, [slot])
+//   tex_id: number (来自 canvas:GetTextureId() 或 image:GetTextureId())
+//   slot:   可选, 默认 1 (slot=0 引擎专用)
+static int l_Shader_SetTexture(lua_State* L) {
+    ShaderUserdata* ud = CheckShader(L, 1);
+    const char* name = luaL_checkstring(L, 2);
+    uint32_t texId = (uint32_t)luaL_checkinteger(L, 3);
+    int slot = (int)luaL_optinteger(L, 4, 1);
+
+    if (!g_render || !ud->programId || !texId) return 0;
+    int loc = g_render->GetUniformLocation(ud->programId, name);
+    if (loc < 0) return 0;
+
+    g_render->SetUniformSampler(loc, slot, texId);
+    return 0;
+}
+
 // shader:Delete() / __gc
 static int l_Shader_Delete(lua_State* L) {
     ShaderUserdata* ud = CheckShader(L, 1);
@@ -208,16 +333,24 @@ int luaopen_Light_Graphics_Shader(lua_State* L) {
     // 注册 userdata 元表
     if (luaL_newmetatable(L, SHADER_MT)) {
         static const luaL_Reg methods[] = {
-            {"Use",        l_Shader_Use},
-            {"SetFloat",   l_Shader_SetFloat},
-            {"SetVec2",    l_Shader_SetVec2},
-            {"SetVec3",    l_Shader_SetVec3},
-            {"SetVec4",    l_Shader_SetVec4},
-            {"SetInt",     l_Shader_SetInt},
-            {"SetMat4",    l_Shader_SetMat4},
-            {"Delete",     l_Shader_Delete},
-            {"__gc",       l_Shader_Delete},
-            {"__tostring", l_Shader_tostring},
+            {"Use",           l_Shader_Use},
+            {"SetFloat",      l_Shader_SetFloat},
+            {"SetVec2",       l_Shader_SetVec2},
+            {"SetVec3",       l_Shader_SetVec3},
+            {"SetVec4",       l_Shader_SetVec4},
+            {"SetInt",        l_Shader_SetInt},
+            {"SetMat4",       l_Shader_SetMat4},
+            // Phase AS.1 — 6 个新 setter
+            {"SetMat3",       l_Shader_SetMat3},
+            {"SetIVec2",      l_Shader_SetIVec2},
+            {"SetIVec3",      l_Shader_SetIVec3},
+            {"SetIVec4",      l_Shader_SetIVec4},
+            {"SetFloatArray", l_Shader_SetFloatArray},
+            {"SetVec2Array",  l_Shader_SetVec2Array},
+            {"SetTexture",    l_Shader_SetTexture},
+            {"Delete",        l_Shader_Delete},
+            {"__gc",          l_Shader_Delete},
+            {"__tostring",    l_Shader_tostring},
             {nullptr, nullptr}
         };
         luaL_setfuncs(L, methods, 0);

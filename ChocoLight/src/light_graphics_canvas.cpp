@@ -82,6 +82,60 @@ static int l_Canvas_Tostring(lua_State* L) {
     return 1;
 }
 
+// ==================== Phase AS.1 — Canvas 增强方法 ====================
+
+/// 从 instance table 取出底层 CanvasContext (失败返回 nullptr)
+static CanvasContext* GetCanvasCtx(lua_State* L, int idx) {
+    if (!lua_istable(L, idx)) return nullptr;
+    lua_getfield(L, idx, "__instance");
+    if (!lua_isuserdata(L, -1)) { lua_pop(L, 1); return nullptr; }
+    CanvasContext* ctx = (CanvasContext*)lua_touserdata(L, -1);
+    lua_pop(L, 1);
+    return ctx;
+}
+
+/// canvas:GetTextureId() -> int  (返回原生 GL texture id, 0 表示无效)
+/// 用法: shader:SetTexture("uTex", canvas:GetTextureId(), 1)
+static int l_Canvas_GetTextureId(lua_State* L) {
+    CanvasContext* ctx = GetCanvasCtx(L, 1);
+    lua_pushinteger(L, ctx ? (lua_Integer)ctx->texture : 0);
+    return 1;
+}
+
+/// canvas:GetWidth() -> int
+static int l_Canvas_GetWidth(lua_State* L) {
+    CanvasContext* ctx = GetCanvasCtx(L, 1);
+    lua_pushinteger(L, ctx ? ctx->width : 0);
+    return 1;
+}
+
+/// canvas:GetHeight() -> int
+static int l_Canvas_GetHeight(lua_State* L) {
+    CanvasContext* ctx = GetCanvasCtx(L, 1);
+    lua_pushinteger(L, ctx ? ctx->height : 0);
+    return 1;
+}
+
+/// canvas:Clear([r], [g], [b], [a]) -> ()
+/// 注意: 仅在 canvas 当前已 SetCanvas/PushCanvas 为渲染目标时清空生效
+/// (调用时绑定 canvas FBO, 清后恢复之前绑定状态)
+static int l_Canvas_Clear(lua_State* L) {
+    CanvasContext* ctx = GetCanvasCtx(L, 1);
+    if (!ctx || !ctx->fbo || !g_render) return 0;
+
+    float r = (float)luaL_optnumber(L, 2, 0.0);
+    float g = (float)luaL_optnumber(L, 3, 0.0);
+    float b = (float)luaL_optnumber(L, 4, 0.0);
+    float a = (float)luaL_optnumber(L, 5, 0.0);
+
+    // 临时绑定 canvas FBO -> 清空 -> 解绑 (恢复默认 framebuffer)
+    // 注: 这里不保存当前 viewport, 因为 ClearCurrent 不依赖 viewport
+    g_render->BindFBO(ctx->fbo);
+    g_render->ClearCurrent(r, g, b, a);
+    g_render->UnbindFBO();
+    return 0;
+}
+
 // Canvas 继承 Drawable — 匹配 sub_1800A9940 注册模式
 int luaopen_Light_Graphics_Canvas(lua_State* L) {
     // 确保 Graphics 父模块 (sub_1800AD380)
@@ -113,8 +167,13 @@ int luaopen_Light_Graphics_Canvas(lua_State* L) {
         lua_call(L, 1, 1);
 
         const luaL_Reg canvas_funcs[] = {
-            {"__call",     l_Canvas_Call},
-            {"__tostring", l_Canvas_Tostring},
+            {"__call",       l_Canvas_Call},
+            {"__tostring",   l_Canvas_Tostring},
+            // Phase AS.1 — Canvas 增强 (4 个方法)
+            {"GetTextureId", l_Canvas_GetTextureId},
+            {"GetWidth",     l_Canvas_GetWidth},
+            {"GetHeight",    l_Canvas_GetHeight},
+            {"Clear",        l_Canvas_Clear},
             {NULL, NULL}
         };
         luaL_setfuncs(L, canvas_funcs, 0);

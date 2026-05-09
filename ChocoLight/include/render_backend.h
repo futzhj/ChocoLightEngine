@@ -145,6 +145,23 @@ public:
     virtual void SetUniform4f(int loc, float x, float y, float z, float w) {}
     virtual void SetUniform1i(int loc, int v) {}
     virtual void SetUniformMat4(int loc, const float* m) {}
+
+    // ---- Phase AS.1 新增 uniform setter ----
+    /// 3x3 矩阵 (法线变换等)
+    virtual void SetUniformMat3(int loc, const float* m) {}
+    /// int 向量 (2/3/4 分量, IVec2/3/4)
+    virtual void SetUniform2i(int loc, int x, int y) {}
+    virtual void SetUniform3i(int loc, int x, int y, int z) {}
+    virtual void SetUniform4i(int loc, int x, int y, int z, int w) {}
+    /// 数组 (count 个元素)
+    virtual void SetUniform1fv(int loc, int count, const float* v) {}
+    virtual void SetUniform2fv(int loc, int count, const float* v) {}
+    /// 绑定 sampler2D: 把 texId 绑到 slot (GL_TEXTURE0+slot), 设 uniform location 为 slot
+    virtual void SetUniformSampler(int loc, int slot, uint32_t texId) {}
+    /// 生成纹理的 mipmap 链 (Canvas:GetTextureId 后可选用于优化采样)
+    virtual void GenerateMipmap(uint32_t texId) {}
+    /// 清空当前绑定的 FBO/默认目标 (Canvas:Clear 用)
+    virtual void ClearCurrent(float r, float g, float b, float a) {}
 };
 
 // ==================== 工厂函数 ====================
