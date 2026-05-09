@@ -17,7 +17,11 @@
 --   * 不依赖任何渲染/音频, 纯算力 — CI 全平台可执行
 --   * Lua 5.1 兼容: 不用 \x 转义, 不用 string.unpack
 
+-- Phase AU debug: 强制 stdout 无缓冲, 确保 SEH crash 前所有 print 都能 flush
+io.stdout:setvbuf("no")
+print("[smoke] physics_3d.lua start, pre-require")
 local ok, Phys = pcall(require, "Light.Physics3D")
+print("[smoke] post-require: ok=" .. tostring(ok) .. " type=" .. type(Phys))
 if not ok or type(Phys) ~= "table" then
     print("Light.Physics3D module not available, skipping (Phys=" .. tostring(Phys) .. ")")
     return
