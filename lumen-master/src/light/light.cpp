@@ -496,6 +496,11 @@ static const struct { const char *modName; const char *procName; } g_lightModule
     {"Light.Audio.Effect",        "luaopen_Light_Audio_Effect"},
     // Phase AU — 3D Physics (Bullet 3)
     {"Light.Physics3D",           "luaopen_Light_Physics3D"},
+    // Phase AV — Skeletal Animation + State Machine
+    {"Light.Animation",           "luaopen_Light_Animation"},
+    {"Light.Animation.Skeleton",  "luaopen_Light_Animation_Skeleton"},
+    {"Light.Animation.Clip",      "luaopen_Light_Animation_Clip"},
+    {"Light.Animation.Animator",  "luaopen_Light_Animation_Animator"},
     {nullptr, nullptr}
 };
 

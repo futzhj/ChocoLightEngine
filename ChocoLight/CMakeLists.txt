@@ -272,6 +272,9 @@ list(APPEND LIGHT_SOURCES ${CHOCO_SRC}/light_physics.cpp)
 # Phase AU — Light.Physics3D (基于 Bullet 3, 全平台含 Web)
 list(APPEND LIGHT_SOURCES ${CHOCO_SRC}/light_physics3d.cpp)
 
+# Phase AV — Light.Animation (骨骼动画 + 状态机, 复用 cgltf, 0 新依赖)
+list(APPEND LIGHT_SOURCES ${CHOCO_SRC}/light_animation.cpp)
+
 # Emscripten/Android: STATIC 库 (链接到最终二进制)
 # 桌面: SHARED 库 (Light.dll/so/dylib)
 if(EMSCRIPTEN OR ANDROID OR CHOCO_IOS)
