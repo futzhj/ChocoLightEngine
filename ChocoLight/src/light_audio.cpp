@@ -102,12 +102,25 @@
 
 #include <cstdint>
 #include <cstring>
+#include <map>
 #include <set>
 #include <vector>
 
 extern "C" {
 #include "lua.h"
 #include "lauxlib.h"
+}
+
+// ============================================================
+// Cross-module: Light.IOStream handle layout
+// 必须与 light_iostream.cpp::LIOStream 保持同步 (Phase AN 新增)
+// ============================================================
+namespace {
+    struct LIOStream_Shared {
+        SDL_IOStream* io;
+        void*         mem;
+    };
+    constexpr const char* MT_IOSTREAM_NAME = "Light.IOStream.Stream";
 }
 
 // ============================================================
@@ -125,6 +138,89 @@ namespace {
     //   注: ChocoLight 单线程, 无需 mutex
     std::set<SDL_AudioStream*> g_streams_with_in_chmap;
     std::set<SDL_AudioStream*> g_streams_with_out_chmap;
+
+    // Phase AN: per-stream Lua callback refs (get/put)
+    // 注: SDL3 的 put_callback 在 SDL_PutAudioStreamData 内同步触发,
+    // get_callback 在 SDL_GetAudioStreamData 内同步触发 — 都是调用者线程 (Lua 主线程),
+    // 因此可直接调 Lua, 无跨线程竞态问题。
+    // 递归保护: 若 Lua callback 内又调 Put/GetAudioStreamData, 第二层调用跳过 Lua 回调。
+    struct StreamCallbackRefs {
+        int get_fn_ref = LUA_NOREF;   // Lua fn in REGISTRY
+        int get_arg_ref = LUA_NOREF;  // optional user_arg in REGISTRY
+        int put_fn_ref = LUA_NOREF;
+        int put_arg_ref = LUA_NOREF;
+        lua_State* L = nullptr;       // 注册时绑定的 lua_State
+        bool in_get_cb = false;
+        bool in_put_cb = false;
+    };
+    // std::map (红黑树) 保证 [] 返回的 reference 在后续插入/查询操作中稳定 (非 unordered_map rehash 迁移)
+    std::map<SDL_AudioStream*, StreamCallbackRefs> g_stream_callbacks;
+
+    // 清理指定 stream 的所有 Lua ref, DestroyAudioStream 或 SetCallback(nil) 调用
+    void CleanupStreamCallbackRefs(SDL_AudioStream* s) {
+        auto it = g_stream_callbacks.find(s);
+        if (it == g_stream_callbacks.end()) return;
+        auto& refs = it->second;
+        if (refs.L) {
+            if (refs.get_fn_ref  != LUA_NOREF) luaL_unref(refs.L, LUA_REGISTRYINDEX, refs.get_fn_ref);
+            if (refs.get_arg_ref != LUA_NOREF) luaL_unref(refs.L, LUA_REGISTRYINDEX, refs.get_arg_ref);
+            if (refs.put_fn_ref  != LUA_NOREF) luaL_unref(refs.L, LUA_REGISTRYINDEX, refs.put_fn_ref);
+            if (refs.put_arg_ref != LUA_NOREF) luaL_unref(refs.L, LUA_REGISTRYINDEX, refs.put_arg_ref);
+        }
+        g_stream_callbacks.erase(it);
+    }
+
+    // Trampoline: SDL callback -> Lua callback
+    // signature: void(void* userdata, SDL_AudioStream* stream, int additional_amount, int total_amount)
+    void SDLCALL StreamGetCallbackTrampoline(void* userdata, SDL_AudioStream* stream,
+                                             int additional_amount, int total_amount) {
+        auto* refs = static_cast<StreamCallbackRefs*>(userdata);
+        if (!refs || !refs->L || refs->get_fn_ref == LUA_NOREF) return;
+        if (refs->in_get_cb) return;  // 递归保护
+        refs->in_get_cb = true;
+        lua_State* L = refs->L;
+        lua_rawgeti(L, LUA_REGISTRYINDEX, refs->get_fn_ref);
+        lua_pushlightuserdata(L, stream);
+        lua_pushinteger(L, additional_amount);
+        lua_pushinteger(L, total_amount);
+        int nargs = 3;
+        if (refs->get_arg_ref != LUA_NOREF) {
+            lua_rawgeti(L, LUA_REGISTRYINDEX, refs->get_arg_ref);
+            nargs = 4;
+        }
+        int err = lua_pcall(L, nargs, 0, 0);
+        if (err) {
+            const char* msg = lua_tostring(L, -1);
+            CC::Log(CC::LOG_WARN, "Light.Audio stream get callback error: %s", msg ? msg : "unknown");
+            lua_pop(L, 1);
+        }
+        refs->in_get_cb = false;
+    }
+
+    void SDLCALL StreamPutCallbackTrampoline(void* userdata, SDL_AudioStream* stream,
+                                             int additional_amount, int total_amount) {
+        auto* refs = static_cast<StreamCallbackRefs*>(userdata);
+        if (!refs || !refs->L || refs->put_fn_ref == LUA_NOREF) return;
+        if (refs->in_put_cb) return;
+        refs->in_put_cb = true;
+        lua_State* L = refs->L;
+        lua_rawgeti(L, LUA_REGISTRYINDEX, refs->put_fn_ref);
+        lua_pushlightuserdata(L, stream);
+        lua_pushinteger(L, additional_amount);
+        lua_pushinteger(L, total_amount);
+        int nargs = 3;
+        if (refs->put_arg_ref != LUA_NOREF) {
+            lua_rawgeti(L, LUA_REGISTRYINDEX, refs->put_arg_ref);
+            nargs = 4;
+        }
+        int err = lua_pcall(L, nargs, 0, 0);
+        if (err) {
+            const char* msg = lua_tostring(L, -1);
+            CC::Log(CC::LOG_WARN, "Light.Audio stream put callback error: %s", msg ? msg : "unknown");
+            lua_pop(L, 1);
+        }
+        refs->in_put_cb = false;
+    }
 
     bool EnsureAudioSubsystem() {
         if (g_audioSubsysInit) return true;
@@ -447,6 +543,8 @@ static int l_Audio_DestroyAudioStream(lua_State* L) {
     // 清理 chmap workaround state, 避免 stale pointer
     g_streams_with_in_chmap.erase(s);
     g_streams_with_out_chmap.erase(s);
+    // Phase AN: 清理 Lua callback refs, 防止 registry 泄漏
+    CleanupStreamCallbackRefs(s);
     SDL_DestroyAudioStream(s);
     lua_pushboolean(L, 1);
     return 1;
@@ -674,6 +772,102 @@ static int l_Audio_GetAudioStreamDevice(lua_State* L) {
     return 2;
 }
 
+// Phase AN: SDL_PropertiesID (Uint32) 直接以 Lua integer 返回, 可传给 Light.Properties.* fns
+static int l_Audio_GetAudioStreamProperties(lua_State* L) {
+    SDL_AudioStream* s = CheckStream(L, 1);
+    if (!s) { lua_pushinteger(L, 0); lua_pushstring(L, "invalid stream handle"); return 2; }
+    SDL_PropertiesID p = SDL_GetAudioStreamProperties(s);
+    lua_pushinteger(L, (lua_Integer)p);
+    if (p == 0) {
+        const char* e = SDL_GetError();
+        lua_pushstring(L, (e && *e) ? e : "GetAudioStreamProperties failed");
+        return 2;
+    }
+    lua_pushnil(L);
+    return 2;
+}
+
+// Phase AN: SetAudioStreamGetCallback(stream, fn|nil, user_arg?) -> (ok, err)
+// fn(stream_ud, additional_amount, total_amount, user_arg) 在 SDL_GetAudioStreamData 触发时被调
+// fn 为 nil 时清除回调
+static int l_Audio_SetAudioStreamGetCallback(lua_State* L) {
+    SDL_AudioStream* s = CheckStream(L, 1);
+    if (!s) { lua_pushboolean(L, 0); lua_pushstring(L, "invalid stream handle"); return 2; }
+    int fn_type = lua_type(L, 2);
+    if (fn_type != LUA_TFUNCTION && fn_type != LUA_TNIL && fn_type != LUA_TNONE) {
+        lua_pushboolean(L, 0); lua_pushstring(L, "callback must be a function or nil"); return 2;
+    }
+
+    // 先 unref 旧的 (无论是否清除 / 替换都需要)
+    auto& refs = g_stream_callbacks[s];
+    refs.L = L;
+    if (refs.get_fn_ref  != LUA_NOREF) { luaL_unref(L, LUA_REGISTRYINDEX, refs.get_fn_ref);  refs.get_fn_ref  = LUA_NOREF; }
+    if (refs.get_arg_ref != LUA_NOREF) { luaL_unref(L, LUA_REGISTRYINDEX, refs.get_arg_ref); refs.get_arg_ref = LUA_NOREF; }
+
+    if (fn_type == LUA_TNIL || fn_type == LUA_TNONE) {
+        if (!SDL_SetAudioStreamGetCallback(s, nullptr, nullptr)) {
+            lua_pushboolean(L, 0); lua_pushstring(L, SDL_GetError()); return 2;
+        }
+        lua_pushboolean(L, 1); lua_pushnil(L); return 2;
+    }
+
+    // 注册 Lua fn + 可选 user_arg
+    lua_pushvalue(L, 2);
+    refs.get_fn_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+    if (!lua_isnoneornil(L, 3)) {
+        lua_pushvalue(L, 3);
+        refs.get_arg_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+    }
+
+    if (!SDL_SetAudioStreamGetCallback(s, StreamGetCallbackTrampoline, &refs)) {
+        luaL_unref(L, LUA_REGISTRYINDEX, refs.get_fn_ref); refs.get_fn_ref = LUA_NOREF;
+        if (refs.get_arg_ref != LUA_NOREF) {
+            luaL_unref(L, LUA_REGISTRYINDEX, refs.get_arg_ref); refs.get_arg_ref = LUA_NOREF;
+        }
+        lua_pushboolean(L, 0); lua_pushstring(L, SDL_GetError()); return 2;
+    }
+    lua_pushboolean(L, 1); lua_pushnil(L); return 2;
+}
+
+// Phase AN: SetAudioStreamPutCallback(stream, fn|nil, user_arg?) -> (ok, err)
+// fn(stream_ud, additional_amount, total_amount, user_arg) 在 SDL_PutAudioStreamData 触发时被调
+static int l_Audio_SetAudioStreamPutCallback(lua_State* L) {
+    SDL_AudioStream* s = CheckStream(L, 1);
+    if (!s) { lua_pushboolean(L, 0); lua_pushstring(L, "invalid stream handle"); return 2; }
+    int fn_type = lua_type(L, 2);
+    if (fn_type != LUA_TFUNCTION && fn_type != LUA_TNIL && fn_type != LUA_TNONE) {
+        lua_pushboolean(L, 0); lua_pushstring(L, "callback must be a function or nil"); return 2;
+    }
+
+    auto& refs = g_stream_callbacks[s];
+    refs.L = L;
+    if (refs.put_fn_ref  != LUA_NOREF) { luaL_unref(L, LUA_REGISTRYINDEX, refs.put_fn_ref);  refs.put_fn_ref  = LUA_NOREF; }
+    if (refs.put_arg_ref != LUA_NOREF) { luaL_unref(L, LUA_REGISTRYINDEX, refs.put_arg_ref); refs.put_arg_ref = LUA_NOREF; }
+
+    if (fn_type == LUA_TNIL || fn_type == LUA_TNONE) {
+        if (!SDL_SetAudioStreamPutCallback(s, nullptr, nullptr)) {
+            lua_pushboolean(L, 0); lua_pushstring(L, SDL_GetError()); return 2;
+        }
+        lua_pushboolean(L, 1); lua_pushnil(L); return 2;
+    }
+
+    lua_pushvalue(L, 2);
+    refs.put_fn_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+    if (!lua_isnoneornil(L, 3)) {
+        lua_pushvalue(L, 3);
+        refs.put_arg_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+    }
+
+    if (!SDL_SetAudioStreamPutCallback(s, StreamPutCallbackTrampoline, &refs)) {
+        luaL_unref(L, LUA_REGISTRYINDEX, refs.put_fn_ref); refs.put_fn_ref = LUA_NOREF;
+        if (refs.put_arg_ref != LUA_NOREF) {
+            luaL_unref(L, LUA_REGISTRYINDEX, refs.put_arg_ref); refs.put_arg_ref = LUA_NOREF;
+        }
+        lua_pushboolean(L, 0); lua_pushstring(L, SDL_GetError()); return 2;
+    }
+    lua_pushboolean(L, 1); lua_pushnil(L); return 2;
+}
+
 // ============================================================
 // Stream IO (6 fns)
 // ============================================================
@@ -815,7 +1009,7 @@ static int l_Audio_OpenAudioDeviceStream(lua_State* L) {
 }
 
 // ============================================================
-// WAV (1 fn)
+// WAV (2 fns: LoadWAV + LoadWAV_IO)
 // ============================================================
 
 static int l_Audio_LoadWAV(lua_State* L) {
@@ -831,6 +1025,34 @@ static int l_Audio_LoadWAV(lua_State* L) {
         lua_pushstring(L, SDL_GetError());
         return 3;
     }
+    PushSpec(L, spec);
+    lua_pushlstring(L, reinterpret_cast<const char*>(audio_buf), (size_t)audio_len);
+    lua_pushnil(L);
+    SDL_free(audio_buf);
+    return 3;
+}
+
+// Phase AN: 从 Light.IOStream handle 加载 WAV
+// 签名: LoadWAV_IO(iostream_ud, closeio) -> (spec, bytes_string, err)
+// closeio=true: SDL 会 close IOStream, 清空 LIOStream.io 避免 GC double-close
+static int l_Audio_LoadWAV_IO(lua_State* L) {
+    void* ud = luaL_checkudata(L, 1, MT_IOSTREAM_NAME);
+    auto* h = static_cast<LIOStream_Shared*>(ud);
+    if (!h->io) {
+        lua_pushnil(L); lua_pushnil(L); lua_pushstring(L, "iostream is closed"); return 3;
+    }
+    bool closeio = lua_toboolean(L, 2) != 0;
+    SDL_AudioSpec spec;
+    Uint8* audio_buf = nullptr;
+    Uint32 audio_len = 0;
+    if (!SDL_LoadWAV_IO(h->io, closeio, &spec, &audio_buf, &audio_len)) {
+        if (closeio) h->io = nullptr;  // SDL 已关闭 IO (即使失败)
+        lua_pushnil(L); lua_pushnil(L);
+        const char* e = SDL_GetError();
+        lua_pushstring(L, (e && *e) ? e : "LoadWAV_IO failed");
+        return 3;
+    }
+    if (closeio) h->io = nullptr;  // SDL 接管并关闭, 清空以避免 GC 时二次 close
     PushSpec(L, spec);
     lua_pushlstring(L, reinterpret_cast<const char*>(audio_buf), (size_t)audio_len);
     lua_pushnil(L);
@@ -955,6 +1177,10 @@ static const luaL_Reg kAudioReg[] = {
     { "UnbindAudioStream",               l_Audio_UnbindAudioStream               },
     { "UnbindAudioStreams",              l_Audio_UnbindAudioStreams              },
     { "GetAudioStreamDevice",            l_Audio_GetAudioStreamDevice            },
+    // Stream properties + callbacks (Phase AN)
+    { "GetAudioStreamProperties",        l_Audio_GetAudioStreamProperties        },
+    { "SetAudioStreamGetCallback",       l_Audio_SetAudioStreamGetCallback       },
+    { "SetAudioStreamPutCallback",       l_Audio_SetAudioStreamPutCallback       },
     // Stream IO
     { "PutAudioStreamData",              l_Audio_PutAudioStreamData              },
     { "GetAudioStreamData",              l_Audio_GetAudioStreamData              },
@@ -973,6 +1199,7 @@ static const luaL_Reg kAudioReg[] = {
     { "OpenAudioDeviceStream",           l_Audio_OpenAudioDeviceStream           },
     // WAV
     { "LoadWAV",                         l_Audio_LoadWAV                         },
+    { "LoadWAV_IO",                      l_Audio_LoadWAV_IO                      },
     // Utilities
     { "MixAudio",                        l_Audio_MixAudio                        },
     { "ConvertAudioSamples",             l_Audio_ConvertAudioSamples             },

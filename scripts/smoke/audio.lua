@@ -64,22 +64,28 @@ local fns_stream_devctl = {
     "PauseAudioStreamDevice", "ResumeAudioStreamDevice", "AudioStreamDevicePaused",
 }
 local fns_simplified = { "OpenAudioDeviceStream" }
-local fns_wav = { "LoadWAV" }
+local fns_wav = { "LoadWAV", "LoadWAV_IO" }  -- Phase AN: +LoadWAV_IO
 local fns_utils = { "MixAudio", "ConvertAudioSamples", "GetAudioFormatName", "GetSilenceValueForFormat" }
+-- Phase AN: Stream properties + callbacks (3 fns)
+local fns_stream_callbacks = {
+    "GetAudioStreamProperties",
+    "SetAudioStreamGetCallback",
+    "SetAudioStreamPutCallback",
+}
 
 local total = 0
 for _, group in ipairs({
     fns_drivers, fns_dev_query, fns_dev_ctrl, fns_stream_life, fns_stream_cfg,
     fns_stream_bind, fns_stream_io, fns_stream_lock, fns_stream_devctl,
-    fns_simplified, fns_wav, fns_utils,
+    fns_simplified, fns_wav, fns_utils, fns_stream_callbacks,
 }) do
     for _, k in ipairs(group) do
         assert_function(A, k)
         total = total + 1
     end
 end
-if total ~= 51 then fail("expected 51 fns, registered " .. total) end
-pass("Light.Audio module ok (51 functions registered)")
+if total ~= 55 then fail("expected 55 fns (51 AM + 4 AN), registered " .. total) end
+pass("Light.Audio module ok (55 functions registered, Phase AM 51 + Phase AN 4)")
 
 -- ==================== 3) 16 constants ====================
 
@@ -374,4 +380,160 @@ if #dst_data == 0 then fail("ConvertAudioSamples returned empty") end
 pass(string.format("Light.Audio.ConvertAudioSamples(S16 mono 22050 -> S16 stereo 44100) ok, %d bytes",
                    #dst_data))
 
-print("audio smoke ok (Phase AM, 51 fns + 16 const verified)")
+-- ==================== 13) Phase AN: LoadWAV_IO ====================
+
+local IO = require("Light.IOStream")
+if type(IO) ~= "table" then fail("require Light.IOStream failed") end
+
+-- 手工构造 44 字节 WAV header + 16 字节 PCM data (8 samples S16 mono)
+-- WAV 格式参考: http://soundfile.sapp.org/doc/WaveFormat/
+local function u32_le(v)
+    return string.char(v % 256, math.floor(v/256) % 256,
+                       math.floor(v/65536) % 256, math.floor(v/16777216) % 256)
+end
+local function u16_le(v) return string.char(v % 256, math.floor(v/256) % 256) end
+
+local pcm_data   = string.rep(string.char(0), 16)  -- 16 bytes silence, S16 mono = 8 samples
+local data_size  = #pcm_data                       -- 16
+local fmt_size   = 16                              -- PCM fmt chunk size
+local riff_size  = 4 + (8 + fmt_size) + (8 + data_size)  -- "WAVE" + fmt chunk + data chunk = 36
+local wav_bytes = "RIFF" .. u32_le(riff_size) .. "WAVE"
+    .. "fmt " .. u32_le(fmt_size)
+    .. u16_le(1)      -- PCM format
+    .. u16_le(1)      -- channels = mono
+    .. u32_le(44100)  -- sample rate
+    .. u32_le(88200)  -- byte rate = 44100 * 2
+    .. u16_le(2)      -- block align = 2 bytes/frame
+    .. u16_le(16)     -- bits per sample
+    .. "data" .. u32_le(data_size)
+    .. pcm_data
+if #wav_bytes ~= 44 + data_size then
+    fail("WAV builder size mismatch: " .. #wav_bytes)
+end
+
+-- 创建 IOStream 从内存, LoadWAV_IO 加载
+local io_ud, io_err = IO.IOFromConstMem(wav_bytes)
+if not io_ud then fail("IOFromConstMem failed: " .. tostring(io_err)) end
+
+local wav_spec, wav_data, wav_err = A.LoadWAV_IO(io_ud, false)  -- closeio=false, 保持 IO 可用
+if not wav_spec then fail("LoadWAV_IO failed: " .. tostring(wav_err)) end
+if type(wav_spec) ~= "table" or wav_spec.channels ~= 1 or wav_spec.freq ~= 44100 then
+    fail(string.format("WAV spec mismatch: ch=%s freq=%s",
+                       tostring(wav_spec.channels), tostring(wav_spec.freq)))
+end
+if #wav_data ~= data_size then
+    fail(string.format("WAV data length mismatch: expected %d, got %d", data_size, #wav_data))
+end
+pass(string.format("Light.Audio.LoadWAV_IO(IOFromConstMem) ok: ch=%d freq=%d data=%d bytes",
+                   wav_spec.channels, wav_spec.freq, #wav_data))
+
+-- LoadWAV_IO with closeio=true: SDL 接管并关闭 IO, wrapper 清空 LIOStream.io
+local io_ud2 = IO.IOFromConstMem(wav_bytes)
+local spec2, data2, err2 = A.LoadWAV_IO(io_ud2, true)
+if not spec2 then fail("LoadWAV_IO(closeio=true) failed: " .. tostring(err2)) end
+-- 之后对已关闭的 IO 操作应报错 (iostream is closed)
+local ok_close, close_err = pcall(IO.ReadIO, io_ud2, 10)
+if ok_close then fail("reading closed IO should error") end
+pass("Light.Audio.LoadWAV_IO(closeio=true) ok, IO closed safely")
+
+-- LoadWAV_IO 边界: 坏数据应失败
+local bad_io = IO.IOFromConstMem("NOT_A_WAV_FILE_XXXXXXXX")
+local bs, bd, be = A.LoadWAV_IO(bad_io, true)
+if bs ~= nil or be == nil then fail("LoadWAV_IO(bad_data) should be nil+err") end
+pass("Light.Audio.LoadWAV_IO(bad_data) boundary ok: " .. tostring(be))
+
+-- ==================== 14) Phase AN: GetAudioStreamProperties ====================
+
+local Props = require("Light.Properties")
+local stream_p = A.CreateAudioStream(spec_def, spec_def)
+if not stream_p then fail("CreateAudioStream for props test failed") end
+
+local props_id, props_err = A.GetAudioStreamProperties(stream_p)
+if type(props_id) ~= "number" then fail("props id should be number") end
+if props_id == 0 then
+    pass("Light.Audio.GetAudioStreamProperties id=0 (stream has no props yet, ok): " .. tostring(props_err))
+else
+    pass("Light.Audio.GetAudioStreamProperties ok, id=" .. props_id)
+    -- 能用 Light.Properties 操作这个 id
+    local ok_set = Props.SetStringProperty(props_id, "test.key", "phase_an_value")
+    if not ok_set then fail("Props.SetStringProperty on audio stream id failed") end
+    local got = Props.GetStringProperty(props_id, "test.key", "default")
+    if got ~= "phase_an_value" then fail("Props round-trip failed: got " .. tostring(got)) end
+    pass("Light.Audio.GetAudioStreamProperties + Light.Properties round-trip ok")
+end
+A.DestroyAudioStream(stream_p)
+
+-- ==================== 15) Phase AN: Set{Get,Put}Callback ====================
+
+local stream_cb = A.CreateAudioStream(spec_def, spec_def)
+if not stream_cb then fail("CreateAudioStream for callback test failed") end
+
+local put_count  = 0
+local put_total  = 0
+local get_count  = 0
+local last_user  = nil
+
+-- Put callback
+local ok_setput, sperr = A.SetAudioStreamPutCallback(stream_cb, function(stream, additional, total, user)
+    put_count = put_count + 1
+    put_total = put_total + additional
+    last_user = user
+end, "hello_put")
+if not ok_setput then fail("SetAudioStreamPutCallback failed: " .. tostring(sperr)) end
+pass("Light.Audio.SetAudioStreamPutCallback ok")
+
+-- Put data, expect callback invoked
+A.PutAudioStreamData(stream_cb, string.rep(string.char(0), 256))
+A.PutAudioStreamData(stream_cb, string.rep(string.char(0), 128))
+if put_count ~= 2 then fail("put callback count expected 2, got " .. put_count) end
+if put_total ~= 384 then fail("put additional sum expected 384, got " .. put_total) end
+if last_user ~= "hello_put" then fail("put user_arg mismatch: " .. tostring(last_user)) end
+pass(string.format("Light.Audio put callback invoked ok (count=%d total=%d user='%s')",
+                   put_count, put_total, tostring(last_user)))
+
+-- Get callback
+local ok_setget, sgerr = A.SetAudioStreamGetCallback(stream_cb, function(stream, additional, total)
+    get_count = get_count + 1
+end)  -- no user_arg this time
+if not ok_setget then fail("SetAudioStreamGetCallback failed: " .. tostring(sgerr)) end
+pass("Light.Audio.SetAudioStreamGetCallback ok (no user_arg)")
+
+local _ = A.GetAudioStreamData(stream_cb, 64)
+if get_count ~= 1 then fail("get callback count expected 1, got " .. get_count) end
+pass(string.format("Light.Audio get callback invoked ok (count=%d)", get_count))
+
+-- 清除 callback (nil)
+local ok_clear = A.SetAudioStreamPutCallback(stream_cb, nil)
+if not ok_clear then fail("SetAudioStreamPutCallback(nil) failed") end
+A.PutAudioStreamData(stream_cb, string.rep(string.char(0), 100))
+if put_count ~= 2 then fail("after clear, put_count should stay 2, got " .. put_count) end
+pass("Light.Audio.SetAudioStreamPutCallback(nil) cleared callback ok")
+
+-- 错误类型拒绝
+local bad, bad_err = A.SetAudioStreamPutCallback(stream_cb, "not_a_function")
+if bad then fail("SetAudioStreamPutCallback(string) should fail") end
+pass("Light.Audio.SetAudioStreamPutCallback(string) rejected ok: " .. tostring(bad_err))
+
+-- DestroyAudioStream 应清理所有 callback ref (不泄漏)
+A.DestroyAudioStream(stream_cb)
+pass("Light.Audio.DestroyAudioStream cleans callback refs ok")
+
+-- 递归保护: 在 put callback 内再调 PutAudioStreamData 不崩
+local stream_rec = A.CreateAudioStream(spec_def, spec_def)
+local rec_depth = 0
+local rec_max = 0
+A.SetAudioStreamPutCallback(stream_rec, function(s, add, tot)
+    rec_depth = rec_depth + 1
+    if rec_depth > rec_max then rec_max = rec_depth end
+    if rec_depth < 3 then
+        -- 内嵌 Put: 递归保护应拦截, 不触发二层 callback
+        A.PutAudioStreamData(s, string.rep(string.char(0), 32))
+    end
+    rec_depth = rec_depth - 1
+end)
+A.PutAudioStreamData(stream_rec, string.rep(string.char(0), 64))
+if rec_max > 1 then fail("recursive callback protection failed: depth=" .. rec_max) end
+pass("Light.Audio callback recursion protection ok (max depth=" .. rec_max .. ")")
+A.DestroyAudioStream(stream_rec)
+
+print("audio smoke ok (Phase AM 51 fns + Phase AN 4 fns + 16 const verified)")
