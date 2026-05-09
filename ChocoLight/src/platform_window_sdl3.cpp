@@ -382,6 +382,13 @@ bool PollEvent(Event* out) {
             std::strncpy(out->text, e.text.text, sizeof(out->text) - 1);
             return true;
 
+        case SDL_EVENT_TEXT_EDITING:
+            out->type        = Event::TextEditing;
+            std::strncpy(out->text, e.edit.text ? e.edit.text : "", sizeof(out->text) - 1);
+            out->text_start  = (int)e.edit.start;
+            out->text_length = (int)e.edit.length;
+            return true;
+
         case SDL_EVENT_QUIT:
             out->type = Event::Quit;
             return true;
@@ -429,6 +436,71 @@ bool PollEvent(Event* out) {
             out->type = Event::None;
             return true;
     }
+}
+
+// ==================== 文本输入 / IME (Phase AQ) ====================
+
+bool StartTextInput(void* win) {
+    if (!win) return false;
+    return SDL_StartTextInput(static_cast<SDL_Window*>(win));
+}
+
+bool StartTextInputWithProps(void* win, const TextInputProps& props) {
+    if (!win) return false;
+    SDL_Window* w = static_cast<SDL_Window*>(win);
+
+    // 所有 props 都是默认 -> 走快速路径, 免创建 Properties
+    if (props.type < 0 && props.capitalization < 0 &&
+        props.autocorrect < 0 && props.multiline < 0) {
+        return SDL_StartTextInput(w);
+    }
+
+    // 构造 SDL_PropertiesID
+    SDL_PropertiesID p = SDL_CreateProperties();
+    if (p == 0) return SDL_StartTextInput(w);  // 降级: Props 创建失败仍然启动输入
+
+    if (props.type >= 0) {
+        SDL_SetNumberProperty(p, SDL_PROP_TEXTINPUT_TYPE_NUMBER, props.type);
+    }
+    if (props.capitalization >= 0) {
+        SDL_SetNumberProperty(p, SDL_PROP_TEXTINPUT_CAPITALIZATION_NUMBER, props.capitalization);
+    }
+    if (props.autocorrect >= 0) {
+        SDL_SetBooleanProperty(p, SDL_PROP_TEXTINPUT_AUTOCORRECT_BOOLEAN, props.autocorrect != 0);
+    }
+    if (props.multiline >= 0) {
+        SDL_SetBooleanProperty(p, SDL_PROP_TEXTINPUT_MULTILINE_BOOLEAN, props.multiline != 0);
+    }
+
+    bool ok = SDL_StartTextInputWithProperties(w, p);
+    SDL_DestroyProperties(p);
+    return ok;
+}
+
+void StopTextInput(void* win) {
+    if (!win) return;
+    SDL_StopTextInput(static_cast<SDL_Window*>(win));
+}
+
+bool IsTextInputActive(void* win) {
+    if (!win) return false;
+    return SDL_TextInputActive(static_cast<SDL_Window*>(win));
+}
+
+void SetTextInputArea(void* win, int x, int y, int w, int h, int cursor) {
+    if (!win) return;
+    SDL_Rect rect = { x, y, w, h };
+    SDL_SetTextInputArea(static_cast<SDL_Window*>(win), &rect, cursor);
+}
+
+void ClearComposition(void* win) {
+    if (!win) return;
+    SDL_ClearComposition(static_cast<SDL_Window*>(win));
+}
+
+bool IsScreenKeyboardShown(void* win) {
+    if (!win) return false;
+    return SDL_ScreenKeyboardShown(static_cast<SDL_Window*>(win));
 }
 
 // ==================== 计时 ====================

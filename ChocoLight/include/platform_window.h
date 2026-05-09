@@ -46,11 +46,12 @@ struct Event {
         TouchDown   = 9,    // 移动平台
         TouchUp     = 10,
         TouchMove   = 11,
-        TextInput        = 12,   // UTF-8 文本输入 (IME)
+        TextInput        = 12,   // UTF-8 文本输入 (IME 已提交)
         Quit             = 13,   // 应用退出
         GamepadButton    = 14,   // 手柄按钮
         GamepadAxis      = 15,   // 手柄摇杆/扳机
         GamepadConnect   = 16,   // 手柄连接/断开
+        TextEditing      = 17,   // UTF-8 IME 组合态 (含 cursor start/length, Phase AQ)
     } type = None;
 
     // 注意: 不使用 union 以避免 ABI 复杂性, 字段直接列出
@@ -66,7 +67,9 @@ struct Event {
     int    height     = 0;       ///< Resize: 新高度 (像素)
     int    touchId    = 0;       ///< Touch*: 多指触摸 ID
     float  pressure    = 0.0f;   ///< Touch*: 压力 (0..1)
-    char   text[32]   = {0};     ///< TextInput: UTF-8 字符串
+    char   text[128]  = {0};     ///< TextInput/TextEditing: UTF-8 字符串 (扩容到 128 以容纳长 IME 短语)
+    int    text_start  = 0;      ///< TextEditing: IME 组合区光标起点 (UTF-8 字节)
+    int    text_length = 0;      ///< TextEditing: IME 组合区选区长度 (UTF-8 字节)
     // 手柄事件
     int    gamepadId   = 0;      ///< Gamepad*: 手柄索引
     int    gpButton    = 0;      ///< GamepadButton: 按钮 ID (SDL_GAMEPAD_BUTTON_*)
@@ -140,6 +143,42 @@ void SetSwapInterval(int interval);
 /// @param out 输出事件 (调用者拥有)
 /// @return true=成功取得事件, false=队列空
 bool PollEvent(Event* out);
+
+// ==================== 文本输入 / IME (Phase AQ) ====================
+
+/// @brief StartTextInput 可选属性 (移动端键盘类型/大小写/自动更正/多行)
+/// @note 字段值为 -1 表示沿用平台默认; 0/1 表示显式关/开 (布尔); type/capitalization 用枚举值
+struct TextInputProps {
+    int  type           = -1;   ///< SDL_TEXTINPUT_TYPE_* (0=TEXT, 1=NAME, 2=EMAIL, 3=USERNAME, 4=PASSWORD_HIDDEN, 5=PASSWORD_VISIBLE, 6=NUMBER, 7=NUMBER_PASSWORD_HIDDEN, 8=NUMBER_PASSWORD_VISIBLE)
+    int  capitalization = -1;   ///< SDL_CAPITALIZE_* (0=NONE, 1=SENTENCES, 2=WORDS, 3=LETTERS)
+    int  autocorrect    = -1;   ///< 0=禁用, 1=启用
+    int  multiline      = -1;   ///< 0=单行, 1=多行
+};
+
+/// @brief 开始接收文本输入 (移动端会弹软键盘)
+/// @param win PlatformWindow 句柄, nullptr 时为 no-op
+/// @return true=成功, false=失败 (无窗口/SDL 错误)
+bool StartTextInput(void* win);
+
+/// @brief 带属性版本 (用于指定移动端键盘类型等)
+bool StartTextInputWithProps(void* win, const TextInputProps& props);
+
+/// @brief 停止接收文本输入 (移动端会收起软键盘)
+void StopTextInput(void* win);
+
+/// @brief 查询当前是否在接收文本输入
+bool IsTextInputActive(void* win);
+
+/// @brief 设置 IME 候选词窗口区域 (像素坐标, 让候选框对齐输入位置)
+/// @param x,y,w,h 输入区域矩形
+/// @param cursor 光标在输入区域内的 X 偏移 (像素)
+void SetTextInputArea(void* win, int x, int y, int w, int h, int cursor);
+
+/// @brief 取消当前 IME 组合 (清空合成态文本)
+void ClearComposition(void* win);
+
+/// @brief 移动端软键盘是否正在显示
+bool IsScreenKeyboardShown(void* win);
 
 // ==================== 计时 ====================
 
