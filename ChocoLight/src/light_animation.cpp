@@ -1582,13 +1582,23 @@ static int l_Clip_SetDuration(lua_State* L) {
 static int l_Clip_AddSampler(lua_State* L) {
     AnimationClip* c   = CheckClip(L, 1);
     int jointIdx       = (int)luaL_checkinteger(L, 2) - 1;    // 1-based → 0-based
-    // 关键: luaL_checkstring 返回 Lua 栈上 TString 内部指针, 当 luaL_error 触发
-    //       luaL_where + lua_pushvfstring 期间 Lumen GC 可能回收/迁移该 TString,
-    //       导致后续 %s 解析读到 dangling pointer 直接崩溃。
-    //       因此凡是要传给 luaL_error %s 的 lua-string, 必须先 copy 成 std::string,
-    //       由本地栈持有内存生命期。
-    std::string tgtStr = luaL_checkstring(L, 3);
-    std::string modStr = luaL_checkstring(L, 4);
+    // 关键安全约束:
+    //   1) luaL_error 走 longjmp, 会跳过本地非 trivial-destructor 对象 (std::string/std::vector)
+    //      → 在 MSVC 上是 UB, 触发 SEH access violation, 进程直接崩溃。
+    //   2) luaL_checkstring 返回的 const char* 理论上只在该值还在 Lua 栈时有效,
+    //      luaL_error 内部 luaL_where → lua_pushvfstring 可能动到栈, 让指针失效。
+    //   解决: 用 trivial 栈缓冲 char[] copy 一份, longjmp 安全跳过, 也不依赖 Lua 栈生命期。
+    const char* tgtRaw = luaL_checkstring(L, 3);
+    const char* modRaw = luaL_checkstring(L, 4);
+    char tgtBuf[32]; char modBuf[32];
+    {
+        size_t n = std::strlen(tgtRaw); if (n >= sizeof(tgtBuf)) n = sizeof(tgtBuf) - 1;
+        std::memcpy(tgtBuf, tgtRaw, n); tgtBuf[n] = '\0';
+    }
+    {
+        size_t n = std::strlen(modRaw); if (n >= sizeof(modBuf)) n = sizeof(modBuf) - 1;
+        std::memcpy(modBuf, modRaw, n); modBuf[n] = '\0';
+    }
     luaL_checktype(L, 5, LUA_TTABLE);
     luaL_checktype(L, 6, LUA_TTABLE);
 
@@ -1597,11 +1607,11 @@ static int l_Clip_AddSampler(lua_State* L) {
     }
 
     ChannelTarget target = ChannelTarget::UNSUPPORTED;
-    if (tgtStr == "translation")      target = ChannelTarget::TRANSLATION;
-    else if (tgtStr == "rotation")    target = ChannelTarget::ROTATION;
-    else if (tgtStr == "scale")       target = ChannelTarget::SCALE;
+    if (std::strcmp(tgtBuf, "translation") == 0)      target = ChannelTarget::TRANSLATION;
+    else if (std::strcmp(tgtBuf, "rotation") == 0)    target = ChannelTarget::ROTATION;
+    else if (std::strcmp(tgtBuf, "scale") == 0)       target = ChannelTarget::SCALE;
     else {
-        return luaL_error(L, "unsupported target: %s (expected translation/rotation/scale)", tgtStr.c_str());
+        return luaL_error(L, "unsupported target: %s (expected translation/rotation/scale)", tgtBuf);
     }
 
     InterpMode mode = InterpMode::LINEAR;
@@ -1615,63 +1625,66 @@ static int l_Clip_AddSampler(lua_State* L) {
         }
         return *a == *b;
     };
-    if (ieq(modStr.c_str(), "LINEAR"))           mode = InterpMode::LINEAR;
-    else if (ieq(modStr.c_str(), "STEP"))        mode = InterpMode::STEP;
-    else if (ieq(modStr.c_str(), "CUBICSPLINE")) mode = InterpMode::CUBICSPLINE;
+    if (ieq(modBuf, "LINEAR"))           mode = InterpMode::LINEAR;
+    else if (ieq(modBuf, "STEP"))        mode = InterpMode::STEP;
+    else if (ieq(modBuf, "CUBICSPLINE")) mode = InterpMode::CUBICSPLINE;
     else {
-        return luaL_error(L, "unsupported mode: %s (expected LINEAR/STEP/CUBICSPLINE)", modStr.c_str());
+        return luaL_error(L, "unsupported mode: %s (expected LINEAR/STEP/CUBICSPLINE)", modBuf);
     }
 
     int comps = (target == ChannelTarget::ROTATION) ? FLOATS_R : FLOATS_T;
 
-    // 读 times table (Lua 5.1: lua_objlen)
+    // -- 静态尺寸校验 (全部在创建任何栈 std::vector 之前完成, 保证 luaL_error longjmp 不会跳过析构) --
     int nTimes = (int)lua_objlen(L, 5);
     if (nTimes <= 0) {
         return luaL_error(L, "times table is empty");
     }
-    std::vector<float> times((size_t)nTimes);
-    for (int i = 0; i < nTimes; ++i) {
-        lua_rawgeti(L, 5, i + 1);
-        if (!lua_isnumber(L, -1)) {
-            lua_pop(L, 1);
-            return luaL_error(L, "times[%d] is not a number", i + 1);
-        }
-        times[(size_t)i] = (float)lua_tonumber(L, -1);
-        lua_pop(L, 1);
-    }
-
-    // 读 values table (扁平 float 数组)
-    int perKey    = (mode == InterpMode::CUBICSPLINE) ? (comps * 3) : comps;
-    int nValsExp  = nTimes * perKey;
-    int nValsGot  = (int)lua_objlen(L, 6);
+    int perKey   = (mode == InterpMode::CUBICSPLINE) ? (comps * 3) : comps;
+    int nValsExp = nTimes * perKey;
+    int nValsGot = (int)lua_objlen(L, 6);
     if (nValsGot != nValsExp) {
         return luaL_error(L, "values count mismatch: expected %d (%d keys * %d), got %d",
                            nValsExp, nTimes, perKey, nValsGot);
     }
-    std::vector<float> values((size_t)nValsGot);
+
+    // -- 内容预扫: 在不分配任何 std::vector 的前提下确认所有元素都是 number --
+    for (int i = 0; i < nTimes; ++i) {
+        lua_rawgeti(L, 5, i + 1);
+        int isNum = lua_isnumber(L, -1);
+        lua_pop(L, 1);
+        if (!isNum) {
+            return luaL_error(L, "times[%d] is not a number", i + 1);
+        }
+    }
     for (int i = 0; i < nValsGot; ++i) {
         lua_rawgeti(L, 6, i + 1);
-        if (!lua_isnumber(L, -1)) {
-            lua_pop(L, 1);
+        int isNum = lua_isnumber(L, -1);
+        lua_pop(L, 1);
+        if (!isNum) {
             return luaL_error(L, "values[%d] is not a number", i + 1);
         }
-        values[(size_t)i] = (float)lua_tonumber(L, -1);
-        lua_pop(L, 1);
     }
 
-    // Rotation 输入 xyzw (glTF 约定), 存储统一转 wxyz + 归一化
-    // 注意: 这里只对 LINEAR/STEP 的 value 做转换; CUBICSPLINE 的 in_tan/out_tan 切向量
-    //       不是 unit quat, 不能直接交换顺序 → 按 glTF 规范原样存储, 由 EvaluateSampler
-    //       在插值后统一走 GltfQuatXyzwToWxyz + Normalize.
-    // (当前实现与 LoadSkinnedGLTF 一致: 采样时才转换, 存储保持 xyzw 原状)
-    // 因此这里不需要额外转换, 直接存 values 即可.
+    // -- 至此所有 raise 路径已穷尽, 可以安全分配 std::vector (后续不再 luaL_error) --
     Sampler s;
     s.jointIndex = jointIdx;
     s.target     = target;
     s.mode       = mode;
     s.components = comps;
-    s.times      = std::move(times);
-    s.values     = std::move(values);
+    s.times.resize((size_t)nTimes);
+    s.values.resize((size_t)nValsGot);
+    for (int i = 0; i < nTimes; ++i) {
+        lua_rawgeti(L, 5, i + 1);
+        s.times[(size_t)i] = (float)lua_tonumber(L, -1);
+        lua_pop(L, 1);
+    }
+    for (int i = 0; i < nValsGot; ++i) {
+        lua_rawgeti(L, 6, i + 1);
+        s.values[(size_t)i] = (float)lua_tonumber(L, -1);
+        lua_pop(L, 1);
+    }
+    // Rotation 输入 xyzw (glTF 约定), 存储统一转 wxyz + 归一化的逻辑在 EvaluateSampler
+    // 中统一处理 (与 LoadSkinnedGLTF 一致, 采样时转换, 存储保持原状).
     c->samplers.push_back(std::move(s));
 
     // 自动推进 duration (取所有 sampler times.back() 的 max)
