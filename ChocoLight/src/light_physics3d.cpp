@@ -74,6 +74,7 @@ extern "C" {
 static const char* WORLD_MT = "Light.Physics3D.World";
 static const char* BODY_MT  = "Light.Physics3D.Body";
 static const char* SHAPE_MT = "Light.Physics3D.Shape";
+static const char* JOINT_MT = "Light.Physics3D.Joint";   // Phase AU Step 3.2
 
 // ==================== userdata 结构 ====================
 
@@ -103,6 +104,9 @@ struct Body3D {
                shapeRef(LUA_NOREF), selfRef(LUA_NOREF), alive(false) {}
 };
 
+// Phase AU Step 3.2: Joint 前向声明
+struct Joint3D;
+
 struct World3D {
     btDefaultCollisionConfiguration*     config;
     btCollisionDispatcher*               dispatcher;
@@ -110,12 +114,34 @@ struct World3D {
     btSequentialImpulseConstraintSolver* solver;
     btDiscreteDynamicsWorld*             world;
     std::vector<Body3D*>                 bodies;
+    std::vector<Joint3D*>                joints;      // Phase AU Step 3.2
     int                                  contactRef;  // OnContact callback in registry
     lua_State*                           L;
     bool                                 alive;
     World3D() : config(nullptr), dispatcher(nullptr), broadphase(nullptr),
                 solver(nullptr), world(nullptr), contactRef(LUA_NOREF),
                 L(nullptr), alive(false) {}
+};
+
+// Phase AU Step 3.2: Joint userdata
+enum JointType {
+    JT_P2P       = 0,
+    JT_HINGE     = 1,
+    JT_SLIDER    = 2,
+    JT_CONETWIST = 3,
+    JT_6DOF      = 4,
+};
+struct Joint3D {
+    btTypedConstraint* constraint;
+    World3D*           owner;
+    int                bodyARef;   // 防 bodyA userdata GC (registry ref)
+    int                bodyBRef;
+    int                selfRef;    // 防 joint 自身 GC (用 vector 持有)
+    JointType          type;
+    bool               alive;
+    Joint3D() : constraint(nullptr), owner(nullptr),
+                bodyARef(LUA_NOREF), bodyBRef(LUA_NOREF), selfRef(LUA_NOREF),
+                type(JT_P2P), alive(false) {}
 };
 
 // ==================== Helpers ====================
@@ -664,6 +690,78 @@ static int l_Body_Delete(lua_State* L) {
     return 0;
 }
 
+// ==================== Joint 销毁逻辑 (Phase AU Step 3.2) ====================
+
+static void InvalidateJoint(lua_State* L, Joint3D* j) {
+    if (!j || !j->alive) return;
+    if (j->constraint && j->owner && j->owner->world) {
+        j->owner->world->removeConstraint(j->constraint);
+    }
+    delete j->constraint;
+    j->constraint = nullptr;
+    if (j->bodyARef != LUA_NOREF) {
+        luaL_unref(L, LUA_REGISTRYINDEX, j->bodyARef);
+        j->bodyARef = LUA_NOREF;
+    }
+    if (j->bodyBRef != LUA_NOREF) {
+        luaL_unref(L, LUA_REGISTRYINDEX, j->bodyBRef);
+        j->bodyBRef = LUA_NOREF;
+    }
+    if (j->selfRef != LUA_NOREF) {
+        luaL_unref(L, LUA_REGISTRYINDEX, j->selfRef);
+        j->selfRef = LUA_NOREF;
+    }
+    j->alive = false;
+}
+
+static Joint3D* CheckJoint(lua_State* L, int idx) {
+    return (Joint3D*)luaL_checkudata(L, idx, JOINT_MT);
+}
+
+static Joint3D* CheckLiveJoint(lua_State* L, int idx) {
+    Joint3D* j = CheckJoint(L, idx);
+    if (!j->alive) return nullptr;
+    return j;
+}
+
+// 解析 Lua 表中的 vec3 字段, 默认 (0,0,0)
+static btVector3 ReadVec3Field(lua_State* L, int idx, const char* key, btVector3 dflt = btVector3(0,0,0)) {
+    lua_getfield(L, idx, key);
+    if (lua_istable(L, -1)) {
+        lua_rawgeti(L, -1, 1); float x = (float)lua_tonumber(L, -1); lua_pop(L, 1);
+        lua_rawgeti(L, -1, 2); float y = (float)lua_tonumber(L, -1); lua_pop(L, 1);
+        lua_rawgeti(L, -1, 3); float z = (float)lua_tonumber(L, -1); lua_pop(L, 1);
+        lua_pop(L, 1);
+        return btVector3(x, y, z);
+    }
+    lua_pop(L, 1);
+    return dflt;
+}
+
+// 解析 frame: {x,y,z, qw,qx,qy,qz} -> btTransform; 缺省单位变换
+static btTransform ReadTransformField(lua_State* L, int idx, const char* key) {
+    btTransform tr; tr.setIdentity();
+    lua_getfield(L, idx, key);
+    if (lua_istable(L, -1)) {
+        int n = (int)lua_objlen(L, -1);
+        if (n >= 3) {
+            lua_rawgeti(L, -1, 1); float x = (float)lua_tonumber(L, -1); lua_pop(L, 1);
+            lua_rawgeti(L, -1, 2); float y = (float)lua_tonumber(L, -1); lua_pop(L, 1);
+            lua_rawgeti(L, -1, 3); float z = (float)lua_tonumber(L, -1); lua_pop(L, 1);
+            tr.setOrigin(btVector3(x, y, z));
+        }
+        if (n >= 7) {
+            lua_rawgeti(L, -1, 4); float qw = (float)lua_tonumber(L, -1); lua_pop(L, 1);
+            lua_rawgeti(L, -1, 5); float qx = (float)lua_tonumber(L, -1); lua_pop(L, 1);
+            lua_rawgeti(L, -1, 6); float qy = (float)lua_tonumber(L, -1); lua_pop(L, 1);
+            lua_rawgeti(L, -1, 7); float qz = (float)lua_tonumber(L, -1); lua_pop(L, 1);
+            tr.setRotation(btQuaternion(qx, qy, qz, qw));
+        }
+    }
+    lua_pop(L, 1);
+    return tr;
+}
+
 static int l_Body_Tostring(lua_State* L) {
     Body3D* b = (Body3D*)luaL_checkudata(L, 1, BODY_MT);
     if (!b->alive) {
@@ -873,6 +971,338 @@ static int l_World_GetBodyCount(lua_State* L) {
     return 1;
 }
 
+// ==================== Phase AU Step 3.2: World:CreateJoint ====================
+
+static int l_World_CreateJoint(lua_State* L) {
+    World3D* w = CheckWorld(L, 1);
+    if (!w->alive) { lua_pushnil(L); lua_pushstring(L, "world dead"); return 2; }
+    luaL_checktype(L, 2, LUA_TTABLE);
+
+    // type
+    lua_getfield(L, 2, "type");
+    const char* typeStr = lua_tostring(L, -1);
+    lua_pop(L, 1);
+    if (!typeStr) {
+        lua_pushnil(L);
+        lua_pushstring(L, "CreateJoint: missing 'type'");
+        return 2;
+    }
+    JointType jt;
+    if      (!strcmp(typeStr, "p2p"))       jt = JT_P2P;
+    else if (!strcmp(typeStr, "hinge"))     jt = JT_HINGE;
+    else if (!strcmp(typeStr, "slider"))    jt = JT_SLIDER;
+    else if (!strcmp(typeStr, "conetwist")) jt = JT_CONETWIST;
+    else if (!strcmp(typeStr, "6dof"))      jt = JT_6DOF;
+    else {
+        lua_pushnil(L);
+        lua_pushfstring(L, "CreateJoint: unknown type '%s'", typeStr);
+        return 2;
+    }
+
+    // bodyA / bodyB (Both required for all 5 constraint types we expose)
+    lua_getfield(L, 2, "bodyA");
+    Body3D* bodyA = (Body3D*)luaL_testudata(L, -1, BODY_MT);
+    int bodyAStackIdx = lua_gettop(L);
+    lua_getfield(L, 2, "bodyB");
+    Body3D* bodyB = (Body3D*)luaL_testudata(L, -1, BODY_MT);
+    int bodyBStackIdx = lua_gettop(L);
+    if (!bodyA || !bodyA->alive || !bodyA->body) {
+        lua_pop(L, 2);
+        lua_pushnil(L);
+        lua_pushstring(L, "CreateJoint: bodyA missing/dead");
+        return 2;
+    }
+    if (!bodyB || !bodyB->alive || !bodyB->body) {
+        lua_pop(L, 2);
+        lua_pushnil(L);
+        lua_pushstring(L, "CreateJoint: bodyB missing/dead");
+        return 2;
+    }
+    if (bodyA->owner != w || bodyB->owner != w) {
+        lua_pop(L, 2);
+        lua_pushnil(L);
+        lua_pushstring(L, "CreateJoint: body not in this world");
+        return 2;
+    }
+
+    btTypedConstraint* constraint = nullptr;
+    switch (jt) {
+        case JT_P2P: {
+            btVector3 pivotA = ReadVec3Field(L, 2, "pivotA");
+            btVector3 pivotB = ReadVec3Field(L, 2, "pivotB");
+            constraint = new btPoint2PointConstraint(*bodyA->body, *bodyB->body, pivotA, pivotB);
+            break;
+        }
+        case JT_HINGE: {
+            btVector3 pivotA = ReadVec3Field(L, 2, "pivotA");
+            btVector3 pivotB = ReadVec3Field(L, 2, "pivotB");
+            btVector3 axisA  = ReadVec3Field(L, 2, "axisA", btVector3(0, 1, 0));
+            btVector3 axisB  = ReadVec3Field(L, 2, "axisB", btVector3(0, 1, 0));
+            constraint = new btHingeConstraint(*bodyA->body, *bodyB->body, pivotA, pivotB, axisA, axisB);
+            break;
+        }
+        case JT_SLIDER: {
+            btTransform fA = ReadTransformField(L, 2, "frameA");
+            btTransform fB = ReadTransformField(L, 2, "frameB");
+            constraint = new btSliderConstraint(*bodyA->body, *bodyB->body, fA, fB, true);
+            break;
+        }
+        case JT_CONETWIST: {
+            btTransform fA = ReadTransformField(L, 2, "frameA");
+            btTransform fB = ReadTransformField(L, 2, "frameB");
+            constraint = new btConeTwistConstraint(*bodyA->body, *bodyB->body, fA, fB);
+            break;
+        }
+        case JT_6DOF: {
+            btTransform fA = ReadTransformField(L, 2, "frameA");
+            btTransform fB = ReadTransformField(L, 2, "frameB");
+            constraint = new btGeneric6DofConstraint(*bodyA->body, *bodyB->body, fA, fB, true);
+            break;
+        }
+    }
+    if (!constraint) {
+        lua_pop(L, 2);
+        lua_pushnil(L);
+        lua_pushstring(L, "CreateJoint: failed to construct");
+        return 2;
+    }
+
+    // disableCollisions option
+    lua_getfield(L, 2, "disableCollisions");
+    bool disableCol = lua_toboolean(L, -1) != 0;
+    lua_pop(L, 1);
+    w->world->addConstraint(constraint, disableCol);
+
+    // 创建 Joint userdata
+    Joint3D* j = (Joint3D*)lua_newuserdata(L, sizeof(Joint3D));
+    new (j) Joint3D();
+    j->constraint = constraint;
+    j->owner      = w;
+    j->type       = jt;
+    j->alive      = true;
+    luaL_getmetatable(L, JOINT_MT);
+    lua_setmetatable(L, -2);
+
+    // 防 bodyA/bodyB GC: registry 引用
+    lua_pushvalue(L, bodyAStackIdx);
+    j->bodyARef = luaL_ref(L, LUA_REGISTRYINDEX);
+    lua_pushvalue(L, bodyBStackIdx);
+    j->bodyBRef = luaL_ref(L, LUA_REGISTRYINDEX);
+
+    // 防 joint userdata 自身 GC: 暂存到 registry, World 持 vector 也对应
+    lua_pushvalue(L, -1);  // duplicate joint udata on top of stack
+    j->selfRef = luaL_ref(L, LUA_REGISTRYINDEX);
+
+    w->joints.push_back(j);
+
+    // 清理 bodyA/bodyB 临时栈值,只留 joint udata
+    lua_remove(L, bodyAStackIdx);
+    // 注意 bodyB 因为 bodyA 已被 remove, 它的索引已经 -1 了; 直接用原 idx-1
+    lua_remove(L, bodyAStackIdx);
+    return 1;  // 只返回 joint
+}
+
+static int l_World_DestroyJoint(lua_State* L) {
+    World3D* w = CheckWorld(L, 1);
+    if (!w->alive) return 0;
+    Joint3D* j = CheckJoint(L, 2);
+    if (j->owner != w || !j->alive) return 0;
+    auto& v = w->joints;
+    v.erase(std::remove(v.begin(), v.end(), j), v.end());
+    InvalidateJoint(L, j);
+    return 0;
+}
+
+static int l_World_GetJointCount(lua_State* L) {
+    World3D* w = CheckWorld(L, 1);
+    if (!w->alive) { lua_pushinteger(L, 0); return 1; }
+    int count = 0;
+    for (auto* j : w->joints) if (j && j->alive) count++;
+    lua_pushinteger(L, count);
+    return 1;
+}
+
+// ==================== Phase AU Step 3.2: Joint 方法 ====================
+
+static int l_Joint_GetType(lua_State* L) {
+    Joint3D* j = CheckJoint(L, 1);
+    const char* s = "unknown";
+    switch (j->type) {
+        case JT_P2P:       s = "p2p"; break;
+        case JT_HINGE:     s = "hinge"; break;
+        case JT_SLIDER:    s = "slider"; break;
+        case JT_CONETWIST: s = "conetwist"; break;
+        case JT_6DOF:      s = "6dof"; break;
+    }
+    lua_pushstring(L, s);
+    return 1;
+}
+
+static int l_Joint_IsAlive(lua_State* L) {
+    Joint3D* j = CheckJoint(L, 1);
+    lua_pushboolean(L, j->alive);
+    return 1;
+}
+
+static int l_Joint_SetEnabled(lua_State* L) {
+    Joint3D* j = CheckLiveJoint(L, 1); if (!j) return 0;
+    bool e = lua_toboolean(L, 2) != 0;
+    j->constraint->setEnabled(e);
+    return 0;
+}
+
+static int l_Joint_IsEnabled(lua_State* L) {
+    Joint3D* j = CheckLiveJoint(L, 1);
+    lua_pushboolean(L, j ? j->constraint->isEnabled() : 0);
+    return 1;
+}
+
+static int l_Joint_Delete(lua_State* L) {
+    Joint3D* j = CheckJoint(L, 1);
+    if (!j->alive) return 0;
+    if (j->owner) {
+        auto& v = j->owner->joints;
+        v.erase(std::remove(v.begin(), v.end(), j), v.end());
+    }
+    InvalidateJoint(L, j);
+    return 0;
+}
+
+static int l_Joint_GC(lua_State* L) {
+    Joint3D* j = CheckJoint(L, 1);
+    if (j->alive) {
+        if (j->owner) {
+            auto& v = j->owner->joints;
+            v.erase(std::remove(v.begin(), v.end(), j), v.end());
+        }
+        InvalidateJoint(L, j);
+    }
+    j->~Joint3D();
+    return 0;
+}
+
+static int l_Joint_Tostring(lua_State* L) {
+    Joint3D* j = CheckJoint(L, 1);
+    const char* s = "?";
+    switch (j->type) {
+        case JT_P2P: s = "p2p"; break;
+        case JT_HINGE: s = "hinge"; break;
+        case JT_SLIDER: s = "slider"; break;
+        case JT_CONETWIST: s = "conetwist"; break;
+        case JT_6DOF: s = "6dof"; break;
+    }
+    lua_pushfstring(L, "Light.Physics3D.Joint(%s, %s)", s, j->alive ? "alive" : "dead");
+    return 1;
+}
+
+// ---- Hinge 方法 ----
+
+static int l_Joint_Hinge_SetLimit(lua_State* L) {
+    Joint3D* j = CheckLiveJoint(L, 1); if (!j || j->type != JT_HINGE) return 0;
+    btHingeConstraint* h = static_cast<btHingeConstraint*>(j->constraint);
+    float low  = (float)luaL_checknumber(L, 2);
+    float high = (float)luaL_checknumber(L, 3);
+    float softness    = (float)luaL_optnumber(L, 4, 0.9);
+    float biasFactor  = (float)luaL_optnumber(L, 5, 0.3);
+    float relaxFactor = (float)luaL_optnumber(L, 6, 1.0);
+    h->setLimit(low, high, softness, biasFactor, relaxFactor);
+    return 0;
+}
+
+static int l_Joint_Hinge_GetAngle(lua_State* L) {
+    Joint3D* j = CheckLiveJoint(L, 1);
+    if (!j || j->type != JT_HINGE) { lua_pushnumber(L, 0); return 1; }
+    btHingeConstraint* h = static_cast<btHingeConstraint*>(j->constraint);
+    lua_pushnumber(L, h->getHingeAngle());
+    return 1;
+}
+
+static int l_Joint_Hinge_EnableMotor(lua_State* L) {
+    Joint3D* j = CheckLiveJoint(L, 1); if (!j || j->type != JT_HINGE) return 0;
+    btHingeConstraint* h = static_cast<btHingeConstraint*>(j->constraint);
+    bool enable = lua_toboolean(L, 2) != 0;
+    float targetVel  = (float)luaL_optnumber(L, 3, 0.0);
+    float maxImpulse = (float)luaL_optnumber(L, 4, 1.0);
+    h->enableAngularMotor(enable, targetVel, maxImpulse);
+    return 0;
+}
+
+// ---- Slider 方法 ----
+
+static int l_Joint_Slider_SetLowerLin(lua_State* L) {
+    Joint3D* j = CheckLiveJoint(L, 1); if (!j || j->type != JT_SLIDER) return 0;
+    static_cast<btSliderConstraint*>(j->constraint)->setLowerLinLimit((float)luaL_checknumber(L, 2));
+    return 0;
+}
+static int l_Joint_Slider_SetUpperLin(lua_State* L) {
+    Joint3D* j = CheckLiveJoint(L, 1); if (!j || j->type != JT_SLIDER) return 0;
+    static_cast<btSliderConstraint*>(j->constraint)->setUpperLinLimit((float)luaL_checknumber(L, 2));
+    return 0;
+}
+static int l_Joint_Slider_SetLowerAng(lua_State* L) {
+    Joint3D* j = CheckLiveJoint(L, 1); if (!j || j->type != JT_SLIDER) return 0;
+    static_cast<btSliderConstraint*>(j->constraint)->setLowerAngLimit((float)luaL_checknumber(L, 2));
+    return 0;
+}
+static int l_Joint_Slider_SetUpperAng(lua_State* L) {
+    Joint3D* j = CheckLiveJoint(L, 1); if (!j || j->type != JT_SLIDER) return 0;
+    static_cast<btSliderConstraint*>(j->constraint)->setUpperAngLimit((float)luaL_checknumber(L, 2));
+    return 0;
+}
+static int l_Joint_Slider_GetLinearPos(lua_State* L) {
+    Joint3D* j = CheckLiveJoint(L, 1);
+    if (!j || j->type != JT_SLIDER) { lua_pushnumber(L, 0); return 1; }
+    lua_pushnumber(L, static_cast<btSliderConstraint*>(j->constraint)->getLinearPos());
+    return 1;
+}
+
+// ---- ConeTwist 方法 ----
+
+static int l_Joint_ConeTwist_SetLimit(lua_State* L) {
+    Joint3D* j = CheckLiveJoint(L, 1); if (!j || j->type != JT_CONETWIST) return 0;
+    btConeTwistConstraint* c = static_cast<btConeTwistConstraint*>(j->constraint);
+    float swing1 = (float)luaL_checknumber(L, 2);
+    float swing2 = (float)luaL_checknumber(L, 3);
+    float twist  = (float)luaL_checknumber(L, 4);
+    c->setLimit(swing1, swing2, twist);
+    return 0;
+}
+
+// ---- Generic6DOF 方法 ----
+
+static int l_Joint_6DOF_SetLinearLower(lua_State* L) {
+    Joint3D* j = CheckLiveJoint(L, 1); if (!j || j->type != JT_6DOF) return 0;
+    float x = (float)luaL_checknumber(L, 2);
+    float y = (float)luaL_checknumber(L, 3);
+    float z = (float)luaL_checknumber(L, 4);
+    static_cast<btGeneric6DofConstraint*>(j->constraint)->setLinearLowerLimit(btVector3(x, y, z));
+    return 0;
+}
+static int l_Joint_6DOF_SetLinearUpper(lua_State* L) {
+    Joint3D* j = CheckLiveJoint(L, 1); if (!j || j->type != JT_6DOF) return 0;
+    float x = (float)luaL_checknumber(L, 2);
+    float y = (float)luaL_checknumber(L, 3);
+    float z = (float)luaL_checknumber(L, 4);
+    static_cast<btGeneric6DofConstraint*>(j->constraint)->setLinearUpperLimit(btVector3(x, y, z));
+    return 0;
+}
+static int l_Joint_6DOF_SetAngularLower(lua_State* L) {
+    Joint3D* j = CheckLiveJoint(L, 1); if (!j || j->type != JT_6DOF) return 0;
+    float x = (float)luaL_checknumber(L, 2);
+    float y = (float)luaL_checknumber(L, 3);
+    float z = (float)luaL_checknumber(L, 4);
+    static_cast<btGeneric6DofConstraint*>(j->constraint)->setAngularLowerLimit(btVector3(x, y, z));
+    return 0;
+}
+static int l_Joint_6DOF_SetAngularUpper(lua_State* L) {
+    Joint3D* j = CheckLiveJoint(L, 1); if (!j || j->type != JT_6DOF) return 0;
+    float x = (float)luaL_checknumber(L, 2);
+    float y = (float)luaL_checknumber(L, 3);
+    float z = (float)luaL_checknumber(L, 4);
+    static_cast<btGeneric6DofConstraint*>(j->constraint)->setAngularUpperLimit(btVector3(x, y, z));
+    return 0;
+}
+
 static int l_World_RayCast(lua_State* L) {
     World3D* w = CheckWorld(L, 1);
     if (!w->alive) {
@@ -918,6 +1348,12 @@ static int l_World_OnContact(lua_State* L) {
 // 释放 Bullet 资源, 可重复调用 (幂等)
 static void World_ReleaseBullet(lua_State* L, World3D* w) {
     if (!w->alive) return;
+    // Phase AU Step 3.2: joints 必须先于 bodies 销毁 (Bullet constraint 引用 body)
+    for (auto* j : w->joints) {
+        InvalidateJoint(L, j);
+        if (j) j->owner = nullptr;
+    }
+    w->joints.clear();
     // 销毁所有 body 引用
     for (auto* b : w->bodies) {
         InvalidateBody(L, b);
@@ -983,11 +1419,45 @@ static const luaL_Reg kWorldMethods[] = {
     { "CreateBody",     l_World_CreateBody },
     { "DestroyBody",    l_World_DestroyBody },
     { "GetBodyCount",   l_World_GetBodyCount },
+    // Phase AU Step 3.2 — Joint
+    { "CreateJoint",    l_World_CreateJoint },
+    { "DestroyJoint",   l_World_DestroyJoint },
+    { "GetJointCount",  l_World_GetJointCount },
     { "RayCast",        l_World_RayCast },
     { "OnContact",      l_World_OnContact },
     { "Delete",         l_World_Delete },
     { "__gc",           l_World_GC },
     { "__tostring",     l_World_Tostring },
+    { nullptr, nullptr }
+};
+
+// Phase AU Step 3.2: Joint 元表方法
+static const luaL_Reg kJointMethods[] = {
+    { "GetType",            l_Joint_GetType },
+    { "IsAlive",            l_Joint_IsAlive },
+    { "SetEnabled",         l_Joint_SetEnabled },
+    { "IsEnabled",          l_Joint_IsEnabled },
+    // Hinge
+    { "SetLimit",           l_Joint_Hinge_SetLimit },          // hinge: low/high; conetwist: 3 params (override based on type)
+    { "GetHingeAngle",      l_Joint_Hinge_GetAngle },
+    { "EnableMotor",        l_Joint_Hinge_EnableMotor },
+    // Slider
+    { "SetLowerLinLimit",   l_Joint_Slider_SetLowerLin },
+    { "SetUpperLinLimit",   l_Joint_Slider_SetUpperLin },
+    { "SetLowerAngLimit",   l_Joint_Slider_SetLowerAng },
+    { "SetUpperAngLimit",   l_Joint_Slider_SetUpperAng },
+    { "GetLinearPos",       l_Joint_Slider_GetLinearPos },
+    // ConeTwist (注意: 与 hinge 的 SetLimit 同名, 但 hinge 接收 2-5 参, conetwist 接收 3 参; 为避免冲突, conetwist 用 SetConeTwistLimit)
+    { "SetConeTwistLimit",  l_Joint_ConeTwist_SetLimit },
+    // Generic 6DOF
+    { "SetLinearLowerLimit",  l_Joint_6DOF_SetLinearLower },
+    { "SetLinearUpperLimit",  l_Joint_6DOF_SetLinearUpper },
+    { "SetAngularLowerLimit", l_Joint_6DOF_SetAngularLower },
+    { "SetAngularUpperLimit", l_Joint_6DOF_SetAngularUpper },
+    // 生命周期
+    { "Delete",             l_Joint_Delete },
+    { "__gc",               l_Joint_GC },
+    { "__tostring",         l_Joint_Tostring },
     { nullptr, nullptr }
 };
 
@@ -1049,6 +1519,14 @@ extern "C" LIGHT_API int luaopen_Light_Physics3D(lua_State* L) {
     // Body 元表
     if (luaL_newmetatable(L, BODY_MT)) {
         luaL_setfuncs(L, kBodyMethods, 0);
+        lua_pushvalue(L, -1);
+        lua_setfield(L, -2, "__index");
+    }
+    lua_pop(L, 1);
+
+    // Joint 元表 (Phase AU Step 3.2)
+    if (luaL_newmetatable(L, JOINT_MT)) {
+        luaL_setfuncs(L, kJointMethods, 0);
         lua_pushvalue(L, -1);
         lua_setfield(L, -2, "__index");
     }

@@ -291,11 +291,131 @@ end
 w:OnContact(nil)
 pass("OnContact(nil) 取消回调成功")
 
+-- ==================== 8.5) Joint (Phase AU Step 3.2) ====================
+print("[8.5] Joint - 5 种 constraint")
+
+if w:GetJointCount() ~= 0 then fail("初始 joint count != 0") end
+
+-- 创建两个新的 dynamic body 测试 joint
+local b1 = w:CreateBody({ type = "dynamic", mass = 1.0, x = 0, y = 5, z = 0, shape = sphere })
+local b2 = w:CreateBody({ type = "dynamic", mass = 1.0, x = 1, y = 5, z = 0, shape = sphere })
+
+-- P2P
+local jp2p = w:CreateJoint({
+    type = "p2p", bodyA = b1, bodyB = b2,
+    pivotA = { 0.5, 0, 0 }, pivotB = { -0.5, 0, 0 },
+})
+if not jp2p then fail("CreateJoint p2p fail") end
+if jp2p:GetType() ~= "p2p" then fail("p2p GetType") end
+if not jp2p:IsAlive() then fail("p2p IsAlive") end
+pass("p2p Joint 创建 + GetType + IsAlive")
+
+-- Hinge (在第一对 body 之外, 创建一对新 body 避免 constraint 冲突)
+local b3 = w:CreateBody({ type = "dynamic", mass = 1.0, x = 3, y = 5, z = 0, shape = box })
+local b4 = w:CreateBody({ type = "dynamic", mass = 1.0, x = 4, y = 5, z = 0, shape = box })
+local jhinge = w:CreateJoint({
+    type = "hinge", bodyA = b3, bodyB = b4,
+    pivotA = { 0.5, 0, 0 }, pivotB = { -0.5, 0, 0 },
+    axisA = { 0, 1, 0 }, axisB = { 0, 1, 0 },
+})
+if not jhinge then fail("CreateJoint hinge fail") end
+jhinge:SetLimit(-1.0, 1.0)
+local angle = jhinge:GetHingeAngle()
+if type(angle) ~= "number" then fail("GetHingeAngle type") end
+jhinge:EnableMotor(true, 1.0, 0.5)
+pass("Hinge Joint + SetLimit + GetHingeAngle + EnableMotor (angle=" .. string.format("%.3f", angle) .. ")")
+
+-- Slider
+local b5 = w:CreateBody({ type = "dynamic", mass = 1.0, x = 6, y = 5, z = 0, shape = box })
+local b6 = w:CreateBody({ type = "dynamic", mass = 1.0, x = 7, y = 5, z = 0, shape = box })
+local jslider = w:CreateJoint({
+    type = "slider", bodyA = b5, bodyB = b6,
+    frameA = { 0, 0, 0,  1, 0, 0, 0 },
+    frameB = { 0, 0, 0,  1, 0, 0, 0 },
+})
+if not jslider then fail("CreateJoint slider fail") end
+jslider:SetLowerLinLimit(-2.0)
+jslider:SetUpperLinLimit(2.0)
+jslider:SetLowerAngLimit(0)
+jslider:SetUpperAngLimit(0)
+local pos = jslider:GetLinearPos()
+pass("Slider Joint + Lin/Ang limits + GetLinearPos (pos=" .. string.format("%.3f", pos) .. ")")
+
+-- ConeTwist
+local b7 = w:CreateBody({ type = "dynamic", mass = 1.0, x = 9, y = 5, z = 0, shape = sphere })
+local b8 = w:CreateBody({ type = "dynamic", mass = 1.0, x = 10, y = 5, z = 0, shape = sphere })
+local jct = w:CreateJoint({
+    type = "conetwist", bodyA = b7, bodyB = b8,
+    frameA = { 0, 0, 0,  1, 0, 0, 0 },
+    frameB = { 0, 0, 0,  1, 0, 0, 0 },
+})
+if not jct then fail("CreateJoint conetwist fail") end
+jct:SetConeTwistLimit(0.5, 0.5, 0.5)
+pass("ConeTwist Joint + SetConeTwistLimit")
+
+-- Generic 6DOF
+local b9 = w:CreateBody({ type = "dynamic", mass = 1.0, x = 12, y = 5, z = 0, shape = box })
+local b10 = w:CreateBody({ type = "dynamic", mass = 1.0, x = 13, y = 5, z = 0, shape = box })
+local j6dof = w:CreateJoint({
+    type = "6dof", bodyA = b9, bodyB = b10,
+    frameA = { 0, 0, 0,  1, 0, 0, 0 },
+    frameB = { 0, 0, 0,  1, 0, 0, 0 },
+})
+if not j6dof then fail("CreateJoint 6dof fail") end
+j6dof:SetLinearLowerLimit(-1, -1, -1)
+j6dof:SetLinearUpperLimit(1, 1, 1)
+j6dof:SetAngularLowerLimit(-0.5, -0.5, -0.5)
+j6dof:SetAngularUpperLimit(0.5, 0.5, 0.5)
+pass("6DOF Joint + Set Linear/Angular Lower/Upper Limit (4 个方法)")
+
+if w:GetJointCount() ~= 5 then fail("joint count != 5: " .. w:GetJointCount()) end
+pass("GetJointCount = 5")
+
+-- SetEnabled / IsEnabled
+jp2p:SetEnabled(false)
+if jp2p:IsEnabled() then fail("SetEnabled(false)") end
+jp2p:SetEnabled(true)
+if not jp2p:IsEnabled() then fail("SetEnabled(true)") end
+pass("Joint Set/IsEnabled")
+
+-- 错误参数: 不存在的 type
+local bad_j, bad_err = w:CreateJoint({ type = "bogus", bodyA = b1, bodyB = b2 })
+if bad_j ~= nil then fail("bogus joint type should fail") end
+pass("bogus joint type -> nil + err: " .. tostring(bad_err))
+
+-- 错误参数: 缺 bodyA
+local bad_j2, bad_err2 = w:CreateJoint({ type = "p2p", bodyB = b2 })
+if bad_j2 ~= nil then fail("missing bodyA should fail") end
+pass("missing bodyA -> nil + err: " .. tostring(bad_err2))
+
+-- DestroyJoint
+w:DestroyJoint(jp2p)
+if w:GetJointCount() ~= 4 then fail("after DestroyJoint, count != 4: " .. w:GetJointCount()) end
+if jp2p:IsAlive() then fail("destroyed joint should be dead") end
+pass("DestroyJoint, count=4")
+
+-- joint:Delete()
+jhinge:Delete()
+if w:GetJointCount() ~= 3 then fail("after Delete, count != 3") end
+pass("joint:Delete() OK")
+
+-- tostring
+local _ = tostring(jslider)
+pass("joint:__tostring 不崩")
+
+-- step world with joints, 不崩
+for i = 1, 10 do w:Step(1.0 / 60) end
+pass("Step 10 帧带 3 个 joints 不崩")
+
 -- ==================== 9) Body / World 销毁 ====================
 print("[9] 销毁路径")
+local count_before = w:GetBodyCount()
 w:DestroyBody(kbody)
-if w:GetBodyCount() ~= 2 then fail("DestroyBody count != 2") end
-pass("DestroyBody, count=2")
+local count_after = w:GetBodyCount()
+if count_after ~= count_before - 1 then
+    fail(string.format("DestroyBody count: %d -> %d (expected -1)", count_before, count_after))
+end
+pass(string.format("DestroyBody, count: %d -> %d", count_before, count_after))
 
 if kbody:IsAlive() ~= false then fail("destroyed body still alive") end
 -- dead body 调方法应不崩, 返回安全值
