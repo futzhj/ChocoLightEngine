@@ -33,7 +33,7 @@ endif()
 set(SDL_TEST_LIBRARY  OFF CACHE BOOL "" FORCE)
 set(SDL_TESTS         OFF CACHE BOOL "" FORCE)
 set(SDL_INSTALL_TESTS OFF CACHE BOOL "" FORCE)
-set(SDL_AUDIO         OFF CACHE BOOL "" FORCE)
+set(SDL_AUDIO         ON  CACHE BOOL "" FORCE)  # Phase AM: Light.Audio 模块需要; 与 miniaudio 共存 (各自后端)
 set(SDL_RENDER        OFF CACHE BOOL "" FORCE)  # 我们不用 SDL_Renderer (用 GL)
 set(SDL_GPU           OFF CACHE BOOL "" FORCE)  # 不用 SDL_GPU
 
@@ -176,6 +176,7 @@ set(LIGHT_SOURCES
     ${CHOCO_SRC}/light_keyboard.cpp
     ${CHOCO_SRC}/light_mouse.cpp
     ${CHOCO_SRC}/light_joystick.cpp
+    ${CHOCO_SRC}/light_audio.cpp
     ${CHOCO_SRC}/platform_window_sdl3.cpp
     ${CHOCO_SRC}/render_backend.cpp
     ${CHOCO_SRC}/batch_renderer.cpp
