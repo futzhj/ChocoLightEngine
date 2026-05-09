@@ -407,6 +407,91 @@ pass("joint:__tostring 不崩")
 for i = 1, 10 do w:Step(1.0 / 60) end
 pass("Step 10 帧带 3 个 joints 不崩")
 
+-- ==================== 8.6) Compound shape (Phase AU Step 4.1) ====================
+print("[8.6] Compound shape")
+
+-- 创建一个由 box + sphere + capsule 组成的复合 body
+local compBody = w:CreateBody({
+    type = "dynamic", mass = 2.0, x = 20, y = 5, z = 0,
+    compoundShapes = {
+        { shape = box,    x = 0, y = 0, z = 0 },                       -- 中心 box
+        { shape = sphere, x = 1.5, y = 0, z = 0 },                     -- 右边球
+        { shape = caps,   x = 0, y = 1.5, z = 0,                       -- 上方胶囊 + 旋转
+                          qw = 0.7071, qx = 0.7071, qy = 0, qz = 0 },
+    },
+})
+if not compBody then fail("Compound body 创建失败") end
+if not compBody:IsAlive() then fail("Compound body IsAlive=false") end
+pass("Compound body 创建 (box + sphere + capsule)")
+
+-- 验证 body 能正常 step (重力下落)
+local cy_before = ({ compBody:GetPosition() })[2]
+for i = 1, 30 do w:Step(1.0 / 60) end
+local cy_after = ({ compBody:GetPosition() })[2]
+if cy_after >= cy_before then
+    fail(string.format("Compound body 没下落: %.2f -> %.2f", cy_before, cy_after))
+end
+pass(string.format("Compound body 重力下落: y %.2f -> %.2f", cy_before, cy_after))
+
+-- 错误参数: 空 compoundShapes
+local bad_comp, bad_err = w:CreateBody({
+    type = "dynamic", mass = 1.0,
+    compoundShapes = {},
+})
+if bad_comp ~= nil then fail("空 compound 应失败") end
+pass("空 compoundShapes -> nil + err: " .. tostring(bad_err))
+
+-- 错误参数: child 缺 shape
+local bad_comp2, bad_err2 = w:CreateBody({
+    type = "dynamic", mass = 1.0,
+    compoundShapes = { { x = 0, y = 0, z = 0 } },  -- 没有 shape 字段
+})
+if bad_comp2 ~= nil then fail("child 缺 shape 应失败") end
+pass("child 缺 shape -> nil + err: " .. tostring(bad_err2))
+
+compBody:Delete()
+pass("Compound body Delete OK")
+
+-- ==================== 8.7) DebugDraw (Phase AU Step 4.1) ====================
+print("[8.7] DebugDraw 接口")
+
+-- 注册 callback table, 计数 drawLine 调用
+local draw_count = 0
+local last_color = nil
+w:SetDebugDrawer({
+    drawLine = function(x1, y1, z1, x2, y2, z2, r, g, b)
+        draw_count = draw_count + 1
+        last_color = { r, g, b }
+    end,
+    drawContactPoint = function(px, py, pz, nx, ny, nz, dist, r, g, b)
+        -- 不强制使用, 仅验证 callback 不崩
+    end,
+    reportErrorWarning = function(msg)
+        print("[Bullet warn]", msg)
+    end,
+})
+pass("SetDebugDrawer 注册成功")
+
+-- 设置 mode (1 = DBG_DrawWireframe, Bullet 默认值)
+w:SetDebugDrawMode(1)
+local mode = w:GetDebugDrawMode()
+if mode ~= 1 then fail("DebugDrawMode roundtrip: " .. tostring(mode)) end
+pass("Set/GetDebugDrawMode = 1")
+
+-- 触发一次 debug 渲染 (会画所有刚体 wireframe)
+w:DebugDrawWorld()
+if draw_count <= 0 then
+    fail("DebugDrawWorld 没触发任何 drawLine")
+end
+pass(string.format("DebugDrawWorld 触发 %d 次 drawLine", draw_count))
+
+-- 取消 callback
+w:SetDebugDrawer(nil)
+draw_count = 0
+w:DebugDrawWorld()  -- 现在应不调用回调 (因为 drawer 已被 nil)
+if draw_count ~= 0 then fail("取消 drawer 后仍触发 drawLine") end
+pass("SetDebugDrawer(nil) 取消生效")
+
 -- ==================== 9) Body / World 销毁 ====================
 print("[9] 销毁路径")
 local count_before = w:GetBodyCount()

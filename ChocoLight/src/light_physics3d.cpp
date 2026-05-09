@@ -98,20 +98,27 @@ struct Shape3D {
 };
 
 struct Body3D {
-    btRigidBody*     body;
-    btMotionState*   motion;
-    World3D*         owner;
-    int              shapeRef;   // 防 shape userdata GC
-    int              selfRef;    // OnContact 回调里反查 Lua body
-    bool             alive;
+    btRigidBody*       body;
+    btMotionState*     motion;
+    World3D*           owner;
+    int                shapeRef;          // 防 shape userdata GC (单 shape 模式)
+    int                selfRef;           // OnContact 回调里反查 Lua body
+    bool               alive;
+    // Phase AU Step 4.1: compound shape (多形状 body)
+    btCompoundShape*   compound;          // non-null 时 body 持有 compound 所有权
+    std::vector<int>   childShapeRefs;    // compound 模式下每个 child shape 的 registry ref
     Body3D() : body(nullptr), motion(nullptr), owner(nullptr),
-               shapeRef(LUA_NOREF), selfRef(LUA_NOREF), alive(false) {}
+               shapeRef(LUA_NOREF), selfRef(LUA_NOREF), alive(false),
+               compound(nullptr) {}
 };
 
 // Phase AU Step 3.2: Joint 前向声明
 struct Joint3D;
 // Phase AU Step 3.3: Character 前向声明
 struct Character3D;
+
+// Phase AU Step 4.1: DebugDraw 接口前向声明
+class LuaDebugDrawer;
 
 struct World3D {
     btDefaultCollisionConfiguration*     config;
@@ -120,6 +127,7 @@ struct World3D {
     btSequentialImpulseConstraintSolver* solver;
     btDiscreteDynamicsWorld*             world;
     btGhostPairCallback*                 ghostPairCb;  // Phase AU Step 3.3
+    LuaDebugDrawer*                      debugDrawer;  // Phase AU Step 4.1
     std::vector<Body3D*>                 bodies;
     std::vector<Joint3D*>                joints;      // Phase AU Step 3.2
     std::vector<Character3D*>            characters;  // Phase AU Step 3.3
@@ -128,6 +136,7 @@ struct World3D {
     bool                                 alive;
     World3D() : config(nullptr), dispatcher(nullptr), broadphase(nullptr),
                 solver(nullptr), world(nullptr), ghostPairCb(nullptr),
+                debugDrawer(nullptr),
                 contactRef(LUA_NOREF), L(nullptr), alive(false) {}
 };
 
@@ -695,6 +704,15 @@ static void InvalidateBody(lua_State* L, Body3D* b) {
         luaL_unref(L, LUA_REGISTRYINDEX, b->selfRef);
         b->selfRef = LUA_NOREF;
     }
+    // Phase AU Step 4.1: 释放 compound shape + 子 shape refs
+    if (b->compound) {
+        delete b->compound;
+        b->compound = nullptr;
+    }
+    for (int ref : b->childShapeRefs) {
+        if (ref != LUA_NOREF) luaL_unref(L, LUA_REGISTRYINDEX, ref);
+    }
+    b->childShapeRefs.clear();
     b->alive = false;
 }
 
@@ -707,6 +725,20 @@ static int l_Body_Delete(lua_State* L) {
         v.erase(std::remove(v.begin(), v.end(), b), v.end());
     }
     InvalidateBody(L, b);
+    return 0;
+}
+
+// __gc: InvalidateBody + 强制析构 (Body3D 有 std::vector 成员,Phase AU Step 4.1)
+static int l_Body_GC(lua_State* L) {
+    Body3D* b = (Body3D*)luaL_checkudata(L, 1, BODY_MT);
+    if (b->alive) {
+        if (b->owner) {
+            auto& v = b->owner->bodies;
+            v.erase(std::remove(v.begin(), v.end(), b), v.end());
+        }
+        InvalidateBody(L, b);
+    }
+    b->~Body3D();
     return 0;
 }
 
@@ -897,23 +929,89 @@ static int l_World_CreateBody(lua_State* L) {
     lua_getfield(L, 2, "y"); float y = lua_isnumber(L, -1) ? (float)lua_tonumber(L, -1) : 0; lua_pop(L, 1);
     lua_getfield(L, 2, "z"); float z = lua_isnumber(L, -1) ? (float)lua_tonumber(L, -1) : 0; lua_pop(L, 1);
 
-    // shape
-    lua_getfield(L, 2, "shape");
-    if (!lua_isuserdata(L, -1)) {
-        lua_pop(L, 1);
-        lua_pushnil(L);
-        lua_pushstring(L, "shape required");
-        return 2;
+    // Phase AU Step 4.1: 优先 compoundShapes (多形状 body); 否则用单 shape
+    btCollisionShape*  btshape  = nullptr;
+    btCompoundShape*   compound = nullptr;
+    int                shapeStackIdx = 0;
+    std::vector<int>   childShapeRefs;   // compound 模式下记下每个 child shape udata 的 registry ref
+
+    lua_getfield(L, 2, "compoundShapes");
+    bool hasCompound = lua_istable(L, -1);
+    if (hasCompound) {
+        int childTblIdx = lua_gettop(L);
+        int n = (int)lua_objlen(L, childTblIdx);
+        if (n < 1) {
+            lua_pop(L, 1);
+            lua_pushnil(L);
+            lua_pushstring(L, "compoundShapes: empty list");
+            return 2;
+        }
+        compound = new btCompoundShape();
+        for (int i = 1; i <= n; ++i) {
+            lua_rawgeti(L, childTblIdx, i);                     // [..., compoundTbl, child{i}]
+            if (!lua_istable(L, -1)) {
+                lua_pop(L, 2);
+                delete compound;
+                for (int r : childShapeRefs) luaL_unref(L, LUA_REGISTRYINDEX, r);
+                lua_pushnil(L);
+                lua_pushfstring(L, "compoundShapes[%d]: not a table", i);
+                return 2;
+            }
+            // child.shape (必需)
+            lua_getfield(L, -1, "shape");
+            Shape3D* csh = (Shape3D*)luaL_testudata(L, -1, SHAPE_MT);
+            if (!csh || !csh->shape) {
+                lua_pop(L, 3);
+                delete compound;
+                for (int r : childShapeRefs) luaL_unref(L, LUA_REGISTRYINDEX, r);
+                lua_pushnil(L);
+                lua_pushfstring(L, "compoundShapes[%d]: missing/invalid shape", i);
+                return 2;
+            }
+            // 防 child shape udata GC: 立刻 ref (lua_getfield 留在栈顶, ref 后弹出)
+            int childRef = luaL_ref(L, LUA_REGISTRYINDEX);
+            childShapeRefs.push_back(childRef);
+            // child 的本地 transform (默认: 原点 + 单位 quat)
+            btTransform localT; localT.setIdentity();
+            lua_getfield(L, -1, "x"); float cx = lua_isnumber(L, -1) ? (float)lua_tonumber(L, -1) : 0; lua_pop(L, 1);
+            lua_getfield(L, -1, "y"); float cy = lua_isnumber(L, -1) ? (float)lua_tonumber(L, -1) : 0; lua_pop(L, 1);
+            lua_getfield(L, -1, "z"); float cz = lua_isnumber(L, -1) ? (float)lua_tonumber(L, -1) : 0; lua_pop(L, 1);
+            localT.setOrigin(btVector3(cx, cy, cz));
+            lua_getfield(L, -1, "qw"); bool hasQuat = lua_isnumber(L, -1);
+            float qw = hasQuat ? (float)lua_tonumber(L, -1) : 1; lua_pop(L, 1);
+            lua_getfield(L, -1, "qx"); float qx = lua_isnumber(L, -1) ? (float)lua_tonumber(L, -1) : 0; lua_pop(L, 1);
+            lua_getfield(L, -1, "qy"); float qy = lua_isnumber(L, -1) ? (float)lua_tonumber(L, -1) : 0; lua_pop(L, 1);
+            lua_getfield(L, -1, "qz"); float qz = lua_isnumber(L, -1) ? (float)lua_tonumber(L, -1) : 0; lua_pop(L, 1);
+            if (hasQuat) {
+                localT.setRotation(btQuaternion(qx, qy, qz, qw));
+            }
+            compound->addChildShape(localT, csh->shape);
+            lua_pop(L, 1);                                       // 弹掉 child{i} 表
+        }
+        lua_pop(L, 1);                                           // 弹掉 compoundShapes 表
+        btshape = compound;
+        // shapeStackIdx 留 0,表示无单 shape udata 栈位置
+    } else {
+        lua_pop(L, 1);                                           // 弹掉 compoundShapes nil
+
+        // shape (单形状路径,原逻辑)
+        lua_getfield(L, 2, "shape");
+        if (!lua_isuserdata(L, -1)) {
+            lua_pop(L, 1);
+            lua_pushnil(L);
+            lua_pushstring(L, "shape required (or use compoundShapes)");
+            return 2;
+        }
+        Shape3D* shape = (Shape3D*)luaL_testudata(L, -1, SHAPE_MT);
+        if (!shape || !shape->shape) {
+            lua_pop(L, 1);
+            lua_pushnil(L);
+            lua_pushstring(L, "invalid shape");
+            return 2;
+        }
+        shapeStackIdx = lua_gettop(L);  // -1
+        btshape = shape->shape;
     }
-    Shape3D* shape = (Shape3D*)luaL_testudata(L, -1, SHAPE_MT);
-    if (!shape || !shape->shape) {
-        lua_pop(L, 1);
-        lua_pushnil(L);
-        lua_pushstring(L, "invalid shape");
-        return 2;
-    }
-    int shapeStackIdx = lua_gettop(L);  // -1
-    btCollisionShape* btshape = shape->shape;
 
     // 计算惯性 (仅 dynamic)
     btVector3 inertia(0, 0, 0);
@@ -957,10 +1055,15 @@ static int l_World_CreateBody(lua_State* L) {
     b->motion = motion;
     b->owner = w;
     b->alive = true;
-
-    // 持有 shape 引用 (防 GC)
-    lua_pushvalue(L, shapeStackIdx);
-    b->shapeRef = luaL_ref(L, LUA_REGISTRYINDEX);
+    // Phase AU Step 4.1: compound 模式下转移 compound 所有权 + 子 shape refs 到 Body
+    if (compound) {
+        b->compound       = compound;
+        b->childShapeRefs = std::move(childShapeRefs);
+    } else {
+        // 单 shape 模式: 持有 shape udata 引用 (防 GC)
+        lua_pushvalue(L, shapeStackIdx);
+        b->shapeRef = luaL_ref(L, LUA_REGISTRYINDEX);
+    }
 
     // 持有自身引用 (用于 OnContact 回调)
     lua_pushvalue(L, -1);  // 复制 body userdata
@@ -1595,6 +1698,121 @@ static int l_Char_Tostring(lua_State* L) {
     return 1;
 }
 
+// ==================== Phase AU Step 4.1: DebugDraw ====================
+
+// 把 callback table 中的方法 forward 到 Lua
+class LuaDebugDrawer : public btIDebugDraw {
+public:
+    lua_State* L;
+    int        cbTableRef;   // callback table 在 registry 的 ref
+    int        debugMode;
+    LuaDebugDrawer(lua_State* L_, int ref) : L(L_), cbTableRef(ref), debugMode(DBG_DrawWireframe) {}
+
+    virtual ~LuaDebugDrawer() {
+        if (cbTableRef != LUA_NOREF && L) {
+            luaL_unref(L, LUA_REGISTRYINDEX, cbTableRef);
+        }
+    }
+
+    // 工具: 调用 callback table 中名为 fnName 的函数, 已经在调用前 push 了 nargs 个参数
+    void callMethod(const char* fnName, int nargs) {
+        if (cbTableRef == LUA_NOREF) { lua_pop(L, nargs); return; }
+        // 取出 callback table
+        lua_rawgeti(L, LUA_REGISTRYINDEX, cbTableRef);                // [..., args..., tbl]
+        lua_getfield(L, -1, fnName);                                   // [..., args..., tbl, fn]
+        if (!lua_isfunction(L, -1)) {
+            lua_pop(L, 2 + nargs);  // 弹掉 fn + tbl + 全部 args
+            return;
+        }
+        // 把 fn 移到 args 之前: 当前栈是 [args..., tbl, fn], 我们要 [fn, args...]
+        // 1) 移走 tbl: 它在 fn 下面
+        lua_remove(L, -2);  // 弹掉 tbl, 栈: [args..., fn]
+        // 2) 把 fn insert 到 args 之前的位置
+        lua_insert(L, -1 - nargs);  // 栈: [fn, args...]
+        if (lua_pcall(L, nargs, 0, 0) != 0) {
+            // 用户 callback 抛错; 记日志然后吞掉, 不影响后续 draw
+            const char* err = lua_tostring(L, -1);
+            fprintf(stderr, "[Light.Physics3D.DebugDrawer] %s callback error: %s\n",
+                    fnName, err ? err : "?");
+            lua_pop(L, 1);
+        }
+    }
+
+    virtual void drawLine(const btVector3& from, const btVector3& to, const btVector3& color) override {
+        lua_pushnumber(L, from.x()); lua_pushnumber(L, from.y()); lua_pushnumber(L, from.z());
+        lua_pushnumber(L, to.x());   lua_pushnumber(L, to.y());   lua_pushnumber(L, to.z());
+        lua_pushnumber(L, color.x());lua_pushnumber(L, color.y());lua_pushnumber(L, color.z());
+        callMethod("drawLine", 9);
+    }
+
+    virtual void drawContactPoint(const btVector3& pointOnB, const btVector3& normalOnB,
+                                  btScalar distance, int /*lifeTime*/, const btVector3& color) override {
+        lua_pushnumber(L, pointOnB.x());  lua_pushnumber(L, pointOnB.y());  lua_pushnumber(L, pointOnB.z());
+        lua_pushnumber(L, normalOnB.x()); lua_pushnumber(L, normalOnB.y()); lua_pushnumber(L, normalOnB.z());
+        lua_pushnumber(L, distance);
+        lua_pushnumber(L, color.x());     lua_pushnumber(L, color.y());     lua_pushnumber(L, color.z());
+        callMethod("drawContactPoint", 10);
+    }
+
+    virtual void reportErrorWarning(const char* warningString) override {
+        lua_pushstring(L, warningString ? warningString : "");
+        callMethod("reportErrorWarning", 1);
+    }
+
+    virtual void draw3dText(const btVector3& location, const char* textString) override {
+        lua_pushnumber(L, location.x()); lua_pushnumber(L, location.y()); lua_pushnumber(L, location.z());
+        lua_pushstring(L, textString ? textString : "");
+        callMethod("draw3dText", 4);
+    }
+
+    virtual void setDebugMode(int mode) override { debugMode = mode; }
+    virtual int  getDebugMode() const  override  { return debugMode; }
+};
+
+// world:SetDebugDrawer(callbackTable | nil) — 注册 / 取消 debug 渲染回调
+static int l_World_SetDebugDrawer(lua_State* L) {
+    World3D* w = CheckWorld(L, 1);
+    if (!w->alive) return 0;
+    // 先清掉旧的
+    if (w->debugDrawer) {
+        w->world->setDebugDrawer(nullptr);
+        delete w->debugDrawer;
+        w->debugDrawer = nullptr;
+    }
+    if (lua_isnoneornil(L, 2)) {
+        return 0;  // 仅清除
+    }
+    luaL_checktype(L, 2, LUA_TTABLE);
+    lua_pushvalue(L, 2);
+    int ref = luaL_ref(L, LUA_REGISTRYINDEX);
+    w->debugDrawer = new LuaDebugDrawer(L, ref);
+    w->world->setDebugDrawer(w->debugDrawer);
+    return 0;
+}
+
+static int l_World_SetDebugDrawMode(lua_State* L) {
+    World3D* w = CheckWorld(L, 1);
+    if (!w->alive || !w->debugDrawer) return 0;
+    int mode = (int)luaL_checkinteger(L, 2);
+    w->debugDrawer->setDebugMode(mode);
+    return 0;
+}
+
+static int l_World_GetDebugDrawMode(lua_State* L) {
+    World3D* w = CheckWorld(L, 1);
+    int m = (w->alive && w->debugDrawer) ? w->debugDrawer->getDebugMode() : 0;
+    lua_pushinteger(L, m);
+    return 1;
+}
+
+// 触发一次 debug 渲染 (调用所有 collision shapes 的 drawLine)
+static int l_World_DebugDrawWorld(lua_State* L) {
+    World3D* w = CheckWorld(L, 1);
+    if (!w->alive || !w->debugDrawer) return 0;
+    w->world->debugDrawWorld();
+    return 0;
+}
+
 static int l_World_RayCast(lua_State* L) {
     World3D* w = CheckWorld(L, 1);
     if (!w->alive) {
@@ -1665,6 +1883,11 @@ static void World_ReleaseBullet(lua_State* L, World3D* w) {
         luaL_unref(L, LUA_REGISTRYINDEX, w->contactRef);
         w->contactRef = LUA_NOREF;
     }
+    // Phase AU Step 4.1: debugDrawer 必须在 world delete 之前清理
+    if (w->debugDrawer && w->world) {
+        w->world->setDebugDrawer(nullptr);
+    }
+    delete w->debugDrawer; w->debugDrawer = nullptr;  // Phase AU Step 4.1
     delete w->world;       w->world = nullptr;
     delete w->solver;      w->solver = nullptr;
     delete w->broadphase;  w->broadphase = nullptr;
@@ -1729,6 +1952,11 @@ static const luaL_Reg kWorldMethods[] = {
     { "CreateCharacter",   l_World_CreateCharacter },
     { "DestroyCharacter",  l_World_DestroyCharacter },
     { "GetCharacterCount", l_World_GetCharacterCount },
+    // Phase AU Step 4.1 — DebugDraw
+    { "SetDebugDrawer",    l_World_SetDebugDrawer },
+    { "SetDebugDrawMode",  l_World_SetDebugDrawMode },
+    { "GetDebugDrawMode",  l_World_GetDebugDrawMode },
+    { "DebugDrawWorld",    l_World_DebugDrawWorld },
     { "RayCast",        l_World_RayCast },
     { "OnContact",      l_World_OnContact },
     { "Delete",         l_World_Delete },
@@ -1824,7 +2052,7 @@ static const luaL_Reg kBodyMethods[] = {
     { "IsKinematic",            l_Body_IsKinematic },
     { "IsAlive",                l_Body_IsAlive },
     { "Delete",                 l_Body_Delete },
-    { "__gc",                   l_Body_Delete },
+    { "__gc",                   l_Body_GC },
     { "__tostring",             l_Body_Tostring },
     { nullptr, nullptr }
 };
