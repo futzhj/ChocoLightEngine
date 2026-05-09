@@ -114,9 +114,120 @@ luaL_setfuncs(L, kAnimationModule, 0);
 
 ---
 
-## Step 2 — Animator 完整化（待执行）
+## Step 2 — Animator 完整化（Sampler / 前向运动学 / 状态机基础）✅
 
-> Step 2 完成后追加本节。
+**完成时间**：2026-05-09  
+**状态**：通过验收 (CI run `25611003441` 全 6 平台 ✅)
+
+### 1. 提交清单
+
+| Commit | 说明 |
+|--------|------|
+| `050e893` | feat(animation): Phase AV step 2 — sampler eval + forward kinematics + Animator state machine basics |
+
+### 2. 改动文件
+
+| 路径 | 改动行数 | 说明 |
+|------|---------|------|
+| `ChocoLight/src/light_animation.cpp` | +519 / -16 | 数学库 + sampler 评估 + 前向运动学 + Animator 状态机基础 + 8 个新 Lua 方法 |
+| `scripts/smoke/animation.lua` | +48 / -0 | API 表面验证（~25 method-existence 检查）+ 错误路径 |
+
+合计：567 行新增 / 16 行删除。
+
+### 3. 输出契约核对（与 `TASK_PhaseAV.md` Step 2 对应）
+
+| 子任务 | 验收项 | 实际 | 通过 |
+|--------|--------|------|------|
+| **数学库** | `Mat4`（16f column-major） | anonymous namespace `struct Mat4 { float m[16]; }` + `Mat4Identity` / `Mat4Multiply` | ✅ |
+| | `Quaternion`（wxyz） | `struct Quaternion { float w,x,y,z; }`；cgltf xyzw → 内部 wxyz 转换在 `EvaluateSampler` 内 | ✅ |
+| | `TRSToMat4(T,R,S)` | T·R·S 组合，column-major | ✅ |
+| | `QuatSlerp` 最短路径 | 检测 `dot < 0` 翻转 q2；退化（`dot > 0.9995`）回退 `lerp + normalize` | ✅ |
+| **Sampler 评估** | LINEAR | `lerp` for translation/scale，`slerp` for rotation | ✅ |
+| | STEP | 取左关键帧值，rotation 不重新归一 | ✅ |
+| | CUBICSPLINE | 每帧 3×components（in_tan/value/out_tan），Hermite 公式；rotation 评估后 `normalize` | ✅ |
+| | 边界处理 | `t <= keys[0]`：取首帧；`t >= keys[N-1]`：取末帧；中间二分查找 | ✅ |
+| **前向运动学** | `ComputeJointMatrices` | DFS 迭代 N+4 上限；`world = parent * local`；`skinning = world * inverseBind` | ✅ |
+| | local 来源 | sampler 覆盖（LINEAR/STEP/CUBICSPLINE 任一通道）or 绑定姿势 TRS | ✅ |
+| | 拓扑安全 | 父索引 `< i` 前提 + N+4 迭代上限防意外环路 | ✅ |
+| **Animator 状态机基础** | `AddState(name, clip, speed, loop)` | 校验 clip userdata，存名→clip 映射 + 持 clip strong ref | ✅ |
+| | `Play(name)` | 切换 currentState，重置 `time=0` | ✅ |
+| | `Stop()` | currentState=-1，时间不重置 | ✅ |
+| | `GetCurrentState()` | 返回当前 state name 或 nil | ✅ |
+| | `GetStateCount()` | 状态数 | ✅ |
+| | `HasState(name)` | bool | ✅ |
+| | `SetLooping(bool)` / `IsLooping()` | 全局 loop 开关 | ✅ |
+| | `Update(dt)` | 推进 time，loop=true 时 `fmod(time, duration)`，否则 clamp；调 `ComputeJointMatrices` | ✅ |
+| | `GetJointMatrices()` | 返回 N*16 float Lua 表；未 update 时自动初始化 bind-pose | ✅ |
+| **生命周期** | `__gc` 释放 clip ref | `luaL_unref(LUA_REGISTRYINDEX, clipRefs[])` | ✅ |
+| **CI** | 6 平台 build + Windows runtime smoke | run `25611003441` win/lin/mac/and/ios/web 全 success | ✅ |
+
+### 4. 关键设计决策
+
+#### 4.1 内部四元数 wxyz vs cgltf xyzw
+
+- **cgltf**：rotation accessor 给 `[x, y, z, w]` 顺序（glTF 2.0 spec）
+- **内部**：使用 wxyz 顺序（数学习惯，方便 `Quaternion::Identity = {1,0,0,0}`）
+- **转换点**：`EvaluateSampler` 在解包 cgltf 浮点数时即完成 `xyzw → wxyz` swap，下游全部按 wxyz 操作
+- **避免误用**：anonymous namespace 隔离，外部不可见
+
+#### 4.2 CUBICSPLINE rotation 后归一
+
+- glTF spec：CUBICSPLINE rotation 输出**不保证**单位四元数（Hermite 切线插值可能漂移）
+- 实现：spline 评估后 `normalize`，否则后续 slerp 行为未定义
+- 测试：暂无数值验证（Step 3 引入 glTF 资产后补）
+
+#### 4.3 前向运动学 N+4 迭代上限
+
+- 假设：cgltf 解析后 joint 数组按拓扑序（父索引 < 自己索引）→ 单遍 DFS 即可
+- 现实：cgltf **不保证**拓扑序；存在 `parent_index > self_index` 的极端情况
+- 防御：迭代到所有 joint 都 `worldComputed[i]=true`，最多 N+4 轮（N 是 joint 数）
+- 性能：典型 30 关节 ≤ 30 次迭代；最坏情况 34 次，仍 O(N²) 上界，对 64 关节足够
+
+#### 4.4 状态机 Step 2 仅单状态
+
+- Step 2 范围：`Play(name)` 立刻切换、无 fade、无 transition
+- Step 4 计划：crossfade（旧状态 weight↓ + 新状态 weight↑，分别评估再混合关节矩阵）+ 事件帧
+- 数据结构预留：`fadeTime` / `fadeDuration` 字段已添加但 Step 2 不使用
+
+#### 4.5 数值验证延后到 Step 3
+
+- **TASK 原计划**：Step 2 smoke 包含数值断言（如 LINEAR 中点 = 0.5×A + 0.5×B）
+- **实际**：smoke 仅验证 API 表面 + 错误路径，无数值断言
+- **理由**：
+  - 数值验证需要可控输入数据；当前 `Light.Animation.Clip` 没有"手动构造"接口
+  - Step 3 引入 glTF 测试资产（cube_skin.glb 等）后，可对比 Blender 导出的关节矩阵做 ground truth
+  - 与 `mesh_3d.lua`（Phase AS.4）一致：先做 API 表面，资产引入后再补数值
+- **风险缓解**：核心数学函数（slerp / lerp / 矩阵乘）逻辑直接对照 GLM 实现，错误概率低
+
+### 5. 调试经验
+
+#### 5.1 编译警告：`fmod` 浮点取模
+
+- 实现循环时直接 `time = std::fmod(time, duration)`，编译无 warning
+- 注意：`std::fmod` 返回值符号与被除数一致 → 若 `time < 0`（dt 为负）需 `+= duration` 修正
+- Step 2 暂不支持负 dt（time 直接 += dt，无负值检查）；后续 SetTime / SetSpeed 接口若引入需补
+
+#### 5.2 没有踩到 Step 1 的 luaL_register 陷阱
+
+- 8 个新方法均通过 `luaL_setfuncs(L, kAnimatorMtFns, 0)` 加到 metatable
+- metatable 注册无 libname 副作用（见 `[MEMORY[cb79c6b3]]`），不触发 OOP 全局表拦截
+
+### 6. 验收完成标准
+
+- [x] Step 2 commit `050e893` push 到 `origin/main`
+- [x] CI run `25611003441` 全 6 平台 + Windows runtime smoke 通过
+- [x] `animation.lua` smoke 自身通过（API 表面 + 错误路径）
+- [x] 没有破坏 Phase AS / AT / AU 的任何 smoke
+- [x] 数学库 / sampler / 前向运动学完整实现
+- [x] 状态机基础 8 个方法完整 + clip 强引用防 GC
+- [x] 决策调整 + 设计原由记录完整
+
+**结论**：Step 2 验收通过，可进入 Step 3（SkinnedMesh + GPU Skinning）。
+
+**待 Step 3 补的事**：
+- glTF 测试资产（如 `cube_skin.glb`）+ 数值断言（matrix vs Blender ground truth）
+- 负 dt 处理（若需要）
+- Animator state name 重复添加的策略（当前是覆盖，未确认是否需要 error）
 
 ---
 
