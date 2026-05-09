@@ -1,6 +1,8 @@
 # Phase AS.1 — Canvas 增强 + Shader uniform 扩展 — 验收文档
 
-> **状态**: 已完成本地实施 + lightc 语法检查通过, 待 GitHub Actions CI 全平台验证
+> **状态**: ✅ **已完成** — 6 平台 CI 全绿 (一次成功, 无修复)
+>
+> GitHub Actions run: [25595906726](https://github.com/futzhj/ChocoLightEngine/actions/runs/25595906726) (commit `4752539`)
 
 ---
 
@@ -130,12 +132,12 @@ CanvasContext 内存布局在 `light_graphics.cpp:CanvasCtxMirror` 镜像声明 
 ## 八、CI 验收标准
 
 - [x] `lightc -p scripts/smoke/canvas_shader_ext.lua` Exit=0 (本地)
-- [ ] GitHub Actions `Build Templates (All Platforms)` 全绿:
-  - [ ] Windows x64: 编译 + Windows runtime smoke (含 canvas_shader_ext.lua)
-  - [ ] Linux x64: 编译 + 语法检查
-  - [ ] macOS Universal: 编译 + 语法检查
-  - [ ] Android arm64+x86_64: 编译
-  - [ ] iOS arm64: 编译
-  - [ ] Web WASM: 编译
+- [x] GitHub Actions `Build Templates (All Platforms)` **全绿** (run 25595906726):
+  - [x] Windows x64: 编译 + Windows runtime smoke (含 canvas_shader_ext.lua) ✅
+  - [x] Linux x64: 编译 + 语法检查 ✅
+  - [x] macOS Universal: 编译 + 语法检查 ✅
+  - [x] Android arm64+x86_64: 编译 ✅
+  - [x] iOS arm64: 编译 ✅
+  - [x] Web WASM: 编译 ✅
 
-CI 全绿后此子 Phase 才算最终交付完成。
+**Phase AS.1 最终交付完成 (一次提交即全平台通过)。**
