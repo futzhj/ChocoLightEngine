@@ -75,6 +75,19 @@
 - Linux/macOS: glob 自动覆盖 `scripts/smoke/*.lua`
 - Android/iOS/Web: 静态库链接 Bullet 通过 `target_link_libraries(Light PRIVATE bullet3)`
 
+### 最终验证 — GitHub Actions Run `25603579470` ✅ 全绿
+
+| 平台 | 状态 | 备注 |
+|------|------|------|
+| Windows | ✅ success | 显式 runtime 跑 `physics_3d.lua` 9 节, 含 60 步重力下落 |
+| Linux | ✅ success | `lightc -p` 语法通过 + 编译通过 |
+| macOS | ✅ success | Universal (x86_64 + arm64) |
+| Android | ✅ success | 静态链接 Light + bullet3 |
+| iOS | ✅ success | 静态链接 |
+| Web (Emscripten) | ✅ success | `BT_NO_SIMD_OPERATOR_OVERLOADS=1` 关闭 SIMD 路径 |
+
+提交: `40b2d40 feat(physics3d): Phase AU step 2 - Lua bindings for Bullet 3 (~944 lines)`
+
 ## 下一步
 **Step 3 (可选)** — Joint(Hinge/Slider/Cone6Dof)、ConvexHull、Heightfield、TriangleMesh、CharacterController。
 
