@@ -1,6 +1,9 @@
 # Phase AR — SDL3 扫尾 (Pen + Event + Timer) — 验收文档
 
-> **状态**: 已完成本地实施 + lightc 语法检查通过, 待 GitHub Actions CI 全平台验证
+> **状态**: ✅ **已完成** — 6 平台 CI 全绿
+>
+> GitHub Actions run: [25595205241](https://github.com/futzhj/ChocoLightEngine/actions/runs/25595205241) (修复 commit `c309325` 之后)
+> 注: 首次 run 25595048581 因 `extern "C"` 在函数内书写错误 (C2598) 导致 5/6 平台编译失败, 1 行修复后全绿。
 
 ---
 
@@ -164,12 +167,20 @@ end
 ## 八、CI 验收标准
 
 - [x] `lightc -p scripts/smoke/pen_event_timer.lua` Exit=0 (本地)
-- [ ] GitHub Actions `Build Templates (All Platforms)` 全绿:
-  - [ ] Windows x64: 编译 + Windows runtime smoke (含 pen_event_timer.lua)
-  - [ ] Linux x64: 编译 + 语法检查
-  - [ ] macOS Universal: 编译 + 语法检查
-  - [ ] Android arm64+x86_64: 编译
-  - [ ] iOS arm64: 编译
-  - [ ] Web WASM: 编译
+- [x] GitHub Actions `Build Templates (All Platforms)` **全绿** (run 25595205241):
+  - [x] Windows x64: 编译 + Windows runtime smoke (含 pen_event_timer.lua) ✅
+  - [x] Linux x64: 编译 + 语法检查 ✅
+  - [x] macOS Universal: 编译 + 语法检查 ✅
+  - [x] Android arm64+x86_64: 编译 ✅
+  - [x] iOS arm64: 编译 ✅
+  - [x] Web WASM: 编译 ✅
 
-CI 全绿后此 Phase 才算最终交付完成。
+**Phase AR 最终交付完成。**
+
+### 八.1 修复经验记录
+
+首次 run 失败的根因: 在 `platform_window_sdl3.cpp` 的函数体内写了 `extern "C" Uint32 Time_GetTimerEventType();` 声明,触发 MSVC C2598 (linkage specification must be at global scope)。
+
+**修复**: 把 `extern "C"` 声明上移到文件顶部 namespace 之外,函数内调用时用 `::Time_GetTimerEventType()` 显式全局解析。
+
+**经验**: 跨编译单元的 C 链接函数声明应统一在文件顶部声明,绝不在函数/类作用域内写 `extern "C"` 块。下个 Phase (AS/AT) 应注意同样陷阱。
