@@ -185,6 +185,10 @@ set(LIGHT_SOURCES
     ${CHOCO_SRC}/batch_renderer.cpp
     ${CHOCO_SRC}/render_gl33.cpp
     ${CHOCO_SRC}/light_audio_backend.cpp
+    # Phase AT — Audio 3D 空间化 + Mixer + Effects
+    ${CHOCO_SRC}/light_audio_sound.cpp
+    ${CHOCO_SRC}/light_audio_group.cpp
+    ${CHOCO_SRC}/light_audio_effect.cpp
     ${CHOCO_SRC}/light_platform_net.cpp
     ${SQLITE3_DIR}/sqlite3.c
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/stb_impl.c

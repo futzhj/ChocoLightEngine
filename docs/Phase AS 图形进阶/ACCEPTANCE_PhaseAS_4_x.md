@@ -202,12 +202,12 @@ stb_image.h 已通过 third_party/stb_impl.c 在所有平台编译 (light_graphi
 
 - [x] `lightc -p scripts/smoke/material_3d.lua` Exit=0 (本地)
 - [x] `lightc -p scripts/smoke/mesh_3d.lua` Exit=0 (回归)
-- [ ] GitHub Actions `Build Templates (All Platforms)` 全绿:
-  - [ ] Windows x64: stb_image 已 link, Mesh.LoadGLTF with_material 边界 smoke
-  - [ ] Linux x64: 编译
-  - [ ] macOS Universal: 编译
-  - [ ] Android arm64+x86_64: 编译
-  - [ ] iOS arm64: 编译
-  - [ ] Web WASM: 编译
+- [x] GitHub Actions `Build Templates (All Platforms)` **全绿** (run 25602244329):
+  - [x] Windows x64: stb_image 已 link, Mesh.LoadGLTF with_material 边界 smoke ✅
+  - [x] Linux x64: 编译 ✅
+  - [x] macOS Universal: 编译 ✅
+  - [x] Android arm64+x86_64: 编译 ✅
+  - [x] iOS arm64: 编译 ✅
+  - [x] Web WASM: 编译 ✅
 
-CI 全绿后此子 Phase 才算最终交付完成。
+**Phase AS.4.x 最终交付完成 (一次提交即全平台通过)。**

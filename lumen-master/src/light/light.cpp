@@ -490,6 +490,10 @@ static const struct { const char *modName; const char *procName; } g_lightModule
     {"Light.Event",               "luaopen_Light_Event"},
     {"Light.Graphics.Mesh",       "luaopen_Light_Graphics_Mesh"},
     {"Light.Graphics.Material",   "luaopen_Light_Graphics_Material"},
+    // Phase AT — Audio 3D 空间化 + Mixer + Effects
+    {"Light.Audio.Sound",         "luaopen_Light_Audio_Sound"},
+    {"Light.Audio.SoundGroup",    "luaopen_Light_Audio_SoundGroup"},
+    {"Light.Audio.Effect",        "luaopen_Light_Audio_Effect"},
     {nullptr, nullptr}
 };
 

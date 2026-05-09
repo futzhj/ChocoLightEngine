@@ -97,6 +97,7 @@
  */
 
 #include "light.h"
+#include "light_audio_backend.h"   // Phase AT — Listener + GlobalVolume
 
 #include <SDL3/SDL.h>
 
@@ -1133,6 +1134,78 @@ static int l_Audio_GetSilenceValueForFormat(lua_State* L) {
 }
 
 // ============================================================
+// Phase AT — Listener (3D audio camera) + Master / GlobalVolume
+// ============================================================
+
+// 解析 (x, y, z, [idx]) 共用辅助
+namespace {
+    bool ReadXYZIdx(lua_State* L, float* x, float* y, float* z, int* idx) {
+        if (lua_type(L, 1) != LUA_TNUMBER ||
+            lua_type(L, 2) != LUA_TNUMBER ||
+            lua_type(L, 3) != LUA_TNUMBER) return false;
+        *x = (float)lua_tonumber(L, 1);
+        *y = (float)lua_tonumber(L, 2);
+        *z = (float)lua_tonumber(L, 3);
+        *idx = (lua_type(L, 4) == LUA_TNUMBER) ? (int)lua_tointeger(L, 4) : 0;
+        return true;
+    }
+}
+
+static int l_Audio_SetListenerPosition(lua_State* L) {
+    float x, y, z; int idx;
+    if (!ReadXYZIdx(L, &x, &y, &z, &idx)) {
+        lua_pushboolean(L, 0); lua_pushstring(L, "expected x, y, z, [idx]"); return 2;
+    }
+    AudioBackend::SetListenerPosition(idx, x, y, z);
+    lua_pushboolean(L, 1); return 1;
+}
+
+static int l_Audio_SetListenerDirection(lua_State* L) {
+    float x, y, z; int idx;
+    if (!ReadXYZIdx(L, &x, &y, &z, &idx)) {
+        lua_pushboolean(L, 0); lua_pushstring(L, "expected x, y, z, [idx]"); return 2;
+    }
+    AudioBackend::SetListenerDirection(idx, x, y, z);
+    lua_pushboolean(L, 1); return 1;
+}
+
+static int l_Audio_SetListenerWorldUp(lua_State* L) {
+    float x, y, z; int idx;
+    if (!ReadXYZIdx(L, &x, &y, &z, &idx)) {
+        lua_pushboolean(L, 0); lua_pushstring(L, "expected x, y, z, [idx]"); return 2;
+    }
+    AudioBackend::SetListenerWorldUp(idx, x, y, z);
+    lua_pushboolean(L, 1); return 1;
+}
+
+static int l_Audio_SetListenerVelocity(lua_State* L) {
+    float x, y, z; int idx;
+    if (!ReadXYZIdx(L, &x, &y, &z, &idx)) {
+        lua_pushboolean(L, 0); lua_pushstring(L, "expected x, y, z, [idx]"); return 2;
+    }
+    AudioBackend::SetListenerVelocity(idx, x, y, z);
+    lua_pushboolean(L, 1); return 1;
+}
+
+static int l_Audio_GetListenerCount(lua_State* L) {
+    lua_pushinteger(L, AudioBackend::GetListenerCount());
+    return 1;
+}
+
+static int l_Audio_SetGlobalVolume(lua_State* L) {
+    if (lua_type(L, 1) != LUA_TNUMBER) {
+        lua_pushboolean(L, 0); lua_pushstring(L, "volume must be a number"); return 2;
+    }
+    AudioBackend::SetGlobalVolume((float)lua_tonumber(L, 1));
+    lua_pushboolean(L, 1); return 1;
+}
+
+static int l_Audio_GetGlobalVolume(lua_State* L) {
+    lua_pushnumber(L, AudioBackend::GetGlobalVolume());
+    return 1;
+}
+
+// ============================================================
 // luaopen_Light_Audio
 // ============================================================
 
@@ -1205,6 +1278,15 @@ static const luaL_Reg kAudioReg[] = {
     { "ConvertAudioSamples",             l_Audio_ConvertAudioSamples             },
     { "GetAudioFormatName",              l_Audio_GetAudioFormatName              },
     { "GetSilenceValueForFormat",        l_Audio_GetSilenceValueForFormat        },
+    // Phase AT — Listener (3D audio camera)
+    { "SetListenerPosition",             l_Audio_SetListenerPosition             },
+    { "SetListenerDirection",            l_Audio_SetListenerDirection            },
+    { "SetListenerWorldUp",              l_Audio_SetListenerWorldUp              },
+    { "SetListenerVelocity",             l_Audio_SetListenerVelocity             },
+    { "GetListenerCount",                l_Audio_GetListenerCount                },
+    // Phase AT — Master / engine global
+    { "SetGlobalVolume",                 l_Audio_SetGlobalVolume                 },
+    { "GetGlobalVolume",                 l_Audio_GetGlobalVolume                 },
     { nullptr, nullptr },
 };
 
