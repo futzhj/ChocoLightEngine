@@ -73,6 +73,7 @@
 #include <vector>
 #include <algorithm>
 #include <new>
+#include <cstdio>  // Phase AU debug: fprintf for SEH bisection
 
 extern "C" {
 #include "lua.h"
@@ -971,9 +972,11 @@ static int l_World_Step(lua_State* L) {
 }
 
 static int l_World_CreateBody(lua_State* L) {
+    fprintf(stderr, "[CB] enter\n"); fflush(stderr);
     World3D* w = CheckWorld(L, 1);
     if (!w->alive) { lua_pushnil(L); return 1; }
     luaL_checktype(L, 2, LUA_TTABLE);
+    fprintf(stderr, "[CB] checked\n"); fflush(stderr);
 
     // 读 type
     lua_getfield(L, 2, "type");
@@ -1076,20 +1079,25 @@ static int l_World_CreateBody(lua_State* L) {
         shapeStackIdx = lua_gettop(L);  // -1
         btshape = shape->shape;
     }
+    fprintf(stderr, "[CB] btshape=%p mass=%.3f\n", (void*)btshape, (double)mass); fflush(stderr);
 
     // 计算惯性 (仅 dynamic)
     btVector3 inertia(0, 0, 0);
     if (mass > 0 && !isKinematic) {
         btshape->calculateLocalInertia(mass, inertia);
     }
+    fprintf(stderr, "[CB] inertia ok\n"); fflush(stderr);
 
     // 创建 body
     btTransform tr;
     tr.setIdentity();
     tr.setOrigin(btVector3(x, y, z));
     btDefaultMotionState* motion = new btDefaultMotionState(tr);
+    fprintf(stderr, "[CB] motion=%p\n", (void*)motion); fflush(stderr);
     btRigidBody::btRigidBodyConstructionInfo ci(mass, motion, btshape, inertia);
+    fprintf(stderr, "[CB] ci built\n"); fflush(stderr);
     btRigidBody* rb = new btRigidBody(ci);
+    fprintf(stderr, "[CB] rb=%p\n", (void*)rb); fflush(stderr);
     if (isKinematic) {
         rb->setCollisionFlags(rb->getCollisionFlags() | btCollisionObject::CF_KINEMATIC_OBJECT);
         rb->setActivationState(DISABLE_DEACTIVATION);
@@ -1109,8 +1117,10 @@ static int l_World_CreateBody(lua_State* L) {
     float angDamp = lua_isnumber(L, -1) ? (float)lua_tonumber(L, -1) : 0.0f;
     lua_pop(L, 1);
     rb->setDamping(linDamp, angDamp);
+    fprintf(stderr, "[CB] pre-addRigidBody\n"); fflush(stderr);
 
     w->world->addRigidBody(rb);
+    fprintf(stderr, "[CB] post-addRigidBody\n"); fflush(stderr);
 
     // 创建 Body3D userdata
     Body3D* b = (Body3D*)lua_newuserdata(L, sizeof(Body3D));
