@@ -52,6 +52,8 @@
 #if CHOCO_HAS_BULLET
 #include <btBulletCollisionCommon.h>
 #include <btBulletDynamicsCommon.h>
+// Heightfield 头文件未被 btBulletCollisionCommon.h 自动包含, 显式引入
+#include <BulletCollision/CollisionShapes/btHeightfieldTerrainShape.h>
 #endif
 
 #include <cstdint>
@@ -80,7 +82,14 @@ struct Body3D;
 
 struct Shape3D {
     btCollisionShape* shape;
-    Shape3D() : shape(nullptr) {}
+    // Heightfield 必须持有 height array (Bullet 内部只存指针不拷贝)
+    float* heightData;
+    // TriangleMesh 必须持有 vertex/index buffer + btTriangleIndexVertexArray
+    btTriangleIndexVertexArray* triMesh;
+    float* triVertices;
+    int*   triIndices;
+    Shape3D() : shape(nullptr), heightData(nullptr),
+                triMesh(nullptr), triVertices(nullptr), triIndices(nullptr) {}
 };
 
 struct Body3D {
@@ -183,11 +192,144 @@ static int l_NewStaticPlane(lua_State* L) {
     return PushShapeUserdata(L, new btStaticPlaneShape(btVector3(nx, ny, nz), d));
 }
 
+// Phase AU Step 3.1: NewConvexHull(verts:array)
+// verts: flat number array {x1,y1,z1, x2,y2,z2, ...}; Bullet 内部 copy 顶点, 无需 extraData
+static int l_NewConvexHull(lua_State* L) {
+    luaL_checktype(L, 1, LUA_TTABLE);
+    int n = (int)lua_objlen(L, 1);
+    if (n < 9 || (n % 3) != 0) {
+        return luaL_error(L, "NewConvexHull: vertex array length must be >=9 and multiple of 3 (got %d)", n);
+    }
+    btConvexHullShape* hull = new btConvexHullShape();
+    int triCount = n / 3;
+    for (int i = 0; i < triCount; i++) {
+        lua_rawgeti(L, 1, i*3 + 1); float vx = (float)lua_tonumber(L, -1); lua_pop(L, 1);
+        lua_rawgeti(L, 1, i*3 + 2); float vy = (float)lua_tonumber(L, -1); lua_pop(L, 1);
+        lua_rawgeti(L, 1, i*3 + 3); float vz = (float)lua_tonumber(L, -1); lua_pop(L, 1);
+        hull->addPoint(btVector3(vx, vy, vz), false);
+    }
+    hull->recalcLocalAabb();
+    return PushShapeUserdata(L, hull);
+}
+
+// Phase AU Step 3.1: NewHeightfield(width, length, heights:array [, scaleY=1, minH=auto, maxH=auto])
+// heights: row-major flat array, length = width*length
+// Bullet 仅引用指针, 必须由 Shape3D 持有 heightData 直到 shape 销毁
+static int l_NewHeightfield(lua_State* L) {
+    int width  = (int)luaL_checkinteger(L, 1);
+    int length = (int)luaL_checkinteger(L, 2);
+    luaL_checktype(L, 3, LUA_TTABLE);
+    float scaleY = (float)luaL_optnumber(L, 4, 1.0);
+    int totalCells = width * length;
+    int n = (int)lua_objlen(L, 3);
+    if (width < 2 || length < 2 || totalCells != n) {
+        return luaL_error(L, "NewHeightfield: heights count %d != width*length %d (or width/length < 2)", n, totalCells);
+    }
+    float* data = (float*)malloc(sizeof(float) * totalCells);
+    if (!data) return luaL_error(L, "NewHeightfield: out of memory");
+    float minH = 1e30f, maxH = -1e30f;
+    for (int i = 0; i < totalCells; i++) {
+        lua_rawgeti(L, 3, i + 1);
+        float h = (float)lua_tonumber(L, -1);
+        lua_pop(L, 1);
+        data[i] = h;
+        if (h < minH) minH = h;
+        if (h > maxH) maxH = h;
+    }
+    if (lua_isnumber(L, 5)) minH = (float)lua_tonumber(L, 5);
+    if (lua_isnumber(L, 6)) maxH = (float)lua_tonumber(L, 6);
+    if (maxH <= minH) maxH = minH + 1.0f;
+
+    // upAxis = 1 (Y up), heightScale=1 (data 已是 float), flipQuadEdges = false
+    btHeightfieldTerrainShape* hf = new btHeightfieldTerrainShape(
+        width, length, data, scaleY, minH, maxH, 1 /*Y up*/, PHY_FLOAT, false);
+    hf->setLocalScaling(btVector3(1, 1, 1));
+
+    // Push shape userdata 并写 extraData
+    Shape3D* ud = (Shape3D*)lua_newuserdata(L, sizeof(Shape3D));
+    new (ud) Shape3D();
+    ud->shape = hf;
+    ud->heightData = data;  // Shape GC 时 free
+    luaL_getmetatable(L, SHAPE_MT);
+    lua_setmetatable(L, -2);
+    return 1;
+}
+
+// Phase AU Step 3.1: NewTriangleMesh(vertices:array, indices:array)
+// vertices: {x,y,z, x,y,z, ...} flat
+// indices : {i1,i2,i3, ...} 3 per triangle (0-based)
+// 适合静态环境 (地形/建筑); 不能给 dynamic body 用
+static int l_NewTriangleMesh(lua_State* L) {
+    luaL_checktype(L, 1, LUA_TTABLE);
+    luaL_checktype(L, 2, LUA_TTABLE);
+    int vn = (int)lua_objlen(L, 1);
+    int in_ = (int)lua_objlen(L, 2);
+    if (vn < 9 || (vn % 3) != 0) {
+        return luaL_error(L, "NewTriangleMesh: vertices length must be >=9 and multiple of 3 (got %d)", vn);
+    }
+    if (in_ < 3 || (in_ % 3) != 0) {
+        return luaL_error(L, "NewTriangleMesh: indices length must be multiple of 3 (got %d)", in_);
+    }
+    int vCount = vn / 3;
+    int triCount = in_ / 3;
+
+    float* verts = (float*)malloc(sizeof(float) * vn);
+    int*   inds  = (int*)  malloc(sizeof(int)   * in_);
+    if (!verts || !inds) {
+        free(verts); free(inds);
+        return luaL_error(L, "NewTriangleMesh: out of memory");
+    }
+    for (int i = 0; i < vn; i++) {
+        lua_rawgeti(L, 1, i + 1); verts[i] = (float)lua_tonumber(L, -1); lua_pop(L, 1);
+    }
+    for (int i = 0; i < in_; i++) {
+        lua_rawgeti(L, 2, i + 1);
+        int idx = (int)lua_tointeger(L, -1);
+        lua_pop(L, 1);
+        if (idx < 0 || idx >= vCount) {
+            free(verts); free(inds);
+            return luaL_error(L, "NewTriangleMesh: index %d out of range [0,%d)", idx, vCount);
+        }
+        inds[i] = idx;
+    }
+
+    btTriangleIndexVertexArray* meshIface = new btTriangleIndexVertexArray(
+        triCount, inds, sizeof(int) * 3,
+        vCount, verts, sizeof(float) * 3);
+    btBvhTriangleMeshShape* tm = new btBvhTriangleMeshShape(meshIface, true /*BVH 加速*/);
+
+    Shape3D* ud = (Shape3D*)lua_newuserdata(L, sizeof(Shape3D));
+    new (ud) Shape3D();
+    ud->shape       = tm;
+    ud->triMesh     = meshIface;
+    ud->triVertices = verts;
+    ud->triIndices  = inds;
+    luaL_getmetatable(L, SHAPE_MT);
+    lua_setmetatable(L, -2);
+    return 1;
+}
+
 static int l_Shape_GC(lua_State* L) {
     Shape3D* s = CheckShape(L, 1);
     if (s->shape) {
         delete s->shape;
         s->shape = nullptr;
+    }
+    if (s->triMesh) {
+        delete s->triMesh;
+        s->triMesh = nullptr;
+    }
+    if (s->heightData) {
+        free(s->heightData);
+        s->heightData = nullptr;
+    }
+    if (s->triVertices) {
+        free(s->triVertices);
+        s->triVertices = nullptr;
+    }
+    if (s->triIndices) {
+        free(s->triIndices);
+        s->triIndices = nullptr;
     }
     return 0;
 }
@@ -820,13 +962,17 @@ static int l_World_Tostring(lua_State* L) {
 // ==================== Module registration ====================
 
 static const luaL_Reg kPhysics3DFns[] = {
-    { "NewBox",         l_NewBox },
-    { "NewSphere",      l_NewSphere },
-    { "NewCylinder",    l_NewCylinder },
-    { "NewCapsule",     l_NewCapsule },
-    { "NewCone",        l_NewCone },
-    { "NewStaticPlane", l_NewStaticPlane },
-    { "NewWorld",       l_NewWorld },
+    { "NewBox",          l_NewBox },
+    { "NewSphere",       l_NewSphere },
+    { "NewCylinder",     l_NewCylinder },
+    { "NewCapsule",      l_NewCapsule },
+    { "NewCone",         l_NewCone },
+    { "NewStaticPlane",  l_NewStaticPlane },
+    // Phase AU Step 3.1
+    { "NewConvexHull",   l_NewConvexHull },
+    { "NewHeightfield",  l_NewHeightfield },
+    { "NewTriangleMesh", l_NewTriangleMesh },
+    { "NewWorld",        l_NewWorld },
     { nullptr, nullptr }
 };
 
@@ -929,13 +1075,16 @@ static int l_Physics3D_Unavailable(lua_State* L) {
 extern "C" LIGHT_API int luaopen_Light_Physics3D(lua_State* L) {
     lua_newtable(L);
     static const luaL_Reg kStub[] = {
-        { "NewBox",         l_Physics3D_Unavailable },
-        { "NewSphere",      l_Physics3D_Unavailable },
-        { "NewCylinder",    l_Physics3D_Unavailable },
-        { "NewCapsule",     l_Physics3D_Unavailable },
-        { "NewCone",        l_Physics3D_Unavailable },
-        { "NewStaticPlane", l_Physics3D_Unavailable },
-        { "NewWorld",       l_Physics3D_Unavailable },
+        { "NewBox",          l_Physics3D_Unavailable },
+        { "NewSphere",       l_Physics3D_Unavailable },
+        { "NewCylinder",     l_Physics3D_Unavailable },
+        { "NewCapsule",      l_Physics3D_Unavailable },
+        { "NewCone",         l_Physics3D_Unavailable },
+        { "NewStaticPlane",  l_Physics3D_Unavailable },
+        { "NewConvexHull",   l_Physics3D_Unavailable },
+        { "NewHeightfield",  l_Physics3D_Unavailable },
+        { "NewTriangleMesh", l_Physics3D_Unavailable },
+        { "NewWorld",        l_Physics3D_Unavailable },
         { nullptr, nullptr }
     };
     luaL_setfuncs(L, kStub, 0);

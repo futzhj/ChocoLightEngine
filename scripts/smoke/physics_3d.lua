@@ -30,11 +30,16 @@ local function approx(a, b, eps) eps = eps or 1e-3; return math.abs(a - b) <= ep
 
 -- ==================== 1) 模块加载 ====================
 print("[1] 模块加载")
-local fns = { "NewBox", "NewSphere", "NewCylinder", "NewCapsule", "NewCone", "NewStaticPlane", "NewWorld" }
+local fns = {
+    "NewBox", "NewSphere", "NewCylinder", "NewCapsule", "NewCone", "NewStaticPlane",
+    -- Phase AU Step 3.1
+    "NewConvexHull", "NewHeightfield", "NewTriangleMesh",
+    "NewWorld",
+}
 for _, name in ipairs(fns) do
     if type(Phys[name]) ~= "function" then fail("Phys." .. name .. " not function") end
 end
-pass("7 个工厂函数都存在")
+pass(#fns .. " 个工厂函数都存在")
 
 -- ==================== 2) Shape 工厂 ====================
 print("[2] Shape 工厂")
@@ -50,6 +55,52 @@ pass("6 种 shape 创建成功 (Box/Sphere/Cylinder/Capsule/Cone/StaticPlane)")
 -- shape userdata tostring 不崩
 local _ = tostring(box) .. tostring(plane)
 pass("shape:__tostring 调用不崩")
+
+-- Phase AU Step 3.1: 高级 shape 工厂
+print("[2.1] 高级 Shape 工厂 (ConvexHull / Heightfield / TriangleMesh)")
+
+-- ConvexHull: 8 个立方体顶点
+local cube_verts = {
+    -1, -1, -1,   1, -1, -1,   1,  1, -1,  -1,  1, -1,
+    -1, -1,  1,   1, -1,  1,   1,  1,  1,  -1,  1,  1,
+}
+local hull = Phys.NewConvexHull(cube_verts)
+if not hull then fail("NewConvexHull fail") end
+pass("NewConvexHull(8 顶点立方体) -> shape")
+
+-- ConvexHull: 错误格式应 raise
+local ok_ch, err_ch = pcall(Phys.NewConvexHull, { 1, 2 })  -- 长度 < 9
+if ok_ch then fail("NewConvexHull bad length should error") end
+pass("NewConvexHull 错误参数 raise: " .. tostring(err_ch))
+
+-- Heightfield: 4x4 平整地形
+local heights = {}
+for i = 1, 16 do heights[i] = 0.0 end
+local hf = Phys.NewHeightfield(4, 4, heights, 1.0)
+if not hf then fail("NewHeightfield fail") end
+pass("NewHeightfield(4x4 平地) -> shape")
+
+-- Heightfield: 大小不匹配应 raise
+local ok_hf, err_hf = pcall(Phys.NewHeightfield, 4, 4, { 0, 0 })
+if ok_hf then fail("NewHeightfield mismatch should error") end
+pass("NewHeightfield 错误大小 raise: " .. tostring(err_hf))
+
+-- TriangleMesh: 一个三角形 + 一个三角形 (平面)
+local tm_verts = {
+    -10, 0, -10,
+     10, 0, -10,
+     10, 0,  10,
+    -10, 0,  10,
+}
+local tm_inds = { 0, 1, 2,   0, 2, 3 }
+local tm = Phys.NewTriangleMesh(tm_verts, tm_inds)
+if not tm then fail("NewTriangleMesh fail") end
+pass("NewTriangleMesh(2 三角形) -> shape")
+
+-- TriangleMesh: 索引越界应 raise
+local ok_tm, err_tm = pcall(Phys.NewTriangleMesh, tm_verts, { 0, 1, 99 })
+if ok_tm then fail("NewTriangleMesh oob should error") end
+pass("NewTriangleMesh 越界 raise: " .. tostring(err_tm))
 
 -- ==================== 3) World 生命周期 ====================
 print("[3] World 生命周期")
