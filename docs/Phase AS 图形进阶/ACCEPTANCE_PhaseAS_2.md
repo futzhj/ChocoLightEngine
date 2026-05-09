@@ -1,6 +1,8 @@
 # Phase AS.2 — 3D Mesh 基础 — 验收文档
 
-> **状态**: 已完成本地实施 + lightc 语法检查通过, 待 GitHub Actions CI 全平台验证
+> **状态**: ✅ **已完成** — 6 平台 CI 全绿 (一次成功, 无修复)
+>
+> GitHub Actions run: [25596380171](https://github.com/futzhj/ChocoLightEngine/actions/runs/25596380171) (commit `44b3fe9`)
 
 ---
 
@@ -164,12 +166,12 @@ DrawMesh: ComputeMVP3D() = projection * (hasView ? viewMatrix * modelview : mode
 ## 八、CI 验收标准
 
 - [x] `lightc -p scripts/smoke/mesh_3d.lua` Exit=0 (本地)
-- [ ] GitHub Actions `Build Templates (All Platforms)` 全绿:
-  - [ ] Windows x64: 编译 + Windows runtime smoke (含 mesh_3d.lua)
-  - [ ] Linux x64: 编译 + 语法检查
-  - [ ] macOS Universal: 编译 + 语法检查
-  - [ ] Android arm64+x86_64: 编译
-  - [ ] iOS arm64: 编译
-  - [ ] Web WASM: 编译
+- [x] GitHub Actions `Build Templates (All Platforms)` **全绿** (run 25596380171):
+  - [x] Windows x64: 编译 + Windows runtime smoke (含 mesh_3d.lua) ✅
+  - [x] Linux x64: 编译 + 语法检查 ✅
+  - [x] macOS Universal: 编译 + 语法检查 ✅
+  - [x] Android arm64+x86_64: 编译 ✅
+  - [x] iOS arm64: 编译 ✅
+  - [x] Web WASM: 编译 ✅
 
-CI 全绿后此子 Phase 才算最终交付完成。
+**Phase AS.2 最终交付完成 (一次提交即全平台通过)。**
