@@ -1619,8 +1619,8 @@ static int l_Clip_AddSampler(lua_State* L) {
 
     int comps = (target == ChannelTarget::ROTATION) ? FLOATS_R : FLOATS_T;
 
-    // 读 times table
-    int nTimes = (int)lua_rawlen(L, 5);
+    // 读 times table (Lua 5.1: lua_objlen)
+    int nTimes = (int)lua_objlen(L, 5);
     if (nTimes <= 0) {
         return luaL_error(L, "times table is empty");
     }
@@ -1638,7 +1638,7 @@ static int l_Clip_AddSampler(lua_State* L) {
     // 读 values table (扁平 float 数组)
     int perKey    = (mode == InterpMode::CUBICSPLINE) ? (comps * 3) : comps;
     int nValsExp  = nTimes * perKey;
-    int nValsGot  = (int)lua_rawlen(L, 6);
+    int nValsGot  = (int)lua_objlen(L, 6);
     if (nValsGot != nValsExp) {
         return luaL_error(L, "values count mismatch: expected %d (%d keys * %d), got %d",
                            nValsExp, nTimes, perKey, nValsGot);
