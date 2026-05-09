@@ -25,6 +25,8 @@
 #include <cstring>
 #include <cstdio>
 #include <cstdlib>
+#include <cmath>          // Step 2: sqrt / sin / cos / acos for QuatSlerp + QuatNormalize
+#include <cstdint>        // Step 2: uint8_t / uint32_t (computed flags)
 
 extern "C" {
 #include "lua.h"
@@ -97,17 +99,28 @@ struct AnimationClip {
     bool                 alive = true;
 };
 
-// Animator 在 Step 1 仅占位 (Step 2 填充实现)
+// Animator (Step 2 完整化: sampler eval + 关节变换树 + 状态机基础)
 struct Animator {
     Skeleton*  skeletonPtr  = nullptr;
     int        skeletonRef  = LUA_NOREF;     // 防 Skeleton GC 的强引用
 
-    // Step 1 仅保留接口字段 (Step 2/4 填充语义)
+    // 时间 / 速率 / 暂停
     bool       paused      = false;
     float      speed       = 1.0f;
     float      currentTime = 0.0f;
 
-    bool       alive = true;
+    // Step 2: 状态机基础 (单状态切换, 无 Transition; Step 4 引入 crossfade)
+    std::unordered_map<std::string, AnimationClip*> states;       // name → clip 指针
+    std::unordered_map<std::string, int>            stateRefs;    // name → registry ref (防 clip GC)
+    std::string                                     currentState; // 空串 = 未播放
+    AnimationClip*                                  activeClip = nullptr;
+    bool                                            looping    = true;
+
+    // Step 2: 关节矩阵缓存 (Update 时填充, GetJointMatrices 直接读)
+    // 布局: 每关节 16 floats (列主序 mat4), 共 N×16 floats
+    std::vector<float> jointMatrices;
+
+    bool alive = true;
 };
 
 } } // namespace LT::Anim
@@ -119,6 +132,313 @@ using LT::Anim::JointNode;
 using LT::Anim::Animator;
 using LT::Anim::InterpMode;
 using LT::Anim::ChannelTarget;
+
+// ==================== Step 2: 数学库 + sampler 评估 + 关节变换树 ====================
+// 矩阵格式: 16 floats 列主序 (column-major), 与 OpenGL/glm/cgltf 一致.
+//   m[col*4 + row]: m[0]=m00 m[1]=m10 m[2]=m20 m[3]=m30  (第 0 列)
+//                   m[4]=m01 m[5]=m11 ...                (第 1 列)
+// 四元数格式: (w, x, y, z), 与 light_animation.cpp Step 1 JointNode::local_r 一致.
+
+namespace { // anonymous: 仅本编译单元可见, 避免符号冲突
+
+// ---------- 矩阵 ----------
+
+inline void Mat4Identity(float* m) {
+    std::memset(m, 0, sizeof(float) * 16);
+    m[0] = m[5] = m[10] = m[15] = 1.0f;
+}
+
+// out = a * b (列主序: out[col][row] = sum a[k][row] * b[col][k])
+inline void Mat4Mul(float* out, const float* a, const float* b) {
+    float tmp[16];
+    for (int col = 0; col < 4; ++col) {
+        for (int row = 0; row < 4; ++row) {
+            float s = 0.0f;
+            for (int k = 0; k < 4; ++k) {
+                s += a[k * 4 + row] * b[col * 4 + k];
+            }
+            tmp[col * 4 + row] = s;
+        }
+    }
+    std::memcpy(out, tmp, sizeof(tmp));
+}
+
+// 由 Translation / Rotation (quat wxyz) / Scale 构造列主序 mat4.
+// 等价于 M = T * R * S (常见骨骼动画约定).
+inline void TRSToMat4(const float* t, const float* qWxyz, const float* s, float* outMat) {
+    const float w = qWxyz[0], x = qWxyz[1], y = qWxyz[2], z = qWxyz[3];
+    const float xx = x * x, yy = y * y, zz = z * z;
+    const float xy = x * y, xz = x * z, yz = y * z;
+    const float wx = w * x, wy = w * y, wz = w * z;
+
+    // R 旋转矩阵 (列主序), 已应用 scale 在每列
+    outMat[0]  = (1.0f - 2.0f * (yy + zz)) * s[0];
+    outMat[1]  = (2.0f * (xy + wz))        * s[0];
+    outMat[2]  = (2.0f * (xz - wy))        * s[0];
+    outMat[3]  = 0.0f;
+
+    outMat[4]  = (2.0f * (xy - wz))        * s[1];
+    outMat[5]  = (1.0f - 2.0f * (xx + zz)) * s[1];
+    outMat[6]  = (2.0f * (yz + wx))        * s[1];
+    outMat[7]  = 0.0f;
+
+    outMat[8]  = (2.0f * (xz + wy))        * s[2];
+    outMat[9]  = (2.0f * (yz - wx))        * s[2];
+    outMat[10] = (1.0f - 2.0f * (xx + yy)) * s[2];
+    outMat[11] = 0.0f;
+
+    // T 平移列
+    outMat[12] = t[0];
+    outMat[13] = t[1];
+    outMat[14] = t[2];
+    outMat[15] = 1.0f;
+}
+
+// ---------- 四元数 ----------
+
+inline void QuatNormalize(float* q) {
+    float len2 = q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3];
+    if (len2 <= 1e-20f) {
+        q[0] = 1; q[1] = 0; q[2] = 0; q[3] = 0;     // 退化为单位四元数
+        return;
+    }
+    float inv = 1.0f / std::sqrt(len2);
+    q[0] *= inv; q[1] *= inv; q[2] *= inv; q[3] *= inv;
+}
+
+// slerp: a/b 假设已归一化, t ∈ [0,1]; 含最短路径翻转 (dot<0 时翻转 b)
+inline void QuatSlerp(const float* a, const float* b, float t, float* out) {
+    float bx = b[0], by = b[1], bz = b[2], bw = b[3];
+    float dot = a[0] * bx + a[1] * by + a[2] * bz + a[3] * bw;
+    if (dot < 0.0f) {
+        bx = -bx; by = -by; bz = -bz; bw = -bw;
+        dot = -dot;
+    }
+    // 几乎平行 → 退化为 lerp + 归一化 (避免 sin(0) 除零)
+    if (dot > 0.9995f) {
+        out[0] = a[0] + t * (bx - a[0]);
+        out[1] = a[1] + t * (by - a[1]);
+        out[2] = a[2] + t * (bz - a[2]);
+        out[3] = a[3] + t * (bw - a[3]);
+        QuatNormalize(out);
+        return;
+    }
+    float theta_0     = std::acos(dot);
+    float theta       = theta_0 * t;
+    float sin_theta_0 = std::sin(theta_0);
+    float sin_theta   = std::sin(theta);
+    float k0 = std::cos(theta) - dot * sin_theta / sin_theta_0;
+    float k1 = sin_theta / sin_theta_0;
+    out[0] = a[0] * k0 + bx * k1;
+    out[1] = a[1] * k0 + by * k1;
+    out[2] = a[2] * k0 + bz * k1;
+    out[3] = a[3] * k0 + bw * k1;
+}
+
+// ---------- Sampler 评估 ----------
+// outComps: 调用方期望的 float 数 (TRANSLATION/SCALE=3, ROTATION=4)
+// 失败 (sampler 空 / outComps 不匹配) 则填默认值: ROTATION=单位四元数 wxyz, SCALE=1, TRANSLATION=0
+static void EvaluateDefault(ChannelTarget tgt, float* out, int outComps) {
+    if (tgt == ChannelTarget::ROTATION && outComps == 4) {
+        out[0] = 1; out[1] = 0; out[2] = 0; out[3] = 0;     // 单位四元数 wxyz
+    } else if (tgt == ChannelTarget::SCALE && outComps == 3) {
+        out[0] = 1; out[1] = 1; out[2] = 1;
+    } else if (outComps == 3) {
+        out[0] = 0; out[1] = 0; out[2] = 0;
+    } else {
+        std::memset(out, 0, sizeof(float) * outComps);
+    }
+}
+
+// glTF 旋转四元数布局: cgltf 给的是 (x,y,z,w), 但我们存的是 (w,x,y,z).
+// AnimationClip 构建时已经按"原样"存了 cgltf 提供的浮点 (x,y,z,w 顺序),
+// 而 JointNode::local_r 是 (w,x,y,z). 这里采样时要转换回 (w,x,y,z).
+static inline void GltfQuatXyzwToWxyz(const float* xyzw, float* outWxyz) {
+    outWxyz[0] = xyzw[3]; // w
+    outWxyz[1] = xyzw[0]; // x
+    outWxyz[2] = xyzw[1]; // y
+    outWxyz[3] = xyzw[2]; // z
+}
+
+// 在 sampler.times 中找最大的 i 使得 times[i] <= t. t 在 [0, duration] 内.
+static int FindKeyframeIndex(const std::vector<float>& times, float t) {
+    if (times.empty()) return -1;
+    if (t <= times.front()) return 0;
+    if (t >= times.back())  return (int)times.size() - 1;
+    // 二分
+    int lo = 0, hi = (int)times.size() - 1;
+    while (lo + 1 < hi) {
+        int mid = (lo + hi) / 2;
+        if (times[mid] <= t) lo = mid;
+        else                 hi = mid;
+    }
+    return lo;
+}
+
+// 评估一个 sampler 在时间 t 处的值, 写到 out (outComps 个 float).
+// LINEAR: TRS 用线性插值, ROTATION 用 slerp.
+// STEP:   取左 keyframe 值.
+// CUBICSPLINE: cgltf 标准 Hermite (每帧 3*components: in_tan, value, out_tan).
+//              ROTATION 在 CUBICSPLINE 后必须归一化.
+static void EvaluateSampler(const Sampler& s, float t, float* out, int outComps) {
+    if (s.times.empty()) {
+        EvaluateDefault(s.target, out, outComps);
+        return;
+    }
+    int idx = FindKeyframeIndex(s.times, t);
+    if (idx < 0) {
+        EvaluateDefault(s.target, out, outComps);
+        return;
+    }
+    int lastIdx = (int)s.times.size() - 1;
+    int comps   = s.components;     // glTF 原始 components (3 或 4)
+
+    auto readKey = [&](int k, int part, float* dst) {
+        // CUBICSPLINE: data[k] 布局 = (in_tan, value, out_tan), 每段 comps 个 float
+        // STEP/LINEAR: data[k] 布局 = value, comps 个 float
+        size_t base = (s.mode == InterpMode::CUBICSPLINE)
+                          ? ((size_t)k * comps * 3 + (size_t)part * comps)
+                          : ((size_t)k * comps);
+        std::memcpy(dst, &s.values[base], sizeof(float) * comps);
+    };
+
+    // 边界 / STEP / 单帧 → 直接取左 keyframe value
+    if (idx >= lastIdx || s.mode == InterpMode::STEP || s.times[idx] >= t) {
+        float raw[4];
+        readKey(idx, 1 /*value*/, raw);
+        if (s.target == ChannelTarget::ROTATION && outComps == 4 && comps == 4) {
+            GltfQuatXyzwToWxyz(raw, out);
+            QuatNormalize(out);
+        } else {
+            std::memcpy(out, raw, sizeof(float) * outComps);
+        }
+        return;
+    }
+
+    // 区间 [idx, idx+1]
+    float t0 = s.times[idx];
+    float t1 = s.times[idx + 1];
+    float dt = t1 - t0;
+    float u  = (dt > 1e-20f) ? (t - t0) / dt : 0.0f;
+    if (u < 0) u = 0;
+    if (u > 1) u = 1;
+
+    if (s.mode == InterpMode::LINEAR) {
+        float a[4], b[4];
+        readKey(idx,     1, a);
+        readKey(idx + 1, 1, b);
+        if (s.target == ChannelTarget::ROTATION && outComps == 4 && comps == 4) {
+            float aWxyz[4], bWxyz[4];
+            GltfQuatXyzwToWxyz(a, aWxyz);
+            GltfQuatXyzwToWxyz(b, bWxyz);
+            QuatNormalize(aWxyz);
+            QuatNormalize(bWxyz);
+            QuatSlerp(aWxyz, bWxyz, u, out);
+        } else {
+            for (int k = 0; k < outComps; ++k) {
+                out[k] = a[k] + u * (b[k] - a[k]);
+            }
+        }
+        return;
+    }
+
+    // CUBICSPLINE: p(u) = (2u³-3u²+1)*v0 + (u³-2u²+u)*dt*o0 + (-2u³+3u²)*v1 + (u³-u²)*dt*i1
+    //              o0 = out_tangent_idx, i1 = in_tangent_(idx+1)
+    float v0[4], o0[4], v1[4], i1[4];
+    readKey(idx,     1, v0);
+    readKey(idx,     2, o0);
+    readKey(idx + 1, 0, i1);
+    readKey(idx + 1, 1, v1);
+
+    float u2 = u * u;
+    float u3 = u2 * u;
+    float h00 =  2 * u3 - 3 * u2 + 1;
+    float h10 =      u3 - 2 * u2 + u;
+    float h01 = -2 * u3 + 3 * u2;
+    float h11 =      u3 -     u2;
+
+    float raw[4];
+    for (int k = 0; k < comps; ++k) {
+        raw[k] = h00 * v0[k] + h10 * dt * o0[k] + h01 * v1[k] + h11 * dt * i1[k];
+    }
+
+    if (s.target == ChannelTarget::ROTATION && outComps == 4 && comps == 4) {
+        GltfQuatXyzwToWxyz(raw, out);
+        QuatNormalize(out);
+    } else {
+        std::memcpy(out, raw, sizeof(float) * outComps);
+    }
+}
+
+// ---------- 前向变换树 ----------
+// 对每个关节: 在 clip 中找匹配 sampler 求 local TRS;
+// 然后 DFS world[i] = world[parent] * local[i];
+// 最后 skinning[i] = world[i] * inverseBind[i].
+// 输出 outMatrices 大小 = jointCount * 16, 列主序.
+static void ComputeJointMatrices(Skeleton* sk, AnimationClip* clip, float t,
+                                  std::vector<float>& outMatrices) {
+    int N = (int)sk->joints.size();
+    outMatrices.assign((size_t)N * 16, 0.0f);
+    if (N == 0) return;
+
+    // 临时缓冲: 每关节 local mat4 + world mat4
+    std::vector<float> localMats(N * 16, 0.0f);
+    std::vector<float> worldMats(N * 16, 0.0f);
+    std::vector<uint8_t> computed(N, 0);
+
+    // 构造每关节的 local TRS → mat4 (sampler 覆盖优先, 否则 bind pose)
+    for (int i = 0; i < N; ++i) {
+        const JointNode& jn = sk->joints[i];
+        float trans[3] = { jn.local_t[0], jn.local_t[1], jn.local_t[2] };
+        float rot  [4] = { jn.local_r[0], jn.local_r[1], jn.local_r[2], jn.local_r[3] };  // wxyz
+        float scl  [3] = { jn.local_s[0], jn.local_s[1], jn.local_s[2] };
+
+        if (clip) {
+            for (const Sampler& s : clip->samplers) {
+                if (s.jointIndex != i) continue;
+                if (s.target == ChannelTarget::TRANSLATION) {
+                    EvaluateSampler(s, t, trans, 3);
+                } else if (s.target == ChannelTarget::ROTATION) {
+                    EvaluateSampler(s, t, rot, 4);
+                } else if (s.target == ChannelTarget::SCALE) {
+                    EvaluateSampler(s, t, scl, 3);
+                }
+            }
+        }
+        TRSToMat4(trans, rot, scl, &localMats[i * 16]);
+    }
+
+    // DFS 计算 world 矩阵 (拓扑顺序保证: 父先于子)
+    // 用迭代式: 关节按 0..N-1 多次扫描直到全部 computed (典型骨骼<64, 一两次扫描就完)
+    // 由于 cgltf 输出的关节列表通常已是 BFS/DFS 顺序, 也就是父索引<子索引,
+    // 一次扫描通常足够, 但为安全起见循环扫描.
+    int safetyIter = 0;
+    while (safetyIter++ < N + 4) {
+        bool allDone = true;
+        for (int i = 0; i < N; ++i) {
+            if (computed[i]) continue;
+            int p = sk->joints[i].parent;
+            if (p < 0) {
+                std::memcpy(&worldMats[i * 16], &localMats[i * 16], sizeof(float) * 16);
+                computed[i] = 1;
+            } else if (computed[p]) {
+                Mat4Mul(&worldMats[i * 16], &worldMats[p * 16], &localMats[i * 16]);
+                computed[i] = 1;
+            } else {
+                allDone = false;
+            }
+        }
+        if (allDone) break;
+    }
+
+    // skinning[i] = world[i] * inverseBind[i]
+    for (int i = 0; i < N; ++i) {
+        const float* invBind = &sk->inverseBindMatrices[i * 16];
+        Mat4Mul(&outMatrices[i * 16], &worldMats[i * 16], invBind);
+    }
+}
+
+} // anonymous namespace
 
 // ==================== userdata 检查辅助 ====================
 
@@ -749,13 +1069,35 @@ static int l_Animator_GetSkeleton(lua_State* L) {
     return 1;
 }
 
+// Step 2: 推进时间 + 处理 looping + 重新计算关节矩阵
 static int l_Animator_Update(lua_State* L) {
     Animator* an = CheckAnimator(L, 1);
     float dt = (float)luaL_checknumber(L, 2);
+
     if (!an->paused) {
         an->currentTime += dt * an->speed;
     }
-    // Step 1: 仅推进时间; Step 2 添加状态机 + 关节矩阵更新
+
+    // 处理 looping / clamping
+    if (an->activeClip && an->activeClip->duration > 1e-6f) {
+        float dur = an->activeClip->duration;
+        if (an->looping) {
+            // wrap to [0, duration); 处理负 speed (回退播放) 也要正确
+            float t = an->currentTime;
+            t = std::fmod(t, dur);
+            if (t < 0) t += dur;
+            an->currentTime = t;
+        } else {
+            // 不循环: clamp 到 [0, duration]; speed<0 时 clamp 到 [0, duration]
+            if (an->currentTime < 0)   an->currentTime = 0;
+            if (an->currentTime > dur) an->currentTime = dur;
+        }
+    }
+
+    // 重新计算关节矩阵 (即使 paused 也要算一次, 因为 SetCurrentTime 后用户可能手动 Update(0))
+    if (an->skeletonPtr && an->skeletonPtr->alive) {
+        ComputeJointMatrices(an->skeletonPtr, an->activeClip, an->currentTime, an->jointMatrices);
+    }
     return 0;
 }
 
@@ -785,11 +1127,123 @@ static int l_Animator_IsPaused(lua_State* L) {
     return 1;
 }
 
-// Step 1 占位: 返回空 table (Step 2 实现真正的关节矩阵计算)
+// Step 2: 返回 N*16 floats table (列主序). 若从未调用 Update, 自动计算一次绑定姿态.
 static int l_Animator_GetJointMatrices(lua_State* L) {
     Animator* an = CheckAnimator(L, 1);
-    (void)an;
-    lua_newtable(L);
+
+    // 如果 jointMatrices 为空, 自动用 bind pose 计算一次 (避免用户忘了 Update)
+    if (an->jointMatrices.empty() && an->skeletonPtr && an->skeletonPtr->alive) {
+        ComputeJointMatrices(an->skeletonPtr, an->activeClip, an->currentTime, an->jointMatrices);
+    }
+
+    int N = (int)an->jointMatrices.size();
+    lua_createtable(L, N, 0);
+    for (int i = 0; i < N; ++i) {
+        lua_pushnumber(L, an->jointMatrices[i]);
+        lua_rawseti(L, -2, i + 1);    // 1-based
+    }
+    return 1;
+}
+
+// ---------- Step 2: 状态机基础 (单状态切换) ----------
+
+// AddState(name, clip): 把 clip 加入状态表; 持有 clip 强引用
+static int l_Animator_AddState(lua_State* L) {
+    Animator* an    = CheckAnimator(L, 1);
+    const char* nm  = luaL_checkstring(L, 2);
+    AnimationClip* c = CheckClip(L, 3);
+    if (!c->alive) {
+        lua_pushnil(L);
+        lua_pushstring(L, "clip is dead");
+        return 2;
+    }
+
+    // 已有同名 state? unref 旧的
+    auto itRef = an->stateRefs.find(nm);
+    if (itRef != an->stateRefs.end()) {
+        luaL_unref(L, LUA_REGISTRYINDEX, itRef->second);
+    }
+
+    // 持 clip 强引用
+    lua_pushvalue(L, 3);
+    int ref = luaL_ref(L, LUA_REGISTRYINDEX);
+
+    an->states[nm]    = c;
+    an->stateRefs[nm] = ref;
+
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+// Play(name): 切换到指定状态; 重置 currentTime=0; 找不到 → nil + err
+static int l_Animator_Play(lua_State* L) {
+    Animator* an   = CheckAnimator(L, 1);
+    const char* nm = luaL_checkstring(L, 2);
+
+    auto it = an->states.find(nm);
+    if (it == an->states.end()) {
+        lua_pushnil(L);
+        lua_pushfstring(L, "state not found: %s", nm);
+        return 2;
+    }
+    an->currentState = nm;
+    an->activeClip   = it->second;
+    an->currentTime  = 0.0f;
+
+    // 立即计算一帧关节矩阵 (允许用户 Play() 后立即 GetJointMatrices)
+    if (an->skeletonPtr && an->skeletonPtr->alive) {
+        ComputeJointMatrices(an->skeletonPtr, an->activeClip, 0.0f, an->jointMatrices);
+    }
+
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+static int l_Animator_Stop(lua_State* L) {
+    Animator* an = CheckAnimator(L, 1);
+    an->currentState.clear();
+    an->activeClip = nullptr;
+    an->currentTime = 0.0f;
+    // 关节矩阵保留 bind pose: 用 skeleton 重新算一次
+    if (an->skeletonPtr && an->skeletonPtr->alive) {
+        ComputeJointMatrices(an->skeletonPtr, nullptr, 0.0f, an->jointMatrices);
+    }
+    return 0;
+}
+
+static int l_Animator_GetCurrentState(lua_State* L) {
+    Animator* an = CheckAnimator(L, 1);
+    if (an->currentState.empty()) {
+        lua_pushnil(L);
+    } else {
+        lua_pushstring(L, an->currentState.c_str());
+    }
+    return 1;
+}
+
+static int l_Animator_GetStateCount(lua_State* L) {
+    Animator* an = CheckAnimator(L, 1);
+    lua_pushinteger(L, (lua_Integer)an->states.size());
+    return 1;
+}
+
+static int l_Animator_HasState(lua_State* L) {
+    Animator* an   = CheckAnimator(L, 1);
+    const char* nm = luaL_checkstring(L, 2);
+    lua_pushboolean(L, an->states.count(nm) ? 1 : 0);
+    return 1;
+}
+
+static int l_Animator_SetLooping(lua_State* L) {
+    Animator* an = CheckAnimator(L, 1);
+    luaL_checktype(L, 2, LUA_TBOOLEAN);
+    an->looping = lua_toboolean(L, 2) != 0;
+    return 0;
+}
+
+static int l_Animator_IsLooping(lua_State* L) {
+    Animator* an = CheckAnimator(L, 1);
+    lua_pushboolean(L, an->looping ? 1 : 0);
     return 1;
 }
 
@@ -808,6 +1262,15 @@ static int l_Animator_Delete(lua_State* L) {
             luaL_unref(L, LUA_REGISTRYINDEX, an->skeletonRef);
             an->skeletonRef = LUA_NOREF;
         }
+        // Step 2: 释放所有 clip 强引用
+        for (auto& kv : an->stateRefs) {
+            if (kv.second != LUA_NOREF) {
+                luaL_unref(L, LUA_REGISTRYINDEX, kv.second);
+            }
+        }
+        an->stateRefs.clear();
+        an->states.clear();
+        an->activeClip = nullptr;
         delete an;
         *pp = nullptr;
     }
@@ -878,6 +1341,16 @@ static const luaL_Reg kAnimatorMethods[] = {
     {"Resume",            l_Animator_Resume},
     {"IsPaused",          l_Animator_IsPaused},
     {"GetJointMatrices",  l_Animator_GetJointMatrices},
+    // Step 2: 状态机基础
+    {"AddState",          l_Animator_AddState},
+    {"Play",              l_Animator_Play},
+    {"Stop",              l_Animator_Stop},
+    {"GetCurrentState",   l_Animator_GetCurrentState},
+    {"GetStateCount",     l_Animator_GetStateCount},
+    {"HasState",          l_Animator_HasState},
+    {"SetLooping",        l_Animator_SetLooping},
+    {"IsLooping",         l_Animator_IsLooping},
+    // 生命周期
     {"IsAlive",           l_Animator_IsAlive},
     {"Delete",            l_Animator_Delete},
     {"__gc",              l_Animator_GC},
