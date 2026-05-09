@@ -8,6 +8,11 @@
 -- 不依赖任何外部 glTF 资源 (与 Phase AS mesh_3d.lua 风格一致)
 -- 兼容 Lua 5.1 (lightc -p 严格语法检查 + light.exe runtime)
 
+-- 防止 GH Actions PowerShell stdout 缓冲截断关键日志
+if io and io.stdout and io.stdout.setvbuf then
+    pcall(function() io.stdout:setvbuf('no') end)
+end
+
 -- helper: 安全 require, lightc -p 时跳过实际加载
 local function safe_require(name)
     local ok, mod = pcall(require, name)
@@ -322,15 +327,18 @@ print('[13] Phase AV.x: procedural 端到端 (Update 时序 / crossfade 中点�
 
 if type(Anim.NewEmptySkeleton) == 'function' and type(Anim.NewEmptyClip) == 'function' then
     local ok_e2e, err_e2e = pcall(function()
+        print('  ... 13.1 NewEmptySkeleton + SetJointName')
         -- 1 关节 skeleton: bind = identity, IBM = identity (默认)
         local sk = Anim.NewEmptySkeleton(1)
         sk:SetJointName(1, 'root')
 
+        print('  ... 13.2 NewEmptyClip("idle") + AddSampler(translation)')
         -- clip "idle": translation 全零 (1s)
         local idle = Anim.NewEmptyClip('idle', 1.0)
         idle:AddSampler(1, 'translation', 'LINEAR',
                          {0.0, 1.0}, {0,0,0,  0,0,0})
 
+        print('  ... 13.3 NewEmptyClip("walk") + AddSampler')
         -- clip "walk": translation x 0 → 10 (1s, LINEAR)
         local walk = Anim.NewEmptyClip('walk', 1.0)
         walk:AddSampler(1, 'translation', 'LINEAR',
@@ -339,12 +347,14 @@ if type(Anim.NewEmptySkeleton) == 'function' and type(Anim.NewEmptyClip) == 'fun
         CHECK(math.abs(idle:GetDuration() - 1.0) < 1e-6, 'empty clip duration after AddSampler = 1.0')
         CHECK(idle:GetSamplerCount() == 1, 'clip has 1 sampler after AddSampler')
 
+        print('  ... 13.4 NewAnimator + AddState')
         -- Animator + 2 states
         local an = Anim.NewAnimator(sk)
         an:AddState('idle', idle)
         an:AddState('walk', walk)
         an:SetLooping(false)
 
+        print('  ... 13.5 Play("walk") + Update(0.5) + GetJointMatrices')
         -- ---- 验证 walk LINEAR t=0.5 精度 ----
         an:Play('walk')
         an:Update(0.5)
