@@ -205,6 +205,140 @@ static void DispatchOnTextEditing(lua_State* L, const char* text, int start, int
     lua_settop(L, top);
 }
 
+// ==================== Phase AR — Pen 事件 dispatch ====================
+
+/// 调用 Window:OnPenProximity(penId, action)  — action: 1=in, 0=out
+static void DispatchOnPenProximity(lua_State* L, int penId, int action) {
+    if (!L || g_windowRef == LUA_NOREF) return;
+    int top = lua_gettop(L);
+    lua_rawgeti(L, LUA_REGISTRYINDEX, g_windowRef);
+    lua_getfield(L, -1, "OnPenProximity");
+    if (lua_isfunction(L, -1)) {
+        lua_pushvalue(L, -2);                        // self
+        lua_pushinteger(L, penId);
+        lua_pushinteger(L, action);
+        if (lua_pcall(L, 3, 0, 0)) {
+            CC::Log(CC::LOG_ERROR, "OnPenProximity: %s", lua_tostring(L, -1));
+            lua_pop(L, 1);
+        }
+    } else {
+        lua_pop(L, 1);
+    }
+    lua_settop(L, top);
+}
+
+/// 调用 Window:OnPenDown(penId, x, y, eraser)
+static void DispatchOnPenDown(lua_State* L, int penId, double x, double y, int eraser) {
+    if (!L || g_windowRef == LUA_NOREF) return;
+    int top = lua_gettop(L);
+    lua_rawgeti(L, LUA_REGISTRYINDEX, g_windowRef);
+    lua_getfield(L, -1, "OnPenDown");
+    if (lua_isfunction(L, -1)) {
+        lua_pushvalue(L, -2);
+        lua_pushinteger(L, penId);
+        lua_pushnumber(L, x);
+        lua_pushnumber(L, y);
+        lua_pushinteger(L, eraser);
+        if (lua_pcall(L, 5, 0, 0)) {
+            CC::Log(CC::LOG_ERROR, "OnPenDown: %s", lua_tostring(L, -1));
+            lua_pop(L, 1);
+        }
+    } else {
+        lua_pop(L, 1);
+    }
+    lua_settop(L, top);
+}
+
+/// 调用 Window:OnPenUp(penId, x, y, eraser)
+static void DispatchOnPenUp(lua_State* L, int penId, double x, double y, int eraser) {
+    if (!L || g_windowRef == LUA_NOREF) return;
+    int top = lua_gettop(L);
+    lua_rawgeti(L, LUA_REGISTRYINDEX, g_windowRef);
+    lua_getfield(L, -1, "OnPenUp");
+    if (lua_isfunction(L, -1)) {
+        lua_pushvalue(L, -2);
+        lua_pushinteger(L, penId);
+        lua_pushnumber(L, x);
+        lua_pushnumber(L, y);
+        lua_pushinteger(L, eraser);
+        if (lua_pcall(L, 5, 0, 0)) {
+            CC::Log(CC::LOG_ERROR, "OnPenUp: %s", lua_tostring(L, -1));
+            lua_pop(L, 1);
+        }
+    } else {
+        lua_pop(L, 1);
+    }
+    lua_settop(L, top);
+}
+
+/// 调用 Window:OnPenButton(penId, button, action, x, y)  — action: 1=down, 0=up
+static void DispatchOnPenButton(lua_State* L, int penId, int button, int action, double x, double y) {
+    if (!L || g_windowRef == LUA_NOREF) return;
+    int top = lua_gettop(L);
+    lua_rawgeti(L, LUA_REGISTRYINDEX, g_windowRef);
+    lua_getfield(L, -1, "OnPenButton");
+    if (lua_isfunction(L, -1)) {
+        lua_pushvalue(L, -2);
+        lua_pushinteger(L, penId);
+        lua_pushinteger(L, button);
+        lua_pushinteger(L, action);
+        lua_pushnumber(L, x);
+        lua_pushnumber(L, y);
+        if (lua_pcall(L, 6, 0, 0)) {
+            CC::Log(CC::LOG_ERROR, "OnPenButton: %s", lua_tostring(L, -1));
+            lua_pop(L, 1);
+        }
+    } else {
+        lua_pop(L, 1);
+    }
+    lua_settop(L, top);
+}
+
+/// 调用 Window:OnPenMotion(penId, x, y)
+static void DispatchOnPenMotion(lua_State* L, int penId, double x, double y) {
+    if (!L || g_windowRef == LUA_NOREF) return;
+    int top = lua_gettop(L);
+    lua_rawgeti(L, LUA_REGISTRYINDEX, g_windowRef);
+    lua_getfield(L, -1, "OnPenMotion");
+    if (lua_isfunction(L, -1)) {
+        lua_pushvalue(L, -2);
+        lua_pushinteger(L, penId);
+        lua_pushnumber(L, x);
+        lua_pushnumber(L, y);
+        if (lua_pcall(L, 4, 0, 0)) {
+            CC::Log(CC::LOG_ERROR, "OnPenMotion: %s", lua_tostring(L, -1));
+            lua_pop(L, 1);
+        }
+    } else {
+        lua_pop(L, 1);
+    }
+    lua_settop(L, top);
+}
+
+/// 调用 Window:OnPenAxis(penId, axis, value)
+static void DispatchOnPenAxis(lua_State* L, int penId, int axis, float value) {
+    if (!L || g_windowRef == LUA_NOREF) return;
+    int top = lua_gettop(L);
+    lua_rawgeti(L, LUA_REGISTRYINDEX, g_windowRef);
+    lua_getfield(L, -1, "OnPenAxis");
+    if (lua_isfunction(L, -1)) {
+        lua_pushvalue(L, -2);
+        lua_pushinteger(L, penId);
+        lua_pushinteger(L, axis);
+        lua_pushnumber(L, value);
+        if (lua_pcall(L, 4, 0, 0)) {
+            CC::Log(CC::LOG_ERROR, "OnPenAxis: %s", lua_tostring(L, -1));
+            lua_pop(L, 1);
+        }
+    } else {
+        lua_pop(L, 1);
+    }
+    lua_settop(L, top);
+}
+
+// Phase AR — Timer 事件转发 (由 light_time.cpp 提供实现)
+extern "C" void Time_OnTimerEvent(lua_State* L, int timer_id);
+
 /// 帧缓冲尺寸变更 → 更新视口和投影
 static void OnFramebufferResize(int width, int height) {
     if (g_render) {
@@ -264,6 +398,29 @@ static void DispatchEvents(lua_State* L) {
                 break;
             case PlatformWindow::Event::TextEditing:
                 DispatchOnTextEditing(L, ev.text, ev.text_start, ev.text_length);
+                break;
+            // Phase AR — Pen 事件
+            case PlatformWindow::Event::PenProximity:
+                DispatchOnPenProximity(L, ev.penId, ev.penAction);
+                break;
+            case PlatformWindow::Event::PenDown:
+                DispatchOnPenDown(L, ev.penId, ev.x, ev.y, ev.penEraser);
+                break;
+            case PlatformWindow::Event::PenUp:
+                DispatchOnPenUp(L, ev.penId, ev.x, ev.y, ev.penEraser);
+                break;
+            case PlatformWindow::Event::PenButton:
+                DispatchOnPenButton(L, ev.penId, ev.penButton, ev.penAction, ev.x, ev.y);
+                break;
+            case PlatformWindow::Event::PenMotion:
+                DispatchOnPenMotion(L, ev.penId, ev.x, ev.y);
+                break;
+            case PlatformWindow::Event::PenAxis:
+                DispatchOnPenAxis(L, ev.penId, ev.penAxis, ev.penAxisValue);
+                break;
+            // Phase AR — Timer 事件 (light_time.cpp 提供处理)
+            case PlatformWindow::Event::Timer:
+                Time_OnTimerEvent(L, ev.penButton);  // 复用 penButton 字段作为 timer_id
                 break;
             default:
                 break;
@@ -756,6 +913,25 @@ int luaopen_Light_UI(lua_State* L) {
     lua_pushinteger(L, 1); lua_setfield(L, -2, "CAPITALIZATION_SENTENCES");
     lua_pushinteger(L, 2); lua_setfield(L, -2, "CAPITALIZATION_WORDS");
     lua_pushinteger(L, 3); lua_setfield(L, -2, "CAPITALIZATION_LETTERS");
+
+    // Phase AR - Pen 输入状态位 (与 SDL_PEN_INPUT_* 一致)
+    lua_pushinteger(L, 1u << 0);  lua_setfield(L, -2, "PEN_INPUT_DOWN");
+    lua_pushinteger(L, 1u << 1);  lua_setfield(L, -2, "PEN_INPUT_BUTTON_1");
+    lua_pushinteger(L, 1u << 2);  lua_setfield(L, -2, "PEN_INPUT_BUTTON_2");
+    lua_pushinteger(L, 1u << 3);  lua_setfield(L, -2, "PEN_INPUT_BUTTON_3");
+    lua_pushinteger(L, 1u << 4);  lua_setfield(L, -2, "PEN_INPUT_BUTTON_4");
+    lua_pushinteger(L, 1u << 5);  lua_setfield(L, -2, "PEN_INPUT_BUTTON_5");
+    lua_pushinteger(L, 1u << 30); lua_setfield(L, -2, "PEN_INPUT_ERASER_TIP");
+
+    // Phase AR - Pen 轴 ID (与 SDL_PenAxis 枚举一致)
+    lua_pushinteger(L, 0); lua_setfield(L, -2, "PEN_AXIS_PRESSURE");
+    lua_pushinteger(L, 1); lua_setfield(L, -2, "PEN_AXIS_XTILT");
+    lua_pushinteger(L, 2); lua_setfield(L, -2, "PEN_AXIS_YTILT");
+    lua_pushinteger(L, 3); lua_setfield(L, -2, "PEN_AXIS_DISTANCE");
+    lua_pushinteger(L, 4); lua_setfield(L, -2, "PEN_AXIS_ROTATION");
+    lua_pushinteger(L, 5); lua_setfield(L, -2, "PEN_AXIS_SLIDER");
+    lua_pushinteger(L, 6); lua_setfield(L, -2, "PEN_AXIS_TANGENTIAL_PRESSURE");
+    lua_pushinteger(L, 7); lua_setfield(L, -2, "PEN_AXIS_COUNT");
     return 1;
 }
 

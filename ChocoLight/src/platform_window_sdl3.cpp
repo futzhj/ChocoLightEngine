@@ -389,6 +389,62 @@ bool PollEvent(Event* out) {
             out->text_length = (int)e.edit.length;
             return true;
 
+        // ==================== Pen 数字笔事件 (Phase AR) ====================
+        case SDL_EVENT_PEN_PROXIMITY_IN:
+            out->type      = Event::PenProximity;
+            out->penId     = (int)e.pproximity.which;
+            out->penAction = 1;
+            return true;
+        case SDL_EVENT_PEN_PROXIMITY_OUT:
+            out->type      = Event::PenProximity;
+            out->penId     = (int)e.pproximity.which;
+            out->penAction = 0;
+            return true;
+        case SDL_EVENT_PEN_DOWN:
+            out->type      = Event::PenDown;
+            out->penId     = (int)e.ptouch.which;
+            out->x         = e.ptouch.x;
+            out->y         = e.ptouch.y;
+            out->penEraser = e.ptouch.eraser ? 1 : 0;
+            return true;
+        case SDL_EVENT_PEN_UP:
+            out->type      = Event::PenUp;
+            out->penId     = (int)e.ptouch.which;
+            out->x         = e.ptouch.x;
+            out->y         = e.ptouch.y;
+            out->penEraser = e.ptouch.eraser ? 1 : 0;
+            return true;
+        case SDL_EVENT_PEN_BUTTON_DOWN:
+            out->type      = Event::PenButton;
+            out->penId     = (int)e.pbutton.which;
+            out->penButton = (int)e.pbutton.button;
+            out->penAction = 1;
+            out->x         = e.pbutton.x;
+            out->y         = e.pbutton.y;
+            return true;
+        case SDL_EVENT_PEN_BUTTON_UP:
+            out->type      = Event::PenButton;
+            out->penId     = (int)e.pbutton.which;
+            out->penButton = (int)e.pbutton.button;
+            out->penAction = 0;
+            out->x         = e.pbutton.x;
+            out->y         = e.pbutton.y;
+            return true;
+        case SDL_EVENT_PEN_MOTION:
+            out->type  = Event::PenMotion;
+            out->penId = (int)e.pmotion.which;
+            out->x     = e.pmotion.x;
+            out->y     = e.pmotion.y;
+            return true;
+        case SDL_EVENT_PEN_AXIS:
+            out->type         = Event::PenAxis;
+            out->penId        = (int)e.paxis.which;
+            out->penAxis      = (int)e.paxis.axis;
+            out->penAxisValue = e.paxis.value;
+            out->x            = e.paxis.x;
+            out->y            = e.paxis.y;
+            return true;
+
         case SDL_EVENT_QUIT:
             out->type = Event::Quit;
             return true;
@@ -432,6 +488,18 @@ bool PollEvent(Event* out) {
             return true;
 
         default:
+            // Phase AR — 动态识别 Light.Time.AddTimer 注册的用户事件类型
+            // (g_timerEventType 在 luaopen_Light_Time 中通过 SDL_RegisterEvents 申请,
+            //  这里调用 Time_GetTimerEventType() 拿到当前值)
+            {
+                extern "C" Uint32 Time_GetTimerEventType();
+                Uint32 timerType = Time_GetTimerEventType();
+                if (timerType != 0 && e.type == timerType) {
+                    out->type      = Event::Timer;
+                    out->penButton = (int)e.user.code;  // 复用 penButton 字段存 timer_id
+                    return true;
+                }
+            }
             // 未识别的事件: 返回 None, 让调用者继续轮询
             out->type = Event::None;
             return true;

@@ -37,10 +37,16 @@
  *    TIME_FORMAT_24HR     = 0
  *    TIME_FORMAT_12HR     = 1
  *
+ * Phase AR additions:
+ *    Light.Time.AddTimer(ms, fn) -> id (one-shot timer; return 0 on failure)
+ *    Light.Time.RemoveTimer(id) -> bool
+ *      Implementation: SDL_AddTimer fires on SDL's internal thread, then
+ *      SDL_PushEvent forwards to the main loop where Time_OnTimerEvent runs
+ *      the Lua callback safely. Timers are one-shot; for repeated callbacks,
+ *      the Lua side wraps with another AddTimer call (avoids re-entrancy and
+ *      cross-thread state churn).
+ *
  * Not bound (intentional):
- *    SDL_AddTimer / SDL_AddTimerNS / SDL_RemoveTimer
- *      - timer callback fires on a dedicated SDL thread; safe Lua dispatch
- *        needs the Tray-style poll trampoline. Defer to a later phase.
  *    SDL_TimeToWindows / SDL_TimeFromWindows
  *      - Windows-specific FILETIME interop; out of cross-platform scope.
  *
@@ -54,10 +60,82 @@
 #include "light.h"
 
 #include <SDL3/SDL.h>
+#include <unordered_map>
+#include <mutex>
 
 extern "C" {
 #include "lua.h"
 #include "lauxlib.h"
+}
+
+// Phase AR — Timer infrastructure
+// =========================================================
+// SDL 内部线程 → PushEvent → 主线程 dispatch → Lua callback
+// 仅允许主线程访问 g_timerCallbackRef; SDL 回调仅读取 timer_id 不访问表。
+static Uint32                                  g_timerEventType = 0;     ///< SDL_RegisterEvents 返回的事件类型 ID, 0=未初始化
+static int                                     g_nextTimerId    = 1;     ///< Lua 层稳定 timer_id
+static std::unordered_map<int, int>            g_timerCallbackRef;       ///< timer_id → Lua registry ref
+static std::unordered_map<int, SDL_TimerID>    g_timerSdlMap;            ///< timer_id → SDL_TimerID (只在主线程访问)
+static std::mutex                              g_timerMutex;             ///< 仅保护 g_nextTimerId 递增
+
+/// SDL_AddTimer 回调 — 在 SDL 内部线程触发, 不能调 lua_*
+/// 仅推送一个 Timer 事件到队列, 让主线程 dispatch 时调 Lua
+static Uint32 SDLCALL TimerCallback(void* userdata, SDL_TimerID timerID, Uint32 interval) {
+    (void)timerID; (void)interval;
+    int timer_id = (int)(intptr_t)userdata;
+
+    // 推一个 SDL_USEREVENT (类型 = g_timerEventType), code = timer_id
+    SDL_Event ev;
+    SDL_zero(ev);
+    ev.user.type      = g_timerEventType;
+    ev.user.timestamp = SDL_GetTicksNS();
+    ev.user.code      = timer_id;
+    ev.user.data1     = nullptr;
+    ev.user.data2     = nullptr;
+    SDL_PushEvent(&ev);
+
+    return 0;  // 返回 0 = 不重复 (单次计时器)
+}
+
+/// 主线程处理 Timer 事件 — 由 light_ui.cpp DispatchEvents 调用
+extern "C" LIGHT_API void Time_OnTimerEvent(lua_State* L, int timer_id) {
+    if (!L) return;
+
+    auto it = g_timerCallbackRef.find(timer_id);
+    if (it == g_timerCallbackRef.end()) return;  // 已被 RemoveTimer 清理
+
+    int ref = it->second;
+
+    // 取出 Lua callback 并调用 (单次触发, 调后释放 ref)
+    lua_rawgeti(L, LUA_REGISTRYINDEX, ref);
+    if (lua_isfunction(L, -1)) {
+        if (lua_pcall(L, 0, 0, 0)) {
+            CC::Log(CC::LOG_ERROR, "Timer[%d] callback: %s", timer_id, lua_tostring(L, -1));
+            lua_pop(L, 1);
+        }
+    } else {
+        lua_pop(L, 1);
+    }
+
+    // 清理 ref 和映射
+    luaL_unref(L, LUA_REGISTRYINDEX, ref);
+    g_timerCallbackRef.erase(timer_id);
+    g_timerSdlMap.erase(timer_id);
+}
+
+/// 初始化 Timer 事件类型 (在 luaopen_Light_Time 中调用, 只注册一次)
+static void EnsureTimerEventTypeRegistered() {
+    if (g_timerEventType == 0) {
+        Uint32 ev = SDL_RegisterEvents(1);
+        if (ev != (Uint32)-1) {
+            g_timerEventType = ev;
+        }
+    }
+}
+
+/// 导出给 platform_window_sdl3.cpp 查询: 如果返回事件类型匹配, 则应该转为 Event::Timer
+extern "C" LIGHT_API Uint32 Time_GetTimerEventType() {
+    return g_timerEventType;
 }
 
 // ===========================================================
@@ -258,6 +336,74 @@ static int l_Time_GetDayOfWeek(lua_State* L) {
 }
 
 // ===========================================================
+// Phase AR — AddTimer / RemoveTimer
+// ===========================================================
+// Lua: AddTimer(ms, fn) -> id
+//   ms: 延迟毫秒 (>=0)
+//   fn: function() callback (单次触发)
+// 返回: int id (>0 表示成功, 0 表示失败)
+static int l_Time_AddTimer(lua_State* L) {
+    Uint32 ms = (Uint32)luaL_checkinteger(L, 1);
+    luaL_checktype(L, 2, LUA_TFUNCTION);
+
+    EnsureTimerEventTypeRegistered();
+    if (g_timerEventType == 0) {
+        // 事件类型注册失败 (极端情况)
+        lua_pushinteger(L, 0);
+        return 1;
+    }
+
+    // 分配稳定 Lua 层 timer_id
+    int timer_id;
+    {
+        std::lock_guard<std::mutex> lock(g_timerMutex);
+        timer_id = g_nextTimerId++;
+    }
+
+    // 存储 callback ref (callback 在栈顶, 都会 luaL_ref 弹出)
+    lua_pushvalue(L, 2);
+    int ref = luaL_ref(L, LUA_REGISTRYINDEX);
+    g_timerCallbackRef[timer_id] = ref;
+
+    // 启动 SDL 定时器
+    SDL_TimerID sdl_id = SDL_AddTimer(ms, TimerCallback, (void*)(intptr_t)timer_id);
+    if (sdl_id == 0) {
+        // 启动失败, 清理
+        luaL_unref(L, LUA_REGISTRYINDEX, ref);
+        g_timerCallbackRef.erase(timer_id);
+        lua_pushinteger(L, 0);
+        return 1;
+    }
+    g_timerSdlMap[timer_id] = sdl_id;
+
+    lua_pushinteger(L, timer_id);
+    return 1;
+}
+
+// Lua: RemoveTimer(id) -> bool
+static int l_Time_RemoveTimer(lua_State* L) {
+    int timer_id = (int)luaL_checkinteger(L, 1);
+
+    auto sdl_it = g_timerSdlMap.find(timer_id);
+    if (sdl_it == g_timerSdlMap.end()) {
+        lua_pushboolean(L, 0);
+        return 1;
+    }
+
+    bool ok = SDL_RemoveTimer(sdl_it->second);
+    g_timerSdlMap.erase(sdl_it);
+
+    auto ref_it = g_timerCallbackRef.find(timer_id);
+    if (ref_it != g_timerCallbackRef.end()) {
+        luaL_unref(L, LUA_REGISTRYINDEX, ref_it->second);
+        g_timerCallbackRef.erase(ref_it);
+    }
+
+    lua_pushboolean(L, ok ? 1 : 0);
+    return 1;
+}
+
+// ===========================================================
 // luaopen_Light_Time
 // ===========================================================
 static const luaL_Reg kTimeReg[] = {
@@ -275,6 +421,9 @@ static const luaL_Reg kTimeReg[] = {
     { "GetDaysInMonth",              l_Time_GetDaysInMonth              },
     { "GetDayOfYear",                l_Time_GetDayOfYear                },
     { "GetDayOfWeek",                l_Time_GetDayOfWeek                },
+    // Phase AR — Callback timers (one-shot)
+    { "AddTimer",                    l_Time_AddTimer                    },
+    { "RemoveTimer",                 l_Time_RemoveTimer                 },
     { nullptr, nullptr },
 };
 
@@ -296,6 +445,9 @@ extern "C" LIGHT_API int luaopen_Light_Time(lua_State* L) {
     lua_setfield(L, -2, "TIME_FORMAT_24HR");
     lua_pushinteger(L, (lua_Integer)SDL_TIME_FORMAT_12HR);
     lua_setfield(L, -2, "TIME_FORMAT_12HR");
+
+    // Phase AR — 预注册 Timer 事件类型 (避免 AddTimer 调用时才注册造成丢事件)
+    EnsureTimerEventTypeRegistered();
 
     return 1;
 }

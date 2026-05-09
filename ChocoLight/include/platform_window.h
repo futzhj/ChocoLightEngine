@@ -52,6 +52,15 @@ struct Event {
         GamepadAxis      = 15,   // 手柄摇杆/扳机
         GamepadConnect   = 16,   // 手柄连接/断开
         TextEditing      = 17,   // UTF-8 IME 组合态 (含 cursor start/length, Phase AQ)
+        // Phase AR — Pen 数字笔事件
+        PenProximity     = 18,   // 笔靠近/离开板 (penAction: 1=in, 0=out)
+        PenDown          = 19,   // 笔接触板 (x,y,penEraser)
+        PenUp            = 20,   // 笔抬起 (x,y,penEraser)
+        PenButton        = 21,   // 笔身按钮 (penButton, penAction)
+        PenMotion        = 22,   // 笔移动 (x,y)
+        PenAxis          = 23,   // 压感/倾斜/距离变化 (penAxis, penAxisValue)
+        // Phase AR — Timer 自定义事件 (Light.Time.AddTimer 中转, 不暴露给外部 hook)
+        Timer            = 24,   // 内部使用: penButton 字段复用为 timer_id
     } type = None;
 
     // 注意: 不使用 union 以避免 ABI 复杂性, 字段直接列出
@@ -76,6 +85,13 @@ struct Event {
     int    gpAction    = 0;      ///< GamepadButton: 1=按下, 0=释放; GamepadConnect: 1=连接, 0=断开
     int    gpAxis      = 0;      ///< GamepadAxis: 轴 ID (SDL_GAMEPAD_AXIS_*)
     float  gpAxisValue = 0.0f;   ///< GamepadAxis: 轴值 (-1..1)
+    // Phase AR — Pen 数字笔字段
+    int    penId        = 0;     ///< Pen*: SDL_PenID (Uint32)
+    int    penButton    = 0;     ///< PenButton: 按钮 ID (1~5); Timer: timer_id
+    int    penAxis      = 0;     ///< PenAxis: 轴 ID (0=PRESSURE..7=TANGENTIAL_PRESSURE)
+    float  penAxisValue = 0.0f;  ///< PenAxis: 轴值
+    int    penEraser    = 0;     ///< PenDown/Up: 1=橡皮擦末端使用
+    int    penAction    = 0;     ///< PenProximity: 1=in/down, 0=out/up; PenButton: 1=down, 0=up
 };
 
 // ==================== 生命周期 ====================
