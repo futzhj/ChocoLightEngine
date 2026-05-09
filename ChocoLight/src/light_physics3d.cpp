@@ -54,6 +54,9 @@
 #include <btBulletDynamicsCommon.h>
 // Heightfield 头文件未被 btBulletCollisionCommon.h 自动包含, 显式引入
 #include <BulletCollision/CollisionShapes/btHeightfieldTerrainShape.h>
+// Phase AU Step 3.3: CharacterController + Ghost object
+#include <BulletCollision/CollisionDispatch/btGhostObject.h>
+#include <BulletDynamics/Character/btKinematicCharacterController.h>
 #endif
 
 #include <cstdint>
@@ -71,10 +74,11 @@ extern "C" {
 
 // ==================== userdata 元表名 ====================
 
-static const char* WORLD_MT = "Light.Physics3D.World";
-static const char* BODY_MT  = "Light.Physics3D.Body";
-static const char* SHAPE_MT = "Light.Physics3D.Shape";
-static const char* JOINT_MT = "Light.Physics3D.Joint";   // Phase AU Step 3.2
+static const char* WORLD_MT     = "Light.Physics3D.World";
+static const char* BODY_MT      = "Light.Physics3D.Body";
+static const char* SHAPE_MT     = "Light.Physics3D.Shape";
+static const char* JOINT_MT     = "Light.Physics3D.Joint";       // Phase AU Step 3.2
+static const char* CHARACTER_MT = "Light.Physics3D.Character";   // Phase AU Step 3.3
 
 // ==================== userdata 结构 ====================
 
@@ -106,6 +110,8 @@ struct Body3D {
 
 // Phase AU Step 3.2: Joint 前向声明
 struct Joint3D;
+// Phase AU Step 3.3: Character 前向声明
+struct Character3D;
 
 struct World3D {
     btDefaultCollisionConfiguration*     config;
@@ -113,14 +119,16 @@ struct World3D {
     btBroadphaseInterface*               broadphase;
     btSequentialImpulseConstraintSolver* solver;
     btDiscreteDynamicsWorld*             world;
+    btGhostPairCallback*                 ghostPairCb;  // Phase AU Step 3.3
     std::vector<Body3D*>                 bodies;
     std::vector<Joint3D*>                joints;      // Phase AU Step 3.2
+    std::vector<Character3D*>            characters;  // Phase AU Step 3.3
     int                                  contactRef;  // OnContact callback in registry
     lua_State*                           L;
     bool                                 alive;
     World3D() : config(nullptr), dispatcher(nullptr), broadphase(nullptr),
-                solver(nullptr), world(nullptr), contactRef(LUA_NOREF),
-                L(nullptr), alive(false) {}
+                solver(nullptr), world(nullptr), ghostPairCb(nullptr),
+                contactRef(LUA_NOREF), L(nullptr), alive(false) {}
 };
 
 // Phase AU Step 3.2: Joint userdata
@@ -142,6 +150,18 @@ struct Joint3D {
     Joint3D() : constraint(nullptr), owner(nullptr),
                 bodyARef(LUA_NOREF), bodyBRef(LUA_NOREF), selfRef(LUA_NOREF),
                 type(JT_P2P), alive(false) {}
+};
+
+// Phase AU Step 3.3: Character userdata
+struct Character3D {
+    btPairCachingGhostObject*       ghost;
+    btKinematicCharacterController* ctrl;
+    World3D*                        owner;
+    int                             shapeRef;   // 防 shape udata GC (必须是 btConvexShape)
+    int                             selfRef;    // 防自身 GC
+    bool                            alive;
+    Character3D() : ghost(nullptr), ctrl(nullptr), owner(nullptr),
+                    shapeRef(LUA_NOREF), selfRef(LUA_NOREF), alive(false) {}
 };
 
 // ==================== Helpers ====================
@@ -792,6 +812,9 @@ static int l_NewWorld(lua_State* L) {
     w->solver = new btSequentialImpulseConstraintSolver();
     w->world = new btDiscreteDynamicsWorld(w->dispatcher, w->broadphase, w->solver, w->config);
     w->world->setGravity(btVector3(gx, gy, gz));
+    // Phase AU Step 3.3: Ghost pair callback (CharacterController 必需)
+    w->ghostPairCb = new btGhostPairCallback();
+    w->broadphase->getOverlappingPairCache()->setInternalGhostPairCallback(w->ghostPairCb);
     w->L = L;
     w->alive = true;
 
@@ -1303,6 +1326,275 @@ static int l_Joint_6DOF_SetAngularUpper(lua_State* L) {
     return 0;
 }
 
+// ==================== Phase AU Step 3.3: CharacterController ====================
+
+static Character3D* CheckCharacter(lua_State* L, int idx) {
+    return (Character3D*)luaL_checkudata(L, idx, CHARACTER_MT);
+}
+static Character3D* CheckLiveCharacter(lua_State* L, int idx) {
+    Character3D* c = CheckCharacter(L, idx);
+    if (!c->alive) return nullptr;
+    return c;
+}
+
+static void InvalidateCharacter(lua_State* L, Character3D* c) {
+    if (!c || !c->alive) return;
+    if (c->owner && c->owner->world) {
+        if (c->ctrl)  c->owner->world->removeAction(c->ctrl);
+        if (c->ghost) c->owner->world->removeCollisionObject(c->ghost);
+    }
+    delete c->ctrl;   c->ctrl  = nullptr;
+    delete c->ghost;  c->ghost = nullptr;
+    if (c->shapeRef != LUA_NOREF) {
+        luaL_unref(L, LUA_REGISTRYINDEX, c->shapeRef);
+        c->shapeRef = LUA_NOREF;
+    }
+    if (c->selfRef != LUA_NOREF) {
+        luaL_unref(L, LUA_REGISTRYINDEX, c->selfRef);
+        c->selfRef = LUA_NOREF;
+    }
+    c->alive = false;
+}
+
+// world:CreateCharacter({ shape, x, y, z, stepHeight=0.35, upX=0, upY=1, upZ=0 })
+static int l_World_CreateCharacter(lua_State* L) {
+    World3D* w = CheckWorld(L, 1);
+    if (!w->alive) { lua_pushnil(L); lua_pushstring(L, "world dead"); return 2; }
+    luaL_checktype(L, 2, LUA_TTABLE);
+
+    // shape (必须是 btConvexShape 子类: box/sphere/cylinder/capsule/cone/convexHull)
+    lua_getfield(L, 2, "shape");
+    Shape3D* sh = (Shape3D*)luaL_testudata(L, -1, SHAPE_MT);
+    int shapeStackIdx = lua_gettop(L);
+    if (!sh || !sh->shape) {
+        lua_pop(L, 1);
+        lua_pushnil(L);
+        lua_pushstring(L, "CreateCharacter: missing 'shape'");
+        return 2;
+    }
+    if (!sh->shape->isConvex()) {
+        lua_pop(L, 1);
+        lua_pushnil(L);
+        lua_pushstring(L, "CreateCharacter: shape must be convex (box/sphere/cylinder/capsule/cone/convexHull)");
+        return 2;
+    }
+
+    // 起始位置
+    lua_getfield(L, 2, "x"); float x = (float)lua_tonumber(L, -1); lua_pop(L, 1);
+    lua_getfield(L, 2, "y"); float y = (float)lua_tonumber(L, -1); lua_pop(L, 1);
+    lua_getfield(L, 2, "z"); float z = (float)lua_tonumber(L, -1); lua_pop(L, 1);
+
+    // stepHeight
+    lua_getfield(L, 2, "stepHeight");
+    float stepH = (float)(lua_isnumber(L, -1) ? lua_tonumber(L, -1) : 0.35);
+    lua_pop(L, 1);
+
+    // up vector (默认 Y up)
+    lua_getfield(L, 2, "upX"); float ux = (float)(lua_isnumber(L, -1) ? lua_tonumber(L, -1) : 0); lua_pop(L, 1);
+    lua_getfield(L, 2, "upY"); float uy = (float)(lua_isnumber(L, -1) ? lua_tonumber(L, -1) : 1); lua_pop(L, 1);
+    lua_getfield(L, 2, "upZ"); float uz = (float)(lua_isnumber(L, -1) ? lua_tonumber(L, -1) : 0); lua_pop(L, 1);
+
+    // 构造 ghost + controller
+    btPairCachingGhostObject* ghost = new btPairCachingGhostObject();
+    btTransform start;
+    start.setIdentity();
+    start.setOrigin(btVector3(x, y, z));
+    ghost->setWorldTransform(start);
+    ghost->setCollisionShape(sh->shape);
+    ghost->setCollisionFlags(btCollisionObject::CF_CHARACTER_OBJECT);
+
+    btConvexShape* convex = static_cast<btConvexShape*>(sh->shape);
+    btKinematicCharacterController* ctrl = new btKinematicCharacterController(
+        ghost, convex, stepH, btVector3(ux, uy, uz));
+
+    // 加入 world: ghost 进 collision world (kinematic-character group), ctrl 作为 action
+    w->world->addCollisionObject(ghost,
+        btBroadphaseProxy::CharacterFilter,
+        btBroadphaseProxy::StaticFilter | btBroadphaseProxy::DefaultFilter);
+    w->world->addAction(ctrl);
+
+    // userdata
+    Character3D* c = (Character3D*)lua_newuserdata(L, sizeof(Character3D));
+    new (c) Character3D();
+    c->ghost = ghost;
+    c->ctrl  = ctrl;
+    c->owner = w;
+    c->alive = true;
+    luaL_getmetatable(L, CHARACTER_MT);
+    lua_setmetatable(L, -2);
+
+    // 防 shape GC
+    lua_pushvalue(L, shapeStackIdx);
+    c->shapeRef = luaL_ref(L, LUA_REGISTRYINDEX);
+    // 防自身 GC
+    lua_pushvalue(L, -1);
+    c->selfRef = luaL_ref(L, LUA_REGISTRYINDEX);
+
+    w->characters.push_back(c);
+
+    // 清理 shape 临时栈值, 只留 character udata
+    lua_remove(L, shapeStackIdx);
+    return 1;
+}
+
+static int l_World_DestroyCharacter(lua_State* L) {
+    World3D* w = CheckWorld(L, 1);
+    if (!w->alive) return 0;
+    Character3D* c = CheckCharacter(L, 2);
+    if (c->owner != w || !c->alive) return 0;
+    auto& v = w->characters;
+    v.erase(std::remove(v.begin(), v.end(), c), v.end());
+    InvalidateCharacter(L, c);
+    return 0;
+}
+
+static int l_World_GetCharacterCount(lua_State* L) {
+    World3D* w = CheckWorld(L, 1);
+    if (!w->alive) { lua_pushinteger(L, 0); return 1; }
+    int count = 0;
+    for (auto* c : w->characters) if (c && c->alive) count++;
+    lua_pushinteger(L, count);
+    return 1;
+}
+
+// ---- Character 方法 ----
+
+static int l_Char_SetWalkDirection(lua_State* L) {
+    Character3D* c = CheckLiveCharacter(L, 1); if (!c) return 0;
+    float vx = (float)luaL_checknumber(L, 2);
+    float vy = (float)luaL_checknumber(L, 3);
+    float vz = (float)luaL_checknumber(L, 4);
+    c->ctrl->setWalkDirection(btVector3(vx, vy, vz));
+    return 0;
+}
+
+static int l_Char_Jump(lua_State* L) {
+    Character3D* c = CheckLiveCharacter(L, 1); if (!c) return 0;
+    if (lua_isnumber(L, 2)) {
+        float vx = (float)lua_tonumber(L, 2);
+        float vy = (float)luaL_optnumber(L, 3, 0);
+        float vz = (float)luaL_optnumber(L, 4, 0);
+        c->ctrl->jump(btVector3(vx, vy, vz));
+    } else {
+        c->ctrl->jump();
+    }
+    return 0;
+}
+
+static int l_Char_OnGround(lua_State* L) {
+    Character3D* c = CheckLiveCharacter(L, 1);
+    lua_pushboolean(L, (c && c->ctrl->onGround()) ? 1 : 0);
+    return 1;
+}
+
+static int l_Char_CanJump(lua_State* L) {
+    Character3D* c = CheckLiveCharacter(L, 1);
+    lua_pushboolean(L, (c && c->ctrl->canJump()) ? 1 : 0);
+    return 1;
+}
+
+static int l_Char_SetJumpSpeed(lua_State* L) {
+    Character3D* c = CheckLiveCharacter(L, 1); if (!c) return 0;
+    c->ctrl->setJumpSpeed((float)luaL_checknumber(L, 2));
+    return 0;
+}
+static int l_Char_GetJumpSpeed(lua_State* L) {
+    Character3D* c = CheckLiveCharacter(L, 1);
+    lua_pushnumber(L, c ? c->ctrl->getJumpSpeed() : 0);
+    return 1;
+}
+
+static int l_Char_SetGravity(lua_State* L) {
+    Character3D* c = CheckLiveCharacter(L, 1); if (!c) return 0;
+    float gx = (float)luaL_checknumber(L, 2);
+    float gy = (float)luaL_checknumber(L, 3);
+    float gz = (float)luaL_checknumber(L, 4);
+    c->ctrl->setGravity(btVector3(gx, gy, gz));
+    return 0;
+}
+static int l_Char_GetGravity(lua_State* L) {
+    Character3D* c = CheckLiveCharacter(L, 1);
+    if (!c) { for (int i=0;i<3;i++) lua_pushnumber(L, 0); return 3; }
+    PushVec3(L, c->ctrl->getGravity());
+    return 3;
+}
+
+static int l_Char_SetMaxSlope(lua_State* L) {
+    Character3D* c = CheckLiveCharacter(L, 1); if (!c) return 0;
+    c->ctrl->setMaxSlope((float)luaL_checknumber(L, 2));
+    return 0;
+}
+static int l_Char_GetMaxSlope(lua_State* L) {
+    Character3D* c = CheckLiveCharacter(L, 1);
+    lua_pushnumber(L, c ? c->ctrl->getMaxSlope() : 0);
+    return 1;
+}
+
+static int l_Char_SetFallSpeed(lua_State* L) {
+    Character3D* c = CheckLiveCharacter(L, 1); if (!c) return 0;
+    c->ctrl->setFallSpeed((float)luaL_checknumber(L, 2));
+    return 0;
+}
+
+static int l_Char_GetPosition(lua_State* L) {
+    Character3D* c = CheckLiveCharacter(L, 1);
+    if (!c) { for (int i=0;i<3;i++) lua_pushnumber(L, 0); return 3; }
+    btVector3 p = c->ghost->getWorldTransform().getOrigin();
+    PushVec3(L, p);
+    return 3;
+}
+
+static int l_Char_SetPosition(lua_State* L) {
+    Character3D* c = CheckLiveCharacter(L, 1); if (!c) return 0;
+    float x = (float)luaL_checknumber(L, 2);
+    float y = (float)luaL_checknumber(L, 3);
+    float z = (float)luaL_checknumber(L, 4);
+    btTransform t = c->ghost->getWorldTransform();
+    t.setOrigin(btVector3(x, y, z));
+    c->ghost->setWorldTransform(t);
+    // 同步给 ctrl 的内部状态: warp 是 official 用法
+    c->ctrl->warp(btVector3(x, y, z));
+    return 0;
+}
+
+static int l_Char_IsAlive(lua_State* L) {
+    Character3D* c = CheckCharacter(L, 1);
+    lua_pushboolean(L, c->alive);
+    return 1;
+}
+
+static int l_Char_Delete(lua_State* L) {
+    Character3D* c = CheckCharacter(L, 1);
+    if (!c->alive) return 0;
+    if (c->owner) {
+        auto& v = c->owner->characters;
+        v.erase(std::remove(v.begin(), v.end(), c), v.end());
+    }
+    InvalidateCharacter(L, c);
+    return 0;
+}
+
+static int l_Char_GC(lua_State* L) {
+    Character3D* c = CheckCharacter(L, 1);
+    if (c->alive) {
+        if (c->owner) {
+            auto& v = c->owner->characters;
+            v.erase(std::remove(v.begin(), v.end(), c), v.end());
+        }
+        InvalidateCharacter(L, c);
+    }
+    c->~Character3D();
+    return 0;
+}
+
+static int l_Char_Tostring(lua_State* L) {
+    Character3D* c = CheckCharacter(L, 1);
+    if (!c->alive) { lua_pushstring(L, "Light.Physics3D.Character(dead)"); return 1; }
+    btVector3 p = c->ghost->getWorldTransform().getOrigin();
+    lua_pushfstring(L, "Light.Physics3D.Character(pos=%.2f,%.2f,%.2f)", p.x(), p.y(), p.z());
+    return 1;
+}
+
 static int l_World_RayCast(lua_State* L) {
     World3D* w = CheckWorld(L, 1);
     if (!w->alive) {
@@ -1345,6 +1637,9 @@ static int l_World_OnContact(lua_State* L) {
     return 0;
 }
 
+// 前向声明 (实现在下方)
+static void InvalidateCharacter(lua_State* L, Character3D* c);
+
 // 释放 Bullet 资源, 可重复调用 (幂等)
 static void World_ReleaseBullet(lua_State* L, World3D* w) {
     if (!w->alive) return;
@@ -1354,6 +1649,12 @@ static void World_ReleaseBullet(lua_State* L, World3D* w) {
         if (j) j->owner = nullptr;
     }
     w->joints.clear();
+    // Phase AU Step 3.3: characters 也在 bodies 之前销毁
+    for (auto* c : w->characters) {
+        InvalidateCharacter(L, c);
+        if (c) c->owner = nullptr;
+    }
+    w->characters.clear();
     // 销毁所有 body 引用
     for (auto* b : w->bodies) {
         InvalidateBody(L, b);
@@ -1369,6 +1670,7 @@ static void World_ReleaseBullet(lua_State* L, World3D* w) {
     delete w->broadphase;  w->broadphase = nullptr;
     delete w->dispatcher;  w->dispatcher = nullptr;
     delete w->config;      w->config = nullptr;
+    delete w->ghostPairCb; w->ghostPairCb = nullptr;  // Phase AU Step 3.3
     w->alive = false;
 }
 
@@ -1423,6 +1725,10 @@ static const luaL_Reg kWorldMethods[] = {
     { "CreateJoint",    l_World_CreateJoint },
     { "DestroyJoint",   l_World_DestroyJoint },
     { "GetJointCount",  l_World_GetJointCount },
+    // Phase AU Step 3.3 — Character
+    { "CreateCharacter",   l_World_CreateCharacter },
+    { "DestroyCharacter",  l_World_DestroyCharacter },
+    { "GetCharacterCount", l_World_GetCharacterCount },
     { "RayCast",        l_World_RayCast },
     { "OnContact",      l_World_OnContact },
     { "Delete",         l_World_Delete },
@@ -1458,6 +1764,28 @@ static const luaL_Reg kJointMethods[] = {
     { "Delete",             l_Joint_Delete },
     { "__gc",               l_Joint_GC },
     { "__tostring",         l_Joint_Tostring },
+    { nullptr, nullptr }
+};
+
+// Phase AU Step 3.3: Character 元表方法
+static const luaL_Reg kCharacterMethods[] = {
+    { "SetWalkDirection", l_Char_SetWalkDirection },
+    { "Jump",             l_Char_Jump },
+    { "OnGround",         l_Char_OnGround },
+    { "CanJump",          l_Char_CanJump },
+    { "SetJumpSpeed",     l_Char_SetJumpSpeed },
+    { "GetJumpSpeed",     l_Char_GetJumpSpeed },
+    { "SetGravity",       l_Char_SetGravity },
+    { "GetGravity",       l_Char_GetGravity },
+    { "SetMaxSlope",      l_Char_SetMaxSlope },
+    { "GetMaxSlope",      l_Char_GetMaxSlope },
+    { "SetFallSpeed",     l_Char_SetFallSpeed },
+    { "GetPosition",      l_Char_GetPosition },
+    { "SetPosition",      l_Char_SetPosition },
+    { "IsAlive",          l_Char_IsAlive },
+    { "Delete",           l_Char_Delete },
+    { "__gc",             l_Char_GC },
+    { "__tostring",       l_Char_Tostring },
     { nullptr, nullptr }
 };
 
@@ -1527,6 +1855,14 @@ extern "C" LIGHT_API int luaopen_Light_Physics3D(lua_State* L) {
     // Joint 元表 (Phase AU Step 3.2)
     if (luaL_newmetatable(L, JOINT_MT)) {
         luaL_setfuncs(L, kJointMethods, 0);
+        lua_pushvalue(L, -1);
+        lua_setfield(L, -2, "__index");
+    }
+    lua_pop(L, 1);
+
+    // Character 元表 (Phase AU Step 3.3)
+    if (luaL_newmetatable(L, CHARACTER_MT)) {
+        luaL_setfuncs(L, kCharacterMethods, 0);
         lua_pushvalue(L, -1);
         lua_setfield(L, -2, "__index");
     }

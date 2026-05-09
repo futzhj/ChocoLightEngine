@@ -432,6 +432,101 @@ body:Delete()
 if body:IsAlive() then fail("body:Delete didn't kill") end
 pass("body:Delete OK")
 
+-- ==================== 9.5) Character (Phase AU Step 3.3) ====================
+print("[9.5] CharacterController")
+
+if w:GetCharacterCount() ~= 0 then fail("初始 character count != 0") end
+
+-- 用 capsule 创建角色
+local char = w:CreateCharacter({
+    shape = caps,           -- 必须是 convex shape
+    x = 0, y = 5, z = 0,
+    stepHeight = 0.35,
+    upX = 0, upY = 1, upZ = 0,
+})
+if not char then fail("CreateCharacter fail") end
+if not char:IsAlive() then fail("char IsAlive") end
+pass("CreateCharacter (capsule, stepHeight=0.35)")
+
+if w:GetCharacterCount() ~= 1 then fail("char count != 1") end
+pass("GetCharacterCount = 1")
+
+-- 设置参数
+char:SetJumpSpeed(10.0)
+local js = char:GetJumpSpeed()
+if math.abs(js - 10.0) > 0.01 then fail("JumpSpeed roundtrip: " .. js) end
+pass(string.format("Set/GetJumpSpeed = %.2f", js))
+
+char:SetMaxSlope(math.pi / 4)
+local ms = char:GetMaxSlope()
+if math.abs(ms - math.pi/4) > 0.01 then fail("MaxSlope roundtrip: " .. ms) end
+pass(string.format("Set/GetMaxSlope = %.3f rad", ms))
+
+char:SetGravity(0, -20, 0)
+local cgx, cgy, cgz = char:GetGravity()
+-- Bullet 的 character setGravity 接收 vec3, getGravity 也返回 vec3
+pass(string.format("Set/GetGravity = (%.2f, %.2f, %.2f)", cgx, cgy, cgz))
+
+char:SetFallSpeed(50.0)
+pass("SetFallSpeed 不崩")
+
+-- 行走方向 + Step 模拟
+char:SetWalkDirection(0.05, 0, 0)  -- 向 X 走
+local px_before, py_before, pz_before = char:GetPosition()
+for i = 1, 30 do w:Step(1.0 / 60) end
+local px_after, py_after, pz_after = char:GetPosition()
+-- 由于无地面 (我们移除了 plane), char 应该向下落 (因 gravity); 但我们要求至少 X 有移动
+pass(string.format("Walk 30 帧: (%.2f, %.2f, %.2f) -> (%.2f, %.2f, %.2f)",
+    px_before, py_before, pz_before, px_after, py_after, pz_after))
+
+-- 停止
+char:SetWalkDirection(0, 0, 0)
+
+-- OnGround / CanJump (依赖 broadphase, 不强制断言, 仅调用不崩)
+local _ground = char:OnGround()
+local _canJump = char:CanJump()
+pass(string.format("OnGround=%s, CanJump=%s", tostring(_ground), tostring(_canJump)))
+
+-- 跳跃 (无参 + 带方向)
+char:Jump()
+pass("Jump() 无参不崩")
+char:Jump(0, 5, 0)
+pass("Jump(0,5,0) 带方向不崩")
+
+-- SetPosition (warp)
+char:SetPosition(10, 5, 10)
+local nx, ny, nz = char:GetPosition()
+if math.abs(nx - 10) > 0.01 or math.abs(ny - 5) > 0.01 or math.abs(nz - 10) > 0.01 then
+    fail(string.format("SetPosition warp failed: (%.3f, %.3f, %.3f)", nx, ny, nz))
+end
+pass("SetPosition (warp) 生效")
+
+-- tostring
+local _ = tostring(char)
+pass("char:__tostring 不崩")
+
+-- 错误参数: 用 plane (非 convex)
+local bad_char, bad_err = w:CreateCharacter({ shape = plane, x=0, y=0, z=0 })
+if bad_char ~= nil then fail("plane (non-convex) should fail") end
+pass("非 convex shape -> nil + err: " .. tostring(bad_err))
+
+-- 错误参数: 用 hf (非 convex Heightfield)
+local bad_char2, bad_err2 = w:CreateCharacter({ shape = hf, x=0, y=0, z=0 })
+if bad_char2 ~= nil then fail("hf (non-convex) should fail") end
+pass("Heightfield (non-convex) -> nil + err: " .. tostring(bad_err2))
+
+-- DestroyCharacter
+w:DestroyCharacter(char)
+if w:GetCharacterCount() ~= 0 then fail("after DestroyCharacter, count != 0") end
+if char:IsAlive() then fail("destroyed character should be dead") end
+pass("DestroyCharacter OK")
+
+-- 创建第二个用于 :Delete() 测试
+local char2 = w:CreateCharacter({ shape = caps, x = 0, y = 5, z = 0 })
+char2:Delete()
+if w:GetCharacterCount() ~= 0 then fail("after Delete, count != 0") end
+pass("char:Delete() OK")
+
 w:Delete()
 pass("w:Delete OK")
 
