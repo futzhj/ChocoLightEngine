@@ -348,7 +348,22 @@ luaL_setfuncs(L, kAnimationModule, 0);
 ## Step 4 — 状态机 + Transition + Crossfade + 事件帧 ✅
 
 **完成时间**：2026-05-10  
-**状态**：本地实现完成，等 CI 验证 (推送到 origin/main 后追加 run id)
+**状态**：✅ **CI 全绿**（commit `f5e8f34`，run [`25612243131`](https://github.com/futzhj/ChocoLightEngine/actions/runs/25612243131)）
+
+| 平台 | build | runtime smoke |
+|------|-------|---------------|
+| Windows | ✅ success | ✅ `[Phase AV Step 1+2+3+4] 通过 93 / 失败 0` |
+| Linux | ✅ success | — (build only) |
+| macOS | ✅ success | — (build only) |
+| Android | ✅ success | — (build only) |
+| iOS | ✅ success | — (build only) |
+| Web (Emscripten) | ✅ success | — (build only) |
+
+**断言细分**（完全匹配预期）：
+- Step 1+2+3 sanity 路径：**67** ✅
+- Step 4 元表方法完整性（14 个新方法）：**14** ✅
+- Step 4 raise 路径（无 self / 无参数）：**12** ✅
+- **合计 93 / 0**
 
 ### 1. 改动文件
 
@@ -436,7 +451,7 @@ luaL_setfuncs(L, kAnimationModule, 0);
 - 新增 `ComputeJointMatricesBlended`（双 clip TRS lerp/slerp 混合后走相同 helper）
 - **优点**：消除 ~80 行重复代码；DFS 拓扑只有一份实现；未来 IK / Layer 也可复用 helper
 
-### 5. 调试经验（待 CI 触发后补）
+### 5. 调试经验
 
 #### 5.1 anonymous namespace 边界
 
@@ -458,14 +473,14 @@ luaL_setfuncs(L, kAnimationModule, 0);
 - [x] demo_animation 主体逻辑无语法错误（本地 lightc -p 待 CI 验证）
 - [x] docs 完整：API + MODULE_INDEX + ACCEPTANCE + samples README
 
-### 7. 待 CI 验证（推送后追加）
+### 7. CI 验证 ✅
 
-- [ ] CI run id：（待 push 后填写）
-- [ ] 6 平台 build 全绿
-- [ ] Windows runtime smoke `[Phase AV Step 1+2+3+4] 通过 N / 失败 0`
-- [ ] Phase AS / AT / AU smoke 无退化
+- [x] CI run id：[`25612243131`](https://github.com/futzhj/ChocoLightEngine/actions/runs/25612243131)
+- [x] 6 平台 build 全绿（Windows / Linux / macOS / Android / iOS / Web）
+- [x] Windows runtime smoke `[Phase AV Step 1+2+3+4] 通过 93 / 失败 0`
+- [x] Phase AS / AT / AU smoke 无退化（`[Phase AT smoke] All 40 assertions PASSED` 等同步通过）
 
-**预期通过断言数**：67 (Step 3) + 14 (Step 4 元表方法) + 12 (Step 4 raise) = **93**
+**通过断言数实测**：67 (Step 1+2+3 sanity) + 14 (Step 4 元表方法) + 12 (Step 4 raise) = **93**（与预期完全一致）
 
 ### 8. 待补任务（Phase AV.x 范围）
 
