@@ -35,6 +35,7 @@ light samples/demo_io_storage/main.lua
 | `demo_tray/` | `Light.Tray` (Phase I/I.2/I.3 全功能, 含 callback) | I |
 | `demo_hidapi/` | `Light.Hidapi` | J |
 | `demo_haptic/` | `Light.Haptic`, `Light.System` | K |
+| `demo_physics3d/` | `Light.Physics3D` (RigidBody / Vehicle / SoftBody / Wheel info / Wind) | AU |
 | `perf_benchmark/` | 性能基准测试 | - |
 
 ## 设计约定

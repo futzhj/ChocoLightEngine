@@ -2120,6 +2120,99 @@ static int l_Veh_GetWheelPosition(lua_State* L) {
     return 3;
 }
 
+// Phase AU Step 4.4: Vehicle 增强 — 一站式 wheel 信息查询
+// veh:GetWheelInfo(idx) -> table { x,y,z, in_contact, contact_normal{x,y,z},
+//   contact_point{x,y,z}, friction, suspension_stiffness, suspension_length, radius }
+static int l_Veh_GetWheelInfo(lua_State* L) {
+    Vehicle3D* v = CheckLiveVehicle(L, 1);
+    int wheel = (int)luaL_checkinteger(L, 2);
+    if (!v || wheel < 0 || wheel >= v->vehicle->getNumWheels()) {
+        lua_pushnil(L);
+        lua_pushstring(L, "wheel index out of range");
+        return 2;
+    }
+    v->vehicle->updateWheelTransform(wheel, true);
+    const btWheelInfo& w = v->vehicle->getWheelInfo(wheel);
+    btVector3 p = v->vehicle->getWheelTransformWS(wheel).getOrigin();
+
+    lua_newtable(L);
+    // 位置
+    lua_pushnumber(L, (double)p.x()); lua_setfield(L, -2, "x");
+    lua_pushnumber(L, (double)p.y()); lua_setfield(L, -2, "y");
+    lua_pushnumber(L, (double)p.z()); lua_setfield(L, -2, "z");
+    // 接触状态
+    lua_pushboolean(L, w.m_raycastInfo.m_isInContact ? 1 : 0);
+    lua_setfield(L, -2, "in_contact");
+    // 接触点 / 法线 (仅 in_contact 有意义,否则给 0,0,0)
+    lua_newtable(L);
+    lua_pushnumber(L, (double)w.m_raycastInfo.m_contactNormalWS.x()); lua_setfield(L, -2, "x");
+    lua_pushnumber(L, (double)w.m_raycastInfo.m_contactNormalWS.y()); lua_setfield(L, -2, "y");
+    lua_pushnumber(L, (double)w.m_raycastInfo.m_contactNormalWS.z()); lua_setfield(L, -2, "z");
+    lua_setfield(L, -2, "contact_normal");
+    lua_newtable(L);
+    lua_pushnumber(L, (double)w.m_raycastInfo.m_contactPointWS.x()); lua_setfield(L, -2, "x");
+    lua_pushnumber(L, (double)w.m_raycastInfo.m_contactPointWS.y()); lua_setfield(L, -2, "y");
+    lua_pushnumber(L, (double)w.m_raycastInfo.m_contactPointWS.z()); lua_setfield(L, -2, "z");
+    lua_setfield(L, -2, "contact_point");
+    // 物理参数
+    lua_pushnumber(L, (double)w.m_frictionSlip);          lua_setfield(L, -2, "friction");
+    lua_pushnumber(L, (double)w.m_suspensionStiffness);   lua_setfield(L, -2, "suspension_stiffness");
+    lua_pushnumber(L, (double)w.m_raycastInfo.m_suspensionLength); lua_setfield(L, -2, "suspension_length");
+    lua_pushnumber(L, (double)w.m_wheelsRadius);          lua_setfield(L, -2, "radius");
+    return 1;
+}
+
+// veh:IsWheelInContact(idx) -> bool
+static int l_Veh_IsWheelInContact(lua_State* L) {
+    Vehicle3D* v = CheckLiveVehicle(L, 1);
+    int wheel = (int)luaL_checkinteger(L, 2);
+    if (!v || wheel < 0 || wheel >= v->vehicle->getNumWheels()) {
+        lua_pushboolean(L, 0);
+        return 1;
+    }
+    lua_pushboolean(L, v->vehicle->getWheelInfo(wheel).m_raycastInfo.m_isInContact ? 1 : 0);
+    return 1;
+}
+
+// veh:SetWheelFriction(idx, friction)
+static int l_Veh_SetWheelFriction(lua_State* L) {
+    Vehicle3D* v = CheckLiveVehicle(L, 1);
+    int wheel = (int)luaL_checkinteger(L, 2);
+    float f = (float)luaL_checknumber(L, 3);
+    if (!v || wheel < 0 || wheel >= v->vehicle->getNumWheels()) return 0;
+    v->vehicle->getWheelInfo(wheel).m_frictionSlip = f;
+    return 0;
+}
+
+// veh:GetWheelFriction(idx) -> friction
+static int l_Veh_GetWheelFriction(lua_State* L) {
+    Vehicle3D* v = CheckLiveVehicle(L, 1);
+    int wheel = (int)luaL_checkinteger(L, 2);
+    if (!v || wheel < 0 || wheel >= v->vehicle->getNumWheels()) {
+        lua_pushnumber(L, 0);
+        return 1;
+    }
+    lua_pushnumber(L, (double)v->vehicle->getWheelInfo(wheel).m_frictionSlip);
+    return 1;
+}
+
+// veh:SetSuspensionStiffness(idx, stiffness)
+static int l_Veh_SetSuspensionStiffness(lua_State* L) {
+    Vehicle3D* v = CheckLiveVehicle(L, 1);
+    int wheel = (int)luaL_checkinteger(L, 2);
+    float k = (float)luaL_checknumber(L, 3);
+    if (!v || wheel < 0 || wheel >= v->vehicle->getNumWheels()) return 0;
+    v->vehicle->getWheelInfo(wheel).m_suspensionStiffness = k;
+    return 0;
+}
+
+// veh:ResetSuspension() — 把所有 wheel 悬挂复位为初始静止状态
+static int l_Veh_ResetSuspension(lua_State* L) {
+    Vehicle3D* v = CheckLiveVehicle(L, 1);
+    if (v) v->vehicle->resetSuspension();
+    return 0;
+}
+
 static int l_Veh_IsAlive(lua_State* L) {
     Vehicle3D* v = CheckVehicle(L, 1);
     lua_pushboolean(L, v->alive);
@@ -2469,6 +2562,89 @@ static int l_SB_AppendAnchor(lua_State* L) {
     return 0;
 }
 
+// Phase AU Step 4.4: SoftBody 增强 — 风、力、速度、拓扑查询
+
+// sb:SetWindVelocity(vx, vy, vz)
+static int l_SB_SetWindVelocity(lua_State* L) {
+    SoftBody3D* s = CheckSoftBody(L, 1);
+    if (!s->alive) return 0;
+    float vx = (float)luaL_checknumber(L, 2);
+    float vy = (float)luaL_checknumber(L, 3);
+    float vz = (float)luaL_checknumber(L, 4);
+    s->sb->setWindVelocity(btVector3(vx, vy, vz));
+    return 0;
+}
+
+// sb:AddForce(fx, fy, fz, [nodeIdx]) — 缺省全局施力,提供 nodeIdx 时单节点
+static int l_SB_AddForce(lua_State* L) {
+    SoftBody3D* s = CheckSoftBody(L, 1);
+    if (!s->alive) return 0;
+    float fx = (float)luaL_checknumber(L, 2);
+    float fy = (float)luaL_checknumber(L, 3);
+    float fz = (float)luaL_checknumber(L, 4);
+    btVector3 f(fx, fy, fz);
+    if (lua_isnumber(L, 5)) {
+        int idx = (int)lua_tointeger(L, 5);
+        int n = s->sb->m_nodes.size();
+        if (idx < 0 || idx >= n) {
+            return luaL_error(L, "AddForce: nodeIdx %d out of range [0,%d)", idx, n);
+        }
+        s->sb->addForce(f, idx);
+    } else {
+        s->sb->addForce(f);
+    }
+    return 0;
+}
+
+// sb:SetVelocity(vx, vy, vz) — 整体速度赋值
+static int l_SB_SetVelocity(lua_State* L) {
+    SoftBody3D* s = CheckSoftBody(L, 1);
+    if (!s->alive) return 0;
+    float vx = (float)luaL_checknumber(L, 2);
+    float vy = (float)luaL_checknumber(L, 3);
+    float vz = (float)luaL_checknumber(L, 4);
+    s->sb->setVelocity(btVector3(vx, vy, vz));
+    return 0;
+}
+
+// sb:GetLinkNodes(linkIdx) -> n1, n2 — 拓扑查询: link 端点对应 node 索引
+// 越界返回 -1, -1
+static int l_SB_GetLinkNodes(lua_State* L) {
+    SoftBody3D* s = CheckSoftBody(L, 1);
+    if (!s->alive) { lua_pushinteger(L, -1); lua_pushinteger(L, -1); return 2; }
+    int idx = (int)luaL_checkinteger(L, 2);
+    int n = s->sb->m_links.size();
+    if (idx < 0 || idx >= n) {
+        lua_pushinteger(L, -1); lua_pushinteger(L, -1); return 2;
+    }
+    const btSoftBody::Link& link = s->sb->m_links[idx];
+    // 用指针差计算 node 索引(m_nodes 是连续数组)
+    const btSoftBody::Node* base = &s->sb->m_nodes[0];
+    lua_pushinteger(L, (lua_Integer)(link.m_n[0] - base));
+    lua_pushinteger(L, (lua_Integer)(link.m_n[1] - base));
+    return 2;
+}
+
+// sb:GetFaceNodes(faceIdx) -> n1, n2, n3 — 三角面的 3 个 node 索引
+// 越界返回 -1, -1, -1
+static int l_SB_GetFaceNodes(lua_State* L) {
+    SoftBody3D* s = CheckSoftBody(L, 1);
+    if (!s->alive) {
+        lua_pushinteger(L, -1); lua_pushinteger(L, -1); lua_pushinteger(L, -1); return 3;
+    }
+    int idx = (int)luaL_checkinteger(L, 2);
+    int n = s->sb->m_faces.size();
+    if (idx < 0 || idx >= n) {
+        lua_pushinteger(L, -1); lua_pushinteger(L, -1); lua_pushinteger(L, -1); return 3;
+    }
+    const btSoftBody::Face& face = s->sb->m_faces[idx];
+    const btSoftBody::Node* base = &s->sb->m_nodes[0];
+    lua_pushinteger(L, (lua_Integer)(face.m_n[0] - base));
+    lua_pushinteger(L, (lua_Integer)(face.m_n[1] - base));
+    lua_pushinteger(L, (lua_Integer)(face.m_n[2] - base));
+    return 3;
+}
+
 static int l_SB_IsAlive(lua_State* L) {
     SoftBody3D* s = CheckSoftBody(L, 1);
     lua_pushboolean(L, s->alive ? 1 : 0);
@@ -2728,6 +2904,13 @@ static const luaL_Reg kVehicleMethods[] = {
     { "GetSpeed",          l_Veh_GetSpeed },
     { "GetWheelTransform", l_Veh_GetWheelTransform },
     { "GetWheelPosition",  l_Veh_GetWheelPosition },
+    // Phase AU Step 4.4
+    { "GetWheelInfo",          l_Veh_GetWheelInfo },
+    { "IsWheelInContact",      l_Veh_IsWheelInContact },
+    { "SetWheelFriction",      l_Veh_SetWheelFriction },
+    { "GetWheelFriction",      l_Veh_GetWheelFriction },
+    { "SetSuspensionStiffness", l_Veh_SetSuspensionStiffness },
+    { "ResetSuspension",       l_Veh_ResetSuspension },
     { "IsAlive",           l_Veh_IsAlive },
     { "Delete",            l_Veh_Delete },
     { "__gc",              l_Veh_GC },
@@ -2748,6 +2931,12 @@ static const luaL_Reg kSoftBodyMethods[] = {
     { "GetLinkCount",      l_SB_GetLinkCount },
     { "GetFaceCount",      l_SB_GetFaceCount },
     { "AppendAnchor",      l_SB_AppendAnchor },
+    // Phase AU Step 4.4
+    { "SetWindVelocity",   l_SB_SetWindVelocity },
+    { "AddForce",          l_SB_AddForce },
+    { "SetVelocity",       l_SB_SetVelocity },
+    { "GetLinkNodes",      l_SB_GetLinkNodes },
+    { "GetFaceNodes",      l_SB_GetFaceNodes },
     { "IsAlive",           l_SB_IsAlive },
     { "Delete",            l_SB_Delete },
     { "__gc",              l_SB_GC },

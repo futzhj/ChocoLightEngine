@@ -14,7 +14,8 @@
 |--------|------|--------|
 | **Step 4.1** | Compound shape API + DebugDraw 接口 | `25605822892` ✅ |
 | **Step 4.2** | btRaycastVehicle 4 轮车辆 + 13 方法 | `25606305379` ✅ |
-| **Step 4.3** | btSoftBody (rope/cloth/ellipsoid + 13 方法) + World 升级 SoftRigidDynamicsWorld | `25608583855` ✅ |
+| **Step 4.3** | btSoftBody (rope/cloth/ellipsoid + 15 方法) + World 升级 SoftRigidDynamicsWorld | `25608583855` ✅ |
+| **Step 4.4** | Vehicle +6 / SoftBody +5 / `samples/demo_physics3d` / smoke 增量 | (本提交,待 CI) |
 
 每次 CI 6 平台(Linux / Windows / macOS / Android / iOS / Web)全绿。
 
@@ -116,6 +117,45 @@ w:DestroySoftBody(sb)
 
 > **调试反思(对照 6A debug 规则)**: 此 bug 在数轮 CI 中被误判为 "Windows SEH 崩溃",原因是 Lua `error()` 抛出后 Bullet runtime 退出 exit code 1 与 SEH crash 表象相似。直到 `[WR] done` 探针被完整打印才确认 cleanup 没问题,真正的 `[C]: in function 'error'` stack trace 才浮现。教训:**先看完整输出**(包括 stack traceback)再下结论;`fprintf` 探针定位用完即清理。
 
+### 2.6 Step 4.4 — 收尾增强(Vehicle / SoftBody / Demo)
+
+#### Vehicle +6 方法(总计 19)
+
+```lua
+veh:GetWheelInfo(idx) -> table {
+    x, y, z,                              -- 世界位置
+    in_contact,                           -- bool, 是否接地
+    contact_normal = {x, y, z},           -- 接触法线 (in_contact=false 时为 0,0,0)
+    contact_point  = {x, y, z},
+    friction,                             -- m_frictionSlip
+    suspension_stiffness,                 -- m_suspensionStiffness
+    suspension_length,                    -- m_raycastInfo.m_suspensionLength
+    radius,                               -- m_wheelsRadius
+}
+veh:IsWheelInContact(idx) -> bool
+veh:SetWheelFriction(idx, f) / GetWheelFriction(idx) -> f
+veh:SetSuspensionStiffness(idx, k)
+veh:ResetSuspension()                     -- 全车悬挂复位
+```
+
+`GetWheelInfo` 一次性 hash 表替代多次单值查询(性能占优,API 直观)。越界 → `nil + err`。其余 set 越界 → 静默忽略,get 越界 → 0/false。
+
+#### SoftBody +5 方法(总计 20)
+
+```lua
+sb:SetWindVelocity(vx, vy, vz)            -- 风(对 cloth/rope 起作用)
+sb:AddForce(fx, fy, fz, [nodeIdx])        -- 缺省全身;有 nodeIdx 时单节点
+sb:SetVelocity(vx, vy, vz)                -- 全身速度赋值
+sb:GetLinkNodes(linkIdx) -> n1, n2        -- 拓扑: link 端点 node 索引(指针差算)
+sb:GetFaceNodes(faceIdx) -> n1, n2, n3    -- 三角面 3 节点
+```
+
+拓扑查询用 `node_ptr - &m_nodes[0]` 直接得索引(`btAlignedObjectArray<Node>` 是连续数组,Bullet 内部都靠此寻址)。越界 → `-1, -1[, -1]`,与 `GetNodePosition` 越界回退 0,0,0 风格一致(读类 API 安全降级,写类 API `luaL_error`)。
+
+#### `samples/demo_physics3d/main.lua` 综合演示
+
+90 行 headless console demo:World + 静态地面 + 落体 box + 4 轮 Vehicle + 8 段 Rope + 风。1 秒物理步进后 print box.y / rope mid.y / 车速 / 接地轮数。无 GUI、无资源,跨 6 平台可跑;Bullet 不可用时优雅降级(同 `demo_haptic` 风格)。`samples/README.md` 索引追加 `demo_physics3d → AU` 一行。
+
 ---
 
 ## 3. 烟雾测试覆盖
@@ -127,7 +167,9 @@ w:DestroySoftBody(sb)
 | [8.6] | **Compound shape**:box+sphere+capsule 复合 body 创建、Step 模拟、Delete | 5 |
 | [8.7] | **DebugDraw**:Lua callback table、SetDebugDrawer / DebugDraw / SetDebugMode / GetDebugMode、SetDebugDrawer(nil) | 6 |
 | [8.8] | **Vehicle**:CreateVehicle、AddWheel × 4、Engine/Brake/Steering、GetWheelTransform、GetSpeedKmH、Step 30 帧、DestroyVehicle | 14+ |
-| [8.9] | **SoftBody**(用 `do..end` 限制 local scope):GetSoftBodyCount=0、Rope(segments=10 → 11 节点 / 10 链接、GetNodePosition、越界 → 0,0,0、Step 60 帧重力下垂)、Cloth(10×10 patch、4 角 fixed)、Ellipsoid(res=2 → ≥6 节点)、AppendAnchor、SetPressure / SetTotalMass、DestroySoftBody / Delete / count 复零 | 22+ |
+| [8.9] | **SoftBody**(用 `do..end` 限制 local scope):GetSoftBodyCount=0、Rope(segments=10 → 11 节点 / 10 链接、GetNodePosition、越界 → 0,0,0、Step 60 帧重力下垂)、Cloth(10×10 patch、4 角 fixed)、Ellipsoid(res=2 → ≥6 节点)、AppendAnchor、SetPressure / SetTotalMass / GetVolume / GetCenterOfMass / GetAabb、DestroySoftBody / Delete / count 复零 | 22+ |
+| **[8.8.5]** Step 4.4 | **Vehicle 增强**:GetWheelInfo(table)、IsWheelInContact、SetWheelFriction round-trip、SetSuspensionStiffness、ResetSuspension、越界 wheel idx 安全 | 6 |
+| **[8.9.5]** Step 4.4 | **SoftBody 增强**:SetWindVelocity、AddForce(全局 + 节点 + 越界 raise)、SetVelocity、GetLinkNodes(0)=(0,1) 与末端、GetFaceNodes 在 rope 上越界 → -1,-1,-1 | 7 |
 | [其他 9-9.5] | 维持 Step 3 已有 Body / Character 销毁路径 | (无变化) |
 
 ---

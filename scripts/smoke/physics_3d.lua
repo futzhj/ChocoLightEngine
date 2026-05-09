@@ -624,6 +624,57 @@ pass("越界 wheel index 静默忽略 + 返回安全值")
 local _ = tostring(vehicle)
 pass("vehicle:__tostring 不崩")
 
+-- 14.5 Phase AU Step 4.4: Vehicle 增强查询 + 物理参数调整
+do
+    -- GetWheelInfo: 一站式查询 (table 返回)
+    local info = vehicle:GetWheelInfo(idxFL)
+    if type(info) ~= "table" then fail("GetWheelInfo 应返回 table") end
+    if type(info.x) ~= "number" or type(info.y) ~= "number" or type(info.z) ~= "number" then
+        fail("GetWheelInfo.{x,y,z} 必须为 number")
+    end
+    if type(info.in_contact) ~= "boolean" then fail("GetWheelInfo.in_contact 应为 bool") end
+    if type(info.contact_normal) ~= "table" then fail("GetWheelInfo.contact_normal 应为 table") end
+    if type(info.friction) ~= "number" or type(info.suspension_stiffness) ~= "number"
+       or type(info.radius) ~= "number" then
+        fail("GetWheelInfo 缺关键物理字段")
+    end
+    pass(string.format("GetWheelInfo(0) -> contact=%s, friction=%.2f, stiff=%.1f, r=%.2f",
+        tostring(info.in_contact), info.friction, info.suspension_stiffness, info.radius))
+
+    -- GetWheelInfo 越界 -> nil + err
+    local bad_info, bad_info_err = vehicle:GetWheelInfo(99)
+    if bad_info ~= nil then fail("越界 GetWheelInfo 应返回 nil") end
+    pass("越界 GetWheelInfo -> nil + err: " .. tostring(bad_info_err))
+
+    -- IsWheelInContact 与 GetWheelInfo.in_contact 一致
+    if vehicle:IsWheelInContact(idxFL) ~= info.in_contact then
+        fail("IsWheelInContact 与 GetWheelInfo.in_contact 不一致")
+    end
+    pass("IsWheelInContact 一致")
+
+    -- 摩擦系数 round-trip
+    local f0 = vehicle:GetWheelFriction(idxFL)
+    vehicle:SetWheelFriction(idxFL, 2.5)
+    if math.abs(vehicle:GetWheelFriction(idxFL) - 2.5) > 1e-3 then
+        fail("SetWheelFriction round-trip 失败")
+    end
+    vehicle:SetWheelFriction(idxFL, f0)  -- 还原
+    pass("SetWheelFriction/GetWheelFriction round-trip OK")
+
+    -- 悬挂刚度 + 复位
+    vehicle:SetSuspensionStiffness(idxFL, 30)
+    -- 复位悬挂(不崩即可)
+    vehicle:ResetSuspension()
+    pass("SetSuspensionStiffness + ResetSuspension OK")
+
+    -- 越界静默
+    vehicle:SetWheelFriction(99, 1)
+    vehicle:SetSuspensionStiffness(-1, 1)
+    if vehicle:IsWheelInContact(99) ~= false then fail("越界 IsWheelInContact 应为 false") end
+    if vehicle:GetWheelFriction(99) ~= 0 then fail("越界 GetWheelFriction 应为 0") end
+    pass("Step 4.4 越界 wheel idx 安全")
+end
+
 -- 15. DestroyVehicle
 w:DestroyVehicle(vehicle)
 if w:GetVehicleCount() ~= 0 then fail("after DestroyVehicle, count != 0") end
@@ -801,6 +852,47 @@ pass("cloth:Delete() OK")
 local sb_err, sb_msg = w:NewSoftBodyRope()
 if sb_err ~= nil then fail("缺 param table 应失败") end
 pass("NewSoftBodyRope() 缺参数 -> nil + err: " .. tostring(sb_msg))
+
+-- 14.5 Phase AU Step 4.4: SoftBody 风/力/速度/拓扑查询
+do
+    -- SetWindVelocity (Bullet API 调用不崩即可)
+    rope:SetWindVelocity(2, 0, 0)
+    pass("rope:SetWindVelocity(2,0,0) OK")
+
+    -- AddForce 全局 + 节点
+    rope:AddForce(0, 1, 0)         -- 全身上升力(短时,不步进)
+    rope:AddForce(0, 0, 0.5, 5)    -- 中段单节点 z 方向小推力
+    pass("rope:AddForce 全局/节点 OK")
+
+    -- AddForce 越界节点 -> luaL_error
+    local ok_force = pcall(rope.AddForce, rope, 0, 0, 0, 999)
+    if ok_force then fail("AddForce 越界 nodeIdx 应 raise") end
+    pass("AddForce 越界 nodeIdx raise OK")
+
+    -- SetVelocity 全身
+    rope:SetVelocity(0, 0, 0)
+    pass("rope:SetVelocity OK")
+
+    -- 拓扑查询: rope segments=10 -> 11 节点 / 10 链接
+    local n0, n1 = rope:GetLinkNodes(0)
+    if n0 ~= 0 or n1 ~= 1 then fail("GetLinkNodes(0) 应为 (0,1) 实为 ("..n0..","..n1..")") end
+    local nlast0, nlast1 = rope:GetLinkNodes(9)
+    if nlast0 ~= 9 or nlast1 ~= 10 then
+        fail("GetLinkNodes(9) 应为 (9,10) 实为 ("..nlast0..","..nlast1..")")
+    end
+    pass(string.format("rope GetLinkNodes(0)=(%d,%d), GetLinkNodes(9)=(%d,%d)",
+        n0, n1, nlast0, nlast1))
+
+    -- 越界 link -> -1, -1
+    local bad_a, bad_b = rope:GetLinkNodes(99)
+    if bad_a ~= -1 or bad_b ~= -1 then fail("越界 GetLinkNodes 应为 -1,-1") end
+    pass("越界 GetLinkNodes -> -1, -1")
+
+    -- rope 没有 face (segments only), GetFaceNodes(0) 越界
+    local fa, fb, fc = rope:GetFaceNodes(0)
+    if fa ~= -1 or fb ~= -1 or fc ~= -1 then fail("rope 无 face, 应返回 -1,-1,-1") end
+    pass("rope GetFaceNodes(0) 越界 -> -1,-1,-1 (rope 无三角面)")
+end
 
 -- 清理 rope
 rope:Delete()
