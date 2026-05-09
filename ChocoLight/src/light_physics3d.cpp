@@ -2611,6 +2611,7 @@ static void World_ReleaseBullet(lua_State* L, World3D* w) {
         if (b) b->owner = nullptr;
     }
     w->bodies.clear();
+    fprintf(stderr, "[WR] bodies cleared\n"); fflush(stderr);
     if (w->contactRef != LUA_NOREF) {
         luaL_unref(L, LUA_REGISTRYINDEX, w->contactRef);
         w->contactRef = LUA_NOREF;
@@ -2620,15 +2621,25 @@ static void World_ReleaseBullet(lua_State* L, World3D* w) {
         w->world->setDebugDrawer(nullptr);
     }
     delete w->debugDrawer; w->debugDrawer = nullptr;  // Phase AU Step 4.1
+    fprintf(stderr, "[WR] debugDrawer deleted\n"); fflush(stderr);
     delete w->world;             w->world = nullptr;
+    fprintf(stderr, "[WR] world deleted\n"); fflush(stderr);
     delete w->softBodySolver;    w->softBodySolver = nullptr;     // Phase AU Step 4.3
+    fprintf(stderr, "[WR] softBodySolver deleted\n"); fflush(stderr);
     delete w->softBodyWorldInfo; w->softBodyWorldInfo = nullptr;  // Phase AU Step 4.3
+    fprintf(stderr, "[WR] softBodyWorldInfo deleted\n"); fflush(stderr);
     delete w->solver;      w->solver = nullptr;
+    fprintf(stderr, "[WR] solver deleted\n"); fflush(stderr);
     delete w->broadphase;  w->broadphase = nullptr;
+    fprintf(stderr, "[WR] broadphase deleted\n"); fflush(stderr);
     delete w->dispatcher;  w->dispatcher = nullptr;
+    fprintf(stderr, "[WR] dispatcher deleted\n"); fflush(stderr);
     delete w->config;      w->config = nullptr;
+    fprintf(stderr, "[WR] config deleted\n"); fflush(stderr);
     delete w->ghostPairCb; w->ghostPairCb = nullptr;  // Phase AU Step 3.3
+    fprintf(stderr, "[WR] ghostPairCb deleted\n"); fflush(stderr);
     w->alive = false;
+    fprintf(stderr, "[WR] done\n"); fflush(stderr);
 }
 
 // World:Delete() — 显式释放 Bullet 资源 (不析构 userdata, 仍由 Lua GC 管理)
