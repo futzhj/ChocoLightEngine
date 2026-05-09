@@ -1,0 +1,7 @@
+﻿gh : run 25614183332 is still in progress; logs will be available when it is complete
+所在位置 行:1 字符: 1
++ gh run view 25614183332 --log-failed 2>&1 | Out-File -Encoding utf8 c ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (run 25614183332... it is complete:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 

@@ -485,35 +485,22 @@ if type(Anim.NewEmptySkeleton) == 'function' then
     local r2 = Anim.NewEmptySkeleton(65)
     CHECK(r2 == nil, 'NewEmptySkeleton(65) → nil (exceeds MAX_JOINTS=64)')
 
-    print('  ... 14.3 NewEmptySkeleton(2) + NewEmptyClip')
     local sk2 = Anim.NewEmptySkeleton(2)
-    print('  ... 14.3.a sk2 type=' .. type(sk2))
     local c2  = Anim.NewEmptyClip('t', 0.0)
-    print('  ... 14.3.b c2 type=' .. type(c2))
-    print('  ... 14.3.c c2.AddSampler type=' .. type(c2.AddSampler))
-    print('  ... 14.3.d c2:GetName() = ' .. tostring(c2:GetName()))
 
-    print('  ... 14.4-pre verify error from happy-path C++ (jointIdx=0 raise)')
-    -- 用 jointIdx=0 触发 luaL_error("joint index must be >= 1...") 路径
-    -- 这条 raise 路径不带 %s 格式化, 排除 lua_pushvfstring/MSVC va_list 嫌疑
-    local ok14_pre, err14_pre = pcall(c2.AddSampler, c2, 0, 'translation', 'LINEAR', {0}, {0,0,0})
-    print('  ... 14.4-pre ok=' .. tostring(ok14_pre) .. ' err=' .. tostring(err14_pre))
-    CHECK(ok14_pre == false, 'AddSampler jointIdx=0 raises (no-%s path)')
-
-    print('  ... 14.4 pcall AddSampler bad_target (走 luaL_error 带 %s 格式)')
-    local ok14_4, err14_4 = pcall(c2.AddSampler, c2, 1, 'bad_target', 'LINEAR', {0}, {0,0,0})
-    print('  ... 14.4 ok=' .. tostring(ok14_4) .. ' err=' .. tostring(err14_4))
-    CHECK(ok14_4 == false, 'AddSampler unknown target raises')
-
-    print('  ... 14.5 pcall AddSampler BAD_MODE')
-    local ok14_5 = pcall(c2.AddSampler, c2, 1, 'translation', 'BAD_MODE', {0}, {0,0,0})
-    CHECK(ok14_5 == false, 'AddSampler unknown mode raises')
-    print('  ... 14.6 pcall AddSampler values-mismatch')
-    local ok14_6 = pcall(c2.AddSampler, c2, 1, 'translation', 'LINEAR', {0}, {0,0})
-    CHECK(ok14_6 == false, 'AddSampler values count mismatch raises')
-    print('  ... 14.7 pcall AddSampler empty times')
-    local ok14_7 = pcall(c2.AddSampler, c2, 1, 'translation', 'LINEAR', {}, {})
-    CHECK(ok14_7 == false, 'AddSampler empty times raises')
+    -- AddSampler 各种错误路径
+    -- 注: l_Clip_AddSampler 内部已 copy luaL_checkstring 到 std::string,
+    --     避免 Lumen 在 luaL_error %s 路径上 GC 回收 TString 导致的 dangling pointer 崩溃
+    CHECK(pcall(c2.AddSampler, c2, 0, 'translation', 'LINEAR', {0}, {0,0,0}) == false,
+          'AddSampler jointIdx=0 raises (no-%s path)')
+    CHECK(pcall(c2.AddSampler, c2, 1, 'bad_target', 'LINEAR', {0}, {0,0,0}) == false,
+          'AddSampler unknown target raises (%s path)')
+    CHECK(pcall(c2.AddSampler, c2, 1, 'translation', 'BAD_MODE', {0}, {0,0,0}) == false,
+          'AddSampler unknown mode raises (%s path)')
+    CHECK(pcall(c2.AddSampler, c2, 1, 'translation', 'LINEAR', {0}, {0,0}) == false,
+          'AddSampler values count mismatch raises')
+    CHECK(pcall(c2.AddSampler, c2, 1, 'translation', 'LINEAR', {}, {}) == false,
+          'AddSampler empty times raises')
 
     print('  ... 14.9 pcall SetJointName out-of-range')
     CHECK(pcall(sk2.SetJointName, sk2, 99, 'x') == false,

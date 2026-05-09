@@ -1582,8 +1582,13 @@ static int l_Clip_SetDuration(lua_State* L) {
 static int l_Clip_AddSampler(lua_State* L) {
     AnimationClip* c   = CheckClip(L, 1);
     int jointIdx       = (int)luaL_checkinteger(L, 2) - 1;    // 1-based → 0-based
-    const char* tgtStr = luaL_checkstring(L, 3);
-    const char* modStr = luaL_checkstring(L, 4);
+    // 关键: luaL_checkstring 返回 Lua 栈上 TString 内部指针, 当 luaL_error 触发
+    //       luaL_where + lua_pushvfstring 期间 Lumen GC 可能回收/迁移该 TString,
+    //       导致后续 %s 解析读到 dangling pointer 直接崩溃。
+    //       因此凡是要传给 luaL_error %s 的 lua-string, 必须先 copy 成 std::string,
+    //       由本地栈持有内存生命期。
+    std::string tgtStr = luaL_checkstring(L, 3);
+    std::string modStr = luaL_checkstring(L, 4);
     luaL_checktype(L, 5, LUA_TTABLE);
     luaL_checktype(L, 6, LUA_TTABLE);
 
@@ -1592,11 +1597,11 @@ static int l_Clip_AddSampler(lua_State* L) {
     }
 
     ChannelTarget target = ChannelTarget::UNSUPPORTED;
-    if (std::strcmp(tgtStr, "translation") == 0)      target = ChannelTarget::TRANSLATION;
-    else if (std::strcmp(tgtStr, "rotation") == 0)    target = ChannelTarget::ROTATION;
-    else if (std::strcmp(tgtStr, "scale") == 0)       target = ChannelTarget::SCALE;
+    if (tgtStr == "translation")      target = ChannelTarget::TRANSLATION;
+    else if (tgtStr == "rotation")    target = ChannelTarget::ROTATION;
+    else if (tgtStr == "scale")       target = ChannelTarget::SCALE;
     else {
-        return luaL_error(L, "unsupported target: %s (expected translation/rotation/scale)", tgtStr);
+        return luaL_error(L, "unsupported target: %s (expected translation/rotation/scale)", tgtStr.c_str());
     }
 
     InterpMode mode = InterpMode::LINEAR;
@@ -1610,11 +1615,11 @@ static int l_Clip_AddSampler(lua_State* L) {
         }
         return *a == *b;
     };
-    if (ieq(modStr, "LINEAR"))           mode = InterpMode::LINEAR;
-    else if (ieq(modStr, "STEP"))        mode = InterpMode::STEP;
-    else if (ieq(modStr, "CUBICSPLINE")) mode = InterpMode::CUBICSPLINE;
+    if (ieq(modStr.c_str(), "LINEAR"))           mode = InterpMode::LINEAR;
+    else if (ieq(modStr.c_str(), "STEP"))        mode = InterpMode::STEP;
+    else if (ieq(modStr.c_str(), "CUBICSPLINE")) mode = InterpMode::CUBICSPLINE;
     else {
-        return luaL_error(L, "unsupported mode: %s (expected LINEAR/STEP/CUBICSPLINE)", modStr);
+        return luaL_error(L, "unsupported mode: %s (expected LINEAR/STEP/CUBICSPLINE)", modStr.c_str());
     }
 
     int comps = (target == ChannelTarget::ROTATION) ? FLOATS_R : FLOATS_T;
