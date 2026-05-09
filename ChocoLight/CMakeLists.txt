@@ -58,6 +58,37 @@ else()
     message(STATUS "Box2D: disabled on Web; Physics exports stubbed")
 endif()
 
+# ==================== Phase AU — Bullet 3 (vendored, all platforms) ====================
+# 仅保留 LinearMath + BulletCollision + BulletDynamics 三个子库, 用 file GLOB 编译
+# 不用 Bullet 自带的复杂 CMake (Demos/Extras 已删除, 自带 CMake 会报错)
+set(BULLET3_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/bullet3")
+
+file(GLOB_RECURSE BULLET_LM_SRC  "${BULLET3_DIR}/src/LinearMath/*.cpp")
+file(GLOB_RECURSE BULLET_COL_SRC "${BULLET3_DIR}/src/BulletCollision/*.cpp")
+file(GLOB_RECURSE BULLET_DYN_SRC "${BULLET3_DIR}/src/BulletDynamics/*.cpp")
+
+add_library(bullet3 STATIC
+    ${BULLET_LM_SRC}
+    ${BULLET_COL_SRC}
+    ${BULLET_DYN_SRC}
+)
+target_include_directories(bullet3 PUBLIC "${BULLET3_DIR}/src")
+
+# Web (Emscripten): Bullet SSE/AVX SIMD path 不能用, 且部分浮点行为要保守
+if(EMSCRIPTEN)
+    target_compile_definitions(bullet3 PRIVATE BT_NO_SIMD_OPERATOR_OVERLOADS=1 BT_USE_DOUBLE_PRECISION=0)
+endif()
+# 取消所有 SIMD 优化 (跨平台一致性, 避免 ARM/x86 浮点差异)
+target_compile_definitions(bullet3 PUBLIC BT_USE_DOUBLE_PRECISION=0)
+# Bullet 内部假设的几个宏在某些 NDK / Xcode 下需禁用
+if(MSVC)
+    target_compile_options(bullet3 PRIVATE /wd4244 /wd4267 /wd4305 /wd4316 /wd4267)
+else()
+    target_compile_options(bullet3 PRIVATE -Wno-deprecated-declarations -Wno-unused-but-set-variable -Wno-unused-variable)
+endif()
+
+message(STATUS "Bullet3: integrated via vendored source (v3.25, LinearMath + BulletCollision + BulletDynamics)")
+
 # ==================== 路径配置 ====================
 
 # Lua 5.1 SDK 路径
@@ -327,6 +358,10 @@ if(NOT EMSCRIPTEN)
 else()
     target_compile_definitions(Light PRIVATE CHOCO_HAS_BOX2D=0)
 endif()
+
+# Phase AU — Bullet 3 全平台 link (含 Web), 用于 Light.Physics3D
+target_link_libraries(Light PRIVATE bullet3)
+target_compile_definitions(Light PRIVATE CHOCO_HAS_BULLET=1)
 
 # ==================== 编译定义 ====================
 
