@@ -736,22 +736,12 @@ static int l_Body_IsAlive(lua_State* L) {
 // ==================== Body 销毁逻辑 ====================
 
 static void InvalidateBody(lua_State* L, Body3D* b) {
-    fprintf(stderr, "[IB] enter b=%p alive=%d compound=%p childRefs=%d\n",
-            (void*)b, b ? (int)b->alive : -1,
-            b ? (void*)b->compound : nullptr,
-            b ? (int)b->childShapeRefs.size() : -1);
-    fflush(stderr);
     if (!b || !b->alive) return;
     if (b->body && b->owner && b->owner->world) {
-        fprintf(stderr, "[IB] pre-removeRigidBody\n"); fflush(stderr);
         b->owner->world->removeRigidBody(b->body);
-        fprintf(stderr, "[IB] post-removeRigidBody\n"); fflush(stderr);
     }
-    fprintf(stderr, "[IB] pre-delete body=%p motion=%p\n", (void*)b->body, (void*)b->motion); fflush(stderr);
     delete b->body;
-    fprintf(stderr, "[IB] body deleted\n"); fflush(stderr);
     delete b->motion;
-    fprintf(stderr, "[IB] motion deleted\n"); fflush(stderr);
     b->body = nullptr;
     b->motion = nullptr;
     if (b->shapeRef != LUA_NOREF) {
@@ -762,12 +752,9 @@ static void InvalidateBody(lua_State* L, Body3D* b) {
         luaL_unref(L, LUA_REGISTRYINDEX, b->selfRef);
         b->selfRef = LUA_NOREF;
     }
-    fprintf(stderr, "[IB] refs unrefed\n"); fflush(stderr);
     // Phase AU Step 4.1: 释放 compound shape + 子 shape refs
     if (b->compound) {
-        fprintf(stderr, "[IB] pre-delete compound=%p\n", (void*)b->compound); fflush(stderr);
         delete b->compound;
-        fprintf(stderr, "[IB] compound deleted\n"); fflush(stderr);
         b->compound = nullptr;
     }
     for (int ref : b->childShapeRefs) {
@@ -775,7 +762,6 @@ static void InvalidateBody(lua_State* L, Body3D* b) {
     }
     b->childShapeRefs.clear();
     b->alive = false;
-    fprintf(stderr, "[IB] done\n"); fflush(stderr);
 }
 
 static int l_Body_Delete(lua_State* L) {
@@ -986,11 +972,9 @@ static int l_World_Step(lua_State* L) {
 }
 
 static int l_World_CreateBody(lua_State* L) {
-    fprintf(stderr, "[CB] enter\n"); fflush(stderr);
     World3D* w = CheckWorld(L, 1);
     if (!w->alive) { lua_pushnil(L); return 1; }
     luaL_checktype(L, 2, LUA_TTABLE);
-    fprintf(stderr, "[CB] checked\n"); fflush(stderr);
 
     // 读 type
     lua_getfield(L, 2, "type");
@@ -1093,25 +1077,19 @@ static int l_World_CreateBody(lua_State* L) {
         shapeStackIdx = lua_gettop(L);  // -1
         btshape = shape->shape;
     }
-    fprintf(stderr, "[CB] btshape=%p mass=%.3f\n", (void*)btshape, (double)mass); fflush(stderr);
-
     // 计算惯性 (仅 dynamic)
     btVector3 inertia(0, 0, 0);
     if (mass > 0 && !isKinematic) {
         btshape->calculateLocalInertia(mass, inertia);
     }
-    fprintf(stderr, "[CB] inertia ok\n"); fflush(stderr);
 
     // 创建 body
     btTransform tr;
     tr.setIdentity();
     tr.setOrigin(btVector3(x, y, z));
     btDefaultMotionState* motion = new btDefaultMotionState(tr);
-    fprintf(stderr, "[CB] motion=%p\n", (void*)motion); fflush(stderr);
     btRigidBody::btRigidBodyConstructionInfo ci(mass, motion, btshape, inertia);
-    fprintf(stderr, "[CB] ci built\n"); fflush(stderr);
     btRigidBody* rb = new btRigidBody(ci);
-    fprintf(stderr, "[CB] rb=%p\n", (void*)rb); fflush(stderr);
     if (isKinematic) {
         rb->setCollisionFlags(rb->getCollisionFlags() | btCollisionObject::CF_KINEMATIC_OBJECT);
         rb->setActivationState(DISABLE_DEACTIVATION);
@@ -1131,10 +1109,8 @@ static int l_World_CreateBody(lua_State* L) {
     float angDamp = lua_isnumber(L, -1) ? (float)lua_tonumber(L, -1) : 0.0f;
     lua_pop(L, 1);
     rb->setDamping(linDamp, angDamp);
-    fprintf(stderr, "[CB] pre-addRigidBody\n"); fflush(stderr);
 
     w->world->addRigidBody(rb);
-    fprintf(stderr, "[CB] post-addRigidBody\n"); fflush(stderr);
 
     // 创建 Body3D userdata
     Body3D* b = (Body3D*)lua_newuserdata(L, sizeof(Body3D));
@@ -2294,7 +2270,9 @@ static int l_World_NewSoftBodyRope(lua_State* L) {
     lua_getfield(L, 2, "mass");     if (lua_isnumber(L, -1)) mass     = (float)lua_tonumber(L, -1); lua_pop(L, 1);
     if (segments < 1) segments = 1;
 
-    btSoftBody* sb = btSoftBodyHelpers::CreateRope(*w->softBodyWorldInfo, p1, p2, segments, fixed);
+    // Bullet CreateRope(res) 生成 res+2 节点 / res+1 链接。
+    // 为让 Lua "segments" 语义直观 (segments=N → N 段、N+1 节点),传入 segments-1。
+    btSoftBody* sb = btSoftBodyHelpers::CreateRope(*w->softBodyWorldInfo, p1, p2, segments - 1, fixed);
     if (!sb) { lua_pushnil(L); lua_pushstring(L, "CreateRope returned null"); return 2; }
     sb->setTotalMass(mass);
     w->world->addSoftBody(sb);
@@ -2611,7 +2589,6 @@ static void World_ReleaseBullet(lua_State* L, World3D* w) {
         if (b) b->owner = nullptr;
     }
     w->bodies.clear();
-    fprintf(stderr, "[WR] bodies cleared\n"); fflush(stderr);
     if (w->contactRef != LUA_NOREF) {
         luaL_unref(L, LUA_REGISTRYINDEX, w->contactRef);
         w->contactRef = LUA_NOREF;
@@ -2621,25 +2598,15 @@ static void World_ReleaseBullet(lua_State* L, World3D* w) {
         w->world->setDebugDrawer(nullptr);
     }
     delete w->debugDrawer; w->debugDrawer = nullptr;  // Phase AU Step 4.1
-    fprintf(stderr, "[WR] debugDrawer deleted\n"); fflush(stderr);
     delete w->world;             w->world = nullptr;
-    fprintf(stderr, "[WR] world deleted\n"); fflush(stderr);
     delete w->softBodySolver;    w->softBodySolver = nullptr;     // Phase AU Step 4.3
-    fprintf(stderr, "[WR] softBodySolver deleted\n"); fflush(stderr);
     delete w->softBodyWorldInfo; w->softBodyWorldInfo = nullptr;  // Phase AU Step 4.3
-    fprintf(stderr, "[WR] softBodyWorldInfo deleted\n"); fflush(stderr);
     delete w->solver;      w->solver = nullptr;
-    fprintf(stderr, "[WR] solver deleted\n"); fflush(stderr);
     delete w->broadphase;  w->broadphase = nullptr;
-    fprintf(stderr, "[WR] broadphase deleted\n"); fflush(stderr);
     delete w->dispatcher;  w->dispatcher = nullptr;
-    fprintf(stderr, "[WR] dispatcher deleted\n"); fflush(stderr);
     delete w->config;      w->config = nullptr;
-    fprintf(stderr, "[WR] config deleted\n"); fflush(stderr);
     delete w->ghostPairCb; w->ghostPairCb = nullptr;  // Phase AU Step 3.3
-    fprintf(stderr, "[WR] ghostPairCb deleted\n"); fflush(stderr);
     w->alive = false;
-    fprintf(stderr, "[WR] done\n"); fflush(stderr);
 }
 
 // World:Delete() — 显式释放 Bullet 资源 (不析构 userdata, 仍由 Lua GC 管理)
