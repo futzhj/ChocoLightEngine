@@ -1624,7 +1624,9 @@ static int l_Clip_AddSampler(lua_State* L) {
     else if (std::strcmp(tgtBuf, "rotation") == 0)    target = ChannelTarget::ROTATION;
     else if (std::strcmp(tgtBuf, "scale") == 0)       target = ChannelTarget::SCALE;
     else {
-        return RaiseFormatted(L, "unsupported target: %s (expected translation/rotation/scale)", tgtBuf);
+        // 调试用: 用最简的 lua_pushstring + lua_error, 不走任何格式化路径
+        lua_pushstring(L, "unsupported target (expected translation/rotation/scale)");
+        return lua_error(L);
     }
 
     InterpMode mode = InterpMode::LINEAR;
