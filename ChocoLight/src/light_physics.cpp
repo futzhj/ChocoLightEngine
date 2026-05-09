@@ -18,6 +18,7 @@ struct PhysicsWorld;
 struct PhysicsBody;
 struct PhysicsShape;
 struct PhysicsFixture;
+struct PhysicsJoint;  // Phase AO
 
 enum PhysicsShapeType {
     PHYSICS_SHAPE_CIRCLE,
@@ -44,6 +45,16 @@ struct PhysicsFixture {
     bool alive;
 
     PhysicsFixture() : fixture(nullptr), owner(nullptr), selfRef(LUA_NOREF), userRef(LUA_NOREF), alive(false) {}
+};
+
+// Phase AO: Joint wrapper. Joint 类型识别用 b2Joint::GetType() 即可,无需在 wrapper 内冗余存储。
+struct PhysicsJoint {
+    b2Joint* joint;
+    PhysicsWorld* owner;
+    int selfRef;
+    bool alive;
+
+    PhysicsJoint() : joint(nullptr), owner(nullptr), selfRef(LUA_NOREF), alive(false) {}
 };
 
 struct PhysicsShape {
@@ -73,11 +84,26 @@ private:
     PhysicsWorld* world_;
 };
 
+// Phase AO: DestructionListener 监听 Box2D 自动销毁的 joint/fixture 事件
+// 当用户调 DestroyBody 时, Box2D 自动 destroy 所有 attached joint, 这时通过
+// SayGoodbye(b2Joint*) 通知, 我们标记 wrapper 为 not alive 以避免 dangling 访问。
+class PhysicsDestructionListener : public b2DestructionListener {
+public:
+    explicit PhysicsDestructionListener(PhysicsWorld* world) : world_(world) {}
+    void SayGoodbye(b2Joint* joint) override;
+    void SayGoodbye(b2Fixture* fixture) override { (void)fixture; }  // fixture 由 InvalidateBody 处理
+
+private:
+    PhysicsWorld* world_;
+};
+
 struct PhysicsWorld {
     b2World* world;
     PhysicsContactListener* listener;
+    PhysicsDestructionListener* destructionListener;  // Phase AO
     std::vector<PhysicsBody*> bodies;
     std::vector<PhysicsFixture*> fixtures;
+    std::vector<PhysicsJoint*> joints;        // Phase AO
     std::vector<PhysicsContactEvent> contactEvents;
     int legacyCollisionRef;
     int beginContactRef;
@@ -86,7 +112,8 @@ struct PhysicsWorld {
     bool alive;
 
     PhysicsWorld()
-        : world(nullptr), listener(nullptr), legacyCollisionRef(LUA_NOREF), beginContactRef(LUA_NOREF),
+        : world(nullptr), listener(nullptr), destructionListener(nullptr),
+          legacyCollisionRef(LUA_NOREF), beginContactRef(LUA_NOREF),
           endContactRef(LUA_NOREF), L(nullptr), alive(false) {}
 };
 
@@ -152,6 +179,28 @@ static PhysicsFixture* FixtureFromB2(b2Fixture* fixture) {
     return wrapper;
 }
 
+// Phase AO: Joint helpers
+static PhysicsJoint* CheckJoint(lua_State* L, int idx) {
+    lua_getfield(L, idx, "__joint");
+    if (!lua_isuserdata(L, -1)) {
+        lua_pop(L, 1);
+        return nullptr;
+    }
+    auto* joint = (PhysicsJoint*)lua_touserdata(L, -1);
+    lua_pop(L, 1);
+    return (joint && joint->alive && joint->joint) ? joint : nullptr;
+}
+
+// 通过 b2Joint 反查 wrapper, 利用 b2Joint::GetUserData().pointer
+static PhysicsJoint* JointFromB2(b2Joint* joint) {
+    if (!joint) return nullptr;
+    uintptr_t ptr = joint->GetUserData().pointer;
+    if (ptr == 0) return nullptr;
+    auto* wrapper = reinterpret_cast<PhysicsJoint*>(ptr);
+    if (!wrapper || !wrapper->alive || wrapper->joint != joint) return nullptr;
+    return wrapper;
+}
+
 static bool PushBodySelf(lua_State* L, PhysicsBody* body) {
     if (!body || !body->alive || body->selfRef == LUA_NOREF) return false;
     lua_rawgeti(L, LUA_REGISTRYINDEX, body->selfRef);
@@ -205,12 +254,35 @@ static void InvalidateBody(lua_State* L, PhysicsBody* body, bool releaseRefs) {
             }
         }
     }
+    if (body->body) body->body->GetUserData().pointer = 0;  // Phase AO
     body->alive = false;
     body->body = nullptr;
     if (releaseRefs && body->selfRef != LUA_NOREF) {
         luaL_unref(L, LUA_REGISTRYINDEX, body->selfRef);
         body->selfRef = LUA_NOREF;
     }
+}
+
+// Phase AO: Joint 失效辅助; releaseRefs 用于 GC 路径释放 Lua registry 引用
+static void InvalidateJoint(lua_State* L, PhysicsJoint* joint, bool releaseRefs) {
+    if (!joint) return;
+    if (joint->joint) joint->joint->GetUserData().pointer = 0;
+    joint->alive = false;
+    joint->joint = nullptr;
+    if (releaseRefs && joint->selfRef != LUA_NOREF) {
+        luaL_unref(L, LUA_REGISTRYINDEX, joint->selfRef);
+        joint->selfRef = LUA_NOREF;
+    }
+}
+
+// Phase AO: PhysicsDestructionListener 实现 (在所有 helper 定义后)
+void PhysicsDestructionListener::SayGoodbye(b2Joint* joint) {
+    if (!world_ || !world_->alive || !joint) return;
+    PhysicsJoint* wrapper = JointFromB2(joint);
+    if (!wrapper) return;
+    // 注: Box2D 自动销毁路径; 不再手动调 b2World::DestroyJoint (会 double-free)
+    // 不能在此释放 Lua registry ref (Lua 不可重入), 仅置 alive=false 并断开指针
+    InvalidateJoint(world_->L, wrapper, false);
 }
 
 void PhysicsContactListener::BeginContact(b2Contact* contact) {
@@ -481,6 +553,58 @@ static int l_Fixture_GetUserData(lua_State* L) {
     return 1;
 }
 
+/// @lua_api Light.Physics.Fixture.TestPoint
+/// @brief Phase AO: Test whether a world-space point (pixels) is inside the Fixture
+/// @param px number World X in pixels
+/// @param py number World Y in pixels
+/// @return boolean True when inside
+static int l_Fixture_TestPoint(lua_State* L) {
+    auto* fixture = CheckFixture(L, 1);
+    if (!fixture) { lua_pushboolean(L, 0); return 1; }
+    float px = (float)luaL_checknumber(L, 2);
+    float py = (float)luaL_checknumber(L, 3);
+    lua_pushboolean(L, fixture->fixture->TestPoint(ToMeters(px, py)));
+    return 1;
+}
+
+/// @lua_api Light.Physics.Fixture.GetAABB
+/// @brief Phase AO: Get fixture AABB for first proxy, in pixels
+/// @return number x, y, w, h in pixels
+static int l_Fixture_GetAABB(lua_State* L) {
+    auto* fixture = CheckFixture(L, 1);
+    if (!fixture) {
+        lua_pushnumber(L, 0);
+        lua_pushnumber(L, 0);
+        lua_pushnumber(L, 0);
+        lua_pushnumber(L, 0);
+        return 4;
+    }
+    const b2AABB& aabb = fixture->fixture->GetAABB(0);
+    lua_pushnumber(L, aabb.lowerBound.x * PTM);
+    lua_pushnumber(L, aabb.lowerBound.y * PTM);
+    lua_pushnumber(L, (aabb.upperBound.x - aabb.lowerBound.x) * PTM);
+    lua_pushnumber(L, (aabb.upperBound.y - aabb.lowerBound.y) * PTM);
+    return 4;
+}
+
+/// @lua_api Light.Physics.Fixture.GetShapeType
+/// @brief Phase AO: Get underlying shape type string: "circle"|"polygon"|"edge"|"chain"
+/// @return string Shape type
+static int l_Fixture_GetShapeType(lua_State* L) {
+    auto* fixture = CheckFixture(L, 1);
+    if (!fixture) { lua_pushnil(L); return 1; }
+    b2Shape* shape = fixture->fixture->GetShape();
+    if (!shape) { lua_pushnil(L); return 1; }
+    switch (shape->GetType()) {
+    case b2Shape::e_circle:  lua_pushstring(L, "circle"); break;
+    case b2Shape::e_polygon: lua_pushstring(L, "polygon"); break;
+    case b2Shape::e_edge:    lua_pushstring(L, "edge"); break;
+    case b2Shape::e_chain:   lua_pushstring(L, "chain"); break;
+    default:                 lua_pushstring(L, "unknown"); break;
+    }
+    return 1;
+}
+
 static const luaL_Reg g_fixture_funcs[] = {
     {"GetBody",        l_Fixture_GetBody},
     {"SetDensity",     l_Fixture_SetDensity},
@@ -495,6 +619,9 @@ static const luaL_Reg g_fixture_funcs[] = {
     {"GetFilterData",  l_Fixture_GetFilterData},
     {"SetUserData",    l_Fixture_SetUserData},
     {"GetUserData",    l_Fixture_GetUserData},
+    {"TestPoint",      l_Fixture_TestPoint},    // Phase AO
+    {"GetAABB",        l_Fixture_GetAABB},      // Phase AO
+    {"GetShapeType",   l_Fixture_GetShapeType}, // Phase AO
     {NULL, NULL}
 };
 
@@ -913,6 +1040,134 @@ static int l_Body_SetFriction(lua_State* L) {
     return 0;
 }
 
+/// @lua_api Light.Physics.Body.GetWorldPoint
+/// @brief Phase AO: Convert local-space point (pixels) to world-space (pixels)
+/// @param lx number Local X in pixels
+/// @param ly number Local Y in pixels
+/// @return number wx, wy in pixels
+static int l_Body_GetWorldPoint(lua_State* L) {
+    auto* body = CheckBody(L, 1);
+    if (!body) {
+        lua_pushnumber(L, 0);
+        lua_pushnumber(L, 0);
+        return 2;
+    }
+    float lx = (float)luaL_checknumber(L, 2);
+    float ly = (float)luaL_checknumber(L, 3);
+    PushPixels(L, body->body->GetWorldPoint(ToMeters(lx, ly)));
+    return 2;
+}
+
+/// @lua_api Light.Physics.Body.GetLocalPoint
+/// @brief Phase AO: Convert world-space point (pixels) to local-space (pixels)
+/// @param wx number World X in pixels
+/// @param wy number World Y in pixels
+/// @return number lx, ly in pixels
+static int l_Body_GetLocalPoint(lua_State* L) {
+    auto* body = CheckBody(L, 1);
+    if (!body) {
+        lua_pushnumber(L, 0);
+        lua_pushnumber(L, 0);
+        return 2;
+    }
+    float wx = (float)luaL_checknumber(L, 2);
+    float wy = (float)luaL_checknumber(L, 3);
+    PushPixels(L, body->body->GetLocalPoint(ToMeters(wx, wy)));
+    return 2;
+}
+
+/// @lua_api Light.Physics.Body.GetWorldVector
+/// @brief Phase AO: Rotate a local-space vector (pixels) into world-space (pixels)
+/// @param lx number Local X in pixels
+/// @param ly number Local Y in pixels
+/// @return number wx, wy in pixels
+static int l_Body_GetWorldVector(lua_State* L) {
+    auto* body = CheckBody(L, 1);
+    if (!body) {
+        lua_pushnumber(L, 0);
+        lua_pushnumber(L, 0);
+        return 2;
+    }
+    float lx = (float)luaL_checknumber(L, 2);
+    float ly = (float)luaL_checknumber(L, 3);
+    PushPixels(L, body->body->GetWorldVector(ToMeters(lx, ly)));
+    return 2;
+}
+
+/// @lua_api Light.Physics.Body.GetLocalVector
+/// @brief Phase AO: Rotate a world-space vector (pixels) into local-space (pixels)
+/// @param wx number World X in pixels
+/// @param wy number World Y in pixels
+/// @return number lx, ly in pixels
+static int l_Body_GetLocalVector(lua_State* L) {
+    auto* body = CheckBody(L, 1);
+    if (!body) {
+        lua_pushnumber(L, 0);
+        lua_pushnumber(L, 0);
+        return 2;
+    }
+    float wx = (float)luaL_checknumber(L, 2);
+    float wy = (float)luaL_checknumber(L, 3);
+    PushPixels(L, body->body->GetLocalVector(ToMeters(wx, wy)));
+    return 2;
+}
+
+/// @lua_api Light.Physics.Body.ApplyForceAtWorldPoint
+/// @brief Phase AO: Apply a world-space force at a world-space point (pixels)
+/// @param fx number Force X (Newtons-like)
+/// @param fy number Force Y
+/// @param px number World X in pixels
+/// @param py number World Y in pixels
+/// @param wake boolean Wake up the body (defaults true)
+static int l_Body_ApplyForceAtWorldPoint(lua_State* L) {
+    auto* body = CheckBody(L, 1);
+    if (!body) return 0;
+    float fx = (float)luaL_checknumber(L, 2);
+    float fy = (float)luaL_checknumber(L, 3);
+    float px = (float)luaL_checknumber(L, 4);
+    float py = (float)luaL_checknumber(L, 5);
+    bool wake = lua_isnoneornil(L, 6) ? true : (lua_toboolean(L, 6) != 0);
+    // 注: Box2D 对力的单位不做像素换算, 仅对位置
+    body->body->ApplyForce(b2Vec2(fx, fy), ToMeters(px, py), wake);
+    return 0;
+}
+
+/// @lua_api Light.Physics.Body.ApplyLinearImpulseAtPoint
+/// @brief Phase AO: Apply impulse at a world-space point (pixels)
+/// @param ix number Impulse X
+/// @param iy number Impulse Y
+/// @param px number World X in pixels
+/// @param py number World Y in pixels
+/// @param wake boolean Wake up the body (defaults true)
+static int l_Body_ApplyLinearImpulseAtPoint(lua_State* L) {
+    auto* body = CheckBody(L, 1);
+    if (!body) return 0;
+    float ix = (float)luaL_checknumber(L, 2);
+    float iy = (float)luaL_checknumber(L, 3);
+    float px = (float)luaL_checknumber(L, 4);
+    float py = (float)luaL_checknumber(L, 5);
+    bool wake = lua_isnoneornil(L, 6) ? true : (lua_toboolean(L, 6) != 0);
+    body->body->ApplyLinearImpulse(b2Vec2(ix, iy), ToMeters(px, py), wake);
+    return 0;
+}
+
+/// @lua_api Light.Physics.Body.GetFixtures
+/// @brief Phase AO: Return an array of all Fixture tables attached to this Body (alive only)
+/// @return table Array of Fixture tables
+static int l_Body_GetFixtures(lua_State* L) {
+    auto* body = CheckBody(L, 1);
+    lua_newtable(L);
+    if (!body) return 1;
+    int idx = 1;
+    for (b2Fixture* raw = body->body->GetFixtureList(); raw; raw = raw->GetNext()) {
+        PhysicsFixture* wrapper = FixtureFromB2(raw);
+        if (!wrapper) continue;
+        if (!PushFixtureSelf(L, wrapper)) continue;
+        lua_rawseti(L, -2, idx++);
+    }
+    return 1;
+}
+
 static const luaL_Reg g_body_funcs[] = {
     {"AddBox",             l_Body_AddBox},
     {"AddCircle",          l_Body_AddCircle},
@@ -947,6 +1202,14 @@ static const luaL_Reg g_body_funcs[] = {
     {"GetLocalCenter",     l_Body_GetLocalCenter},
     {"SetRestitution",     l_Body_SetRestitution},
     {"SetFriction",        l_Body_SetFriction},
+    // Phase AO
+    {"GetWorldPoint",                 l_Body_GetWorldPoint},
+    {"GetLocalPoint",                 l_Body_GetLocalPoint},
+    {"GetWorldVector",                l_Body_GetWorldVector},
+    {"GetLocalVector",                l_Body_GetLocalVector},
+    {"ApplyForceAtWorldPoint",        l_Body_ApplyForceAtWorldPoint},
+    {"ApplyLinearImpulseAtPoint",     l_Body_ApplyLinearImpulseAtPoint},
+    {"GetFixtures",                   l_Body_GetFixtures},
     {NULL, NULL}
 };
 
@@ -954,13 +1217,17 @@ static int l_World_GC(lua_State* L) {
     auto* world = (PhysicsWorld*)lua_touserdata(L, 1);
     if (!world || !world->alive) return 0;
 
+    // Phase AO: 先失效 joints (在 body/world 销毁前, 释放 registry ref)
+    for (auto* joint : world->joints) InvalidateJoint(L, joint, true);
     for (auto* body : world->bodies) InvalidateBody(L, body, true);
     if (world->legacyCollisionRef != LUA_NOREF) luaL_unref(L, LUA_REGISTRYINDEX, world->legacyCollisionRef);
     if (world->beginContactRef != LUA_NOREF) luaL_unref(L, LUA_REGISTRYINDEX, world->beginContactRef);
     if (world->endContactRef != LUA_NOREF) luaL_unref(L, LUA_REGISTRYINDEX, world->endContactRef);
     delete world->listener;
+    delete world->destructionListener;  // Phase AO
     delete world->world;
     world->listener = nullptr;
+    world->destructionListener = nullptr;
     world->world = nullptr;
     world->alive = false;
     world->~PhysicsWorld();
@@ -982,7 +1249,9 @@ static int l_World_Call(lua_State* L) {
     auto* world = new (storage) PhysicsWorld();
     world->world = new b2World(b2Vec2(0.0f, 10.0f));
     world->listener = new PhysicsContactListener(world);
+    world->destructionListener = new PhysicsDestructionListener(world);  // Phase AO
     world->world->SetContactListener(world->listener);
+    world->world->SetDestructionListener(world->destructionListener);
     world->L = L;
     world->alive = true;
     SetWorldGC(L);
@@ -1079,6 +1348,8 @@ static int l_World_CreateBody(lua_State* L) {
     luaL_setfuncs(L, g_body_funcs, 0);
     lua_pushvalue(L, -1);
     wrapper->selfRef = luaL_ref(L, LUA_REGISTRYINDEX);
+    // Phase AO: 反向链接 b2Body -> wrapper, 用于 Joint.GetBodyA/B
+    body->GetUserData().pointer = reinterpret_cast<uintptr_t>(wrapper);
     world->bodies.push_back(wrapper);
     return 1;
 }
@@ -1146,6 +1417,603 @@ static int l_World_EndContact(lua_State* L) {
     if (world->endContactRef != LUA_NOREF) luaL_unref(L, LUA_REGISTRYINDEX, world->endContactRef);
     lua_pushvalue(L, 2);
     world->endContactRef = luaL_ref(L, LUA_REGISTRYINDEX);
+    return 0;
+}
+
+// ============================================================
+// Phase AO: Joint bindings, PushJointTable + common ops
+// ============================================================
+
+static bool PushJointSelf(lua_State* L, PhysicsJoint* joint) {
+    if (!joint || !joint->alive || joint->selfRef == LUA_NOREF) return false;
+    lua_rawgeti(L, LUA_REGISTRYINDEX, joint->selfRef);
+    if (!lua_istable(L, -1)) {
+        lua_pop(L, 1);
+        return false;
+    }
+    return true;
+}
+
+/// @lua_api Light.Physics.Joint.IsAlive
+/// @brief Phase AO: True when the underlying b2Joint has not been destroyed
+/// @return boolean Alive flag
+static int l_Joint_IsAlive(lua_State* L) {
+    auto* joint = CheckJoint(L, 1);
+    lua_pushboolean(L, joint != nullptr);
+    return 1;
+}
+
+static const char* JointTypeName(b2JointType type) {
+    switch (type) {
+    case e_revoluteJoint:  return "revolute";
+    case e_prismaticJoint: return "prismatic";
+    case e_distanceJoint:  return "distance";
+    case e_weldJoint:      return "weld";
+    case e_mouseJoint:     return "mouse";
+    case e_ropeJoint:      return "rope";
+    case e_pulleyJoint:    return "pulley";
+    case e_wheelJoint:     return "wheel";
+    case e_frictionJoint:  return "friction";
+    case e_motorJoint:     return "motor";
+    case e_gearJoint:      return "gear";
+    default:               return "unknown";
+    }
+}
+
+/// @lua_api Light.Physics.Joint.GetType
+/// @brief Phase AO: Joint kind string
+/// @return string Type name: "distance"|"revolute"|"prismatic"|"weld"|"mouse"|...
+static int l_Joint_GetType(lua_State* L) {
+    auto* joint = CheckJoint(L, 1);
+    if (!joint) { lua_pushnil(L); return 1; }
+    lua_pushstring(L, JointTypeName(joint->joint->GetType()));
+    return 1;
+}
+
+/// @lua_api Light.Physics.Joint.GetBodyA
+/// @brief Phase AO: Get the first Body attached to this joint (or nil)
+static int l_Joint_GetBodyA(lua_State* L) {
+    auto* joint = CheckJoint(L, 1);
+    if (!joint) { lua_pushnil(L); return 1; }
+    b2Body* body = joint->joint->GetBodyA();
+    if (!body) { lua_pushnil(L); return 1; }
+    auto* wrapper = reinterpret_cast<PhysicsBody*>(body->GetUserData().pointer);
+    if (!PushBodySelf(L, wrapper)) lua_pushnil(L);
+    return 1;
+}
+
+/// @lua_api Light.Physics.Joint.GetBodyB
+/// @brief Phase AO: Get the second Body attached to this joint (or nil)
+static int l_Joint_GetBodyB(lua_State* L) {
+    auto* joint = CheckJoint(L, 1);
+    if (!joint) { lua_pushnil(L); return 1; }
+    b2Body* body = joint->joint->GetBodyB();
+    if (!body) { lua_pushnil(L); return 1; }
+    auto* wrapper = reinterpret_cast<PhysicsBody*>(body->GetUserData().pointer);
+    if (!PushBodySelf(L, wrapper)) lua_pushnil(L);
+    return 1;
+}
+
+/// @lua_api Light.Physics.Joint.GetAnchorA
+/// @brief Phase AO: World-space anchor on Body A in pixels
+/// @return number x, y in pixels
+static int l_Joint_GetAnchorA(lua_State* L) {
+    auto* joint = CheckJoint(L, 1);
+    if (!joint) { lua_pushnumber(L, 0); lua_pushnumber(L, 0); return 2; }
+    PushPixels(L, joint->joint->GetAnchorA());
+    return 2;
+}
+
+/// @lua_api Light.Physics.Joint.GetAnchorB
+/// @brief Phase AO: World-space anchor on Body B in pixels
+/// @return number x, y in pixels
+static int l_Joint_GetAnchorB(lua_State* L) {
+    auto* joint = CheckJoint(L, 1);
+    if (!joint) { lua_pushnumber(L, 0); lua_pushnumber(L, 0); return 2; }
+    PushPixels(L, joint->joint->GetAnchorB());
+    return 2;
+}
+
+/// @lua_api Light.Physics.Joint.GetReactionForce
+/// @brief Phase AO: Reaction force from the last time step scaled by 1/dt
+/// @param invDt number Inverse delta time (1/dt)
+/// @return number fx, fy
+static int l_Joint_GetReactionForce(lua_State* L) {
+    auto* joint = CheckJoint(L, 1);
+    if (!joint) { lua_pushnumber(L, 0); lua_pushnumber(L, 0); return 2; }
+    float invDt = (float)luaL_optnumber(L, 2, 60.0);
+    b2Vec2 f = joint->joint->GetReactionForce(invDt);
+    lua_pushnumber(L, f.x);
+    lua_pushnumber(L, f.y);
+    return 2;
+}
+
+/// @lua_api Light.Physics.Joint.GetReactionTorque
+/// @brief Phase AO: Reaction torque from the last time step scaled by 1/dt
+/// @param invDt number Inverse delta time (1/dt)
+/// @return number Torque value
+static int l_Joint_GetReactionTorque(lua_State* L) {
+    auto* joint = CheckJoint(L, 1);
+    if (!joint) { lua_pushnumber(L, 0); return 1; }
+    float invDt = (float)luaL_optnumber(L, 2, 60.0);
+    lua_pushnumber(L, joint->joint->GetReactionTorque(invDt));
+    return 1;
+}
+
+/// @lua_api Light.Physics.Joint.IsEnabled
+/// @brief Phase AO: True when both attached bodies are enabled
+/// @return boolean Enabled flag
+static int l_Joint_IsEnabled(lua_State* L) {
+    auto* joint = CheckJoint(L, 1);
+    lua_pushboolean(L, joint && joint->joint->IsEnabled());
+    return 1;
+}
+
+/// @lua_api Light.Physics.Joint.Destroy
+/// @brief Phase AO: Manually destroy this joint (equivalent to World:DestroyJoint)
+static int l_Joint_Destroy(lua_State* L) {
+    auto* joint = CheckJoint(L, 1);
+    if (!joint) return 0;
+    PhysicsWorld* world = joint->owner;
+    if (!world || !world->alive || !world->world) return 0;
+    b2Joint* raw = joint->joint;
+    InvalidateJoint(L, joint, true);   // 先 invalidate 防止 SayGoodbye 再次触发
+    world->world->DestroyJoint(raw);
+    return 0;
+}
+
+// ---------- Type-specific Joint getters ----------
+
+static b2RevoluteJoint* CheckRevoluteJoint(lua_State* L, int idx) {
+    auto* joint = CheckJoint(L, idx);
+    if (!joint || joint->joint->GetType() != e_revoluteJoint) return nullptr;
+    return static_cast<b2RevoluteJoint*>(joint->joint);
+}
+
+static b2PrismaticJoint* CheckPrismaticJoint(lua_State* L, int idx) {
+    auto* joint = CheckJoint(L, idx);
+    if (!joint || joint->joint->GetType() != e_prismaticJoint) return nullptr;
+    return static_cast<b2PrismaticJoint*>(joint->joint);
+}
+
+static b2DistanceJoint* CheckDistanceJoint(lua_State* L, int idx) {
+    auto* joint = CheckJoint(L, idx);
+    if (!joint || joint->joint->GetType() != e_distanceJoint) return nullptr;
+    return static_cast<b2DistanceJoint*>(joint->joint);
+}
+
+static b2MouseJoint* CheckMouseJoint(lua_State* L, int idx) {
+    auto* joint = CheckJoint(L, idx);
+    if (!joint || joint->joint->GetType() != e_mouseJoint) return nullptr;
+    return static_cast<b2MouseJoint*>(joint->joint);
+}
+
+/// @lua_api Light.Physics.Joint.GetJointAngle
+/// @brief Phase AO: Revolute joint: current angle in radians (returns 0 for other types)
+static int l_Joint_GetJointAngle(lua_State* L) {
+    auto* rj = CheckRevoluteJoint(L, 1);
+    lua_pushnumber(L, rj ? rj->GetJointAngle() : 0.0);
+    return 1;
+}
+
+/// @lua_api Light.Physics.Joint.GetJointSpeed
+/// @brief Phase AO: Revolute joint: current angular speed in rad/s (returns 0 for other types)
+static int l_Joint_GetJointSpeed(lua_State* L) {
+    auto* rj = CheckRevoluteJoint(L, 1);
+    lua_pushnumber(L, rj ? rj->GetJointSpeed() : 0.0);
+    return 1;
+}
+
+/// @lua_api Light.Physics.Joint.GetJointTranslation
+/// @brief Phase AO: Prismatic joint: current translation in pixels (returns 0 for other types)
+static int l_Joint_GetJointTranslation(lua_State* L) {
+    auto* pj = CheckPrismaticJoint(L, 1);
+    lua_pushnumber(L, pj ? (pj->GetJointTranslation() * PTM) : 0.0);
+    return 1;
+}
+
+/// @lua_api Light.Physics.Joint.SetMotorSpeed
+/// @brief Phase AO: Set motor speed (revolute/prismatic joints only)
+/// @param speed number Motor speed
+static int l_Joint_SetMotorSpeed(lua_State* L) {
+    auto* joint = CheckJoint(L, 1);
+    if (!joint) return 0;
+    float speed = (float)luaL_checknumber(L, 2);
+    switch (joint->joint->GetType()) {
+    case e_revoluteJoint:  static_cast<b2RevoluteJoint*>(joint->joint)->SetMotorSpeed(speed); break;
+    case e_prismaticJoint: static_cast<b2PrismaticJoint*>(joint->joint)->SetMotorSpeed(speed); break;
+    default: break;
+    }
+    return 0;
+}
+
+/// @lua_api Light.Physics.Joint.EnableMotor
+/// @brief Phase AO: Enable/disable motor (revolute/prismatic joints only)
+/// @param enabled boolean Enabled flag
+static int l_Joint_EnableMotor(lua_State* L) {
+    auto* joint = CheckJoint(L, 1);
+    if (!joint) return 0;
+    bool enabled = lua_toboolean(L, 2) != 0;
+    switch (joint->joint->GetType()) {
+    case e_revoluteJoint:  static_cast<b2RevoluteJoint*>(joint->joint)->EnableMotor(enabled); break;
+    case e_prismaticJoint: static_cast<b2PrismaticJoint*>(joint->joint)->EnableMotor(enabled); break;
+    default: break;
+    }
+    return 0;
+}
+
+/// @lua_api Light.Physics.Joint.SetTarget
+/// @brief Phase AO: Mouse joint only: set target world-space point (pixels)
+/// @param x number World X in pixels
+/// @param y number World Y in pixels
+static int l_Joint_SetTarget(lua_State* L) {
+    auto* mj = CheckMouseJoint(L, 1);
+    if (!mj) return 0;
+    float x = (float)luaL_checknumber(L, 2);
+    float y = (float)luaL_checknumber(L, 3);
+    mj->SetTarget(ToMeters(x, y));
+    return 0;
+}
+
+/// @lua_api Light.Physics.Joint.SetLength
+/// @brief Phase AO: Distance joint only: set rest length in pixels
+/// @param length number New length in pixels
+static int l_Joint_SetLength(lua_State* L) {
+    auto* dj = CheckDistanceJoint(L, 1);
+    if (!dj) return 0;
+    dj->SetLength((float)luaL_checknumber(L, 2) / PTM);
+    return 0;
+}
+
+/// @lua_api Light.Physics.Joint.GetLength
+/// @brief Phase AO: Distance joint only: get rest length in pixels (returns 0 for other types)
+static int l_Joint_GetLength(lua_State* L) {
+    auto* dj = CheckDistanceJoint(L, 1);
+    lua_pushnumber(L, dj ? (dj->GetLength() * PTM) : 0.0);
+    return 1;
+}
+
+static int l_Joint_Tostring(lua_State* L) {
+    auto* joint = CheckJoint(L, 1);
+    if (!joint) { lua_pushstring(L, "Light.Physics.Joint(dead)"); return 1; }
+    lua_pushfstring(L, "Light.Physics.Joint(%s)", JointTypeName(joint->joint->GetType()));
+    return 1;
+}
+
+static const luaL_Reg g_joint_funcs[] = {
+    {"IsAlive",           l_Joint_IsAlive},
+    {"GetType",           l_Joint_GetType},
+    {"GetBodyA",          l_Joint_GetBodyA},
+    {"GetBodyB",          l_Joint_GetBodyB},
+    {"GetAnchorA",        l_Joint_GetAnchorA},
+    {"GetAnchorB",        l_Joint_GetAnchorB},
+    {"GetReactionForce",  l_Joint_GetReactionForce},
+    {"GetReactionTorque", l_Joint_GetReactionTorque},
+    {"IsEnabled",         l_Joint_IsEnabled},
+    {"Destroy",           l_Joint_Destroy},
+    // Type-specific (safe no-op when wrong type)
+    {"GetJointAngle",       l_Joint_GetJointAngle},
+    {"GetJointSpeed",       l_Joint_GetJointSpeed},
+    {"GetJointTranslation", l_Joint_GetJointTranslation},
+    {"SetMotorSpeed",       l_Joint_SetMotorSpeed},
+    {"EnableMotor",         l_Joint_EnableMotor},
+    {"SetTarget",           l_Joint_SetTarget},
+    {"SetLength",           l_Joint_SetLength},
+    {"GetLength",           l_Joint_GetLength},
+    {"__tostring",          l_Joint_Tostring},
+    {NULL, NULL}
+};
+
+static PhysicsJoint* PushJointTable(lua_State* L, PhysicsWorld* world, b2Joint* joint) {
+    lua_createtable(L, 0, 8);
+    void* storage = lua_newuserdata(L, sizeof(PhysicsJoint));
+    auto* wrapper = new (storage) PhysicsJoint();
+    wrapper->joint = joint;
+    wrapper->owner = world;
+    wrapper->alive = true;
+    lua_setfield(L, -2, "__joint");
+    luaL_setfuncs(L, g_joint_funcs, 0);
+    lua_pushvalue(L, -1);
+    wrapper->selfRef = luaL_ref(L, LUA_REGISTRYINDEX);
+    joint->GetUserData().pointer = reinterpret_cast<uintptr_t>(wrapper);
+    world->joints.push_back(wrapper);
+    return wrapper;
+}
+
+// ============================================================
+// Phase AO: World Create*Joint / DestroyJoint / GetJointCount
+// ============================================================
+
+static bool ResolveBodyPair(lua_State* L, int idxA, int idxB, PhysicsWorld* world,
+                            b2Body** outA, b2Body** outB) {
+    auto* bodyA = CheckBody(L, idxA);
+    auto* bodyB = CheckBody(L, idxB);
+    if (!bodyA || !bodyB) return false;
+    if (bodyA->owner != world || bodyB->owner != world) return false;
+    *outA = bodyA->body;
+    *outB = bodyB->body;
+    return true;
+}
+
+/// @lua_api Light.Physics.World.CreateDistanceJoint
+/// @brief Phase AO: Create a distance joint between two Bodies
+/// @param bodyA table Body A
+/// @param bodyB table Body B
+/// @param ax number Anchor A world X in pixels
+/// @param ay number Anchor A world Y in pixels
+/// @param bx number Anchor B world X in pixels
+/// @param by number Anchor B world Y in pixels
+/// @param collideConnected boolean Allow collision between connected bodies (default false)
+/// @return table Joint
+static int l_World_CreateDistanceJoint(lua_State* L) {
+    auto* world = CheckWorld(L, 1);
+    if (!world) { lua_pushnil(L); return 1; }
+    b2Body *a = nullptr, *b = nullptr;
+    if (!ResolveBodyPair(L, 2, 3, world, &a, &b)) { lua_pushnil(L); return 1; }
+    b2DistanceJointDef def;
+    def.Initialize(a, b,
+                   ToMeters((float)luaL_checknumber(L, 4), (float)luaL_checknumber(L, 5)),
+                   ToMeters((float)luaL_checknumber(L, 6), (float)luaL_checknumber(L, 7)));
+    def.collideConnected = lua_toboolean(L, 8) != 0;
+    b2Joint* joint = world->world->CreateJoint(&def);
+    if (!joint) { lua_pushnil(L); return 1; }
+    PushJointTable(L, world, joint);
+    return 1;
+}
+
+/// @lua_api Light.Physics.World.CreateRevoluteJoint
+/// @brief Phase AO: Create a revolute joint between two Bodies
+/// @param bodyA table Body A
+/// @param bodyB table Body B
+/// @param ax number Anchor world X in pixels
+/// @param ay number Anchor world Y in pixels
+/// @param collideConnected boolean Allow collision between connected bodies (default false)
+/// @return table Joint
+static int l_World_CreateRevoluteJoint(lua_State* L) {
+    auto* world = CheckWorld(L, 1);
+    if (!world) { lua_pushnil(L); return 1; }
+    b2Body *a = nullptr, *b = nullptr;
+    if (!ResolveBodyPair(L, 2, 3, world, &a, &b)) { lua_pushnil(L); return 1; }
+    b2RevoluteJointDef def;
+    def.Initialize(a, b, ToMeters((float)luaL_checknumber(L, 4), (float)luaL_checknumber(L, 5)));
+    def.collideConnected = lua_toboolean(L, 6) != 0;
+    b2Joint* joint = world->world->CreateJoint(&def);
+    if (!joint) { lua_pushnil(L); return 1; }
+    PushJointTable(L, world, joint);
+    return 1;
+}
+
+/// @lua_api Light.Physics.World.CreatePrismaticJoint
+/// @brief Phase AO: Create a prismatic joint between two Bodies
+/// @param bodyA table Body A
+/// @param bodyB table Body B
+/// @param ax number Anchor world X in pixels
+/// @param ay number Anchor world Y in pixels
+/// @param axisX number Axis direction X (unitless, normalized internally)
+/// @param axisY number Axis direction Y
+/// @param collideConnected boolean Default false
+/// @return table Joint
+static int l_World_CreatePrismaticJoint(lua_State* L) {
+    auto* world = CheckWorld(L, 1);
+    if (!world) { lua_pushnil(L); return 1; }
+    b2Body *a = nullptr, *b = nullptr;
+    if (!ResolveBodyPair(L, 2, 3, world, &a, &b)) { lua_pushnil(L); return 1; }
+    b2PrismaticJointDef def;
+    b2Vec2 axis((float)luaL_checknumber(L, 6), (float)luaL_checknumber(L, 7));
+    axis.Normalize();
+    def.Initialize(a, b, ToMeters((float)luaL_checknumber(L, 4), (float)luaL_checknumber(L, 5)), axis);
+    def.collideConnected = lua_toboolean(L, 8) != 0;
+    b2Joint* joint = world->world->CreateJoint(&def);
+    if (!joint) { lua_pushnil(L); return 1; }
+    PushJointTable(L, world, joint);
+    return 1;
+}
+
+/// @lua_api Light.Physics.World.CreateWeldJoint
+/// @brief Phase AO: Create a weld joint (rigid connection) between two Bodies
+/// @param bodyA table Body A
+/// @param bodyB table Body B
+/// @param ax number Anchor world X in pixels
+/// @param ay number Anchor world Y in pixels
+/// @param collideConnected boolean Default false
+/// @return table Joint
+static int l_World_CreateWeldJoint(lua_State* L) {
+    auto* world = CheckWorld(L, 1);
+    if (!world) { lua_pushnil(L); return 1; }
+    b2Body *a = nullptr, *b = nullptr;
+    if (!ResolveBodyPair(L, 2, 3, world, &a, &b)) { lua_pushnil(L); return 1; }
+    b2WeldJointDef def;
+    def.Initialize(a, b, ToMeters((float)luaL_checknumber(L, 4), (float)luaL_checknumber(L, 5)));
+    def.collideConnected = lua_toboolean(L, 6) != 0;
+    b2Joint* joint = world->world->CreateJoint(&def);
+    if (!joint) { lua_pushnil(L); return 1; }
+    PushJointTable(L, world, joint);
+    return 1;
+}
+
+/// @lua_api Light.Physics.World.CreateMouseJoint
+/// @brief Phase AO: Create a mouse joint to drag a dynamic Body toward a target point
+/// @param bodyA table A static/kinematic Body (usually an anchor)
+/// @param bodyB table The draggable dynamic Body
+/// @param tx number Target world X in pixels
+/// @param ty number Target world Y in pixels
+/// @param maxForce number Maximum force (optional, default 1000 * mass of bodyB)
+/// @return table Joint
+static int l_World_CreateMouseJoint(lua_State* L) {
+    auto* world = CheckWorld(L, 1);
+    if (!world) { lua_pushnil(L); return 1; }
+    b2Body *a = nullptr, *b = nullptr;
+    if (!ResolveBodyPair(L, 2, 3, world, &a, &b)) { lua_pushnil(L); return 1; }
+    b2MouseJointDef def;
+    def.bodyA = a;
+    def.bodyB = b;
+    def.target = ToMeters((float)luaL_checknumber(L, 4), (float)luaL_checknumber(L, 5));
+    def.maxForce = (float)luaL_optnumber(L, 6, 1000.0 * b->GetMass());
+    b2Joint* joint = world->world->CreateJoint(&def);
+    if (!joint) { lua_pushnil(L); return 1; }
+    PushJointTable(L, world, joint);
+    return 1;
+}
+
+/// @lua_api Light.Physics.World.DestroyJoint
+/// @brief Phase AO: Destroy a joint (safe when already dead)
+/// @param joint table Joint object
+static int l_World_DestroyJoint(lua_State* L) {
+    auto* world = CheckWorld(L, 1);
+    luaL_checktype(L, 2, LUA_TTABLE);
+    auto* joint = CheckJoint(L, 2);
+    if (!world || !joint || joint->owner != world) return 0;
+    b2Joint* raw = joint->joint;
+    InvalidateJoint(L, joint, true);
+    world->world->DestroyJoint(raw);
+    return 0;
+}
+
+/// @lua_api Light.Physics.World.GetJointCount
+/// @brief Phase AO: Count currently live joints in this world
+/// @return number Joint count
+static int l_World_GetJointCount(lua_State* L) {
+    auto* world = CheckWorld(L, 1);
+    int count = 0;
+    if (world) {
+        for (auto* joint : world->joints) if (joint && joint->alive) count++;
+    }
+    lua_pushinteger(L, count);
+    return 1;
+}
+
+// ============================================================
+// Phase AO: RayCast + QueryAABB
+// ============================================================
+
+// RayCast callback 需要返回 fraction (0..1) 或特殊值 -1 / 0 / 1
+// Lua 回调签名: function(fixture, hitX, hitY, normalX, normalY, fraction)
+//   return nil     -> 用 fraction (继续但裁剪)
+//   return -1      -> 忽略此 fixture
+//   return 0       -> 终止 raycast
+//   return 1       -> 继续但不裁剪 (clipping disabled)
+//   return <num>   -> 作为新的最大 fraction
+class PhysicsRayCastCallback : public b2RayCastCallback {
+public:
+    PhysicsRayCastCallback(lua_State* L, int cbRef) : L_(L), cbRef_(cbRef), aborted_(false) {}
+
+    float ReportFixture(b2Fixture* fixture, const b2Vec2& point,
+                        const b2Vec2& normal, float fraction) override {
+        if (aborted_) return 0.0f;
+        PhysicsFixture* wrapper = FixtureFromB2(fixture);
+        if (!wrapper) return -1.0f;
+        lua_rawgeti(L_, LUA_REGISTRYINDEX, cbRef_);
+        if (!PushFixtureSelf(L_, wrapper)) {
+            lua_pop(L_, 1);
+            return -1.0f;
+        }
+        lua_pushnumber(L_, point.x * PTM);
+        lua_pushnumber(L_, point.y * PTM);
+        lua_pushnumber(L_, normal.x);
+        lua_pushnumber(L_, normal.y);
+        lua_pushnumber(L_, fraction);
+        if (lua_pcall(L_, 6, 1, 0) != 0) {
+            const char* err = lua_tostring(L_, -1);
+            CC::Log(CC::LOG_WARN, "Physics raycast callback error: %s", err ? err : "(unknown)");
+            lua_pop(L_, 1);
+            aborted_ = true;
+            return 0.0f;  // terminate
+        }
+        float ret;
+        if (lua_isnumber(L_, -1)) ret = (float)lua_tonumber(L_, -1);
+        else ret = fraction;  // nil: 使用 fraction
+        lua_pop(L_, 1);
+        return ret;
+    }
+
+private:
+    lua_State* L_;
+    int cbRef_;
+    bool aborted_;
+};
+
+/// @lua_api Light.Physics.World.RayCast
+/// @brief Phase AO: Cast a ray in the world and invoke the Lua callback per hit
+/// @param x1 number Start X in pixels
+/// @param y1 number Start Y in pixels
+/// @param x2 number End X in pixels
+/// @param y2 number End Y in pixels
+/// @param callback function function(fixture, hitX, hitY, nx, ny, fraction) return nil|-1|0|1|fraction
+static int l_World_RayCast(lua_State* L) {
+    auto* world = CheckWorld(L, 1);
+    if (!world) return 0;
+    float x1 = (float)luaL_checknumber(L, 2);
+    float y1 = (float)luaL_checknumber(L, 3);
+    float x2 = (float)luaL_checknumber(L, 4);
+    float y2 = (float)luaL_checknumber(L, 5);
+    luaL_checktype(L, 6, LUA_TFUNCTION);
+    lua_pushvalue(L, 6);
+    int cbRef = luaL_ref(L, LUA_REGISTRYINDEX);
+    {
+        PhysicsRayCastCallback cb(L, cbRef);
+        b2Vec2 p1 = ToMeters(x1, y1), p2 = ToMeters(x2, y2);
+        if (!(p1.x == p2.x && p1.y == p2.y)) world->world->RayCast(&cb, p1, p2);
+    }
+    luaL_unref(L, LUA_REGISTRYINDEX, cbRef);
+    return 0;
+}
+
+class PhysicsQueryCallback : public b2QueryCallback {
+public:
+    PhysicsQueryCallback(lua_State* L, int cbRef) : L_(L), cbRef_(cbRef), aborted_(false) {}
+
+    bool ReportFixture(b2Fixture* fixture) override {
+        if (aborted_) return false;
+        PhysicsFixture* wrapper = FixtureFromB2(fixture);
+        if (!wrapper) return true;   // 继续但跳过 invalid wrapper
+        lua_rawgeti(L_, LUA_REGISTRYINDEX, cbRef_);
+        if (!PushFixtureSelf(L_, wrapper)) {
+            lua_pop(L_, 1);
+            return true;
+        }
+        if (lua_pcall(L_, 1, 1, 0) != 0) {
+            const char* err = lua_tostring(L_, -1);
+            CC::Log(CC::LOG_WARN, "Physics query callback error: %s", err ? err : "(unknown)");
+            lua_pop(L_, 1);
+            aborted_ = true;
+            return false;
+        }
+        bool cont = lua_isnil(L_, -1) ? true : (lua_toboolean(L_, -1) != 0);
+        lua_pop(L_, 1);
+        return cont;
+    }
+
+private:
+    lua_State* L_;
+    int cbRef_;
+    bool aborted_;
+};
+
+/// @lua_api Light.Physics.World.QueryAABB
+/// @brief Phase AO: Query fixtures overlapping an AABB, invoking the Lua callback
+/// @param x number AABB X in pixels
+/// @param y number AABB Y in pixels
+/// @param w number AABB width in pixels
+/// @param h number AABB height in pixels
+/// @param callback function function(fixture) return true to continue, false/nil to stop
+static int l_World_QueryAABB(lua_State* L) {
+    auto* world = CheckWorld(L, 1);
+    if (!world) return 0;
+    float x = (float)luaL_checknumber(L, 2);
+    float y = (float)luaL_checknumber(L, 3);
+    float w = (float)luaL_checknumber(L, 4);
+    float h = (float)luaL_checknumber(L, 5);
+    luaL_checktype(L, 6, LUA_TFUNCTION);
+    lua_pushvalue(L, 6);
+    int cbRef = luaL_ref(L, LUA_REGISTRYINDEX);
+    {
+        PhysicsQueryCallback cb(L, cbRef);
+        b2AABB aabb;
+        aabb.lowerBound = ToMeters(x, y);
+        aabb.upperBound = ToMeters(x + w, y + h);
+        world->world->QueryAABB(&cb, aabb);
+    }
+    luaL_unref(L, LUA_REGISTRYINDEX, cbRef);
     return 0;
 }
 
@@ -1264,6 +2132,16 @@ static const luaL_Reg g_world_funcs[] = {
     {"OnCollision",          l_World_OnCollision},
     {"BeginContact",         l_World_BeginContact},
     {"EndContact",           l_World_EndContact},
+    // Phase AO: joints + queries
+    {"CreateDistanceJoint",  l_World_CreateDistanceJoint},
+    {"CreateRevoluteJoint",  l_World_CreateRevoluteJoint},
+    {"CreatePrismaticJoint", l_World_CreatePrismaticJoint},
+    {"CreateWeldJoint",      l_World_CreateWeldJoint},
+    {"CreateMouseJoint",     l_World_CreateMouseJoint},
+    {"DestroyJoint",         l_World_DestroyJoint},
+    {"GetJointCount",        l_World_GetJointCount},
+    {"RayCast",              l_World_RayCast},
+    {"QueryAABB",            l_World_QueryAABB},
     {"__call",               l_World_Call},
     {"__tostring",           l_World_Tostring},
     {NULL, NULL}
