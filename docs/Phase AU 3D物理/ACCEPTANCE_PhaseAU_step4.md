@@ -15,7 +15,7 @@
 | **Step 4.1** | Compound shape API + DebugDraw 接口 | `25605822892` ✅ |
 | **Step 4.2** | btRaycastVehicle 4 轮车辆 + 13 方法 | `25606305379` ✅ |
 | **Step 4.3** | btSoftBody (rope/cloth/ellipsoid + 15 方法) + World 升级 SoftRigidDynamicsWorld | `25608583855` ✅ |
-| **Step 4.4** | Vehicle +6 / SoftBody +5 / `samples/demo_physics3d` / smoke 增量 | (本提交,待 CI) |
+| **Step 4.4** | Vehicle +6 / SoftBody +5 / `samples/demo_physics3d` / smoke 增量 | `25609835267` ✅ |
 
 每次 CI 6 平台(Linux / Windows / macOS / Android / iOS / Web)全绿。
 
