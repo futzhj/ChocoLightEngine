@@ -1,6 +1,8 @@
 # Phase AQ — TextInput + IME — 验收文档
 
-> **状态**: 已完成 (本地实施 + lightc 语法检查通过, 待 GitHub Actions CI 全平台验证)
+> **状态**: ✅ **已完成** — 6 平台 CI + Windows runtime smoke 全绿
+>
+> GitHub Actions run: [25594281625](https://github.com/futzhj/ChocoLightEngine/actions/runs/25594281625) (commit `6c93968`)
 
 ---
 
@@ -167,12 +169,12 @@ lumen-master\build\src\lightc\Release\lightc.exe -p scripts\smoke\textinput.lua
 ## 九、CI 验收标准
 
 - [x] `lightc -p scripts/smoke/textinput.lua` Exit=0 (本地)
-- [ ] GitHub Actions `Build Templates (All Platforms)` 全绿:
-  - [ ] Windows x64: 编译 + Windows runtime smoke (含 textinput.lua)
-  - [ ] Linux x64: 编译 + 语法检查
-  - [ ] macOS Universal: 编译 + 语法检查
-  - [ ] Android arm64+x86_64: 编译
-  - [ ] iOS arm64: 编译
-  - [ ] Web WASM: 编译
+- [x] GitHub Actions `Build Templates (All Platforms)` **全绿** (run id 25594281625):
+  - [x] Windows x64: 编译 + Windows runtime smoke (含 textinput.lua) ✅
+  - [x] Linux x64: 编译 + 语法检查 ✅
+  - [x] macOS Universal: 编译 + 语法检查 ✅
+  - [x] Android arm64+x86_64: 编译 ✅
+  - [x] iOS arm64: 编译 ✅
+  - [x] Web WASM: 编译 ✅
 
-CI 全绿后此 Phase 才算最终交付完成。
+**Phase AQ 最终交付完成。**
