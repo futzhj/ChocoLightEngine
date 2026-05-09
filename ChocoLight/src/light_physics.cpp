@@ -74,11 +74,20 @@ struct PhysicsContactEvent {
     b2Fixture* fixtureB;
 };
 
+// Phase AP: Contact userdata view — Lua 侧通过它调用 SetEnabled/SetFriction 等
+// 仅在 PreSolve/PostSolve 回调内有效, 回调返回后 alive=false, 后续方法安全 no-op
+struct PhysicsContactView {
+    b2Contact* contact;
+    bool alive;
+};
+
 class PhysicsContactListener : public b2ContactListener {
 public:
     explicit PhysicsContactListener(PhysicsWorld* world) : world_(world) {}
     void BeginContact(b2Contact* contact) override;
     void EndContact(b2Contact* contact) override;
+    void PreSolve(b2Contact* contact, const b2Manifold* oldManifold) override;           // Phase AP
+    void PostSolve(b2Contact* contact, const b2ContactImpulse* impulse) override;        // Phase AP
 
 private:
     PhysicsWorld* world_;
@@ -108,13 +117,17 @@ struct PhysicsWorld {
     int legacyCollisionRef;
     int beginContactRef;
     int endContactRef;
+    int preSolveRef;          // Phase AP
+    int postSolveRef;         // Phase AP
     lua_State* L;
     bool alive;
 
     PhysicsWorld()
         : world(nullptr), listener(nullptr), destructionListener(nullptr),
           legacyCollisionRef(LUA_NOREF), beginContactRef(LUA_NOREF),
-          endContactRef(LUA_NOREF), L(nullptr), alive(false) {}
+          endContactRef(LUA_NOREF),
+          preSolveRef(LUA_NOREF), postSolveRef(LUA_NOREF),
+          L(nullptr), alive(false) {}
 };
 
 static b2Vec2 ToMeters(float x, float y) {
@@ -327,11 +340,125 @@ static int l_Contact_GetFixtureB(lua_State* L) {
     return 1;
 }
 
+// ============================================================
+// Phase AP: Contact "live" 方法 (PreSolve/PostSolve 内有效)
+// ============================================================
+
+// 取出 contact 对应的 PhysicsContactView (alive 时返回非空)
+static PhysicsContactView* CheckContactView(lua_State* L, int idx) {
+    if (!lua_istable(L, idx)) return nullptr;
+    lua_getfield(L, idx, "__contact");
+    if (!lua_isuserdata(L, -1)) { lua_pop(L, 1); return nullptr; }
+    auto* view = (PhysicsContactView*)lua_touserdata(L, -1);
+    lua_pop(L, 1);
+    if (!view || !view->alive || !view->contact) return nullptr;
+    return view;
+}
+
+/// @lua_api Light.Physics.Contact.IsTouching
+/// @brief Phase AP: Whether the contact is currently touching (PreSolve/PostSolve only)
+static int l_Contact_IsTouching(lua_State* L) {
+    auto* view = CheckContactView(L, 1);
+    lua_pushboolean(L, view && view->contact->IsTouching());
+    return 1;
+}
+
+/// @lua_api Light.Physics.Contact.IsEnabled
+/// @brief Phase AP: Whether the contact is enabled (PreSolve only useful)
+static int l_Contact_IsEnabled(lua_State* L) {
+    auto* view = CheckContactView(L, 1);
+    lua_pushboolean(L, view && view->contact->IsEnabled());
+    return 1;
+}
+
+/// @lua_api Light.Physics.Contact.SetEnabled
+/// @brief Phase AP: Enable/disable contact for this single time step (must be called in PreSolve)
+/// @param enabled boolean Enabled flag
+static int l_Contact_SetEnabled(lua_State* L) {
+    auto* view = CheckContactView(L, 1);
+    if (!view) return 0;
+    view->contact->SetEnabled(lua_toboolean(L, 2) != 0);
+    return 0;
+}
+
+/// @lua_api Light.Physics.Contact.SetFriction
+/// @brief Phase AP: Override friction for this contact (must be called in PreSolve)
+/// @param friction number Friction coefficient
+static int l_Contact_SetFriction(lua_State* L) {
+    auto* view = CheckContactView(L, 1);
+    if (!view) return 0;
+    view->contact->SetFriction((float)luaL_checknumber(L, 2));
+    return 0;
+}
+
+/// @lua_api Light.Physics.Contact.GetFriction
+/// @brief Phase AP: Current friction coefficient
+static int l_Contact_GetFriction(lua_State* L) {
+    auto* view = CheckContactView(L, 1);
+    lua_pushnumber(L, view ? view->contact->GetFriction() : 0.0);
+    return 1;
+}
+
+/// @lua_api Light.Physics.Contact.SetRestitution
+/// @brief Phase AP: Override restitution (bounciness) for this contact (must be called in PreSolve)
+/// @param restitution number Restitution coefficient
+static int l_Contact_SetRestitution(lua_State* L) {
+    auto* view = CheckContactView(L, 1);
+    if (!view) return 0;
+    view->contact->SetRestitution((float)luaL_checknumber(L, 2));
+    return 0;
+}
+
+/// @lua_api Light.Physics.Contact.GetRestitution
+/// @brief Phase AP: Current restitution coefficient
+static int l_Contact_GetRestitution(lua_State* L) {
+    auto* view = CheckContactView(L, 1);
+    lua_pushnumber(L, view ? view->contact->GetRestitution() : 0.0);
+    return 1;
+}
+
+/// @lua_api Light.Physics.Contact.ResetFriction
+/// @brief Phase AP: Reset friction to per-fixture mixed value
+static int l_Contact_ResetFriction(lua_State* L) {
+    auto* view = CheckContactView(L, 1);
+    if (view) view->contact->ResetFriction();
+    return 0;
+}
+
+/// @lua_api Light.Physics.Contact.ResetRestitution
+/// @brief Phase AP: Reset restitution to per-fixture mixed value
+static int l_Contact_ResetRestitution(lua_State* L) {
+    auto* view = CheckContactView(L, 1);
+    if (view) view->contact->ResetRestitution();
+    return 0;
+}
+
+/// @lua_api Light.Physics.Contact.GetManifoldPointCount
+/// @brief Phase AP: Number of contact points (0/1/2)
+static int l_Contact_GetManifoldPointCount(lua_State* L) {
+    auto* view = CheckContactView(L, 1);
+    if (!view) { lua_pushinteger(L, 0); return 1; }
+    const b2Manifold* m = view->contact->GetManifold();
+    lua_pushinteger(L, m ? m->pointCount : 0);
+    return 1;
+}
+
 static const luaL_Reg g_contact_funcs[] = {
     {"GetBodyA",    l_Contact_GetBodyA},
     {"GetBodyB",    l_Contact_GetBodyB},
     {"GetFixtureA", l_Contact_GetFixtureA},
     {"GetFixtureB", l_Contact_GetFixtureB},
+    // Phase AP: live-contact methods
+    {"IsTouching",              l_Contact_IsTouching},
+    {"IsEnabled",               l_Contact_IsEnabled},
+    {"SetEnabled",              l_Contact_SetEnabled},
+    {"SetFriction",             l_Contact_SetFriction},
+    {"GetFriction",             l_Contact_GetFriction},
+    {"SetRestitution",          l_Contact_SetRestitution},
+    {"GetRestitution",          l_Contact_GetRestitution},
+    {"ResetFriction",           l_Contact_ResetFriction},
+    {"ResetRestitution",        l_Contact_ResetRestitution},
+    {"GetManifoldPointCount",   l_Contact_GetManifoldPointCount},
     {NULL, NULL}
 };
 
@@ -379,6 +506,74 @@ static void DispatchContactEvents(lua_State* L, PhysicsWorld* world) {
         PushContactTable(L, bodyA, bodyB, fixtureA, fixtureB);
         CallLuaNoReturn(L, 1);
     }
+}
+
+// Phase AP: 推一个携带 __contact userdata 的 Contact table (live) 用于 PreSolve/PostSolve
+// 返回栈顶 view 指针, 调用方在回调返回后置 view->alive = false
+static PhysicsContactView* PushLiveContactTable(lua_State* L, b2Contact* contact) {
+    PhysicsFixture* fa = contact ? FixtureFromB2(contact->GetFixtureA()) : nullptr;
+    PhysicsFixture* fb = contact ? FixtureFromB2(contact->GetFixtureB()) : nullptr;
+    PhysicsBody* ba = fa ? fa->owner : nullptr;
+    PhysicsBody* bb = fb ? fb->owner : nullptr;
+    PushContactTable(L, ba, bb, fa, fb);  // 在栈顶留 contact table
+    // 附加 __contact userdata
+    auto* view = (PhysicsContactView*)lua_newuserdata(L, sizeof(PhysicsContactView));
+    view->contact = contact;
+    view->alive = true;
+    lua_setfield(L, -2, "__contact");
+    return view;
+}
+
+void PhysicsContactListener::PreSolve(b2Contact* contact, const b2Manifold* oldManifold) {
+    (void)oldManifold;
+    if (!world_ || !world_->alive || !contact) return;
+    if (world_->preSolveRef == LUA_NOREF) return;
+    lua_State* L = world_->L;
+    if (!L) return;
+
+    int baseTop = lua_gettop(L);
+    lua_rawgeti(L, LUA_REGISTRYINDEX, world_->preSolveRef);
+    if (!lua_isfunction(L, -1)) { lua_settop(L, baseTop); return; }
+    PhysicsContactView* view = PushLiveContactTable(L, contact);
+    // pcall 保护: PreSolve 异常不应中断 Step
+    if (lua_pcall(L, 1, 0, 0) != 0) {
+        const char* err = lua_tostring(L, -1);
+        if (err) CC::Log(CC::LOG_ERROR, "PreSolve error: %s", err);
+    }
+    view->alive = false;
+    lua_settop(L, baseTop);
+}
+
+void PhysicsContactListener::PostSolve(b2Contact* contact, const b2ContactImpulse* impulse) {
+    if (!world_ || !world_->alive || !contact) return;
+    if (world_->postSolveRef == LUA_NOREF) return;
+    lua_State* L = world_->L;
+    if (!L) return;
+
+    int baseTop = lua_gettop(L);
+    lua_rawgeti(L, LUA_REGISTRYINDEX, world_->postSolveRef);
+    if (!lua_isfunction(L, -1)) { lua_settop(L, baseTop); return; }
+    PhysicsContactView* view = PushLiveContactTable(L, contact);
+    // 复制 normal/tangent impulses 到 Lua 数组
+    int n = impulse ? impulse->count : 0;
+    if (n < 0) n = 0;
+    if (n > b2_maxManifoldPoints) n = b2_maxManifoldPoints;
+    lua_createtable(L, n, 0);
+    for (int i = 0; i < n; i++) {
+        lua_pushnumber(L, impulse->normalImpulses[i]);
+        lua_rawseti(L, -2, i + 1);
+    }
+    lua_createtable(L, n, 0);
+    for (int i = 0; i < n; i++) {
+        lua_pushnumber(L, impulse->tangentImpulses[i]);
+        lua_rawseti(L, -2, i + 1);
+    }
+    if (lua_pcall(L, 3, 0, 0) != 0) {
+        const char* err = lua_tostring(L, -1);
+        if (err) CC::Log(CC::LOG_ERROR, "PostSolve error: %s", err);
+    }
+    view->alive = false;
+    lua_settop(L, baseTop);
 }
 
 static int l_Shape_GC(lua_State* L) {
@@ -605,6 +800,41 @@ static int l_Fixture_GetShapeType(lua_State* L) {
     return 1;
 }
 
+/// @lua_api Light.Physics.Fixture.RayCast
+/// @brief Phase AP: Cast a ray against only this single fixture.
+/// @param x1 number Start X in pixels
+/// @param y1 number Start Y in pixels
+/// @param x2 number End X in pixels
+/// @param y2 number End Y in pixels
+/// @param childIndex number Child shape index (chain/polygon usually 0), optional
+/// @return number, number, number, number, number Hit X (px), Hit Y (px), Normal X, Normal Y, fraction — or nil if miss
+static int l_Fixture_RayCast(lua_State* L) {
+    auto* fixture = CheckFixture(L, 1);
+    if (!fixture) { lua_pushnil(L); return 1; }
+    float x1 = (float)luaL_checknumber(L, 2);
+    float y1 = (float)luaL_checknumber(L, 3);
+    float x2 = (float)luaL_checknumber(L, 4);
+    float y2 = (float)luaL_checknumber(L, 5);
+    int childIndex = (int)luaL_optinteger(L, 6, 0);
+
+    b2RayCastInput input;
+    input.p1 = ToMeters(x1, y1);
+    input.p2 = ToMeters(x2, y2);
+    input.maxFraction = 1.0f;
+
+    b2RayCastOutput output;
+    bool hit = fixture->fixture->RayCast(&output, input, childIndex);
+    if (!hit) { lua_pushnil(L); return 1; }
+
+    b2Vec2 hitPoint = input.p1 + output.fraction * (input.p2 - input.p1);
+    lua_pushnumber(L, hitPoint.x * PTM);
+    lua_pushnumber(L, hitPoint.y * PTM);
+    lua_pushnumber(L, output.normal.x);
+    lua_pushnumber(L, output.normal.y);
+    lua_pushnumber(L, output.fraction);
+    return 5;
+}
+
 static const luaL_Reg g_fixture_funcs[] = {
     {"GetBody",        l_Fixture_GetBody},
     {"SetDensity",     l_Fixture_SetDensity},
@@ -622,6 +852,7 @@ static const luaL_Reg g_fixture_funcs[] = {
     {"TestPoint",      l_Fixture_TestPoint},    // Phase AO
     {"GetAABB",        l_Fixture_GetAABB},      // Phase AO
     {"GetShapeType",   l_Fixture_GetShapeType}, // Phase AO
+    {"RayCast",        l_Fixture_RayCast},      // Phase AP
     {NULL, NULL}
 };
 
@@ -1168,6 +1399,183 @@ static int l_Body_GetFixtures(lua_State* L) {
     return 1;
 }
 
+// ============================================================
+// Phase AP: Body 高级属性
+// ============================================================
+
+/// @lua_api Light.Physics.Body.GetGravityScale
+/// @brief Phase AP: Get this Body's gravity scale multiplier (default 1.0)
+/// @return number Gravity scale
+static int l_Body_GetGravityScale(lua_State* L) {
+    auto* body = CheckBody(L, 1);
+    lua_pushnumber(L, body ? body->body->GetGravityScale() : 1.0);
+    return 1;
+}
+
+/// @lua_api Light.Physics.Body.SetGravityScale
+/// @brief Phase AP: Set this Body's gravity scale (0 = no gravity, 2 = double)
+/// @param scale number Gravity multiplier
+static int l_Body_SetGravityScale(lua_State* L) {
+    auto* body = CheckBody(L, 1);
+    if (body) body->body->SetGravityScale((float)luaL_checknumber(L, 2));
+    return 0;
+}
+
+/// @lua_api Light.Physics.Body.IsFixedRotation
+/// @brief Phase AP: Query whether this Body has fixed (zero) rotation
+/// @return boolean Fixed-rotation flag
+static int l_Body_IsFixedRotation(lua_State* L) {
+    auto* body = CheckBody(L, 1);
+    lua_pushboolean(L, body && body->body->IsFixedRotation());
+    return 1;
+}
+
+/// @lua_api Light.Physics.Body.SetFixedRotation
+/// @brief Phase AP: Lock rotation. Useful for character controllers.
+/// @param enabled boolean Fixed-rotation flag
+static int l_Body_SetFixedRotation(lua_State* L) {
+    auto* body = CheckBody(L, 1);
+    if (body) body->body->SetFixedRotation(lua_toboolean(L, 2) != 0);
+    return 0;
+}
+
+/// @lua_api Light.Physics.Body.IsSleepingAllowed
+/// @brief Phase AP: Query whether this Body may be put to sleep automatically
+/// @return boolean Sleeping-allowed flag
+static int l_Body_IsSleepingAllowed(lua_State* L) {
+    auto* body = CheckBody(L, 1);
+    lua_pushboolean(L, body && body->body->IsSleepingAllowed());
+    return 1;
+}
+
+/// @lua_api Light.Physics.Body.SetSleepingAllowed
+/// @brief Phase AP: Toggle whether this Body may auto-sleep.
+/// @param enabled boolean Allow sleep
+static int l_Body_SetSleepingAllowed(lua_State* L) {
+    auto* body = CheckBody(L, 1);
+    if (body) body->body->SetSleepingAllowed(lua_toboolean(L, 2) != 0);
+    return 0;
+}
+
+/// @lua_api Light.Physics.Body.ResetMassData
+/// @brief Phase AP: Recompute mass from fixtures. Call after changing fixture density.
+static int l_Body_ResetMassData(lua_State* L) {
+    auto* body = CheckBody(L, 1);
+    if (body) body->body->ResetMassData();
+    return 0;
+}
+
+/// @lua_api Light.Physics.Body.GetMassData
+/// @brief Phase AP: Get mass data (mass, centerX_px, centerY_px, inertia)
+/// @return number, number, number, number mass, center x (px), center y (px), rotational inertia
+static int l_Body_GetMassData(lua_State* L) {
+    auto* body = CheckBody(L, 1);
+    if (!body) {
+        lua_pushnumber(L, 0); lua_pushnumber(L, 0);
+        lua_pushnumber(L, 0); lua_pushnumber(L, 0);
+        return 4;
+    }
+    b2MassData md;
+    body->body->GetMassData(&md);
+    lua_pushnumber(L, md.mass);
+    lua_pushnumber(L, md.center.x * PTM);
+    lua_pushnumber(L, md.center.y * PTM);
+    lua_pushnumber(L, md.I);
+    return 4;
+}
+
+/// @lua_api Light.Physics.Body.SetMassData
+/// @brief Phase AP: Manually override mass data.
+/// @param mass number Mass in kg
+/// @param cx number Center X in pixels
+/// @param cy number Center Y in pixels
+/// @param inertia number Rotational inertia
+static int l_Body_SetMassData(lua_State* L) {
+    auto* body = CheckBody(L, 1);
+    if (!body) return 0;
+    b2MassData md;
+    md.mass   = (float)luaL_checknumber(L, 2);
+    md.center = ToMeters((float)luaL_checknumber(L, 3), (float)luaL_checknumber(L, 4));
+    md.I      = (float)luaL_optnumber(L, 5, 0.0);
+    body->body->SetMassData(&md);
+    return 0;
+}
+
+// ============================================================
+// Phase AP: Body 邻居遍历
+// ============================================================
+
+// 辅助: 从 b2Body* 反查 Lua body table 并压栈
+static void PushBodyFromRaw(lua_State* L, b2Body* raw) {
+    if (!raw) { lua_pushnil(L); return; }
+    PhysicsBody* wrapper = reinterpret_cast<PhysicsBody*>(raw->GetUserData().pointer);
+    if (!wrapper || !wrapper->alive || wrapper->selfRef == LUA_NOREF) {
+        lua_pushnil(L);
+        return;
+    }
+    lua_rawgeti(L, LUA_REGISTRYINDEX, wrapper->selfRef);
+    if (!lua_istable(L, -1)) {
+        lua_pop(L, 1);
+        lua_pushnil(L);
+    }
+}
+
+/// @lua_api Light.Physics.Body.GetJointList
+/// @brief Phase AP: Array of all joints attached to this Body (alive only).
+/// @return table Array of joint tables
+static int l_Body_GetJointList(lua_State* L) {
+    auto* body = CheckBody(L, 1);
+    lua_newtable(L);
+    if (!body) return 1;
+    int idx = 1;
+    for (b2JointEdge* edge = body->body->GetJointList(); edge; edge = edge->next) {
+        if (!edge->joint) continue;
+        PhysicsJoint* jw = reinterpret_cast<PhysicsJoint*>(edge->joint->GetUserData().pointer);
+        if (!jw || !jw->alive || jw->selfRef == LUA_NOREF) continue;
+        lua_rawgeti(L, LUA_REGISTRYINDEX, jw->selfRef);
+        if (lua_istable(L, -1)) {
+            lua_rawseti(L, -2, idx++);
+        } else {
+            lua_pop(L, 1);
+        }
+    }
+    return 1;
+}
+
+/// @lua_api Light.Physics.Body.GetContactList
+/// @brief Phase AP: Array of currently-touching contacts. Each item is a contact table with fixtureA/B, bodyA/B.
+/// @return table Array of contact tables (only "touching" contacts included)
+static int l_Body_GetContactList(lua_State* L) {
+    auto* body = CheckBody(L, 1);
+    lua_newtable(L);
+    if (!body) return 1;
+    int idx = 1;
+    for (b2ContactEdge* edge = body->body->GetContactList(); edge; edge = edge->next) {
+        if (!edge->contact || !edge->contact->IsTouching()) continue;
+        b2Contact* c = edge->contact;
+        b2Fixture* fa = c->GetFixtureA();
+        b2Fixture* fb = c->GetFixtureB();
+        if (!fa || !fb) continue;
+        lua_newtable(L);
+        // fixtureA / fixtureB
+        PhysicsFixture* fwa = FixtureFromB2(fa);
+        PhysicsFixture* fwb = FixtureFromB2(fb);
+        if (fwa && PushFixtureSelf(L, fwa)) {
+            lua_setfield(L, -2, "fixtureA");
+        }
+        if (fwb && PushFixtureSelf(L, fwb)) {
+            lua_setfield(L, -2, "fixtureB");
+        }
+        // bodyA / bodyB
+        PushBodyFromRaw(L, fa->GetBody());
+        lua_setfield(L, -2, "bodyA");
+        PushBodyFromRaw(L, fb->GetBody());
+        lua_setfield(L, -2, "bodyB");
+        lua_rawseti(L, -2, idx++);
+    }
+    return 1;
+}
+
 static const luaL_Reg g_body_funcs[] = {
     {"AddBox",             l_Body_AddBox},
     {"AddCircle",          l_Body_AddCircle},
@@ -1210,6 +1618,19 @@ static const luaL_Reg g_body_funcs[] = {
     {"ApplyForceAtWorldPoint",        l_Body_ApplyForceAtWorldPoint},
     {"ApplyLinearImpulseAtPoint",     l_Body_ApplyLinearImpulseAtPoint},
     {"GetFixtures",                   l_Body_GetFixtures},
+    // Phase AP: Body 高级属性
+    {"GetGravityScale",               l_Body_GetGravityScale},
+    {"SetGravityScale",               l_Body_SetGravityScale},
+    {"IsFixedRotation",               l_Body_IsFixedRotation},
+    {"SetFixedRotation",              l_Body_SetFixedRotation},
+    {"IsSleepingAllowed",             l_Body_IsSleepingAllowed},
+    {"SetSleepingAllowed",            l_Body_SetSleepingAllowed},
+    {"ResetMassData",                 l_Body_ResetMassData},
+    {"GetMassData",                   l_Body_GetMassData},
+    {"SetMassData",                   l_Body_SetMassData},
+    // Phase AP: 邻居遍历
+    {"GetJointList",                  l_Body_GetJointList},
+    {"GetContactList",                l_Body_GetContactList},
     {NULL, NULL}
 };
 
@@ -1223,6 +1644,8 @@ static int l_World_GC(lua_State* L) {
     if (world->legacyCollisionRef != LUA_NOREF) luaL_unref(L, LUA_REGISTRYINDEX, world->legacyCollisionRef);
     if (world->beginContactRef != LUA_NOREF) luaL_unref(L, LUA_REGISTRYINDEX, world->beginContactRef);
     if (world->endContactRef != LUA_NOREF) luaL_unref(L, LUA_REGISTRYINDEX, world->endContactRef);
+    if (world->preSolveRef != LUA_NOREF) luaL_unref(L, LUA_REGISTRYINDEX, world->preSolveRef);    // Phase AP
+    if (world->postSolveRef != LUA_NOREF) luaL_unref(L, LUA_REGISTRYINDEX, world->postSolveRef);  // Phase AP
     delete world->listener;
     delete world->destructionListener;  // Phase AO
     delete world->world;
@@ -1318,6 +1741,46 @@ static int l_World_SetContinuousPhysics(lua_State* L) {
     auto* world = CheckWorld(L, 1);
     if (world) world->world->SetContinuousPhysics(lua_toboolean(L, 2) != 0);
     return 0;
+}
+
+// ============================================================
+// Phase AP: World 仿真控制
+// ============================================================
+
+/// @lua_api Light.Physics.World.SetSubStepping
+/// @brief Phase AP: Enable sub-stepping within continuous physics (small perf cost, better CCD)
+/// @param enabled boolean Sub-stepping flag
+static int l_World_SetSubStepping(lua_State* L) {
+    auto* world = CheckWorld(L, 1);
+    if (world) world->world->SetSubStepping(lua_toboolean(L, 2) != 0);
+    return 0;
+}
+
+/// @lua_api Light.Physics.World.GetSubStepping
+/// @brief Phase AP: Query sub-stepping flag
+/// @return boolean Sub-stepping flag
+static int l_World_GetSubStepping(lua_State* L) {
+    auto* world = CheckWorld(L, 1);
+    lua_pushboolean(L, world && world->world->GetSubStepping());
+    return 1;
+}
+
+/// @lua_api Light.Physics.World.SetWarmStarting
+/// @brief Phase AP: Enable solver warm-starting for better stacking stability (default on)
+/// @param enabled boolean Warm-start flag
+static int l_World_SetWarmStarting(lua_State* L) {
+    auto* world = CheckWorld(L, 1);
+    if (world) world->world->SetWarmStarting(lua_toboolean(L, 2) != 0);
+    return 0;
+}
+
+/// @lua_api Light.Physics.World.GetWarmStarting
+/// @brief Phase AP: Query warm-starting flag
+/// @return boolean Warm-start flag
+static int l_World_GetWarmStarting(lua_State* L) {
+    auto* world = CheckWorld(L, 1);
+    lua_pushboolean(L, world && world->world->GetWarmStarting());
+    return 1;
 }
 
 /// @lua_api Light.Physics.World.CreateBody
@@ -1417,6 +1880,44 @@ static int l_World_EndContact(lua_State* L) {
     if (world->endContactRef != LUA_NOREF) luaL_unref(L, LUA_REGISTRYINDEX, world->endContactRef);
     lua_pushvalue(L, 2);
     world->endContactRef = luaL_ref(L, LUA_REGISTRYINDEX);
+    return 0;
+}
+
+/// @lua_api Light.Physics.World.PreSolve
+/// @brief Phase AP: Register PreSolve callback (called synchronously inside Step)
+/// @note Callback receives (contact). Use contact:SetEnabled(false) to disable for this step.
+/// @note WARNING: Do NOT call CreateBody/DestroyBody/etc inside the callback (Box2D world is locked).
+/// @param callback function Callback function or nil to clear
+static int l_World_PreSolve(lua_State* L) {
+    auto* world = CheckWorld(L, 1);
+    if (!world) return 0;
+    if (world->preSolveRef != LUA_NOREF) {
+        luaL_unref(L, LUA_REGISTRYINDEX, world->preSolveRef);
+        world->preSolveRef = LUA_NOREF;
+    }
+    if (lua_isfunction(L, 2)) {
+        lua_pushvalue(L, 2);
+        world->preSolveRef = luaL_ref(L, LUA_REGISTRYINDEX);
+    }
+    return 0;
+}
+
+/// @lua_api Light.Physics.World.PostSolve
+/// @brief Phase AP: Register PostSolve callback (called synchronously inside Step)
+/// @note Callback receives (contact, normalImpulses, tangentImpulses) — useful for impact audio/destruction
+/// @note WARNING: Do NOT modify the world inside the callback.
+/// @param callback function Callback function or nil to clear
+static int l_World_PostSolve(lua_State* L) {
+    auto* world = CheckWorld(L, 1);
+    if (!world) return 0;
+    if (world->postSolveRef != LUA_NOREF) {
+        luaL_unref(L, LUA_REGISTRYINDEX, world->postSolveRef);
+        world->postSolveRef = LUA_NOREF;
+    }
+    if (lua_isfunction(L, 2)) {
+        lua_pushvalue(L, 2);
+        world->postSolveRef = luaL_ref(L, LUA_REGISTRYINDEX);
+    }
     return 0;
 }
 
@@ -1589,31 +2090,67 @@ static b2MouseJoint* CheckMouseJoint(lua_State* L, int idx) {
 }
 
 /// @lua_api Light.Physics.Joint.GetJointAngle
-/// @brief Phase AO: Revolute joint: current angle in radians (returns 0 for other types)
+/// @brief Current angle in radians. Revolute/Wheel (Phase AP extended)
 static int l_Joint_GetJointAngle(lua_State* L) {
-    auto* rj = CheckRevoluteJoint(L, 1);
-    lua_pushnumber(L, rj ? rj->GetJointAngle() : 0.0);
+    auto* joint = CheckJoint(L, 1);
+    if (!joint) { lua_pushnumber(L, 0); return 1; }
+    float v = 0.0f;
+    switch (joint->joint->GetType()) {
+    case e_revoluteJoint: v = static_cast<b2RevoluteJoint*>(joint->joint)->GetJointAngle(); break;
+    case e_wheelJoint:    v = static_cast<b2WheelJoint*>(joint->joint)->GetJointAngle(); break;
+    default: break;
+    }
+    lua_pushnumber(L, v);
     return 1;
 }
 
 /// @lua_api Light.Physics.Joint.GetJointSpeed
-/// @brief Phase AO: Revolute joint: current angular speed in rad/s (returns 0 for other types)
+/// @brief Current angular speed in rad/s. Revolute/Wheel (Phase AP extended)
 static int l_Joint_GetJointSpeed(lua_State* L) {
-    auto* rj = CheckRevoluteJoint(L, 1);
-    lua_pushnumber(L, rj ? rj->GetJointSpeed() : 0.0);
+    auto* joint = CheckJoint(L, 1);
+    if (!joint) { lua_pushnumber(L, 0); return 1; }
+    float v = 0.0f;
+    switch (joint->joint->GetType()) {
+    case e_revoluteJoint: v = static_cast<b2RevoluteJoint*>(joint->joint)->GetJointSpeed(); break;
+    case e_wheelJoint:    v = static_cast<b2WheelJoint*>(joint->joint)->GetJointAngularSpeed(); break;
+    default: break;
+    }
+    lua_pushnumber(L, v);
     return 1;
 }
 
 /// @lua_api Light.Physics.Joint.GetJointTranslation
-/// @brief Phase AO: Prismatic joint: current translation in pixels (returns 0 for other types)
+/// @brief Current translation in pixels. Prismatic/Wheel (Phase AP extended)
 static int l_Joint_GetJointTranslation(lua_State* L) {
-    auto* pj = CheckPrismaticJoint(L, 1);
-    lua_pushnumber(L, pj ? (pj->GetJointTranslation() * PTM) : 0.0);
+    auto* joint = CheckJoint(L, 1);
+    if (!joint) { lua_pushnumber(L, 0); return 1; }
+    float v = 0.0f;
+    switch (joint->joint->GetType()) {
+    case e_prismaticJoint: v = static_cast<b2PrismaticJoint*>(joint->joint)->GetJointTranslation() * PTM; break;
+    case e_wheelJoint:     v = static_cast<b2WheelJoint*>(joint->joint)->GetJointTranslation() * PTM; break;
+    default: break;
+    }
+    lua_pushnumber(L, v);
+    return 1;
+}
+
+/// @lua_api Light.Physics.Joint.GetJointLinearSpeed
+/// @brief Phase AP: Current linear speed in px/s. Prismatic/Wheel.
+static int l_Joint_GetJointLinearSpeed(lua_State* L) {
+    auto* joint = CheckJoint(L, 1);
+    if (!joint) { lua_pushnumber(L, 0); return 1; }
+    float v = 0.0f;
+    switch (joint->joint->GetType()) {
+    case e_prismaticJoint: v = static_cast<b2PrismaticJoint*>(joint->joint)->GetJointSpeed() * PTM; break;
+    case e_wheelJoint:     v = static_cast<b2WheelJoint*>(joint->joint)->GetJointLinearSpeed() * PTM; break;
+    default: break;
+    }
+    lua_pushnumber(L, v);
     return 1;
 }
 
 /// @lua_api Light.Physics.Joint.SetMotorSpeed
-/// @brief Phase AO: Set motor speed (revolute/prismatic joints only)
+/// @brief Set motor speed. Revolute/Prismatic/Wheel (Phase AP extended)
 /// @param speed number Motor speed
 static int l_Joint_SetMotorSpeed(lua_State* L) {
     auto* joint = CheckJoint(L, 1);
@@ -1622,13 +2159,14 @@ static int l_Joint_SetMotorSpeed(lua_State* L) {
     switch (joint->joint->GetType()) {
     case e_revoluteJoint:  static_cast<b2RevoluteJoint*>(joint->joint)->SetMotorSpeed(speed); break;
     case e_prismaticJoint: static_cast<b2PrismaticJoint*>(joint->joint)->SetMotorSpeed(speed); break;
+    case e_wheelJoint:     static_cast<b2WheelJoint*>(joint->joint)->SetMotorSpeed(speed); break;
     default: break;
     }
     return 0;
 }
 
 /// @lua_api Light.Physics.Joint.EnableMotor
-/// @brief Phase AO: Enable/disable motor (revolute/prismatic joints only)
+/// @brief Enable/disable motor. Revolute/Prismatic/Wheel (Phase AP extended)
 /// @param enabled boolean Enabled flag
 static int l_Joint_EnableMotor(lua_State* L) {
     auto* joint = CheckJoint(L, 1);
@@ -1637,6 +2175,7 @@ static int l_Joint_EnableMotor(lua_State* L) {
     switch (joint->joint->GetType()) {
     case e_revoluteJoint:  static_cast<b2RevoluteJoint*>(joint->joint)->EnableMotor(enabled); break;
     case e_prismaticJoint: static_cast<b2PrismaticJoint*>(joint->joint)->EnableMotor(enabled); break;
+    case e_wheelJoint:     static_cast<b2WheelJoint*>(joint->joint)->EnableMotor(enabled); break;
     default: break;
     }
     return 0;
@@ -1673,6 +2212,567 @@ static int l_Joint_GetLength(lua_State* L) {
     return 1;
 }
 
+// ============================================================
+// Phase AP: MaxForce/MaxTorque (Mouse/Motor/Friction)
+// ============================================================
+
+/// @lua_api Light.Physics.Joint.SetMaxForce
+/// @brief Phase AP: Set max force. Mouse/Motor/Friction joints only.
+/// @param force number Max force
+static int l_Joint_SetMaxForce(lua_State* L) {
+    auto* joint = CheckJoint(L, 1);
+    if (!joint) return 0;
+    float f = (float)luaL_checknumber(L, 2);
+    switch (joint->joint->GetType()) {
+    case e_mouseJoint:    static_cast<b2MouseJoint*>(joint->joint)->SetMaxForce(f); break;
+    case e_motorJoint:    static_cast<b2MotorJoint*>(joint->joint)->SetMaxForce(f); break;
+    case e_frictionJoint: static_cast<b2FrictionJoint*>(joint->joint)->SetMaxForce(f); break;
+    default: break;
+    }
+    return 0;
+}
+
+/// @lua_api Light.Physics.Joint.GetMaxForce
+/// @brief Phase AP: Get max force. Mouse/Motor/Friction joints only.
+static int l_Joint_GetMaxForce(lua_State* L) {
+    auto* joint = CheckJoint(L, 1);
+    if (!joint) { lua_pushnumber(L, 0); return 1; }
+    float v = 0.0f;
+    switch (joint->joint->GetType()) {
+    case e_mouseJoint:    v = static_cast<b2MouseJoint*>(joint->joint)->GetMaxForce(); break;
+    case e_motorJoint:    v = static_cast<b2MotorJoint*>(joint->joint)->GetMaxForce(); break;
+    case e_frictionJoint: v = static_cast<b2FrictionJoint*>(joint->joint)->GetMaxForce(); break;
+    default: break;
+    }
+    lua_pushnumber(L, v);
+    return 1;
+}
+
+/// @lua_api Light.Physics.Joint.SetMaxTorque
+/// @brief Phase AP: Set max torque. Motor/Friction joints only.
+/// @param torque number Max torque
+static int l_Joint_SetMaxTorque(lua_State* L) {
+    auto* joint = CheckJoint(L, 1);
+    if (!joint) return 0;
+    float t = (float)luaL_checknumber(L, 2);
+    switch (joint->joint->GetType()) {
+    case e_motorJoint:    static_cast<b2MotorJoint*>(joint->joint)->SetMaxTorque(t); break;
+    case e_frictionJoint: static_cast<b2FrictionJoint*>(joint->joint)->SetMaxTorque(t); break;
+    default: break;
+    }
+    return 0;
+}
+
+/// @lua_api Light.Physics.Joint.GetMaxTorque
+/// @brief Phase AP: Get max torque. Motor/Friction joints only.
+static int l_Joint_GetMaxTorque(lua_State* L) {
+    auto* joint = CheckJoint(L, 1);
+    if (!joint) { lua_pushnumber(L, 0); return 1; }
+    float v = 0.0f;
+    switch (joint->joint->GetType()) {
+    case e_motorJoint:    v = static_cast<b2MotorJoint*>(joint->joint)->GetMaxTorque(); break;
+    case e_frictionJoint: v = static_cast<b2FrictionJoint*>(joint->joint)->GetMaxTorque(); break;
+    default: break;
+    }
+    lua_pushnumber(L, v);
+    return 1;
+}
+
+// ============================================================
+// Phase AP: MotorJoint 专属 (Linear/Angular offset, correction)
+// ============================================================
+
+static b2MotorJoint* CheckMotorJoint(lua_State* L, int idx) {
+    auto* joint = CheckJoint(L, idx);
+    if (!joint || joint->joint->GetType() != e_motorJoint) return nullptr;
+    return static_cast<b2MotorJoint*>(joint->joint);
+}
+
+/// @lua_api Light.Physics.Joint.SetLinearOffset
+/// @brief Phase AP: MotorJoint only. Set target linear offset in pixels.
+/// @param x number X offset in pixels
+/// @param y number Y offset in pixels
+static int l_Joint_SetLinearOffset(lua_State* L) {
+    auto* mj = CheckMotorJoint(L, 1);
+    if (!mj) return 0;
+    float x = (float)luaL_checknumber(L, 2);
+    float y = (float)luaL_checknumber(L, 3);
+    mj->SetLinearOffset(ToMeters(x, y));
+    return 0;
+}
+
+/// @lua_api Light.Physics.Joint.GetLinearOffset
+/// @brief Phase AP: MotorJoint only. Returns (x, y) in pixels.
+/// @return number, number Offset x, y in pixels
+static int l_Joint_GetLinearOffset(lua_State* L) {
+    auto* mj = CheckMotorJoint(L, 1);
+    if (!mj) { lua_pushnumber(L, 0); lua_pushnumber(L, 0); return 2; }
+    PushPixels(L, mj->GetLinearOffset());
+    return 2;
+}
+
+/// @lua_api Light.Physics.Joint.SetAngularOffset
+/// @brief Phase AP: MotorJoint only. Set target angular offset in radians.
+/// @param angle number Target angle in radians
+static int l_Joint_SetAngularOffset(lua_State* L) {
+    auto* mj = CheckMotorJoint(L, 1);
+    if (!mj) return 0;
+    mj->SetAngularOffset((float)luaL_checknumber(L, 2));
+    return 0;
+}
+
+/// @lua_api Light.Physics.Joint.GetAngularOffset
+/// @brief Phase AP: MotorJoint only. Returns angular offset in radians.
+static int l_Joint_GetAngularOffset(lua_State* L) {
+    auto* mj = CheckMotorJoint(L, 1);
+    lua_pushnumber(L, mj ? mj->GetAngularOffset() : 0.0);
+    return 1;
+}
+
+/// @lua_api Light.Physics.Joint.SetCorrectionFactor
+/// @brief Phase AP: MotorJoint only. Set position correction factor (0..1).
+/// @param factor number Correction factor
+static int l_Joint_SetCorrectionFactor(lua_State* L) {
+    auto* mj = CheckMotorJoint(L, 1);
+    if (!mj) return 0;
+    mj->SetCorrectionFactor((float)luaL_checknumber(L, 2));
+    return 0;
+}
+
+/// @lua_api Light.Physics.Joint.GetCorrectionFactor
+/// @brief Phase AP: MotorJoint only. Returns correction factor.
+static int l_Joint_GetCorrectionFactor(lua_State* L) {
+    auto* mj = CheckMotorJoint(L, 1);
+    lua_pushnumber(L, mj ? mj->GetCorrectionFactor() : 0.0);
+    return 1;
+}
+
+// ============================================================
+// Phase AP: PulleyJoint 专属
+// ============================================================
+
+static b2PulleyJoint* CheckPulleyJoint(lua_State* L, int idx) {
+    auto* joint = CheckJoint(L, idx);
+    if (!joint || joint->joint->GetType() != e_pulleyJoint) return nullptr;
+    return static_cast<b2PulleyJoint*>(joint->joint);
+}
+
+/// @lua_api Light.Physics.Joint.GetGroundAnchorA
+/// @brief Phase AP: PulleyJoint only. Returns ground anchor A (x, y) in pixels.
+static int l_Joint_GetGroundAnchorA(lua_State* L) {
+    auto* pj = CheckPulleyJoint(L, 1);
+    if (!pj) { lua_pushnumber(L, 0); lua_pushnumber(L, 0); return 2; }
+    PushPixels(L, pj->GetGroundAnchorA());
+    return 2;
+}
+
+/// @lua_api Light.Physics.Joint.GetGroundAnchorB
+/// @brief Phase AP: PulleyJoint only. Returns ground anchor B (x, y) in pixels.
+static int l_Joint_GetGroundAnchorB(lua_State* L) {
+    auto* pj = CheckPulleyJoint(L, 1);
+    if (!pj) { lua_pushnumber(L, 0); lua_pushnumber(L, 0); return 2; }
+    PushPixels(L, pj->GetGroundAnchorB());
+    return 2;
+}
+
+/// @lua_api Light.Physics.Joint.GetLengthA
+/// @brief Phase AP: PulleyJoint only. Returns reference length A in pixels.
+static int l_Joint_GetLengthA(lua_State* L) {
+    auto* pj = CheckPulleyJoint(L, 1);
+    lua_pushnumber(L, pj ? (pj->GetLengthA() * PTM) : 0.0);
+    return 1;
+}
+
+/// @lua_api Light.Physics.Joint.GetLengthB
+/// @brief Phase AP: PulleyJoint only. Returns reference length B in pixels.
+static int l_Joint_GetLengthB(lua_State* L) {
+    auto* pj = CheckPulleyJoint(L, 1);
+    lua_pushnumber(L, pj ? (pj->GetLengthB() * PTM) : 0.0);
+    return 1;
+}
+
+/// @lua_api Light.Physics.Joint.GetCurrentLengthA
+/// @brief Phase AP: PulleyJoint only. Returns current length A in pixels.
+static int l_Joint_GetCurrentLengthA(lua_State* L) {
+    auto* pj = CheckPulleyJoint(L, 1);
+    lua_pushnumber(L, pj ? (pj->GetCurrentLengthA() * PTM) : 0.0);
+    return 1;
+}
+
+/// @lua_api Light.Physics.Joint.GetCurrentLengthB
+/// @brief Phase AP: PulleyJoint only. Returns current length B in pixels.
+static int l_Joint_GetCurrentLengthB(lua_State* L) {
+    auto* pj = CheckPulleyJoint(L, 1);
+    lua_pushnumber(L, pj ? (pj->GetCurrentLengthB() * PTM) : 0.0);
+    return 1;
+}
+
+// ============================================================
+// Phase AP: GearJoint 专属
+// ============================================================
+
+static b2GearJoint* CheckGearJoint(lua_State* L, int idx) {
+    auto* joint = CheckJoint(L, idx);
+    if (!joint || joint->joint->GetType() != e_gearJoint) return nullptr;
+    return static_cast<b2GearJoint*>(joint->joint);
+}
+
+/// @lua_api Light.Physics.Joint.SetRatio
+/// @brief Phase AP: GearJoint/PulleyJoint ratio cannot be changed (Pulley). For Gear: set ratio.
+/// @param ratio number New ratio
+static int l_Joint_SetRatio(lua_State* L) {
+    auto* gj = CheckGearJoint(L, 1);
+    if (!gj) return 0;
+    gj->SetRatio((float)luaL_checknumber(L, 2));
+    return 0;
+}
+
+/// @lua_api Light.Physics.Joint.GetRatio
+/// @brief Phase AP: Returns ratio. GearJoint or PulleyJoint.
+static int l_Joint_GetRatio(lua_State* L) {
+    auto* joint = CheckJoint(L, 1);
+    if (!joint) { lua_pushnumber(L, 0); return 1; }
+    float v = 0.0f;
+    switch (joint->joint->GetType()) {
+    case e_gearJoint:   v = static_cast<b2GearJoint*>(joint->joint)->GetRatio(); break;
+    case e_pulleyJoint: v = static_cast<b2PulleyJoint*>(joint->joint)->GetRatio(); break;
+    default: break;
+    }
+    lua_pushnumber(L, v);
+    return 1;
+}
+
+// 辅助: 从 b2Joint* 反查其 Lua joint table 并压栈。未命中或已销毁 push nil
+static void PushJointFromRaw(lua_State* L, PhysicsWorld* world, b2Joint* raw) {
+    if (!raw || !world) { lua_pushnil(L); return; }
+    PhysicsJoint* wrapper = reinterpret_cast<PhysicsJoint*>(raw->GetUserData().pointer);
+    if (!wrapper || !wrapper->alive || wrapper->selfRef == LUA_NOREF) {
+        lua_pushnil(L);
+        return;
+    }
+    lua_rawgeti(L, LUA_REGISTRYINDEX, wrapper->selfRef);
+    if (!lua_istable(L, -1)) {
+        lua_pop(L, 1);
+        lua_pushnil(L);
+    }
+}
+
+/// @lua_api Light.Physics.Joint.GetJoint1
+/// @brief Phase AP: GearJoint only. Returns the first coupled joint.
+static int l_Joint_GetJoint1(lua_State* L) {
+    auto* gj = CheckGearJoint(L, 1);
+    auto* wrapper = CheckJoint(L, 1);
+    if (!gj || !wrapper) { lua_pushnil(L); return 1; }
+    PushJointFromRaw(L, wrapper->owner, gj->GetJoint1());
+    return 1;
+}
+
+/// @lua_api Light.Physics.Joint.GetJoint2
+/// @brief Phase AP: GearJoint only. Returns the second coupled joint.
+static int l_Joint_GetJoint2(lua_State* L) {
+    auto* gj = CheckGearJoint(L, 1);
+    auto* wrapper = CheckJoint(L, 1);
+    if (!gj || !wrapper) { lua_pushnil(L); return 1; }
+    PushJointFromRaw(L, wrapper->owner, gj->GetJoint2());
+    return 1;
+}
+
+// ============================================================
+// Phase AP: Joint Limits (Revolute + Prismatic + Wheel)
+// ============================================================
+
+/// @lua_api Light.Physics.Joint.EnableLimit
+/// @brief Phase AP: Enable/disable joint motion limits (Revolute/Prismatic/Wheel)
+/// @param enabled boolean Enabled flag
+static int l_Joint_EnableLimit(lua_State* L) {
+    auto* joint = CheckJoint(L, 1);
+    if (!joint) return 0;
+    bool enabled = lua_toboolean(L, 2) != 0;
+    switch (joint->joint->GetType()) {
+    case e_revoluteJoint:  static_cast<b2RevoluteJoint*>(joint->joint)->EnableLimit(enabled); break;
+    case e_prismaticJoint: static_cast<b2PrismaticJoint*>(joint->joint)->EnableLimit(enabled); break;
+    case e_wheelJoint:     static_cast<b2WheelJoint*>(joint->joint)->EnableLimit(enabled); break;
+    default: break;
+    }
+    return 0;
+}
+
+/// @lua_api Light.Physics.Joint.IsLimitEnabled
+/// @brief Phase AP: Query whether motion limits are enabled
+/// @return boolean Enabled flag
+static int l_Joint_IsLimitEnabled(lua_State* L) {
+    auto* joint = CheckJoint(L, 1);
+    if (!joint) { lua_pushboolean(L, 0); return 1; }
+    bool v = false;
+    switch (joint->joint->GetType()) {
+    case e_revoluteJoint:  v = static_cast<b2RevoluteJoint*>(joint->joint)->IsLimitEnabled(); break;
+    case e_prismaticJoint: v = static_cast<b2PrismaticJoint*>(joint->joint)->IsLimitEnabled(); break;
+    case e_wheelJoint:     v = static_cast<b2WheelJoint*>(joint->joint)->IsLimitEnabled(); break;
+    default: break;
+    }
+    lua_pushboolean(L, v);
+    return 1;
+}
+
+/// @lua_api Light.Physics.Joint.SetLimits
+/// @brief Phase AP: Set joint motion limits. Revolute: radians. Prismatic/Wheel: pixels.
+/// @param lower number Lower limit (radians or pixels depending on joint type)
+/// @param upper number Upper limit
+static int l_Joint_SetLimits(lua_State* L) {
+    auto* joint = CheckJoint(L, 1);
+    if (!joint) return 0;
+    float lo = (float)luaL_checknumber(L, 2);
+    float hi = (float)luaL_checknumber(L, 3);
+    switch (joint->joint->GetType()) {
+    case e_revoluteJoint:
+        static_cast<b2RevoluteJoint*>(joint->joint)->SetLimits(lo, hi);
+        break;
+    case e_prismaticJoint:
+        static_cast<b2PrismaticJoint*>(joint->joint)->SetLimits(lo / PTM, hi / PTM);
+        break;
+    case e_wheelJoint:
+        static_cast<b2WheelJoint*>(joint->joint)->SetLimits(lo / PTM, hi / PTM);
+        break;
+    default: break;
+    }
+    return 0;
+}
+
+/// @lua_api Light.Physics.Joint.GetLowerLimit
+/// @brief Phase AP: Get lower motion limit (radians or pixels)
+/// @return number Lower limit
+static int l_Joint_GetLowerLimit(lua_State* L) {
+    auto* joint = CheckJoint(L, 1);
+    if (!joint) { lua_pushnumber(L, 0); return 1; }
+    float v = 0.0f;
+    switch (joint->joint->GetType()) {
+    case e_revoluteJoint:  v = static_cast<b2RevoluteJoint*>(joint->joint)->GetLowerLimit(); break;
+    case e_prismaticJoint: v = static_cast<b2PrismaticJoint*>(joint->joint)->GetLowerLimit() * PTM; break;
+    case e_wheelJoint:     v = static_cast<b2WheelJoint*>(joint->joint)->GetLowerLimit() * PTM; break;
+    default: break;
+    }
+    lua_pushnumber(L, v);
+    return 1;
+}
+
+/// @lua_api Light.Physics.Joint.GetUpperLimit
+/// @brief Phase AP: Get upper motion limit (radians or pixels)
+/// @return number Upper limit
+static int l_Joint_GetUpperLimit(lua_State* L) {
+    auto* joint = CheckJoint(L, 1);
+    if (!joint) { lua_pushnumber(L, 0); return 1; }
+    float v = 0.0f;
+    switch (joint->joint->GetType()) {
+    case e_revoluteJoint:  v = static_cast<b2RevoluteJoint*>(joint->joint)->GetUpperLimit(); break;
+    case e_prismaticJoint: v = static_cast<b2PrismaticJoint*>(joint->joint)->GetUpperLimit() * PTM; break;
+    case e_wheelJoint:     v = static_cast<b2WheelJoint*>(joint->joint)->GetUpperLimit() * PTM; break;
+    default: break;
+    }
+    lua_pushnumber(L, v);
+    return 1;
+}
+
+// ============================================================
+// Phase AP: Motor 扩展 (SetMaxMotorTorque/Force + GetMotor*)
+// ============================================================
+
+/// @lua_api Light.Physics.Joint.IsMotorEnabled
+/// @brief Phase AP: Query motor enabled state (Revolute/Prismatic/Wheel)
+/// @return boolean Enabled flag
+static int l_Joint_IsMotorEnabled(lua_State* L) {
+    auto* joint = CheckJoint(L, 1);
+    if (!joint) { lua_pushboolean(L, 0); return 1; }
+    bool v = false;
+    switch (joint->joint->GetType()) {
+    case e_revoluteJoint:  v = static_cast<b2RevoluteJoint*>(joint->joint)->IsMotorEnabled(); break;
+    case e_prismaticJoint: v = static_cast<b2PrismaticJoint*>(joint->joint)->IsMotorEnabled(); break;
+    case e_wheelJoint:     v = static_cast<b2WheelJoint*>(joint->joint)->IsMotorEnabled(); break;
+    default: break;
+    }
+    lua_pushboolean(L, v);
+    return 1;
+}
+
+/// @lua_api Light.Physics.Joint.GetMotorSpeed
+/// @brief Phase AP: Get current motor speed setting (Revolute/Prismatic/Wheel)
+/// @return number Motor speed
+static int l_Joint_GetMotorSpeed(lua_State* L) {
+    auto* joint = CheckJoint(L, 1);
+    if (!joint) { lua_pushnumber(L, 0); return 1; }
+    float v = 0.0f;
+    switch (joint->joint->GetType()) {
+    case e_revoluteJoint:  v = static_cast<b2RevoluteJoint*>(joint->joint)->GetMotorSpeed(); break;
+    case e_prismaticJoint: v = static_cast<b2PrismaticJoint*>(joint->joint)->GetMotorSpeed(); break;
+    case e_wheelJoint:     v = static_cast<b2WheelJoint*>(joint->joint)->GetMotorSpeed(); break;
+    default: break;
+    }
+    lua_pushnumber(L, v);
+    return 1;
+}
+
+/// @lua_api Light.Physics.Joint.SetMaxMotorTorque
+/// @brief Phase AP: Set max motor torque (Revolute/Wheel only)
+/// @param torque number Max motor torque
+static int l_Joint_SetMaxMotorTorque(lua_State* L) {
+    auto* joint = CheckJoint(L, 1);
+    if (!joint) return 0;
+    float t = (float)luaL_checknumber(L, 2);
+    switch (joint->joint->GetType()) {
+    case e_revoluteJoint: static_cast<b2RevoluteJoint*>(joint->joint)->SetMaxMotorTorque(t); break;
+    case e_wheelJoint:    static_cast<b2WheelJoint*>(joint->joint)->SetMaxMotorTorque(t); break;
+    default: break;
+    }
+    return 0;
+}
+
+/// @lua_api Light.Physics.Joint.GetMotorTorque
+/// @brief Phase AP: Get current motor torque (Revolute/Wheel only)
+/// @param invDt number Inverse delta time
+/// @return number Motor torque
+static int l_Joint_GetMotorTorque(lua_State* L) {
+    auto* joint = CheckJoint(L, 1);
+    if (!joint) { lua_pushnumber(L, 0); return 1; }
+    float invDt = (float)luaL_optnumber(L, 2, 60.0);
+    float v = 0.0f;
+    switch (joint->joint->GetType()) {
+    case e_revoluteJoint: v = static_cast<b2RevoluteJoint*>(joint->joint)->GetMotorTorque(invDt); break;
+    case e_wheelJoint:    v = static_cast<b2WheelJoint*>(joint->joint)->GetMotorTorque(invDt); break;
+    default: break;
+    }
+    lua_pushnumber(L, v);
+    return 1;
+}
+
+/// @lua_api Light.Physics.Joint.SetMaxMotorForce
+/// @brief Phase AP: Set max motor force (Prismatic only)
+/// @param force number Max motor force
+static int l_Joint_SetMaxMotorForce(lua_State* L) {
+    auto* pj = CheckPrismaticJoint(L, 1);
+    if (!pj) return 0;
+    pj->SetMaxMotorForce((float)luaL_checknumber(L, 2));
+    return 0;
+}
+
+/// @lua_api Light.Physics.Joint.GetMotorForce
+/// @brief Phase AP: Get current motor force (Prismatic only)
+/// @param invDt number Inverse delta time
+/// @return number Motor force
+static int l_Joint_GetMotorForce(lua_State* L) {
+    auto* pj = CheckPrismaticJoint(L, 1);
+    if (!pj) { lua_pushnumber(L, 0); return 1; }
+    float invDt = (float)luaL_optnumber(L, 2, 60.0);
+    lua_pushnumber(L, pj->GetMotorForce(invDt));
+    return 1;
+}
+
+// ============================================================
+// Phase AP: Spring API (Distance/Weld/Mouse/Wheel)
+// ============================================================
+
+// 辅助: 对带 SetStiffness 的 4 种 joint 类型做分派
+static int l_Joint_SetStiffness(lua_State* L) {
+    auto* joint = CheckJoint(L, 1);
+    if (!joint) return 0;
+    float s = (float)luaL_checknumber(L, 2);
+    switch (joint->joint->GetType()) {
+    case e_distanceJoint: static_cast<b2DistanceJoint*>(joint->joint)->SetStiffness(s); break;
+    case e_weldJoint:     static_cast<b2WeldJoint*>(joint->joint)->SetStiffness(s); break;
+    case e_mouseJoint:    static_cast<b2MouseJoint*>(joint->joint)->SetStiffness(s); break;
+    case e_wheelJoint:    static_cast<b2WheelJoint*>(joint->joint)->SetStiffness(s); break;
+    default: break;
+    }
+    return 0;
+}
+
+static int l_Joint_GetStiffness(lua_State* L) {
+    auto* joint = CheckJoint(L, 1);
+    if (!joint) { lua_pushnumber(L, 0); return 1; }
+    float v = 0.0f;
+    switch (joint->joint->GetType()) {
+    case e_distanceJoint: v = static_cast<b2DistanceJoint*>(joint->joint)->GetStiffness(); break;
+    case e_weldJoint:     v = static_cast<b2WeldJoint*>(joint->joint)->GetStiffness(); break;
+    case e_mouseJoint:    v = static_cast<b2MouseJoint*>(joint->joint)->GetStiffness(); break;
+    case e_wheelJoint:    v = static_cast<b2WheelJoint*>(joint->joint)->GetStiffness(); break;
+    default: break;
+    }
+    lua_pushnumber(L, v);
+    return 1;
+}
+
+static int l_Joint_SetDamping(lua_State* L) {
+    auto* joint = CheckJoint(L, 1);
+    if (!joint) return 0;
+    float d = (float)luaL_checknumber(L, 2);
+    switch (joint->joint->GetType()) {
+    case e_distanceJoint: static_cast<b2DistanceJoint*>(joint->joint)->SetDamping(d); break;
+    case e_weldJoint:     static_cast<b2WeldJoint*>(joint->joint)->SetDamping(d); break;
+    case e_mouseJoint:    static_cast<b2MouseJoint*>(joint->joint)->SetDamping(d); break;
+    case e_wheelJoint:    static_cast<b2WheelJoint*>(joint->joint)->SetDamping(d); break;
+    default: break;
+    }
+    return 0;
+}
+
+static int l_Joint_GetDamping(lua_State* L) {
+    auto* joint = CheckJoint(L, 1);
+    if (!joint) { lua_pushnumber(L, 0); return 1; }
+    float v = 0.0f;
+    switch (joint->joint->GetType()) {
+    case e_distanceJoint: v = static_cast<b2DistanceJoint*>(joint->joint)->GetDamping(); break;
+    case e_weldJoint:     v = static_cast<b2WeldJoint*>(joint->joint)->GetDamping(); break;
+    case e_mouseJoint:    v = static_cast<b2MouseJoint*>(joint->joint)->GetDamping(); break;
+    case e_wheelJoint:    v = static_cast<b2WheelJoint*>(joint->joint)->GetDamping(); break;
+    default: break;
+    }
+    lua_pushnumber(L, v);
+    return 1;
+}
+
+/// @lua_api Light.Physics.Joint.SetSpring
+/// @brief Phase AP: Convenience helper. Convert (frequencyHz, dampingRatio) to stiffness+damping via b2LinearStiffness.
+/// @note Only applies to Distance/Weld/Mouse/Wheel joints. No-op for others.
+/// @param frequencyHz number Natural frequency in Hz (e.g. 4.0)
+/// @param dampingRatio number Damping ratio (0 = undamped, 1 = critically damped)
+static int l_Joint_SetSpring(lua_State* L) {
+    auto* joint = CheckJoint(L, 1);
+    if (!joint) return 0;
+    float hz = (float)luaL_checknumber(L, 2);
+    float ratio = (float)luaL_checknumber(L, 3);
+    b2Body* a = joint->joint->GetBodyA();
+    b2Body* b = joint->joint->GetBodyB();
+    if (!a || !b) return 0;
+    float stiffness = 0.0f, damping = 0.0f;
+    b2LinearStiffness(stiffness, damping, hz, ratio, a, b);
+    switch (joint->joint->GetType()) {
+    case e_distanceJoint: {
+        auto* dj = static_cast<b2DistanceJoint*>(joint->joint);
+        dj->SetStiffness(stiffness);
+        dj->SetDamping(damping);
+        break;
+    }
+    case e_weldJoint: {
+        auto* wj = static_cast<b2WeldJoint*>(joint->joint);
+        wj->SetStiffness(stiffness);
+        wj->SetDamping(damping);
+        break;
+    }
+    case e_mouseJoint: {
+        auto* mj = static_cast<b2MouseJoint*>(joint->joint);
+        mj->SetStiffness(stiffness);
+        mj->SetDamping(damping);
+        break;
+    }
+    case e_wheelJoint: {
+        auto* whj = static_cast<b2WheelJoint*>(joint->joint);
+        whj->SetStiffness(stiffness);
+        whj->SetDamping(damping);
+        break;
+    }
+    default: break;
+    }
+    return 0;
+}
+
 static int l_Joint_Tostring(lua_State* L) {
     auto* joint = CheckJoint(L, 1);
     if (!joint) { lua_pushstring(L, "Light.Physics.Joint(dead)"); return 1; }
@@ -1700,6 +2800,51 @@ static const luaL_Reg g_joint_funcs[] = {
     {"SetTarget",           l_Joint_SetTarget},
     {"SetLength",           l_Joint_SetLength},
     {"GetLength",           l_Joint_GetLength},
+    // Phase AP: Limits
+    {"EnableLimit",         l_Joint_EnableLimit},
+    {"IsLimitEnabled",      l_Joint_IsLimitEnabled},
+    {"SetLimits",           l_Joint_SetLimits},
+    {"GetLowerLimit",       l_Joint_GetLowerLimit},
+    {"GetUpperLimit",       l_Joint_GetUpperLimit},
+    // Phase AP: Motor 扩展
+    {"IsMotorEnabled",      l_Joint_IsMotorEnabled},
+    {"GetMotorSpeed",       l_Joint_GetMotorSpeed},
+    {"SetMaxMotorTorque",   l_Joint_SetMaxMotorTorque},
+    {"GetMotorTorque",      l_Joint_GetMotorTorque},
+    {"SetMaxMotorForce",    l_Joint_SetMaxMotorForce},
+    {"GetMotorForce",       l_Joint_GetMotorForce},
+    // Phase AP: Spring (Distance/Weld/Mouse/Wheel)
+    {"SetStiffness",        l_Joint_SetStiffness},
+    {"GetStiffness",        l_Joint_GetStiffness},
+    {"SetDamping",          l_Joint_SetDamping},
+    {"GetDamping",          l_Joint_GetDamping},
+    {"SetSpring",           l_Joint_SetSpring},
+    // Phase AP: MaxForce/MaxTorque (Mouse/Motor/Friction)
+    {"SetMaxForce",         l_Joint_SetMaxForce},
+    {"GetMaxForce",         l_Joint_GetMaxForce},
+    {"SetMaxTorque",        l_Joint_SetMaxTorque},
+    {"GetMaxTorque",        l_Joint_GetMaxTorque},
+    // Phase AP: Wheel/Prismatic
+    {"GetJointLinearSpeed", l_Joint_GetJointLinearSpeed},
+    // Phase AP: MotorJoint 专属
+    {"SetLinearOffset",     l_Joint_SetLinearOffset},
+    {"GetLinearOffset",     l_Joint_GetLinearOffset},
+    {"SetAngularOffset",    l_Joint_SetAngularOffset},
+    {"GetAngularOffset",    l_Joint_GetAngularOffset},
+    {"SetCorrectionFactor", l_Joint_SetCorrectionFactor},
+    {"GetCorrectionFactor", l_Joint_GetCorrectionFactor},
+    // Phase AP: PulleyJoint 专属
+    {"GetGroundAnchorA",    l_Joint_GetGroundAnchorA},
+    {"GetGroundAnchorB",    l_Joint_GetGroundAnchorB},
+    {"GetLengthA",          l_Joint_GetLengthA},
+    {"GetLengthB",          l_Joint_GetLengthB},
+    {"GetCurrentLengthA",   l_Joint_GetCurrentLengthA},
+    {"GetCurrentLengthB",   l_Joint_GetCurrentLengthB},
+    // Phase AP: GearJoint 专属
+    {"SetRatio",            l_Joint_SetRatio},
+    {"GetRatio",            l_Joint_GetRatio},
+    {"GetJoint1",           l_Joint_GetJoint1},
+    {"GetJoint2",           l_Joint_GetJoint2},
     {"__tostring",          l_Joint_Tostring},
     {NULL, NULL}
 };
@@ -1849,6 +2994,144 @@ static int l_World_CreateMouseJoint(lua_State* L) {
     def.bodyB = b;
     def.target = ToMeters((float)luaL_checknumber(L, 4), (float)luaL_checknumber(L, 5));
     def.maxForce = (float)luaL_optnumber(L, 6, 1000.0 * b->GetMass());
+    b2Joint* joint = world->world->CreateJoint(&def);
+    if (!joint) { lua_pushnil(L); return 1; }
+    PushJointTable(L, world, joint);
+    return 1;
+}
+
+// ============================================================
+// Phase AP: 5 种新 Joint 创建函数
+// ============================================================
+
+/// @lua_api Light.Physics.World.CreateWheelJoint
+/// @brief Phase AP: Create a wheel joint — translating along an axis + limited rotation (vehicles)
+/// @param bodyA table Body A (chassis)
+/// @param bodyB table Body B (wheel)
+/// @param ax number Anchor world X in pixels
+/// @param ay number Anchor world Y in pixels
+/// @param axisX number Axis direction X (suspension direction, unitless)
+/// @param axisY number Axis direction Y
+/// @param collideConnected boolean Default false
+/// @return table Joint
+static int l_World_CreateWheelJoint(lua_State* L) {
+    auto* world = CheckWorld(L, 1);
+    if (!world) { lua_pushnil(L); return 1; }
+    b2Body *a = nullptr, *b = nullptr;
+    if (!ResolveBodyPair(L, 2, 3, world, &a, &b)) { lua_pushnil(L); return 1; }
+    b2Vec2 axis((float)luaL_checknumber(L, 6), (float)luaL_checknumber(L, 7));
+    axis.Normalize();
+    b2WheelJointDef def;
+    def.Initialize(a, b, ToMeters((float)luaL_checknumber(L, 4), (float)luaL_checknumber(L, 5)), axis);
+    def.collideConnected = lua_toboolean(L, 8) != 0;
+    b2Joint* joint = world->world->CreateJoint(&def);
+    if (!joint) { lua_pushnil(L); return 1; }
+    PushJointTable(L, world, joint);
+    return 1;
+}
+
+/// @lua_api Light.Physics.World.CreateMotorJoint
+/// @brief Phase AP: Create a motor joint to control relative offset+angle between two bodies (no anchor)
+/// @param bodyA table Body A (reference)
+/// @param bodyB table Body B (driven)
+/// @param correctionFactor number Position correction factor (0..1, default 0.3)
+/// @return table Joint
+static int l_World_CreateMotorJoint(lua_State* L) {
+    auto* world = CheckWorld(L, 1);
+    if (!world) { lua_pushnil(L); return 1; }
+    b2Body *a = nullptr, *b = nullptr;
+    if (!ResolveBodyPair(L, 2, 3, world, &a, &b)) { lua_pushnil(L); return 1; }
+    b2MotorJointDef def;
+    def.Initialize(a, b);
+    def.correctionFactor = (float)luaL_optnumber(L, 4, 0.3);
+    b2Joint* joint = world->world->CreateJoint(&def);
+    if (!joint) { lua_pushnil(L); return 1; }
+    PushJointTable(L, world, joint);
+    return 1;
+}
+
+/// @lua_api Light.Physics.World.CreateFrictionJoint
+/// @brief Phase AP: Create a friction joint to simulate top-down friction between two bodies
+/// @param bodyA table Body A
+/// @param bodyB table Body B
+/// @param ax number Anchor world X in pixels
+/// @param ay number Anchor world Y in pixels
+/// @param collideConnected boolean Default false
+/// @return table Joint
+static int l_World_CreateFrictionJoint(lua_State* L) {
+    auto* world = CheckWorld(L, 1);
+    if (!world) { lua_pushnil(L); return 1; }
+    b2Body *a = nullptr, *b = nullptr;
+    if (!ResolveBodyPair(L, 2, 3, world, &a, &b)) { lua_pushnil(L); return 1; }
+    b2FrictionJointDef def;
+    def.Initialize(a, b, ToMeters((float)luaL_checknumber(L, 4), (float)luaL_checknumber(L, 5)));
+    def.collideConnected = lua_toboolean(L, 6) != 0;
+    b2Joint* joint = world->world->CreateJoint(&def);
+    if (!joint) { lua_pushnil(L); return 1; }
+    PushJointTable(L, world, joint);
+    return 1;
+}
+
+/// @lua_api Light.Physics.World.CreatePulleyJoint
+/// @brief Phase AP: Create a pulley joint. lengthA + ratio*lengthB remains constant.
+/// @param bodyA table Body A
+/// @param bodyB table Body B
+/// @param groundAx number Ground anchor A world X in pixels
+/// @param groundAy number Ground anchor A world Y in pixels
+/// @param groundBx number Ground anchor B world X in pixels
+/// @param groundBy number Ground anchor B world Y in pixels
+/// @param anchorAx number Anchor on body A world X in pixels
+/// @param anchorAy number Anchor on body A world Y in pixels
+/// @param anchorBx number Anchor on body B world X in pixels
+/// @param anchorBy number Anchor on body B world Y in pixels
+/// @param ratio number Ratio > 0
+/// @return table Joint
+static int l_World_CreatePulleyJoint(lua_State* L) {
+    auto* world = CheckWorld(L, 1);
+    if (!world) { lua_pushnil(L); return 1; }
+    b2Body *a = nullptr, *b = nullptr;
+    if (!ResolveBodyPair(L, 2, 3, world, &a, &b)) { lua_pushnil(L); return 1; }
+    b2Vec2 gA = ToMeters((float)luaL_checknumber(L, 4),  (float)luaL_checknumber(L, 5));
+    b2Vec2 gB = ToMeters((float)luaL_checknumber(L, 6),  (float)luaL_checknumber(L, 7));
+    b2Vec2 anA = ToMeters((float)luaL_checknumber(L, 8),  (float)luaL_checknumber(L, 9));
+    b2Vec2 anB = ToMeters((float)luaL_checknumber(L, 10), (float)luaL_checknumber(L, 11));
+    float ratio = (float)luaL_optnumber(L, 12, 1.0);
+    if (ratio <= 0.0f) { lua_pushnil(L); return 1; }  // Box2D 要求 > 0
+    b2PulleyJointDef def;
+    def.Initialize(a, b, gA, gB, anA, anB, ratio);
+    b2Joint* joint = world->world->CreateJoint(&def);
+    if (!joint) { lua_pushnil(L); return 1; }
+    PushJointTable(L, world, joint);
+    return 1;
+}
+
+/// @lua_api Light.Physics.World.CreateGearJoint
+/// @brief Phase AP: Couple two revolute/prismatic joints with a ratio (gear)
+/// @note joint1 and joint2 MUST be either revolute or prismatic; must outlive the gear joint.
+/// @param joint1 table A revolute or prismatic joint
+/// @param joint2 table A revolute or prismatic joint
+/// @param ratio number Gear ratio (default 1.0)
+/// @return table Gear joint, or nil if joint types invalid
+static int l_World_CreateGearJoint(lua_State* L) {
+    auto* world = CheckWorld(L, 1);
+    if (!world) { lua_pushnil(L); return 1; }
+    luaL_checktype(L, 2, LUA_TTABLE);
+    luaL_checktype(L, 3, LUA_TTABLE);
+    auto* j1 = CheckJoint(L, 2);
+    auto* j2 = CheckJoint(L, 3);
+    if (!j1 || !j2 || j1->owner != world || j2->owner != world) { lua_pushnil(L); return 1; }
+    // 只支持 revolute/prismatic
+    auto valid_type = [](b2JointType t) { return t == e_revoluteJoint || t == e_prismaticJoint; };
+    if (!valid_type(j1->joint->GetType()) || !valid_type(j2->joint->GetType())) {
+        lua_pushnil(L);
+        return 1;
+    }
+    b2GearJointDef def;
+    def.bodyA = j1->joint->GetBodyB();   // Box2D 约定: gear 作用 body 是 joint.bodyB
+    def.bodyB = j2->joint->GetBodyB();
+    def.joint1 = j1->joint;
+    def.joint2 = j2->joint;
+    def.ratio = (float)luaL_optnumber(L, 4, 1.0);
     b2Joint* joint = world->world->CreateJoint(&def);
     if (!joint) { lua_pushnil(L); return 1; }
     PushJointTable(L, world, joint);
@@ -2132,16 +3415,29 @@ static const luaL_Reg g_world_funcs[] = {
     {"OnCollision",          l_World_OnCollision},
     {"BeginContact",         l_World_BeginContact},
     {"EndContact",           l_World_EndContact},
+    {"PreSolve",             l_World_PreSolve},   // Phase AP
+    {"PostSolve",            l_World_PostSolve},  // Phase AP
     // Phase AO: joints + queries
     {"CreateDistanceJoint",  l_World_CreateDistanceJoint},
     {"CreateRevoluteJoint",  l_World_CreateRevoluteJoint},
     {"CreatePrismaticJoint", l_World_CreatePrismaticJoint},
     {"CreateWeldJoint",      l_World_CreateWeldJoint},
     {"CreateMouseJoint",     l_World_CreateMouseJoint},
+    // Phase AP
+    {"CreateWheelJoint",     l_World_CreateWheelJoint},
+    {"CreateMotorJoint",     l_World_CreateMotorJoint},
+    {"CreateFrictionJoint",  l_World_CreateFrictionJoint},
+    {"CreatePulleyJoint",    l_World_CreatePulleyJoint},
+    {"CreateGearJoint",      l_World_CreateGearJoint},
     {"DestroyJoint",         l_World_DestroyJoint},
     {"GetJointCount",        l_World_GetJointCount},
     {"RayCast",              l_World_RayCast},
     {"QueryAABB",            l_World_QueryAABB},
+    // Phase AP: 仿真控制
+    {"SetSubStepping",       l_World_SetSubStepping},
+    {"GetSubStepping",       l_World_GetSubStepping},
+    {"SetWarmStarting",      l_World_SetWarmStarting},
+    {"GetWarmStarting",      l_World_GetWarmStarting},
     {"__call",               l_World_Call},
     {"__tostring",           l_World_Tostring},
     {NULL, NULL}

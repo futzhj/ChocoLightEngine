@@ -336,7 +336,281 @@ local cross_joint = world:CreateDistanceJoint(ground, w2_body, 0, 0, 0, 0)
 if cross_joint ~= nil then fail("Cross-world joint should have been rejected, got: " .. tostring(cross_joint)) end
 pass("Cross-world joint rejected")
 
+-- ============================================================
+-- Phase AP smoke (14 ~ 25)
+-- ============================================================
+
+-- 为 AP 测试新建一个干净 world
+local apw = setmetatable({}, { __index = W })
+W.__call(apw)
+apw:SetGravity(0, 600)
+
+-- 静态地面 + 两个 dynamic body
+local ap_ground  = apw:CreateBody("static", 400, 580)
+ap_ground:CreateFixture(P.NewRectangleShape(800, 40), 0.0)
+local ap_box_a   = apw:CreateBody("dynamic", 300, 300)
+ap_box_a:CreateFixture(P.NewRectangleShape(40, 40), 1.0)
+local ap_box_b   = apw:CreateBody("dynamic", 500, 300)
+ap_box_b:CreateFixture(P.NewRectangleShape(40, 40), 1.0)
+
+-- ==================== 14) Joint Limits (revolute) ====================
+
+local rev = apw:CreateRevoluteJoint(ap_box_a, ap_box_b, 400, 300)
+rev:EnableLimit(true)
+if not rev:IsLimitEnabled() then fail("EnableLimit not reflected") end
+rev:SetLimits(-0.5, 0.5)
+if math.abs(rev:GetLowerLimit() - (-0.5)) > 1e-3 then fail("GetLowerLimit mismatch: " .. rev:GetLowerLimit()) end
+if math.abs(rev:GetUpperLimit() - 0.5) > 1e-3 then fail("GetUpperLimit mismatch: " .. rev:GetUpperLimit()) end
+rev:EnableMotor(true)
+rev:SetMotorSpeed(1.0)
+rev:SetMaxMotorTorque(100)
+if not rev:IsMotorEnabled() then fail("IsMotorEnabled false after enable") end
+if math.abs(rev:GetMotorSpeed() - 1.0) > 1e-3 then fail("GetMotorSpeed mismatch") end
+local _ = rev:GetMotorTorque(60)  -- 不验证具体值, 只验证不崩
+pass("Joint Limits + Motor (revolute) ok")
+
+-- ==================== 15) Spring API (distance + wheel) ====================
+
+local dist = apw:CreateDistanceJoint(ap_box_a, ap_box_b, 300, 300, 500, 300)
+dist:SetStiffness(50.0)
+dist:SetDamping(0.5)
+if math.abs(dist:GetStiffness() - 50.0) > 1e-3 then fail("Distance stiffness mismatch") end
+if math.abs(dist:GetDamping() - 0.5) > 1e-3 then fail("Distance damping mismatch") end
+-- SetSpring 便利函数
+dist:SetSpring(4.0, 0.5)  -- 4 Hz, ratio 0.5 → 内部转 stiffness/damping
+local s_after = dist:GetStiffness()
+if s_after <= 0 then fail("SetSpring did not set stiffness, got " .. s_after) end
+pass("Spring API (Distance) ok")
+
+-- ==================== 16) WheelJoint with motor + spring + limit ====================
+
+local chassis = apw:CreateBody("dynamic", 200, 100)
+chassis:CreateFixture(P.NewRectangleShape(60, 20), 1.0)
+local wheel_b = apw:CreateBody("dynamic", 200, 130)
+wheel_b:CreateFixture(P.NewCircleShape(15), 1.0)
+
+local wheel = apw:CreateWheelJoint(chassis, wheel_b, 200, 130, 0, 1)
+if wheel == nil then fail("CreateWheelJoint returned nil") end
+if wheel:GetType() ~= "wheel" then fail("Wheel GetType wrong: " .. tostring(wheel:GetType())) end
+
+wheel:EnableMotor(true)
+wheel:SetMotorSpeed(5.0)
+wheel:SetMaxMotorTorque(20)
+wheel:EnableLimit(true)
+wheel:SetLimits(-30, 30)  -- pixels
+wheel:SetSpring(4.0, 0.7)
+
+local _wt = wheel:GetMotorTorque(60)
+local _wls = wheel:GetJointLinearSpeed()  -- 0 px/s 初始
+local _wa = wheel:GetJointAngle()
+local _was = wheel:GetJointSpeed()        -- angular
+local _wtr = wheel:GetJointTranslation()
+if math.abs(wheel:GetLowerLimit() - (-30)) > 1e-2 then fail("Wheel lower limit mismatch") end
+pass("WheelJoint (motor+spring+limit) ok")
+
+-- ==================== 17) MotorJoint ====================
+
+local motor = apw:CreateMotorJoint(ap_box_a, ap_box_b, 0.5)
+if motor == nil then fail("CreateMotorJoint returned nil") end
+if motor:GetType() ~= "motor" then fail("Motor GetType wrong: " .. tostring(motor:GetType())) end
+motor:SetLinearOffset(50, 30)
+local lx, ly = motor:GetLinearOffset()
+if math.abs(lx - 50) > 1e-2 or math.abs(ly - 30) > 1e-2 then fail("LinearOffset mismatch: " .. lx .. ", " .. ly) end
+motor:SetAngularOffset(0.5)
+if math.abs(motor:GetAngularOffset() - 0.5) > 1e-3 then fail("AngularOffset mismatch") end
+motor:SetMaxForce(200)
+motor:SetMaxTorque(100)
+if math.abs(motor:GetMaxForce() - 200) > 1e-2 then fail("MotorJoint MaxForce mismatch") end
+if math.abs(motor:GetMaxTorque() - 100) > 1e-2 then fail("MotorJoint MaxTorque mismatch") end
+motor:SetCorrectionFactor(0.7)
+if math.abs(motor:GetCorrectionFactor() - 0.7) > 1e-3 then fail("CorrectionFactor mismatch") end
+apw:DestroyJoint(motor)
+pass("MotorJoint ok")
+
+-- ==================== 18) FrictionJoint ====================
+
+local fric = apw:CreateFrictionJoint(ap_box_a, ap_box_b, 400, 300)
+if fric == nil then fail("CreateFrictionJoint returned nil") end
+if fric:GetType() ~= "friction" then fail("Friction GetType wrong: " .. tostring(fric:GetType())) end
+fric:SetMaxForce(50)
+fric:SetMaxTorque(20)
+if math.abs(fric:GetMaxForce() - 50) > 1e-2 then fail("Friction MaxForce mismatch") end
+if math.abs(fric:GetMaxTorque() - 20) > 1e-2 then fail("Friction MaxTorque mismatch") end
+apw:DestroyJoint(fric)
+pass("FrictionJoint ok")
+
+-- ==================== 19) PulleyJoint ====================
+
+-- 两个独立 body 各有锚点, ground anchor 在它们上方
+local pba = apw:CreateBody("dynamic", 100, 400)
+pba:CreateFixture(P.NewRectangleShape(30, 30), 1.0)
+local pbb = apw:CreateBody("dynamic", 700, 400)
+pbb:CreateFixture(P.NewRectangleShape(30, 30), 1.0)
+
+local pulley = apw:CreatePulleyJoint(
+    pba, pbb,
+    100, 100,    -- groundA
+    700, 100,    -- groundB
+    100, 400,    -- anchorA (on body A, world coords)
+    700, 400,    -- anchorB (on body B, world coords)
+    1.0)         -- ratio
+if pulley == nil then fail("CreatePulleyJoint returned nil") end
+if pulley:GetType() ~= "pulley" then fail("Pulley GetType wrong: " .. tostring(pulley:GetType())) end
+local gax, gay = pulley:GetGroundAnchorA()
+if math.abs(gax - 100) > 1e-2 or math.abs(gay - 100) > 1e-2 then fail("GroundAnchorA mismatch: " .. gax .. ", " .. gay) end
+if pulley:GetLengthA() <= 0 then fail("LengthA non-positive") end
+if pulley:GetCurrentLengthA() <= 0 then fail("CurrentLengthA non-positive") end
+if math.abs(pulley:GetRatio() - 1.0) > 1e-3 then fail("Pulley ratio mismatch") end
+-- ratio <= 0 应被拒绝
+local bad_pulley = apw:CreatePulleyJoint(pba, pbb, 100,100, 700,100, 100,400, 700,400, 0)
+if bad_pulley ~= nil then fail("PulleyJoint with ratio<=0 should be rejected") end
+pass("PulleyJoint ok")
+
+-- ==================== 20) GearJoint ====================
+
+-- 两个 revolute joint coupled with ratio
+local rev1 = apw:CreateRevoluteJoint(ap_ground, pba, 100, 400)
+local rev2 = apw:CreateRevoluteJoint(ap_ground, pbb, 700, 400)
+local gear = apw:CreateGearJoint(rev1, rev2, 2.0)
+if gear == nil then fail("CreateGearJoint returned nil") end
+if gear:GetType() ~= "gear" then fail("Gear GetType wrong: " .. tostring(gear:GetType())) end
+if math.abs(gear:GetRatio() - 2.0) > 1e-3 then fail("Gear ratio mismatch") end
+gear:SetRatio(1.5)
+if math.abs(gear:GetRatio() - 1.5) > 1e-3 then fail("Gear SetRatio mismatch") end
+local j1 = gear:GetJoint1()
+local j2 = gear:GetJoint2()
+if j1 == nil or j2 == nil then fail("Gear GetJoint1/2 returned nil") end
+if j1:GetType() ~= "revolute" or j2:GetType() ~= "revolute" then fail("Gear coupled joint type mismatch") end
+-- 用错误类型组合 (gear + revolute 不允许)
+local bad_gear = apw:CreateGearJoint(gear, rev1, 1.0)
+if bad_gear ~= nil then fail("GearJoint with non-revolute/prismatic should be rejected") end
+pass("GearJoint ok")
+
+-- 必须先销毁 gear, 才能销毁组合 joint
+apw:DestroyJoint(gear)
+
+-- ==================== 21) PreSolve + PostSolve callback ====================
+
+local pre_count = 0
+local post_count = 0
+local last_normal_impulse = 0
+
+apw:PreSolve(function(contact)
+    pre_count = pre_count + 1
+    -- contact:SetEnabled(false) 应能在 PreSolve 内禁用 (此处不禁用以保留碰撞 → PostSolve)
+    local _ = contact:IsTouching()
+    contact:SetFriction(0.5)
+    contact:GetFriction()
+    contact:SetRestitution(0.3)
+    contact:GetRestitution()
+    contact:ResetFriction()
+    contact:ResetRestitution()
+    local _ = contact:GetManifoldPointCount()
+end)
+
+apw:PostSolve(function(contact, normalImpulses, tangentImpulses)
+    post_count = post_count + 1
+    if type(normalImpulses) == "table" and #normalImpulses > 0 then
+        last_normal_impulse = normalImpulses[1]
+    end
+end)
+
+-- 让 ap_box_a 和 ap_box_b 撞击 ground (从 300 落到 580)
+for _ = 1, 60 do apw:Step(1 / 60) end
+
+if pre_count == 0 then fail("PreSolve callback never fired") end
+if post_count == 0 then fail("PostSolve callback never fired") end
+-- normalImpulse 应为正数 (撞击力)
+if last_normal_impulse <= 0 then fail("PostSolve normal impulse should be > 0, got " .. last_normal_impulse) end
+pass("PreSolve+PostSolve ok (pre=" .. pre_count .. ", post=" .. post_count ..
+     ", lastImpulse=" .. string.format("%.2f", last_normal_impulse) .. ")")
+
+-- contact:SetEnabled(false) 测试: 让一个新 body 落到平台上, PreSolve 禁用 → 不会反弹
+apw:PreSolve(function(c) c:SetEnabled(false) end)
+apw:PostSolve(nil)  -- 清掉 PostSolve
+
+local ghost = apw:CreateBody("dynamic", 600, 400)
+ghost:CreateFixture(P.NewCircleShape(8), 1.0)
+local _, ghost_y_before = ghost:GetPosition()
+for _ = 1, 60 do apw:Step(1 / 60) end
+local _gx, ghost_y_after = ghost:GetPosition()
+-- 因为禁用了所有 contact, ghost 应该穿过地面继续下落
+if ghost_y_after <= ghost_y_before + 50 then
+    fail("Ghost did not penetrate ground (PreSolve SetEnabled(false) failed): before=" ..
+         ghost_y_before .. ", after=" .. ghost_y_after)
+end
+apw:PreSolve(nil)  -- 清掉 PreSolve, 后续测试恢复正常
+pass("Contact:SetEnabled(false) inside PreSolve disables contact ok")
+
+-- ==================== 22) Body 邻居遍历 ====================
+
+-- GetJointList 应包含 rev/dist/wheel/pulley/rev1/rev2 中与当前 body 相关的
+local boxa_joints = ap_box_a:GetJointList()
+if type(boxa_joints) ~= "table" then fail("GetJointList not a table") end
+if #boxa_joints == 0 then fail("box_a should have joints attached") end
+-- 每个 entry 是 joint table
+for _, j in ipairs(boxa_joints) do
+    if not j.GetType then fail("joint entry missing GetType") end
+end
+pass("Body:GetJointList ok (#=" .. #boxa_joints .. ")")
+
+-- GetContactList: ap_box_a 已落到地上, 应有 1 contact
+local boxa_contacts = ap_box_a:GetContactList()
+if type(boxa_contacts) ~= "table" then fail("GetContactList not a table") end
+-- 注: ap_box_a 在第一轮 Step 后应该接触地面, 但 box_a 也可能与 box_b 接触
+-- 至少应该 ≥0 不崩 (因受 motorJoint 控制可能未接触)
+for _, c in ipairs(boxa_contacts) do
+    if c.bodyA == nil or c.bodyB == nil then fail("contact entry missing body") end
+end
+pass("Body:GetContactList ok (#=" .. #boxa_contacts .. ")")
+
+-- ==================== 23) Fixture:RayCast (单体) ====================
+
+local cir_body = apw:CreateBody("static", 50, 200)
+local cir_fx = cir_body:CreateFixture(P.NewCircleShape(20), 0.0)
+local hx, hy, nx, ny, frac = cir_fx:RayCast(50, 0, 50, 400)
+if hx == nil then fail("Single-fixture RayCast should hit circle") end
+if frac == nil or frac <= 0 or frac >= 1 then fail("RayCast fraction out of range: " .. tostring(frac)) end
+-- Miss case
+local miss = cir_fx:RayCast(700, 0, 700, 400)
+if miss ~= nil then fail("Single-fixture RayCast should miss but returned " .. tostring(miss)) end
+pass("Fixture:RayCast ok")
+
+-- ==================== 24) Body 高级属性 ====================
+
+ap_box_a:SetGravityScale(0.5)
+if math.abs(ap_box_a:GetGravityScale() - 0.5) > 1e-3 then fail("GravityScale mismatch") end
+
+ap_box_a:SetFixedRotation(true)
+if not ap_box_a:IsFixedRotation() then fail("FixedRotation not set") end
+
+ap_box_a:SetSleepingAllowed(false)
+if ap_box_a:IsSleepingAllowed() then fail("SleepingAllowed should be false") end
+
+ap_box_a:ResetMassData()
+local m, cx, cy, I = ap_box_a:GetMassData()
+if m <= 0 then fail("ResetMassData mass should be > 0") end
+
+-- SetMassData 手动覆盖
+ap_box_a:SetMassData(2.5, 0, 0, 0.1)
+local m2, cx2, cy2, I2 = ap_box_a:GetMassData()
+if math.abs(m2 - 2.5) > 1e-3 then fail("SetMassData mass: " .. m2) end
+pass("Body 高级属性 ok")
+
+-- ==================== 25) World 仿真控制 ====================
+
+apw:SetSubStepping(true)
+if not apw:GetSubStepping() then fail("SubStepping not set") end
+apw:SetSubStepping(false)
+if apw:GetSubStepping() then fail("SubStepping not cleared") end
+
+apw:SetWarmStarting(false)
+if apw:GetWarmStarting() then fail("WarmStarting not cleared") end
+apw:SetWarmStarting(true)
+if not apw:GetWarmStarting() then fail("WarmStarting not set") end
+pass("World 仿真控制 ok")
+
 -- ==================== summary ====================
 
 pass("")
-pass("=== Phase AO physics smoke passed ===")
+pass("=== Phase AO + AP physics smoke passed ===")
