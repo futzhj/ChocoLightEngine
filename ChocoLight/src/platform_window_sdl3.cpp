@@ -20,6 +20,10 @@
 #undef CreateWindow
 #endif
 
+// Phase AR — Light.Time 提供的 Timer 事件类型查询函数
+// (在全局作用域声明; extern "C" 不允许出现在函数内部块中)
+extern "C" Uint32 Time_GetTimerEventType();
+
 namespace PlatformWindow {
 
 // ==================== 内部状态 ====================
@@ -490,10 +494,9 @@ bool PollEvent(Event* out) {
         default:
             // Phase AR — 动态识别 Light.Time.AddTimer 注册的用户事件类型
             // (g_timerEventType 在 luaopen_Light_Time 中通过 SDL_RegisterEvents 申请,
-            //  这里调用 Time_GetTimerEventType() 拿到当前值)
+            //  Time_GetTimerEventType() 在文件顶部以 extern "C" 全局声明)
             {
-                extern "C" Uint32 Time_GetTimerEventType();
-                Uint32 timerType = Time_GetTimerEventType();
+                Uint32 timerType = ::Time_GetTimerEventType();
                 if (timerType != 0 && e.type == timerType) {
                     out->type      = Event::Timer;
                     out->penButton = (int)e.user.code;  // 复用 penButton 字段存 timer_id
