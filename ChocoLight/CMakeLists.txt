@@ -74,12 +74,13 @@ add_library(bullet3 STATIC
 )
 target_include_directories(bullet3 PUBLIC "${BULLET3_DIR}/src")
 
-# Web (Emscripten): Bullet SSE/AVX SIMD path 不能用, 且部分浮点行为要保守
+# Web (Emscripten): Bullet SSE/AVX SIMD path 不能用
 if(EMSCRIPTEN)
-    target_compile_definitions(bullet3 PRIVATE BT_NO_SIMD_OPERATOR_OVERLOADS=1 BT_USE_DOUBLE_PRECISION=0)
+    target_compile_definitions(bullet3 PRIVATE BT_NO_SIMD_OPERATOR_OVERLOADS=1)
 endif()
-# 取消所有 SIMD 优化 (跨平台一致性, 避免 ARM/x86 浮点差异)
-target_compile_definitions(bullet3 PUBLIC BT_USE_DOUBLE_PRECISION=0)
+# btScalar 类型选择: btScalar.h 用 #if defined(BT_USE_DOUBLE_PRECISION) 而非
+# #if BT_USE_DOUBLE_PRECISION, 所以 *绝对不能* 定义此宏 (即使值 = 0 也会触发 double 分支).
+# 不定义 -> btScalar = float (与 light_physics3d.cpp 的 float* 数组兼容).
 # Bullet 内部假设的几个宏在某些 NDK / Xcode 下需禁用
 if(MSVC)
     target_compile_options(bullet3 PRIVATE /wd4244 /wd4267 /wd4305 /wd4316 /wd4267)
