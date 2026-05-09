@@ -899,7 +899,11 @@ extern "C" LIGHT_API int luaopen_Light_Animation(lua_State* L) {
     RegisterMetatable(L, CLIP_MT,     kClipMethods);
     RegisterMetatable(L, ANIMATOR_MT, kAnimatorMethods);
 
-    luaL_register(L, "Light.Animation", kAnimationModule);
+    // 注意: 不能用 luaL_register(L, "Light.Animation", ...) 因为 ChocoLight 的 Light
+    // 是 OOP 框架特殊全局, 其 __index/__newindex 拦截会触发 'object is a static module'.
+    // 与 Phase AU light_physics3d.cpp 的 luaopen 保持一致: lua_newtable + luaL_setfuncs.
+    lua_newtable(L);
+    luaL_setfuncs(L, kAnimationModule, 0);
     return 1;
 }
 

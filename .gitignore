@@ -66,6 +66,7 @@ _mac*.txt
 _and*.txt
 _ios*.txt
 _web*.txt
+_*.log
 
 # Godot experiment (not part of main project)
 cpp_godot/
