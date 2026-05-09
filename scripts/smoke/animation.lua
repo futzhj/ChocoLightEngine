@@ -462,6 +462,13 @@ if type(Anim.NewEmptySkeleton) == 'function' and type(Anim.NewEmptyClip) == 'fun
     else
         CHECK(true, 'procedural e2e 全程无异常')
     end
+
+    -- 主动收割 [13] pcall 退出后留下的 userdata, 隔离 [14] luaL_error → CheckGC 路径
+    -- (可疑: 14.4 luaL_error 触发 lua_pushvfstring 内的 CheckGC, 集中跑死对象 __gc finalizer 时崩)
+    print('  ... post-13: collectgarbage("collect") x2')
+    collectgarbage('collect')
+    collectgarbage('collect')
+    print('  ... post-13: GC 完成')
 else
     print('  SKIP: NewEmptySkeleton / NewEmptyClip 不可用')
 end
