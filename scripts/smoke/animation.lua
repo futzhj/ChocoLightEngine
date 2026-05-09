@@ -286,12 +286,220 @@ else
     print('  SKIP: Step 4 元表方法不可用')
 end
 
-print('  INFO: Step 4 状态机/事件/Crossfade 端到端语义验证 (Update 时序 / fade 中点权重 / 事件循环边界)')
-print('        留 Phase AV.x 引入测试 glTF 资产时补完整成功路径 (与 Step 1+2+3 数值断言策略一致)')
+-- ==================== [12] Phase AV.x: procedural API 完整性 ====================
+
+print('[12] Phase AV.x: procedural API 完整性')
+
+if type(Anim.NewEmptySkeleton) == 'function' then
+    CHECK(true, 'Anim.NewEmptySkeleton 存在 (Phase AV.x)')
+else
+    CHECK(false, 'Anim.NewEmptySkeleton 缺失')
+end
+CHECK(type(Anim.NewEmptyClip) == 'function', 'Anim.NewEmptyClip 存在 (Phase AV.x)')
+
+-- Skeleton 元表 Phase AV.x setter
+for _, mname in ipairs({'SetJointName', 'SetJointParent', 'SetBindLocalTRS', 'SetInverseBindMatrix'}) do
+    CHECK(mt_skeleton and type(mt_skeleton[mname]) == 'function',
+          'Skeleton:' .. mname .. ' 存在 (Phase AV.x)')
+end
+
+-- Clip 元表 Phase AV.x setter
+for _, mname in ipairs({'SetDuration', 'AddSampler'}) do
+    CHECK(mt_clip and type(mt_clip[mname]) == 'function',
+          'Clip:' .. mname .. ' 存在 (Phase AV.x)')
+end
+
+-- Animator 元表 Phase AV.x getter
+for _, mname in ipairs({'GetClip', 'GetActiveClip', 'ListStates',
+                        'GetTransitionInfo', 'GetEventInfo', 'ListParams'}) do
+    CHECK(mt_animator and type(mt_animator[mname]) == 'function',
+          'Animator:' .. mname .. ' 存在 (Phase AV.x)')
+end
+
+-- ==================== [13] Phase AV.x: procedural 端到端数值验证 ====================
+
+print('[13] Phase AV.x: procedural 端到端 (Update 时序 / crossfade 中点权重 / event 循环边界)')
+
+if type(Anim.NewEmptySkeleton) == 'function' and type(Anim.NewEmptyClip) == 'function' then
+    local ok_e2e, err_e2e = pcall(function()
+        -- 1 关节 skeleton: bind = identity, IBM = identity (默认)
+        local sk = Anim.NewEmptySkeleton(1)
+        sk:SetJointName(1, 'root')
+
+        -- clip "idle": translation 全零 (1s)
+        local idle = Anim.NewEmptyClip('idle', 1.0)
+        idle:AddSampler(1, 'translation', 'LINEAR',
+                         {0.0, 1.0}, {0,0,0,  0,0,0})
+
+        -- clip "walk": translation x 0 → 10 (1s, LINEAR)
+        local walk = Anim.NewEmptyClip('walk', 1.0)
+        walk:AddSampler(1, 'translation', 'LINEAR',
+                         {0.0, 1.0}, {0,0,0,  10,0,0})
+
+        CHECK(math.abs(idle:GetDuration() - 1.0) < 1e-6, 'empty clip duration after AddSampler = 1.0')
+        CHECK(idle:GetSamplerCount() == 1, 'clip has 1 sampler after AddSampler')
+
+        -- Animator + 2 states
+        local an = Anim.NewAnimator(sk)
+        an:AddState('idle', idle)
+        an:AddState('walk', walk)
+        an:SetLooping(false)
+
+        -- ---- 验证 walk LINEAR t=0.5 精度 ----
+        an:Play('walk')
+        an:Update(0.5)
+        local mats = an:GetJointMatrices()
+        CHECK(type(mats) == 'table' and #mats == 16, 'single joint matrices length = 16')
+        -- 列主序 mat4: tx 在 index 13 (Lua 1-based; C 侧 mat[12])
+        CHECK(math.abs(mats[13] - 5.0) < 1e-3, 'walk t=0.5 LINEAR translation.x ≈ 5.0')
+        CHECK(math.abs(mats[14] - 0.0) < 1e-3, 'walk t=0.5 LINEAR translation.y ≈ 0.0')
+
+        -- ---- 验证 crossfade 中点权重混合 ----
+        -- 从 walk 开始 (currentTime 被 Play 重置回 0), crossfade 回 idle 用 0.4s
+        -- Update(0.2) 后: active(walk).time=0.2 → x=2.0; target(idle).time=0.2 → x=0
+        -- progress = 0.2/0.4 = 0.5 → blended x = lerp(2.0, 0, 0.5) = 1.0
+        an:Play('walk')
+        an:Crossfade('idle', 0.4)
+        an:Update(0.2)
+        CHECK(an:IsCrossfading() == true, 'crossfading=true after Crossfade + partial Update')
+        CHECK(math.abs(an:GetCrossfadeProgress() - 0.5) < 1e-3,
+              'crossfade progress ≈ 0.5 at mid')
+        CHECK(an:GetCrossfadeTarget() == 'idle', 'crossfade target = idle')
+        local matsX = an:GetJointMatrices()
+        CHECK(math.abs(matsX[13] - 1.0) < 5e-3,
+              'crossfade mid translation.x ≈ 1.0 (lerp(2.0, 0, 0.5))')
+
+        -- ---- 完成 crossfade 切换 ----
+        an:Update(0.3)    -- 累计 0.5s > 0.4s duration → 切换完成
+        CHECK(an:IsCrossfading() == false, 'crossfade done after enough updates')
+        CHECK(an:GetCurrentState() == 'idle', 'state switched to idle after crossfade')
+
+        -- ---- 验证 event 跨循环边界触发 ----
+        an:Stop()
+        an:Play('idle')
+        an:SetLooping(true)
+        an:SetCurrentTime(0.8)
+        local hit_early = 0
+        local hit_late  = 0
+        an:AddEvent('idle', 0.1, function() hit_early = hit_early + 1 end)
+        an:AddEvent('idle', 0.5, function() hit_late  = hit_late  + 1 end)
+        CHECK(an:GetEventCount() == 2, 'AddEvent x2 → GetEventCount = 2')
+
+        -- prev=0.8, 推进 0.4s, wrap → new=0.2; 跨界区间 [0.8, 1.0] ∪ [0, 0.2]
+        -- triggerTime=0.1 落在 [0, 0.2] → hit; triggerTime=0.5 不在跨界 → miss
+        an:Update(0.4)
+        CHECK(hit_early == 1, 'event trigger=0.1 across wrap (prev=0.8, new=0.2) fires once')
+        CHECK(hit_late  == 0, 'event trigger=0.5 not in wrap range → no fire')
+        CHECK(math.abs(an:GetCurrentTime() - 0.2) < 1e-4,
+              'looping wrap currentTime ≈ 0.2')
+        CHECK(math.abs(an:GetPrevTime() - 0.8) < 1e-4,
+              'prevTime remembers pre-wrap 0.8')
+
+        -- ---- Param 读写 + ListParams ----
+        an:SetParam('health', 100)
+        an:SetParam('speed', 2.5)
+        CHECK(an:GetParam('health') == 100, 'SetParam/GetParam round-trip health=100')
+        CHECK(math.abs(an:GetParam('speed') - 2.5) < 1e-6,
+              'SetParam/GetParam round-trip speed=2.5')
+        CHECK(an:HasParam('health') == true, 'HasParam: present')
+        CHECK(an:HasParam('missing') == false, 'HasParam: missing=false')
+        local ps = an:ListParams()
+        CHECK(type(ps) == 'table' and ps.health == 100 and math.abs(ps.speed - 2.5) < 1e-6,
+              'ListParams returns all params as kv table')
+
+        -- ---- Transition getter ----
+        an:AddTransition('idle', 'walk',
+                           function() return (an:GetParam('health') or 0) > 50 end,
+                           0.3)
+        CHECK(an:GetTransitionCount() == 1, 'AddTransition → count=1')
+        local ti = an:GetTransitionInfo(1)
+        CHECK(type(ti) == 'table', 'GetTransitionInfo returns table')
+        CHECK(ti.from == 'idle' and ti.to == 'walk', 'transition info from/to correct')
+        CHECK(math.abs(ti.duration - 0.3) < 1e-6, 'transition info duration = 0.3')
+        CHECK(ti.hasCond == true, 'transition info hasCond = true')
+        CHECK(an:GetTransitionInfo(99) == nil, 'GetTransitionInfo out-of-range → nil')
+
+        -- ---- Event getter ----
+        local ei = an:GetEventInfo(1)
+        CHECK(type(ei) == 'table', 'GetEventInfo returns table')
+        CHECK(ei.state == 'idle' and math.abs(ei.triggerTime - 0.1) < 1e-6,
+              'event info state/triggerTime')
+        CHECK(ei.hasCallback == true, 'event info hasCallback = true')
+        CHECK(an:GetEventInfo(99) == nil, 'GetEventInfo out-of-range → nil')
+
+        -- ---- Clip / State getter ----
+        local idle_ref = an:GetClip('idle')
+        CHECK(idle_ref ~= nil and idle_ref:GetName() == 'idle',
+              'GetClip("idle") returns same clip')
+        CHECK(an:GetClip('missing') == nil, 'GetClip("missing") → nil')
+
+        local act = an:GetActiveClip()
+        CHECK(act ~= nil and act:GetName() == 'idle',
+              'GetActiveClip = current (idle)')
+
+        local names = an:ListStates()
+        CHECK(type(names) == 'table' and #names == 2,
+              'ListStates returns 2 state names')
+
+        -- ---- Clear transitions / events ----
+        an:ClearTransitions()
+        CHECK(an:GetTransitionCount() == 0, 'ClearTransitions → 0')
+        an:ClearEvents()
+        CHECK(an:GetEventCount() == 0, 'ClearEvents → 0')
+    end)
+    if not ok_e2e then
+        CHECK(false, 'procedural e2e 成功执行: ' .. tostring(err_e2e))
+    else
+        CHECK(true, 'procedural e2e 全程无异常')
+    end
+else
+    print('  SKIP: NewEmptySkeleton / NewEmptyClip 不可用')
+end
+
+-- ==================== [14] Phase AV.x: procedural 错误路径 ====================
+
+print('[14] Phase AV.x: procedural 错误路径')
+
+if type(Anim.NewEmptySkeleton) == 'function' then
+    -- NewEmptySkeleton 越界: 返回 nil + err (不 raise)
+    local r1 = Anim.NewEmptySkeleton(0)
+    CHECK(r1 == nil, 'NewEmptySkeleton(0) → nil (out of range)')
+    local r2 = Anim.NewEmptySkeleton(65)
+    CHECK(r2 == nil, 'NewEmptySkeleton(65) → nil (exceeds MAX_JOINTS=64)')
+
+    local sk2 = Anim.NewEmptySkeleton(2)
+    local c2  = Anim.NewEmptyClip('t', 0.0)
+
+    -- AddSampler 未知 target / mode / 尺寸不匹配 → raise
+    CHECK(pcall(c2.AddSampler, c2, 1, 'bad_target', 'LINEAR', {0}, {0,0,0}) == false,
+          'AddSampler unknown target raises')
+    CHECK(pcall(c2.AddSampler, c2, 1, 'translation', 'BAD_MODE', {0}, {0,0,0}) == false,
+          'AddSampler unknown mode raises')
+    CHECK(pcall(c2.AddSampler, c2, 1, 'translation', 'LINEAR', {0}, {0,0}) == false,
+          'AddSampler values count mismatch raises')
+    CHECK(pcall(c2.AddSampler, c2, 0, 'translation', 'LINEAR', {0}, {0,0,0}) == false,
+          'AddSampler jointIdx=0 raises')
+    CHECK(pcall(c2.AddSampler, c2, 1, 'translation', 'LINEAR', {}, {}) == false,
+          'AddSampler empty times raises')
+
+    -- Skeleton setter 错误
+    CHECK(pcall(sk2.SetJointName, sk2, 99, 'x') == false,
+          'SetJointName out-of-range raises')
+    CHECK(pcall(sk2.SetJointParent, sk2, 1, 1) == false,
+          'SetJointParent self-reference raises')
+    CHECK(pcall(sk2.SetJointParent, sk2, 1, 99) == false,
+          'SetJointParent out-of-range parent raises')
+    CHECK(pcall(sk2.SetBindLocalTRS, sk2, 99, 0,0,0, 1,0,0,0, 1,1,1) == false,
+          'SetBindLocalTRS out-of-range raises')
+    CHECK(pcall(sk2.SetInverseBindMatrix, sk2, 1, {1,2,3}) == false,
+          'SetInverseBindMatrix short table raises (<16)')
+else
+    print('  SKIP: Phase AV.x API 不可用')
+end
 
 -- ==================== 汇总 ====================
 
-print(string.format('[Phase AV Step 1+2+3+4] 通过 %d / 失败 %d', PASS, FAIL))
+print(string.format('[Phase AV Step 1+2+3+4 + Phase AV.x] 通过 %d / 失败 %d', PASS, FAIL))
 if FAIL > 0 then
     error(string.format('animation smoke 失败: %d 个断言不通过', FAIL))
 end

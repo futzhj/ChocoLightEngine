@@ -1171,6 +1171,58 @@ static int l_Anim_NewAnimator(lua_State* L) {
     return 1;
 }
 
+// ==================== Phase AV.x: Procedural Skeleton / Clip 构造 ====================
+// 动机: 不依赖 glTF 资产即可构造 Skeleton + Clip 用于单元测试 / 程序化动画.
+// 使用模式:
+//   local sk  = Light.Animation.NewEmptySkeleton(2)
+//   sk:SetJointName(1, "root"); sk:SetJointParent(1, 0)      -- 0 = 无 parent
+//   sk:SetJointName(2, "tip");  sk:SetJointParent(2, 1)      -- parent = root
+//   sk:SetBindLocalTRS(1, 0,0,0,  1,0,0,0,  1,1,1)           -- (T, R_wxyz, S)
+//
+//   local clip = Light.Animation.NewEmptyClip("walk", 1.0)
+//   clip:AddSampler(1, "rotation", "LINEAR",
+//                    { 0.0, 0.5, 1.0 },
+//                    { 0,0,0,1,  0,1,0,0,  0,0,0,1 })        -- 注意: rotation 采样值按 glTF xyzw 输入
+// 旋转输入采用 glTF xyzw 约定 (与 LoadSkinnedGLTF 一致), 内部转 wxyz 存储.
+static int l_Anim_NewEmptySkeleton(lua_State* L) {
+    int n = (int)luaL_checkinteger(L, 1);
+    if (n <= 0 || n > MAX_JOINTS) {
+        lua_pushnil(L);
+        lua_pushfstring(L, "joint count out of range: %d (must be 1..%d)", n, MAX_JOINTS);
+        return 2;
+    }
+    Skeleton* sk = new Skeleton();
+    sk->joints.resize((size_t)n);
+    sk->inverseBindMatrices.assign((size_t)n * FLOATS_PER_MAT4, 0.0f);
+    // 默认: 所有关节 parent=-1 (全部是根), bind = 单位变换, IBM = 单位矩阵
+    for (int i = 0; i < n; ++i) {
+        JointNode& jn = sk->joints[i];
+        jn.name   = "joint_" + std::to_string(i);
+        jn.parent = -1;
+        jn.children.clear();
+        jn.local_t[0] = jn.local_t[1] = jn.local_t[2] = 0.0f;
+        jn.local_r[0] = 1.0f; jn.local_r[1] = jn.local_r[2] = jn.local_r[3] = 0.0f;
+        jn.local_s[0] = jn.local_s[1] = jn.local_s[2] = 1.0f;
+        sk->nameToIndex[jn.name] = i;
+        float* m = &sk->inverseBindMatrices[(size_t)i * FLOATS_PER_MAT4];
+        m[0] = m[5] = m[10] = m[15] = 1.0f;
+    }
+    sk->rootJoint = 0;    // 默认第一个关节为根 (SetJointParent 后会重算)
+    PushSkeletonUserdata(L, sk);
+    return 1;
+}
+
+static int l_Anim_NewEmptyClip(lua_State* L) {
+    const char* name = luaL_checkstring(L, 1);
+    float dur        = (float)luaL_optnumber(L, 2, 0.0);
+    if (dur < 0.0f) dur = 0.0f;
+    AnimationClip* c = new AnimationClip();
+    c->name     = name;
+    c->duration = dur;
+    PushClipUserdata(L, c);
+    return 1;
+}
+
 // ==================== Skeleton 方法 ====================
 
 static int l_Skeleton_GetJointCount(lua_State* L) {
@@ -1259,6 +1311,91 @@ static int l_Skeleton_GetInverseBindMatrix(lua_State* L) {
         lua_rawseti(L, -2, k + 1);
     }
     return 1;
+}
+
+// ---------- Phase AV.x: Skeleton procedural setter ----------
+
+// SetJointName(idx1, name): 重命名关节; 同步更新 nameToIndex (删旧名, 添新名)
+static int l_Skeleton_SetJointName(lua_State* L) {
+    Skeleton* sk   = CheckSkeleton(L, 1);
+    int idx        = (int)luaL_checkinteger(L, 2);    // 1-based
+    const char* nm = luaL_checkstring(L, 3);
+    if (idx < 1 || idx > (int)sk->joints.size()) {
+        return luaL_error(L, "joint index out of range: %d", idx);
+    }
+    JointNode& jn = sk->joints[idx - 1];
+    sk->nameToIndex.erase(jn.name);
+    jn.name = nm;
+    sk->nameToIndex[jn.name] = idx - 1;
+    return 0;
+}
+
+// SetJointParent(idx1, parentIdx1_or_0): 0 = 无 parent; 自动重算 rootJoint + children 不维护
+// (children 列表仅本阶段不依赖, ComputeJointMatrices DFS 用 parent 向上拓扑排序)
+static int l_Skeleton_SetJointParent(lua_State* L) {
+    Skeleton* sk = CheckSkeleton(L, 1);
+    int idx      = (int)luaL_checkinteger(L, 2);     // 1-based
+    int pidx     = (int)luaL_checkinteger(L, 3);     // 1-based, 0 = 无 parent
+    int N        = (int)sk->joints.size();
+    if (idx < 1 || idx > N) {
+        return luaL_error(L, "joint index out of range: %d", idx);
+    }
+    if (pidx < 0 || pidx > N) {
+        return luaL_error(L, "parent index out of range: %d", pidx);
+    }
+    if (pidx == idx) {
+        return luaL_error(L, "joint cannot be its own parent (idx=%d)", idx);
+    }
+    sk->joints[idx - 1].parent = (pidx == 0) ? -1 : (pidx - 1);
+    // 重算 rootJoint (第一个 parent==-1)
+    sk->rootJoint = -1;
+    for (size_t i = 0; i < sk->joints.size(); ++i) {
+        if (sk->joints[i].parent < 0) { sk->rootJoint = (int)i; break; }
+    }
+    return 0;
+}
+
+// SetBindLocalTRS(idx1, tx,ty,tz, qw,qx,qy,qz, sx,sy,sz)
+// 旋转四元数格式: wxyz (ChocoLight 内部约定)
+static int l_Skeleton_SetBindLocalTRS(lua_State* L) {
+    Skeleton* sk = CheckSkeleton(L, 1);
+    int idx      = (int)luaL_checkinteger(L, 2);    // 1-based
+    if (idx < 1 || idx > (int)sk->joints.size()) {
+        return luaL_error(L, "joint index out of range: %d", idx);
+    }
+    JointNode& jn = sk->joints[idx - 1];
+    jn.local_t[0] = (float)luaL_checknumber(L, 3);
+    jn.local_t[1] = (float)luaL_checknumber(L, 4);
+    jn.local_t[2] = (float)luaL_checknumber(L, 5);
+    jn.local_r[0] = (float)luaL_checknumber(L, 6);   // w
+    jn.local_r[1] = (float)luaL_checknumber(L, 7);   // x
+    jn.local_r[2] = (float)luaL_checknumber(L, 8);   // y
+    jn.local_r[3] = (float)luaL_checknumber(L, 9);   // z
+    jn.local_s[0] = (float)luaL_checknumber(L, 10);
+    jn.local_s[1] = (float)luaL_checknumber(L, 11);
+    jn.local_s[2] = (float)luaL_checknumber(L, 12);
+    return 0;
+}
+
+// SetInverseBindMatrix(idx1, table_m16): 覆盖指定关节的逆绑定矩阵 (16 floats, 列主序)
+static int l_Skeleton_SetInverseBindMatrix(lua_State* L) {
+    Skeleton* sk = CheckSkeleton(L, 1);
+    int idx      = (int)luaL_checkinteger(L, 2);    // 1-based
+    if (idx < 1 || idx > (int)sk->joints.size()) {
+        return luaL_error(L, "joint index out of range: %d", idx);
+    }
+    luaL_checktype(L, 3, LUA_TTABLE);
+    float* m = &sk->inverseBindMatrices[(size_t)(idx - 1) * FLOATS_PER_MAT4];
+    for (int k = 0; k < FLOATS_PER_MAT4; ++k) {
+        lua_rawgeti(L, 3, k + 1);
+        if (!lua_isnumber(L, -1)) {
+            lua_pop(L, 1);
+            return luaL_error(L, "inverse bind matrix element %d is not a number", k + 1);
+        }
+        m[k] = (float)lua_tonumber(L, -1);
+        lua_pop(L, 1);
+    }
+    return 0;
 }
 
 static int l_Skeleton_IsAlive(lua_State* L) {
@@ -1421,6 +1558,121 @@ static int l_Clip_Sample(lua_State* L) {
         lua_pushnumber(L, found->values[baseOff + k]);
     }
     return comps;
+}
+
+// ---------- Phase AV.x: Clip procedural setter ----------
+
+// SetDuration(sec): 显式设置时长; AddSampler 会自动 max(duration, sampler.times.back()).
+static int l_Clip_SetDuration(lua_State* L) {
+    AnimationClip* c = CheckClip(L, 1);
+    float dur = (float)luaL_checknumber(L, 2);
+    if (dur < 0.0f) dur = 0.0f;
+    c->duration = dur;
+    return 0;
+}
+
+// AddSampler(jointIdx1, target_str, mode_str, times_table, values_table)
+//   target:  "translation" | "rotation" | "scale"
+//   mode:    "LINEAR" | "STEP" | "CUBICSPLINE" (大小写不敏感)
+//   times:   Lua array of seconds (升序; 不强制校验)
+//   values:  Lua flat array of floats
+//            T/S:        3 floats / keyframe  (LINEAR/STEP)   或 3*3 (CUBICSPLINE: in,value,out)
+//            R:          4 floats / keyframe  (xyzw, glTF 约定; 内部转 wxyz)
+// 自动更新 clip->duration = max(duration, times.back()).
+static int l_Clip_AddSampler(lua_State* L) {
+    AnimationClip* c   = CheckClip(L, 1);
+    int jointIdx       = (int)luaL_checkinteger(L, 2) - 1;    // 1-based → 0-based
+    const char* tgtStr = luaL_checkstring(L, 3);
+    const char* modStr = luaL_checkstring(L, 4);
+    luaL_checktype(L, 5, LUA_TTABLE);
+    luaL_checktype(L, 6, LUA_TTABLE);
+
+    if (jointIdx < 0) {
+        return luaL_error(L, "joint index must be >= 1 (got %d)", jointIdx + 1);
+    }
+
+    ChannelTarget target = ChannelTarget::UNSUPPORTED;
+    if (std::strcmp(tgtStr, "translation") == 0)      target = ChannelTarget::TRANSLATION;
+    else if (std::strcmp(tgtStr, "rotation") == 0)    target = ChannelTarget::ROTATION;
+    else if (std::strcmp(tgtStr, "scale") == 0)       target = ChannelTarget::SCALE;
+    else {
+        return luaL_error(L, "unsupported target: %s (expected translation/rotation/scale)", tgtStr);
+    }
+
+    InterpMode mode = InterpMode::LINEAR;
+    // 手动小写比较 (避免引入 tolower 依赖)
+    auto ieq = [](const char* a, const char* b) {
+        while (*a && *b) {
+            char ca = (*a >= 'a' && *a <= 'z') ? (char)(*a - 'a' + 'A') : *a;
+            char cb = (*b >= 'a' && *b <= 'z') ? (char)(*b - 'a' + 'A') : *b;
+            if (ca != cb) return false;
+            ++a; ++b;
+        }
+        return *a == *b;
+    };
+    if (ieq(modStr, "LINEAR"))           mode = InterpMode::LINEAR;
+    else if (ieq(modStr, "STEP"))        mode = InterpMode::STEP;
+    else if (ieq(modStr, "CUBICSPLINE")) mode = InterpMode::CUBICSPLINE;
+    else {
+        return luaL_error(L, "unsupported mode: %s (expected LINEAR/STEP/CUBICSPLINE)", modStr);
+    }
+
+    int comps = (target == ChannelTarget::ROTATION) ? FLOATS_R : FLOATS_T;
+
+    // 读 times table
+    int nTimes = (int)lua_rawlen(L, 5);
+    if (nTimes <= 0) {
+        return luaL_error(L, "times table is empty");
+    }
+    std::vector<float> times((size_t)nTimes);
+    for (int i = 0; i < nTimes; ++i) {
+        lua_rawgeti(L, 5, i + 1);
+        if (!lua_isnumber(L, -1)) {
+            lua_pop(L, 1);
+            return luaL_error(L, "times[%d] is not a number", i + 1);
+        }
+        times[(size_t)i] = (float)lua_tonumber(L, -1);
+        lua_pop(L, 1);
+    }
+
+    // 读 values table (扁平 float 数组)
+    int perKey    = (mode == InterpMode::CUBICSPLINE) ? (comps * 3) : comps;
+    int nValsExp  = nTimes * perKey;
+    int nValsGot  = (int)lua_rawlen(L, 6);
+    if (nValsGot != nValsExp) {
+        return luaL_error(L, "values count mismatch: expected %d (%d keys * %d), got %d",
+                           nValsExp, nTimes, perKey, nValsGot);
+    }
+    std::vector<float> values((size_t)nValsGot);
+    for (int i = 0; i < nValsGot; ++i) {
+        lua_rawgeti(L, 6, i + 1);
+        if (!lua_isnumber(L, -1)) {
+            lua_pop(L, 1);
+            return luaL_error(L, "values[%d] is not a number", i + 1);
+        }
+        values[(size_t)i] = (float)lua_tonumber(L, -1);
+        lua_pop(L, 1);
+    }
+
+    // Rotation 输入 xyzw (glTF 约定), 存储统一转 wxyz + 归一化
+    // 注意: 这里只对 LINEAR/STEP 的 value 做转换; CUBICSPLINE 的 in_tan/out_tan 切向量
+    //       不是 unit quat, 不能直接交换顺序 → 按 glTF 规范原样存储, 由 EvaluateSampler
+    //       在插值后统一走 GltfQuatXyzwToWxyz + Normalize.
+    // (当前实现与 LoadSkinnedGLTF 一致: 采样时才转换, 存储保持 xyzw 原状)
+    // 因此这里不需要额外转换, 直接存 values 即可.
+    Sampler s;
+    s.jointIndex = jointIdx;
+    s.target     = target;
+    s.mode       = mode;
+    s.components = comps;
+    s.times      = std::move(times);
+    s.values     = std::move(values);
+    c->samplers.push_back(std::move(s));
+
+    // 自动推进 duration (取所有 sampler times.back() 的 max)
+    float tBack = c->samplers.back().times.back();
+    if (tBack > c->duration) c->duration = tBack;
+    return 0;
 }
 
 static int l_Clip_IsAlive(lua_State* L) {
@@ -1933,6 +2185,100 @@ static int l_Animator_GetPrevTime(lua_State* L) {
     return 1;
 }
 
+// ---------- Phase AV.x: Animator 读取 (调试/内省) ----------
+
+// GetClip(name) → Clip userdata 或 nil (通过 registry ref 取, 保持身份一致)
+static int l_Animator_GetClip(lua_State* L) {
+    Animator* an   = CheckAnimator(L, 1);
+    const char* nm = luaL_checkstring(L, 2);
+    auto it = an->stateRefs.find(nm);
+    if (it == an->stateRefs.end() || it->second == LUA_NOREF) {
+        lua_pushnil(L);
+        return 1;
+    }
+    lua_rawgeti(L, LUA_REGISTRYINDEX, it->second);
+    return 1;
+}
+
+// GetActiveClip() → Clip userdata 或 nil (当前 state 的 clip)
+static int l_Animator_GetActiveClip(lua_State* L) {
+    Animator* an = CheckAnimator(L, 1);
+    if (an->currentState.empty()) {
+        lua_pushnil(L);
+        return 1;
+    }
+    auto it = an->stateRefs.find(an->currentState);
+    if (it == an->stateRefs.end() || it->second == LUA_NOREF) {
+        lua_pushnil(L);
+        return 1;
+    }
+    lua_rawgeti(L, LUA_REGISTRYINDEX, it->second);
+    return 1;
+}
+
+// ListStates() → { "idle", "walk", ... } (无序 table array; 顺序未指定)
+static int l_Animator_ListStates(lua_State* L) {
+    Animator* an = CheckAnimator(L, 1);
+    lua_newtable(L);
+    int i = 1;
+    for (const auto& kv : an->states) {
+        lua_pushstring(L, kv.first.c_str());
+        lua_rawseti(L, -2, i++);
+    }
+    return 1;
+}
+
+// GetTransitionInfo(idx1) → { from, to, duration, hasCond } 或 nil (越界)
+static int l_Animator_GetTransitionInfo(lua_State* L) {
+    Animator* an = CheckAnimator(L, 1);
+    int i = (int)luaL_checkinteger(L, 2);    // 1-based
+    if (i < 1 || i > (int)an->transitions.size()) {
+        lua_pushnil(L);
+        return 1;
+    }
+    const TransitionDef& tr = an->transitions[(size_t)(i - 1)];
+    lua_newtable(L);
+    lua_pushstring(L, tr.fromState.c_str());
+    lua_setfield(L, -2, "from");
+    lua_pushstring(L, tr.toState.c_str());
+    lua_setfield(L, -2, "to");
+    lua_pushnumber(L, tr.duration);
+    lua_setfield(L, -2, "duration");
+    lua_pushboolean(L, tr.condFnRef != LUA_NOREF ? 1 : 0);
+    lua_setfield(L, -2, "hasCond");
+    return 1;
+}
+
+// GetEventInfo(idx1) → { state, triggerTime, hasCallback } 或 nil (越界)
+static int l_Animator_GetEventInfo(lua_State* L) {
+    Animator* an = CheckAnimator(L, 1);
+    int i = (int)luaL_checkinteger(L, 2);    // 1-based
+    if (i < 1 || i > (int)an->events.size()) {
+        lua_pushnil(L);
+        return 1;
+    }
+    const EventDef& ev = an->events[(size_t)(i - 1)];
+    lua_newtable(L);
+    lua_pushstring(L, ev.state.c_str());
+    lua_setfield(L, -2, "state");
+    lua_pushnumber(L, ev.triggerTime);
+    lua_setfield(L, -2, "triggerTime");
+    lua_pushboolean(L, ev.callbackRef != LUA_NOREF ? 1 : 0);
+    lua_setfield(L, -2, "hasCallback");
+    return 1;
+}
+
+// ListParams() → { [name] = value, ... } (键值 table)
+static int l_Animator_ListParams(lua_State* L) {
+    Animator* an = CheckAnimator(L, 1);
+    lua_newtable(L);
+    for (const auto& kv : an->params) {
+        lua_pushnumber(L, kv.second);
+        lua_setfield(L, -2, kv.first.c_str());
+    }
+    return 1;
+}
+
 static int l_Animator_IsAlive(lua_State* L) {
     Animator* an = CheckAnimator(L, 1);
     lua_pushboolean(L, an->alive ? 1 : 0);
@@ -2234,6 +2580,11 @@ static const luaL_Reg kSkeletonMethods[] = {
     {"GetRootJoint",          l_Skeleton_GetRootJoint},
     {"GetBindLocalTRS",       l_Skeleton_GetBindLocalTRS},
     {"GetInverseBindMatrix",  l_Skeleton_GetInverseBindMatrix},
+    // Phase AV.x: procedural setter
+    {"SetJointName",          l_Skeleton_SetJointName},
+    {"SetJointParent",        l_Skeleton_SetJointParent},
+    {"SetBindLocalTRS",       l_Skeleton_SetBindLocalTRS},
+    {"SetInverseBindMatrix",  l_Skeleton_SetInverseBindMatrix},
     {"IsAlive",               l_Skeleton_IsAlive},
     {"Delete",                l_Skeleton_Delete},
     {"__gc",                  l_Skeleton_GC},
@@ -2247,6 +2598,9 @@ static const luaL_Reg kClipMethods[] = {
     {"GetSamplerCount",  l_Clip_GetSamplerCount},
     {"GetSamplerInfo",   l_Clip_GetSamplerInfo},
     {"Sample",           l_Clip_Sample},
+    // Phase AV.x: procedural setter
+    {"SetDuration",      l_Clip_SetDuration},
+    {"AddSampler",       l_Clip_AddSampler},
     {"IsAlive",          l_Clip_IsAlive},
     {"Delete",           l_Clip_Delete},
     {"__gc",             l_Clip_GC},
@@ -2288,6 +2642,13 @@ static const luaL_Reg kAnimatorMethods[] = {
     {"SetParam",              l_Animator_SetParam},
     {"GetParam",              l_Animator_GetParam},
     {"HasParam",              l_Animator_HasParam},
+    // Phase AV.x: 读取/内省接口
+    {"GetClip",               l_Animator_GetClip},
+    {"GetActiveClip",         l_Animator_GetActiveClip},
+    {"ListStates",            l_Animator_ListStates},
+    {"GetTransitionInfo",     l_Animator_GetTransitionInfo},
+    {"GetEventInfo",          l_Animator_GetEventInfo},
+    {"ListParams",            l_Animator_ListParams},
     // 生命周期
     {"IsAlive",               l_Animator_IsAlive},
     {"Delete",                l_Animator_Delete},
@@ -2309,9 +2670,12 @@ static const luaL_Reg kSkinnedMeshMethods[] = {
 };
 
 static const luaL_Reg kAnimationModule[] = {
-    {"LoadSkinnedGLTF", l_Anim_LoadSkinnedGLTF},
-    {"NewAnimator",     l_Anim_NewAnimator},
-    {"DrawSkinnedMesh", l_Anim_DrawSkinnedMesh},     // Step 3
+    {"LoadSkinnedGLTF",    l_Anim_LoadSkinnedGLTF},
+    {"NewAnimator",        l_Anim_NewAnimator},
+    {"DrawSkinnedMesh",    l_Anim_DrawSkinnedMesh},     // Step 3
+    // Phase AV.x: procedural
+    {"NewEmptySkeleton",   l_Anim_NewEmptySkeleton},
+    {"NewEmptyClip",       l_Anim_NewEmptyClip},
     {nullptr, nullptr},
 };
 
