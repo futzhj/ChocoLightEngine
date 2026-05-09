@@ -17,11 +17,7 @@
 --   * 不依赖任何渲染/音频, 纯算力 — CI 全平台可执行
 --   * Lua 5.1 兼容: 不用 \x 转义, 不用 string.unpack
 
--- Phase AU debug: 强制 stdout 无缓冲, 确保 SEH crash 前所有 print 都能 flush
-io.stdout:setvbuf("no")
-print("[smoke] physics_3d.lua start, pre-require")
 local ok, Phys = pcall(require, "Light.Physics3D")
-print("[smoke] post-require: ok=" .. tostring(ok) .. " type=" .. type(Phys))
 if not ok or type(Phys) ~= "table" then
     print("Light.Physics3D module not available, skipping (Phys=" .. tostring(Phys) .. ")")
     return
@@ -33,7 +29,6 @@ local function fail(msg) error("FAIL: " .. msg, 2) end
 local function approx(a, b, eps) eps = eps or 1e-3; return math.abs(a - b) <= eps end
 
 -- ==================== 1) 模块加载 ====================
-print("[DBG] before [1]")
 print("[1] 模块加载")
 local fns = {
     "NewBox", "NewSphere", "NewCylinder", "NewCapsule", "NewCone", "NewStaticPlane",
@@ -47,7 +42,6 @@ end
 pass(#fns .. " 个工厂函数都存在")
 
 -- ==================== 2) Shape 工厂 ====================
-print("[DBG] before [2]")
 print("[2] Shape 工厂")
 local box = Phys.NewBox(0.5, 0.5, 0.5)
 if not box then fail("NewBox fail") end
@@ -63,7 +57,6 @@ local _ = tostring(box) .. tostring(plane)
 pass("shape:__tostring 调用不崩")
 
 -- Phase AU Step 3.1: 高级 shape 工厂
-print("[DBG] before [2.1]")
 print("[2.1] 高级 Shape 工厂 (ConvexHull / Heightfield / TriangleMesh)")
 
 -- ConvexHull: 8 个立方体顶点
@@ -104,15 +97,12 @@ local tm = Phys.NewTriangleMesh(tm_verts, tm_inds)
 if not tm then fail("NewTriangleMesh fail") end
 pass("NewTriangleMesh(2 三角形) -> shape")
 
--- TriangleMesh: 索引越界应 raise
--- TODO: Phase AU debug: 临时禁用 — 在 Windows release MSVC 上 pcall 触发 SEH 崩溃 (定位中)
--- local ok_tm, err_tm = pcall(Phys.NewTriangleMesh, tm_verts, { 0, 1, 99 })
--- if ok_tm then fail("NewTriangleMesh oob should error") end
--- pass("NewTriangleMesh 越界 raise: " .. tostring(err_tm))
-print("[DBG] skipped NewTriangleMesh oob pcall (Windows SEH bug)")
+-- TriangleMesh: 索引越界应 raise (恢复测试 — 之前怀疑的 Windows SEH 实为 rope 节点数断言失败)
+local ok_tm, err_tm = pcall(Phys.NewTriangleMesh, tm_verts, { 0, 1, 99 })
+if ok_tm then fail("NewTriangleMesh oob should error") end
+pass("NewTriangleMesh 越界 raise: " .. tostring(err_tm))
 
 -- ==================== 3) World 生命周期 ====================
-print("[DBG] before [3] NewWorld")
 print("[3] World 生命周期")
 local w = Phys.NewWorld()  -- 默认重力 (0, -9.81, 0)
 if not w then fail("NewWorld fail") end
