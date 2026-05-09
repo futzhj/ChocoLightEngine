@@ -21,6 +21,7 @@
 #include "platform_window.h"
 #include <vector>
 #include <cstring>
+#include <unordered_map>
 
 // ==================== 内嵌 Shader 源码 ====================
 
@@ -95,6 +96,97 @@ void main() {
 )";
 #endif
 
+// ==================== Phase AS.2 — 3D 默认 shader ====================
+// 简单 Lambert 光照 + diffuse texture, 单方向光 (从右上前方照射)
+#if defined(__EMSCRIPTEN__) || defined(__ANDROID__) || defined(CHOCO_PLATFORM_IOS)
+static const char* VS3D_SOURCE = R"(#version 300 es
+precision highp float;
+layout(location=0) in vec3 aPos;
+layout(location=1) in vec3 aNormal;
+layout(location=2) in vec2 aUV;
+layout(location=3) in vec4 aColor;
+uniform mat4 uMVP;
+uniform mat4 uModel;
+out vec3 vNormalW;
+out vec2 vTexCoord;
+out vec4 vColor;
+void main() {
+    gl_Position = uMVP * vec4(aPos, 1.0);
+    // 法线经模型矩阵变换 (简化: 不做严格 normal matrix)
+    vNormalW = mat3(uModel) * aNormal;
+    vTexCoord = aUV;
+    vColor = aColor;
+}
+)";
+static const char* FS3D_SOURCE = R"(#version 300 es
+precision mediump float;
+in vec3 vNormalW;
+in vec2 vTexCoord;
+in vec4 vColor;
+uniform sampler2D uTexture;
+uniform int uUseTexture;
+uniform vec3 uLightDir;     // 已归一化, 指向光源
+uniform vec3 uLightColor;
+uniform vec3 uAmbient;
+layout(location=0) out vec4 FragColor;
+void main() {
+    vec3 N = normalize(vNormalW);
+    float ndl = max(dot(N, uLightDir), 0.0);
+    vec3 lit = uAmbient + uLightColor * ndl;
+    vec4 base = vColor;
+    if (uUseTexture == 1) base = base * texture(uTexture, vTexCoord);
+    FragColor = vec4(base.rgb * lit, base.a);
+}
+)";
+#else
+static const char* VS3D_SOURCE = R"(
+#version 330 core
+layout(location=0) in vec3 aPos;
+layout(location=1) in vec3 aNormal;
+layout(location=2) in vec2 aUV;
+layout(location=3) in vec4 aColor;
+uniform mat4 uMVP;
+uniform mat4 uModel;
+out vec3 vNormalW;
+out vec2 vTexCoord;
+out vec4 vColor;
+void main() {
+    gl_Position = uMVP * vec4(aPos, 1.0);
+    vNormalW = mat3(uModel) * aNormal;
+    vTexCoord = aUV;
+    vColor = aColor;
+}
+)";
+static const char* FS3D_SOURCE = R"(
+#version 330 core
+in vec3 vNormalW;
+in vec2 vTexCoord;
+in vec4 vColor;
+uniform sampler2D uTexture;
+uniform int uUseTexture;
+uniform vec3 uLightDir;
+uniform vec3 uLightColor;
+uniform vec3 uAmbient;
+out vec4 FragColor;
+void main() {
+    vec3 N = normalize(vNormalW);
+    float ndl = max(dot(N, uLightDir), 0.0);
+    vec3 lit = uAmbient + uLightColor * ndl;
+    vec4 base = vColor;
+    if (uUseTexture == 1) base = base * texture(uTexture, vTexCoord);
+    FragColor = vec4(base.rgb * lit, base.a);
+}
+)";
+#endif
+
+// Phase AS.2 — Mesh GPU 资源
+struct MeshGPU {
+    GLuint vao;
+    GLuint vbo;
+    GLuint ebo;
+    int    indexCount;
+};
+
 // ==================== GL33Backend ====================
 
 class GL33Backend : public RenderBackend {
@@ -122,6 +214,24 @@ class GL33Backend : public RenderBackend {
     // 动态 VBO 容量 (顶点数)
     int vboCapacity = 0;
     static constexpr int INITIAL_VBO_CAPACITY = 1024;
+
+    // ---- Phase AS.2 — 3D mesh 资源 ----
+    GLuint program3D       = 0;       // 3D 默认 shader (Lambert + diffuse)
+    GLint  loc3D_MVP       = -1;
+    GLint  loc3D_Model     = -1;
+    GLint  loc3D_Texture   = -1;
+    GLint  loc3D_UseTexture= -1;
+    GLint  loc3D_LightDir  = -1;
+    GLint  loc3D_LightColor= -1;
+    GLint  loc3D_Ambient   = -1;
+    bool   userShaderActive = false;  // 用户 Shader:Use 时为 true; UseDefaultShader 时复位
+    bool   depthTestEnabled = false;  // 当前深度测试状态 (默认关, 与 2D 兼容)
+    Mat4   viewMatrix;                // Phase AS.2 — 视图矩阵 (LookAt 结果)
+    bool   hasView          = false;  // 是否已 LoadView (false 表示用 modelview 直接)
+
+    // Mesh 资源池
+    std::unordered_map<uint32_t, MeshGPU> meshes;
+    uint32_t                              nextMeshId = 1;
 
     // 编译 shader, 返回 0 表示失败
     static GLuint CompileShader(GLenum type, const char* src) {
@@ -158,10 +268,16 @@ class GL33Backend : public RenderBackend {
         return p;
     }
 
-    // 上传 MVP uniform
+    // 上传 MVP uniform (2D shader, 简单的 projection * modelview)
     void FlushMVP() {
         Mat4 mvp = projection * modelview;
         glUniformMatrix4fv(locMVP, 1, GL_FALSE, mvp.m);
+    }
+
+    // 计算 3D MVP: projection * view * modelview (含相机 transform)
+    Mat4 ComputeMVP3D() const {
+        Mat4 vm = hasView ? (viewMatrix * modelview) : modelview;
+        return projection * vm;
     }
 
     // 确保 VBO 容量足够
@@ -221,8 +337,31 @@ public:
         glEnable(GL_BLEND);
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
-        CC::Log(CC::LOG_INFO, "RenderBackend: GL33 Core initialized (GL %s)",
-                (const char*)glGetString(GL_VERSION));
+        // ---- Phase AS.2 — 编译 3D 默认 shader ----
+        GLuint vs3D = CompileShader(GL_VERTEX_SHADER, VS3D_SOURCE);
+        GLuint fs3D = CompileShader(GL_FRAGMENT_SHADER, FS3D_SOURCE);
+        if (vs3D && fs3D) {
+            program3D = LinkProgram(vs3D, fs3D);
+            if (program3D) {
+                loc3D_MVP        = glGetUniformLocation(program3D, "uMVP");
+                loc3D_Model      = glGetUniformLocation(program3D, "uModel");
+                loc3D_Texture    = glGetUniformLocation(program3D, "uTexture");
+                loc3D_UseTexture = glGetUniformLocation(program3D, "uUseTexture");
+                loc3D_LightDir   = glGetUniformLocation(program3D, "uLightDir");
+                loc3D_LightColor = glGetUniformLocation(program3D, "uLightColor");
+                loc3D_Ambient    = glGetUniformLocation(program3D, "uAmbient");
+            } else {
+                CC::Log(CC::LOG_WARN, "GL33: 3D shader link failed (Mesh:Draw will silently no-op)");
+            }
+        } else {
+            CC::Log(CC::LOG_WARN, "GL33: 3D shader compile failed");
+        }
+        if (vs3D) glDeleteShader(vs3D);
+        if (fs3D) glDeleteShader(fs3D);
+
+        CC::Log(CC::LOG_INFO, "RenderBackend: GL33 Core initialized (GL %s)%s",
+                (const char*)glGetString(GL_VERSION),
+                program3D ? ", 3D mesh enabled" : "");
         return true;
     }
 
@@ -233,6 +372,19 @@ public:
         if (vao) glDeleteVertexArrays(1, &vao);
         program = vao = vbo = ebo = 0;
         eboCapacity = 0;
+
+        // Phase AS.2 — 释放 3D 资源
+        if (program3D) {
+            glDeleteProgram(program3D);
+            program3D = 0;
+        }
+        for (auto& kv : meshes) {
+            const MeshGPU& m = kv.second;
+            if (m.ebo) glDeleteBuffers(1, &m.ebo);
+            if (m.vbo) glDeleteBuffers(1, &m.vbo);
+            if (m.vao) glDeleteVertexArrays(1, &m.vao);
+        }
+        meshes.clear();
     }
 
     const char* GetName() const override { return "GL33Core"; }
@@ -600,6 +752,7 @@ public:
     bool UseShader(uint32_t shaderId) override {
         if (!shaderId) return false;
         glUseProgram((GLuint)shaderId);
+        userShaderActive = true;  // Phase AS.2 — 标记用户 shader 激活
         // 自动上传 MVP 到约定名 uMVP (若存在)
         GLint locMVPUser = glGetUniformLocation((GLuint)shaderId, "uMVP");
         if (locMVPUser >= 0) {
@@ -611,6 +764,7 @@ public:
 
     void UseDefaultShader() override {
         glUseProgram(program);
+        userShaderActive = false;  // Phase AS.2 — 复位标志
         FlushMVP();
     }
 
@@ -679,6 +833,161 @@ public:
     void ClearCurrent(float r, float g, float b, float a) override {
         glClearColor(r, g, b, a);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    }
+
+    // ==================== Phase AS.2 — 3D mesh + 深度测试 + camera ====================
+
+    bool Supports3D() const override { return program3D != 0; }
+
+    uint32_t CreateMesh(const RenderVertex3D* verts, int vCount,
+                        const uint32_t* indices, int iCount) override {
+        if (!verts || vCount <= 0 || !indices || iCount <= 0) return 0;
+        if (!program3D) return 0;  // 无 3D shader 时不能创建 (Init 失败兜底)
+
+        MeshGPU m;
+        glGenVertexArrays(1, &m.vao);
+        glGenBuffers(1, &m.vbo);
+        glGenBuffers(1, &m.ebo);
+        glBindVertexArray(m.vao);
+
+        // VBO: 上传顶点
+        glBindBuffer(GL_ARRAY_BUFFER, m.vbo);
+        glBufferData(GL_ARRAY_BUFFER, vCount * sizeof(RenderVertex3D), verts, GL_STATIC_DRAW);
+
+        // EBO: 上传索引 (uint32, 兼容 mesh 顶点数 > 65536)
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m.ebo);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER, iCount * sizeof(uint32_t), indices, GL_STATIC_DRAW);
+
+        // 顶点属性 layout: pos(0), normal(1), uv(2), color(3)
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(RenderVertex3D),
+                              (void*)offsetof(RenderVertex3D, x));
+        glEnableVertexAttribArray(1);
+        glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(RenderVertex3D),
+                              (void*)offsetof(RenderVertex3D, nx));
+        glEnableVertexAttribArray(2);
+        glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, sizeof(RenderVertex3D),
+                              (void*)offsetof(RenderVertex3D, u));
+        glEnableVertexAttribArray(3);
+        glVertexAttribPointer(3, 4, GL_FLOAT, GL_FALSE, sizeof(RenderVertex3D),
+                              (void*)offsetof(RenderVertex3D, r));
+
+        glBindVertexArray(0);
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+
+        m.indexCount = iCount;
+        uint32_t id = nextMeshId++;
+        meshes[id] = m;
+        return id;
+    }
+
+    void DeleteMesh(uint32_t meshId) override {
+        auto it = meshes.find(meshId);
+        if (it == meshes.end()) return;
+        const MeshGPU& m = it->second;
+        if (m.ebo) glDeleteBuffers(1, &m.ebo);
+        if (m.vbo) glDeleteBuffers(1, &m.vbo);
+        if (m.vao) glDeleteVertexArrays(1, &m.vao);
+        meshes.erase(it);
+    }
+
+    void DrawMesh(uint32_t meshId, uint32_t textureId) override {
+        auto it = meshes.find(meshId);
+        if (it == meshes.end()) return;
+        const MeshGPU& m = it->second;
+        if (!m.vao || m.indexCount <= 0) return;
+
+        // 选择 shader: 用户 shader 激活时不切, 否则用引擎 3D 默认
+        if (!userShaderActive && program3D) {
+            glUseProgram(program3D);
+            // 上传 MVP / Model / Light uniforms
+            Mat4 mvp = ComputeMVP3D();
+            glUniformMatrix4fv(loc3D_MVP,   1, GL_FALSE, mvp.m);
+            glUniformMatrix4fv(loc3D_Model, 1, GL_FALSE, modelview.m);
+            // 默认光: 从 (0.5, 1, 0.5) 方向照射 (归一化)
+            float lx = 0.408f, ly = 0.816f, lz = 0.408f;
+            glUniform3f(loc3D_LightDir,   lx, ly, lz);
+            glUniform3f(loc3D_LightColor, 0.9f, 0.9f, 0.85f);
+            glUniform3f(loc3D_Ambient,    0.2f, 0.2f, 0.25f);
+            // 纹理
+            if (textureId) {
+                glActiveTexture(GL_TEXTURE0);
+                glBindTexture(GL_TEXTURE_2D, textureId);
+                glUniform1i(loc3D_Texture,    0);
+                glUniform1i(loc3D_UseTexture, 1);
+            } else {
+                glUniform1i(loc3D_UseTexture, 0);
+            }
+        } else if (textureId) {
+            // 用户 shader: 仅绑定纹理到 slot 0, 用户负责 sampler uniform
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_2D, textureId);
+        }
+
+        // 临时启用深度测试 (如果用户没启用), 绘制完恢复
+        bool tempDepth = !depthTestEnabled;
+        if (tempDepth) {
+            glEnable(GL_DEPTH_TEST);
+            glDepthFunc(GL_LEQUAL);
+        }
+
+        glBindVertexArray(m.vao);
+        glDrawElements(GL_TRIANGLES, m.indexCount, GL_UNSIGNED_INT, (void*)0);
+        glBindVertexArray(0);
+
+        if (tempDepth) {
+            glDisable(GL_DEPTH_TEST);
+        }
+
+        // 切回默认 2D shader (避免 3D shader 残留影响后续 2D 绘制)
+        if (!userShaderActive && program3D) {
+            glUseProgram(program);
+            // 重新绑定 2D VAO 以便后续 2D 绘制
+            glBindVertexArray(vao);
+        }
+    }
+
+    void SetDepthTest(bool enable) override {
+        if (enable == depthTestEnabled) return;
+        depthTestEnabled = enable;
+        if (enable) {
+            glEnable(GL_DEPTH_TEST);
+            glDepthFunc(GL_LEQUAL);
+        } else {
+            glDisable(GL_DEPTH_TEST);
+        }
+    }
+
+    void SetDepthFunc(int func) override {
+        // 0=Less, 1=LEqual, 2=Greater, 3=GEqual, 4=Equal, 5=NotEqual, 6=Always, 7=Never
+        GLenum gl_func;
+        switch (func) {
+            case 0: gl_func = GL_LESS; break;
+            case 1: gl_func = GL_LEQUAL; break;
+            case 2: gl_func = GL_GREATER; break;
+            case 3: gl_func = GL_GEQUAL; break;
+            case 4: gl_func = GL_EQUAL; break;
+            case 5: gl_func = GL_NOTEQUAL; break;
+            case 6: gl_func = GL_ALWAYS; break;
+            case 7: gl_func = GL_NEVER; break;
+            default: gl_func = GL_LEQUAL; break;
+        }
+        glDepthFunc(gl_func);
+    }
+
+    void LoadView(const float* viewMat4) override {
+        if (!viewMat4) {
+            hasView = false;
+            return;
+        }
+        memcpy(viewMatrix.m, viewMat4, sizeof(viewMatrix.m));
+        hasView = true;
+    }
+
+    void LoadProjection(const float* projMat4) override {
+        if (!projMat4) return;
+        memcpy(projection.m, projMat4, sizeof(projection.m));
     }
 };
 

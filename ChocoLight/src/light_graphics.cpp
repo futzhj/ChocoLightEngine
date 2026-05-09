@@ -251,6 +251,80 @@ static int l_GetCanvas(lua_State* L) {
     return 1;
 }
 
+// ==================== Phase AS.2 — 3D camera + 深度测试 ====================
+
+/// @lua_api Light.Graphics.SetPerspective
+/// @brief 设置透视投影 (用于 3D 渲染)
+/// @param fovYDeg number 垂直视野角度 (度)
+/// @param aspect number 宽高比 (w/h)
+/// @param near number 近裁剪面 (>0)
+/// @param far number 远裁剪面 (>near)
+/// @return void
+static int l_SetPerspective(lua_State* L) {
+    float fovY   = (float)luaL_checknumber(L, 1);
+    float aspect = (float)luaL_checknumber(L, 2);
+    float near_  = (float)luaL_checknumber(L, 3);
+    float far_   = (float)luaL_checknumber(L, 4);
+    if (g_render) {
+        Mat4 proj = Mat4::Perspective(fovY, aspect, near_, far_);
+        g_render->LoadProjection(proj.m);
+    }
+    return 0;
+}
+
+/// @lua_api Light.Graphics.SetCamera
+/// @brief 设置 3D 摄像机 (LookAt 视图矩阵)
+/// @param ex number 摄像机 X
+/// @param ey number 摄像机 Y
+/// @param ez number 摄像机 Z
+/// @param tx number 注视点 X
+/// @param ty number 注视点 Y
+/// @param tz number 注视点 Z
+/// @param ux number? 上方向 X (默认 0)
+/// @param uy number? 上方向 Y (默认 1)
+/// @param uz number? 上方向 Z (默认 0)
+/// @return void
+static int l_SetCamera(lua_State* L) {
+    float ex = (float)luaL_checknumber(L, 1);
+    float ey = (float)luaL_checknumber(L, 2);
+    float ez = (float)luaL_checknumber(L, 3);
+    float tx = (float)luaL_checknumber(L, 4);
+    float ty = (float)luaL_checknumber(L, 5);
+    float tz = (float)luaL_checknumber(L, 6);
+    float ux = (float)luaL_optnumber(L, 7, 0.0);
+    float uy = (float)luaL_optnumber(L, 8, 1.0);
+    float uz = (float)luaL_optnumber(L, 9, 0.0);
+    if (g_render) {
+        Mat4 view = Mat4::LookAt(ex, ey, ez, tx, ty, tz, ux, uy, uz);
+        g_render->LoadView(view.m);
+    }
+    return 0;
+}
+
+// 当前深度测试状态 (Lua 端镜像, GetDepthTest 用)
+static bool g_depthTestEnabled = false;
+
+/// @lua_api Light.Graphics.SetDepthTest
+/// @brief 启用/禁用深度测试 (默认禁用以兼容 2D 渲染)
+/// @param enable boolean true=启用, false=禁用
+/// @return void
+static int l_SetDepthTest(lua_State* L) {
+    bool enable = lua_toboolean(L, 1) != 0;
+    if (g_render) {
+        g_render->SetDepthTest(enable);
+    }
+    g_depthTestEnabled = enable;
+    return 0;
+}
+
+/// @lua_api Light.Graphics.GetDepthTest
+/// @brief 查询深度测试是否启用
+/// @return boolean
+static int l_GetDepthTest(lua_State* L) {
+    lua_pushboolean(L, g_depthTestEnabled ? 1 : 0);
+    return 1;
+}
+
 // ==================== Phase AS.1 — Canvas 渲染目标栈 ====================
 // 设计: 软限制 8 层栈深度 (Q2 决策),超出仅警告不中断;
 //      Pop 在空栈时也仅警告不中断,确保 Lua 端误用不会崩。
@@ -1116,6 +1190,11 @@ static const luaL_Reg graphics_funcs[] = {
     // Phase AS.1 — Canvas 栈
     {"PushCanvas",        l_PushCanvas},
     {"PopCanvas",         l_PopCanvas},
+    // Phase AS.2 — 3D camera + 深度测试
+    {"SetPerspective",    l_SetPerspective},
+    {"SetCamera",         l_SetCamera},
+    {"SetDepthTest",      l_SetDepthTest},
+    {"GetDepthTest",      l_GetDepthTest},
     // --- 元方法 ---
     {"__call",            l_Graphics_Call},
     {"__tostring",        l_Graphics_Tostring},

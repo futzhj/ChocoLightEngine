@@ -23,6 +23,15 @@ struct RenderVertex {
     float r, g, b, a;    // 颜色
 };
 
+/// Phase AS.2 — 3D mesh 顶点格式 (12 floats = 48 bytes)
+/// 与 RenderVertex 平行, 不破坏现有 2D 渲染管线
+struct RenderVertex3D {
+    float x, y, z;       // pos
+    float nx, ny, nz;    // normal (单位向量)
+    float u, v;          // uv
+    float r, g, b, a;    // color (顶点颜色, 与材质相乘)
+};
+
 // ==================== 绘制模式 ====================
 
 enum class DrawMode {
@@ -49,6 +58,12 @@ struct Mat4 {
     static Mat4 Rotate(float angleDeg, float ax, float ay, float az);
     // 缩放
     static Mat4 Scale(float sx, float sy, float sz);
+    /// Phase AS.2 — 透视投影 (fovY 角度制, near/far > 0)
+    static Mat4 Perspective(float fovYDeg, float aspect, float n, float f);
+    /// Phase AS.2 — LookAt 视图矩阵 (eye/target/up 世界空间)
+    static Mat4 LookAt(float ex, float ey, float ez,
+                       float tx, float ty, float tz,
+                       float ux, float uy, float uz);
     // 矩阵乘法: this * other
     Mat4 operator*(const Mat4& other) const;
 };
@@ -162,6 +177,25 @@ public:
     virtual void GenerateMipmap(uint32_t texId) {}
     /// 清空当前绑定的 FBO/默认目标 (Canvas:Clear 用)
     virtual void ClearCurrent(float r, float g, float b, float a) {}
+
+    // ---- Phase AS.2 新增 3D mesh 接口 (GL33 真实现, Legacy 默认 no-op) ----
+    /// 是否支持 3D mesh + 深度测试 + perspective 投影
+    virtual bool Supports3D() const { return false; }
+    /// 创建 mesh (上传顶点+索引到 GPU), 返回 mesh id (0=失败)
+    virtual uint32_t CreateMesh(const RenderVertex3D* verts, int vCount,
+                                const uint32_t* indices, int iCount) { return 0; }
+    /// 释放 mesh GPU 资源
+    virtual void DeleteMesh(uint32_t meshId) {}
+    /// 绘制 mesh (使用当前 shader/projection/view, textureId=0 时无纹理)
+    virtual void DrawMesh(uint32_t meshId, uint32_t textureId) {}
+    /// 启用/禁用深度测试 (默认禁用以兼容 2D)
+    virtual void SetDepthTest(bool enable) {}
+    /// 设置深度比较函数 (0=Less, 1=LEqual, 2=Greater, 3=GEqual, 4=Equal, 5=NotEqual, 6=Always, 7=Never)
+    virtual void SetDepthFunc(int func) {}
+    /// 加载视图矩阵 (与 modelview 不同, 由 LookAt 生成)
+    virtual void LoadView(const float* viewMat4) {}
+    /// 加载投影矩阵 (替代 LoadOrtho 的通用版, 用于 Perspective)
+    virtual void LoadProjection(const float* projMat4) {}
 };
 
 // ==================== 工厂函数 ====================
