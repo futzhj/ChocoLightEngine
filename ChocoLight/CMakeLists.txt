@@ -59,18 +59,22 @@ else()
 endif()
 
 # ==================== Phase AU — Bullet 3 (vendored, all platforms) ====================
-# 仅保留 LinearMath + BulletCollision + BulletDynamics 三个子库, 用 file GLOB 编译
+# 保留 LinearMath + BulletCollision + BulletDynamics + BulletSoftBody 四个子库, 用 file GLOB 编译
 # 不用 Bullet 自带的复杂 CMake (Demos/Extras 已删除, 自带 CMake 会报错)
+# BulletSoftBody 仅引入"经典 SoftBody"必要文件 (rope/cloth/ellipsoid/anchor),
+# 跳过 Deformable / ReducedDeformable / SoftMultiBody (不需要)
 set(BULLET3_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/bullet3")
 
 file(GLOB_RECURSE BULLET_LM_SRC  "${BULLET3_DIR}/src/LinearMath/*.cpp")
 file(GLOB_RECURSE BULLET_COL_SRC "${BULLET3_DIR}/src/BulletCollision/*.cpp")
 file(GLOB_RECURSE BULLET_DYN_SRC "${BULLET3_DIR}/src/BulletDynamics/*.cpp")
+file(GLOB         BULLET_SOFT_SRC "${BULLET3_DIR}/src/BulletSoftBody/*.cpp")
 
 add_library(bullet3 STATIC
     ${BULLET_LM_SRC}
     ${BULLET_COL_SRC}
     ${BULLET_DYN_SRC}
+    ${BULLET_SOFT_SRC}
 )
 target_include_directories(bullet3 PUBLIC "${BULLET3_DIR}/src")
 
@@ -88,7 +92,7 @@ else()
     target_compile_options(bullet3 PRIVATE -Wno-deprecated-declarations -Wno-unused-but-set-variable -Wno-unused-variable)
 endif()
 
-message(STATUS "Bullet3: integrated via vendored source (v3.25, LinearMath + BulletCollision + BulletDynamics)")
+message(STATUS "Bullet3: integrated via vendored source (v3.25, LinearMath + BulletCollision + BulletDynamics + BulletSoftBody)")
 
 # ==================== 路径配置 ====================
 

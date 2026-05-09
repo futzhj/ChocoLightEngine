@@ -60,6 +60,12 @@
 // Phase AU Step 4.2: Vehicle (btRaycastVehicle)
 #include <BulletDynamics/Vehicle/btRaycastVehicle.h>
 #include <BulletDynamics/Vehicle/btVehicleRaycaster.h>
+// Phase AU Step 4.3: SoftBody (cloth/rope/jello)
+#include <BulletSoftBody/btSoftBody.h>
+#include <BulletSoftBody/btSoftBodyHelpers.h>
+#include <BulletSoftBody/btSoftBodyRigidBodyCollisionConfiguration.h>
+#include <BulletSoftBody/btSoftRigidDynamicsWorld.h>
+#include <BulletSoftBody/btDefaultSoftBodySolver.h>
 #endif
 
 #include <cstdint>
@@ -83,6 +89,7 @@ static const char* SHAPE_MT     = "Light.Physics3D.Shape";
 static const char* JOINT_MT     = "Light.Physics3D.Joint";       // Phase AU Step 3.2
 static const char* CHARACTER_MT = "Light.Physics3D.Character";   // Phase AU Step 3.3
 static const char* VEHICLE_MT   = "Light.Physics3D.Vehicle";     // Phase AU Step 4.2
+static const char* SOFTBODY_MT  = "Light.Physics3D.SoftBody";    // Phase AU Step 4.3
 
 // ==================== userdata 结构 ====================
 
@@ -126,24 +133,32 @@ struct Vehicle3D;
 // Phase AU Step 4.1: DebugDraw 接口前向声明
 class LuaDebugDrawer;
 
+// Phase AU Step 4.3: SoftBody userdata 前向声明
+struct SoftBody3D;
+
 struct World3D {
-    btDefaultCollisionConfiguration*     config;
+    // Phase AU Step 4.3: collision config 升级为 SoftBodyRigidBody (派生自 Default), 兼容现有 RigidBody
+    btSoftBodyRigidBodyCollisionConfiguration* config;
     btCollisionDispatcher*               dispatcher;
     btBroadphaseInterface*               broadphase;
     btSequentialImpulseConstraintSolver* solver;
-    btDiscreteDynamicsWorld*             world;
+    // Phase AU Step 4.3: world 升级为 SoftRigidDynamicsWorld (派生自 Discrete), 现有 addRigidBody/Constraint/Action 全兼容
+    btSoftRigidDynamicsWorld*            world;
+    btSoftBodySolver*                    softBodySolver;  // Phase AU Step 4.3
+    btSoftBodyWorldInfo                  softBodyWorldInfo;  // Phase AU Step 4.3 (按值, 不分配)
     btGhostPairCallback*                 ghostPairCb;  // Phase AU Step 3.3
     LuaDebugDrawer*                      debugDrawer;  // Phase AU Step 4.1
     std::vector<Body3D*>                 bodies;
-    std::vector<Joint3D*>                joints;      // Phase AU Step 3.2
-    std::vector<Character3D*>            characters;  // Phase AU Step 3.3
-    std::vector<Vehicle3D*>              vehicles;    // Phase AU Step 4.2
+    std::vector<Joint3D*>                joints;       // Phase AU Step 3.2
+    std::vector<Character3D*>            characters;   // Phase AU Step 3.3
+    std::vector<Vehicle3D*>              vehicles;     // Phase AU Step 4.2
+    std::vector<SoftBody3D*>             softBodies;   // Phase AU Step 4.3
     int                                  contactRef;  // OnContact callback in registry
     lua_State*                           L;
     bool                                 alive;
     World3D() : config(nullptr), dispatcher(nullptr), broadphase(nullptr),
-                solver(nullptr), world(nullptr), ghostPairCb(nullptr),
-                debugDrawer(nullptr),
+                solver(nullptr), world(nullptr), softBodySolver(nullptr),
+                ghostPairCb(nullptr), debugDrawer(nullptr),
                 contactRef(LUA_NOREF), L(nullptr), alive(false) {}
 };
 
@@ -190,6 +205,16 @@ struct Vehicle3D {
     bool                        alive;
     Vehicle3D() : vehicle(nullptr), raycaster(nullptr), owner(nullptr),
                   chassisBodyRef(LUA_NOREF), selfRef(LUA_NOREF), alive(false) {}
+};
+
+// Phase AU Step 4.3: SoftBody userdata (cloth/rope/ellipsoid/anchor)
+struct SoftBody3D {
+    btSoftBody* sb;
+    World3D*    owner;
+    int         selfRef;
+    bool        alive;
+    SoftBody3D() : sb(nullptr), owner(nullptr),
+                   selfRef(LUA_NOREF), alive(false) {}
 };
 
 // ==================== Helpers ====================
@@ -857,12 +882,25 @@ static int l_NewWorld(lua_State* L) {
     World3D* w = (World3D*)lua_newuserdata(L, sizeof(World3D));
     new (w) World3D();
 
-    w->config = new btDefaultCollisionConfiguration();
+    // Phase AU Step 4.3: 用 SoftBodyRigidBody collision config (派生自 Default), 兼容现有 RigidBody
+    w->config = new btSoftBodyRigidBodyCollisionConfiguration();
     w->dispatcher = new btCollisionDispatcher(w->config);
     w->broadphase = new btDbvtBroadphase();
     w->solver = new btSequentialImpulseConstraintSolver();
-    w->world = new btDiscreteDynamicsWorld(w->dispatcher, w->broadphase, w->solver, w->config);
+    // Phase AU Step 4.3: SoftBody solver
+    w->softBodySolver = new btDefaultSoftBodySolver();
+    // Phase AU Step 4.3: 用 SoftRigidDynamicsWorld (派生自 Discrete)
+    w->world = new btSoftRigidDynamicsWorld(w->dispatcher, w->broadphase, w->solver, w->config, w->softBodySolver);
     w->world->setGravity(btVector3(gx, gy, gz));
+    // Phase AU Step 4.3: 初始化 softBodyWorldInfo (rope/cloth Step 时使用)
+    w->softBodyWorldInfo.m_dispatcher = w->dispatcher;
+    w->softBodyWorldInfo.m_broadphase = w->broadphase;
+    w->softBodyWorldInfo.m_gravity.setValue(gx, gy, gz);
+    w->softBodyWorldInfo.air_density = (btScalar)1.2f;
+    w->softBodyWorldInfo.water_density = 0;
+    w->softBodyWorldInfo.water_offset = 0;
+    w->softBodyWorldInfo.water_normal = btVector3(0, 0, 0);
+    w->softBodyWorldInfo.m_sparsesdf.Initialize();
     // Phase AU Step 3.3: Ghost pair callback (CharacterController 必需)
     w->ghostPairCb = new btGhostPairCallback();
     w->broadphase->getOverlappingPairCache()->setInternalGhostPairCallback(w->ghostPairCb);
@@ -877,7 +915,10 @@ static int l_NewWorld(lua_State* L) {
 static int l_World_SetGravity(lua_State* L) {
     World3D* w = CheckWorld(L, 1);
     if (!w->alive) return 0;
-    w->world->setGravity(ReadVec3(L, 2));
+    btVector3 g = ReadVec3(L, 2);
+    w->world->setGravity(g);
+    // Phase AU Step 4.3: 同步 softBodyWorldInfo.m_gravity
+    w->softBodyWorldInfo.m_gravity = g;
     return 0;
 }
 
@@ -2113,6 +2154,355 @@ static int l_Veh_Tostring(lua_State* L) {
     return 1;
 }
 
+// ==================== Phase AU Step 4.3: SoftBody 实现 ====================
+//
+// API 设计:
+//   world:NewSoftBodyRope({x1,y1,z1, x2,y2,z2, segments=10, fixed=0, mass=1}) -> SoftBody
+//   world:NewSoftBodyPatch({p1={x,y,z}, p2=..., p3=..., p4=...,
+//                           resx=10, resy=10, fixed=0, genDiags=true, mass=1}) -> SoftBody
+//   world:NewSoftBodyEllipsoid({cx,cy,cz, rx,ry,rz, res=64, mass=1}) -> SoftBody
+//   world:DestroySoftBody(sb)
+//   world:GetSoftBodyCount() -> int
+//
+//   sb:SetTotalMass(mass, [fromFaces=false])
+//   sb:SetPressure(p)    -- cfg.kPR  (closed cloth/ellipsoid 内压)
+//   sb:SetDamping(c)     -- cfg.kDP  damping coefficient
+//   sb:GetVolume() -> float
+//   sb:GetCenterOfMass() -> x, y, z  (节点平均)
+//   sb:GetAabb() -> minX,minY,minZ, maxX,maxY,maxZ
+//   sb:GetNodeCount() -> int
+//   sb:GetNodePosition(idx0) -> x, y, z   (0-based, 越界返回 0,0,0)
+//   sb:GetLinkCount() -> int
+//   sb:GetFaceCount() -> int
+//   sb:AppendAnchor(nodeIdx, body, [disableCollision=false], [influence=1])
+//   sb:IsAlive() -> bool
+//   sb:Delete()
+//   sb:__gc / __tostring
+
+static SoftBody3D* CheckSoftBody(lua_State* L, int idx) {
+    return (SoftBody3D*)luaL_checkudata(L, idx, SOFTBODY_MT);
+}
+
+// 释放 SoftBody 资源, 可重复调用 (幂等)
+static void InvalidateSoftBody(lua_State* L, SoftBody3D* s) {
+    if (!s || !s->alive) return;
+    if (s->owner && s->owner->world && s->sb) {
+        s->owner->world->removeSoftBody(s->sb);
+    }
+    delete s->sb; s->sb = nullptr;
+    if (s->selfRef != LUA_NOREF) {
+        luaL_unref(L, LUA_REGISTRYINDEX, s->selfRef);
+        s->selfRef = LUA_NOREF;
+    }
+    s->alive = false;
+}
+
+// 创建 SoftBody userdata, 从 stack[idx_world]==World 取上下文; 把 sb 注册到 world->softBodies
+// 入参 sb 必须已经 push 到 world (调用前)
+// 出参: stack 顶为新 SoftBody userdata, 同时已经 luaL_ref 进 world->softBodies
+static int PushAndRegisterSoftBody(lua_State* L, World3D* w, btSoftBody* sb) {
+    SoftBody3D* s = (SoftBody3D*)lua_newuserdata(L, sizeof(SoftBody3D));
+    new (s) SoftBody3D();
+    s->sb = sb;
+    s->owner = w;
+    s->alive = true;
+    luaL_getmetatable(L, SOFTBODY_MT);
+    lua_setmetatable(L, -2);
+    // 注册 selfRef 防 GC (world 持有引用直到 world 销毁 / DestroySoftBody)
+    lua_pushvalue(L, -1);
+    s->selfRef = luaL_ref(L, LUA_REGISTRYINDEX);
+    w->softBodies.push_back(s);
+    return 1;
+}
+
+// Helper: 从 table 中读 vec3 (字段名 cx/cy/cz 或 x/y/z 或数字索引)
+static btVector3 ReadTableVec3(lua_State* L, int tblIdx,
+                               const char* fx, const char* fy, const char* fz,
+                               float dx, float dy, float dz) {
+    float x = dx, y = dy, z = dz;
+    lua_getfield(L, tblIdx, fx); if (lua_isnumber(L, -1)) x = (float)lua_tonumber(L, -1); lua_pop(L, 1);
+    lua_getfield(L, tblIdx, fy); if (lua_isnumber(L, -1)) y = (float)lua_tonumber(L, -1); lua_pop(L, 1);
+    lua_getfield(L, tblIdx, fz); if (lua_isnumber(L, -1)) z = (float)lua_tonumber(L, -1); lua_pop(L, 1);
+    return btVector3(x, y, z);
+}
+
+// 子表 {x,y,z} 风格读取
+static btVector3 ReadSubVec3(lua_State* L, int parent, const char* field, float dx, float dy, float dz) {
+    lua_getfield(L, parent, field);
+    btVector3 v(dx, dy, dz);
+    if (lua_istable(L, -1)) {
+        int sub = lua_gettop(L);
+        // 优先 x/y/z, 退化到 [1]/[2]/[3]
+        lua_getfield(L, sub, "x");
+        if (lua_isnumber(L, -1)) {
+            v.setX((float)lua_tonumber(L, -1)); lua_pop(L, 1);
+            lua_getfield(L, sub, "y"); if (lua_isnumber(L, -1)) v.setY((float)lua_tonumber(L, -1)); lua_pop(L, 1);
+            lua_getfield(L, sub, "z"); if (lua_isnumber(L, -1)) v.setZ((float)lua_tonumber(L, -1)); lua_pop(L, 1);
+        } else {
+            lua_pop(L, 1);
+            lua_rawgeti(L, sub, 1); if (lua_isnumber(L, -1)) v.setX((float)lua_tonumber(L, -1)); lua_pop(L, 1);
+            lua_rawgeti(L, sub, 2); if (lua_isnumber(L, -1)) v.setY((float)lua_tonumber(L, -1)); lua_pop(L, 1);
+            lua_rawgeti(L, sub, 3); if (lua_isnumber(L, -1)) v.setZ((float)lua_tonumber(L, -1)); lua_pop(L, 1);
+        }
+    }
+    lua_pop(L, 1);
+    return v;
+}
+
+// world:NewSoftBodyRope({x1,y1,z1, x2,y2,z2, segments=10, fixed=0, mass=1})
+static int l_World_NewSoftBodyRope(lua_State* L) {
+    World3D* w = CheckWorld(L, 1);
+    if (!w->alive) { lua_pushnil(L); lua_pushstring(L, "world is dead"); return 2; }
+    if (!lua_istable(L, 2)) { lua_pushnil(L); lua_pushstring(L, "expected param table"); return 2; }
+
+    btVector3 p1 = ReadTableVec3(L, 2, "x1", "y1", "z1", 0, 0, 0);
+    btVector3 p2 = ReadTableVec3(L, 2, "x2", "y2", "z2", 0, -1, 0);
+
+    int segments = 10;
+    int fixed = 0;
+    float mass = 1.0f;
+    lua_getfield(L, 2, "segments"); if (lua_isnumber(L, -1)) segments = (int)lua_tointeger(L, -1); lua_pop(L, 1);
+    lua_getfield(L, 2, "fixed");    if (lua_isnumber(L, -1)) fixed    = (int)lua_tointeger(L, -1); lua_pop(L, 1);
+    lua_getfield(L, 2, "mass");     if (lua_isnumber(L, -1)) mass     = (float)lua_tonumber(L, -1); lua_pop(L, 1);
+    if (segments < 1) segments = 1;
+
+    btSoftBody* sb = btSoftBodyHelpers::CreateRope(w->softBodyWorldInfo, p1, p2, segments, fixed);
+    if (!sb) { lua_pushnil(L); lua_pushstring(L, "CreateRope returned null"); return 2; }
+    sb->setTotalMass(mass);
+    w->world->addSoftBody(sb);
+    return PushAndRegisterSoftBody(L, w, sb);
+}
+
+// world:NewSoftBodyPatch({p1={x,y,z}, p2=..., p3=..., p4=...,
+//                          resx=10, resy=10, fixed=0, genDiags=true, mass=1})
+static int l_World_NewSoftBodyPatch(lua_State* L) {
+    World3D* w = CheckWorld(L, 1);
+    if (!w->alive) { lua_pushnil(L); lua_pushstring(L, "world is dead"); return 2; }
+    if (!lua_istable(L, 2)) { lua_pushnil(L); lua_pushstring(L, "expected param table"); return 2; }
+
+    btVector3 p1 = ReadSubVec3(L, 2, "p1", -1, 0, -1);
+    btVector3 p2 = ReadSubVec3(L, 2, "p2",  1, 0, -1);
+    btVector3 p3 = ReadSubVec3(L, 2, "p3", -1, 0,  1);
+    btVector3 p4 = ReadSubVec3(L, 2, "p4",  1, 0,  1);
+
+    int resx = 10, resy = 10, fixed = 0;
+    bool genDiags = true;
+    float mass = 1.0f;
+    lua_getfield(L, 2, "resx");     if (lua_isnumber(L, -1)) resx = (int)lua_tointeger(L, -1); lua_pop(L, 1);
+    lua_getfield(L, 2, "resy");     if (lua_isnumber(L, -1)) resy = (int)lua_tointeger(L, -1); lua_pop(L, 1);
+    lua_getfield(L, 2, "fixed");    if (lua_isnumber(L, -1)) fixed = (int)lua_tointeger(L, -1); lua_pop(L, 1);
+    lua_getfield(L, 2, "genDiags"); if (lua_isboolean(L, -1)) genDiags = lua_toboolean(L, -1) != 0; lua_pop(L, 1);
+    lua_getfield(L, 2, "mass");     if (lua_isnumber(L, -1)) mass = (float)lua_tonumber(L, -1); lua_pop(L, 1);
+    if (resx < 2) resx = 2;
+    if (resy < 2) resy = 2;
+
+    btSoftBody* sb = btSoftBodyHelpers::CreatePatch(w->softBodyWorldInfo, p1, p2, p3, p4,
+                                                    resx, resy, fixed, genDiags);
+    if (!sb) { lua_pushnil(L); lua_pushstring(L, "CreatePatch returned null"); return 2; }
+    sb->setTotalMass(mass);
+    w->world->addSoftBody(sb);
+    return PushAndRegisterSoftBody(L, w, sb);
+}
+
+// world:NewSoftBodyEllipsoid({cx,cy,cz, rx,ry,rz, res=64, mass=1})
+static int l_World_NewSoftBodyEllipsoid(lua_State* L) {
+    World3D* w = CheckWorld(L, 1);
+    if (!w->alive) { lua_pushnil(L); lua_pushstring(L, "world is dead"); return 2; }
+    if (!lua_istable(L, 2)) { lua_pushnil(L); lua_pushstring(L, "expected param table"); return 2; }
+
+    btVector3 center = ReadTableVec3(L, 2, "cx", "cy", "cz", 0, 0, 0);
+    btVector3 radius = ReadTableVec3(L, 2, "rx", "ry", "rz", 1, 1, 1);
+
+    int res = 64;
+    float mass = 1.0f;
+    lua_getfield(L, 2, "res");  if (lua_isnumber(L, -1)) res  = (int)lua_tointeger(L, -1); lua_pop(L, 1);
+    lua_getfield(L, 2, "mass"); if (lua_isnumber(L, -1)) mass = (float)lua_tonumber(L, -1); lua_pop(L, 1);
+    if (res < 4) res = 4;
+
+    btSoftBody* sb = btSoftBodyHelpers::CreateEllipsoid(w->softBodyWorldInfo, center, radius, res);
+    if (!sb) { lua_pushnil(L); lua_pushstring(L, "CreateEllipsoid returned null"); return 2; }
+    sb->setTotalMass(mass);
+    w->world->addSoftBody(sb);
+    return PushAndRegisterSoftBody(L, w, sb);
+}
+
+// world:DestroySoftBody(sb)
+static int l_World_DestroySoftBody(lua_State* L) {
+    World3D* w = CheckWorld(L, 1);
+    SoftBody3D* s = CheckSoftBody(L, 2);
+    if (!w->alive || !s->alive) return 0;
+    auto it = std::find(w->softBodies.begin(), w->softBodies.end(), s);
+    if (it != w->softBodies.end()) w->softBodies.erase(it);
+    InvalidateSoftBody(L, s);
+    return 0;
+}
+
+// world:GetSoftBodyCount()
+static int l_World_GetSoftBodyCount(lua_State* L) {
+    World3D* w = CheckWorld(L, 1);
+    if (!w->alive) { lua_pushinteger(L, 0); return 1; }
+    lua_pushinteger(L, (lua_Integer)w->softBodies.size());
+    return 1;
+}
+
+// sb:SetTotalMass(mass, [fromFaces=false])
+static int l_SB_SetTotalMass(lua_State* L) {
+    SoftBody3D* s = CheckSoftBody(L, 1);
+    if (!s->alive) return 0;
+    float mass = (float)luaL_checknumber(L, 2);
+    bool fromFaces = lua_isboolean(L, 3) ? (lua_toboolean(L, 3) != 0) : false;
+    s->sb->setTotalMass(mass, fromFaces);
+    return 0;
+}
+
+// sb:SetPressure(p) — 内压 (闭合曲面如 ellipsoid)
+static int l_SB_SetPressure(lua_State* L) {
+    SoftBody3D* s = CheckSoftBody(L, 1);
+    if (!s->alive) return 0;
+    s->sb->m_cfg.kPR = (float)luaL_checknumber(L, 2);
+    return 0;
+}
+
+// sb:SetDamping(c)
+static int l_SB_SetDamping(lua_State* L) {
+    SoftBody3D* s = CheckSoftBody(L, 1);
+    if (!s->alive) return 0;
+    s->sb->m_cfg.kDP = (float)luaL_checknumber(L, 2);
+    return 0;
+}
+
+// sb:GetVolume()
+static int l_SB_GetVolume(lua_State* L) {
+    SoftBody3D* s = CheckSoftBody(L, 1);
+    if (!s->alive) { lua_pushnumber(L, 0); return 1; }
+    lua_pushnumber(L, (double)s->sb->getVolume());
+    return 1;
+}
+
+// sb:GetCenterOfMass() -> x, y, z (节点平均)
+static int l_SB_GetCenterOfMass(lua_State* L) {
+    SoftBody3D* s = CheckSoftBody(L, 1);
+    if (!s->alive) { lua_pushnumber(L,0); lua_pushnumber(L,0); lua_pushnumber(L,0); return 3; }
+    btVector3 c(0,0,0);
+    int n = s->sb->m_nodes.size();
+    if (n > 0) {
+        for (int i = 0; i < n; i++) c += s->sb->m_nodes[i].m_x;
+        c /= (btScalar)n;
+    }
+    PushVec3(L, c);
+    return 3;
+}
+
+// sb:GetAabb() -> minX,minY,minZ, maxX,maxY,maxZ
+static int l_SB_GetAabb(lua_State* L) {
+    SoftBody3D* s = CheckSoftBody(L, 1);
+    if (!s->alive) {
+        for (int i = 0; i < 6; i++) lua_pushnumber(L, 0);
+        return 6;
+    }
+    btVector3 mn, mx;
+    s->sb->getAabb(mn, mx);
+    PushVec3(L, mn);
+    PushVec3(L, mx);
+    return 6;
+}
+
+// sb:GetNodeCount() -> int
+static int l_SB_GetNodeCount(lua_State* L) {
+    SoftBody3D* s = CheckSoftBody(L, 1);
+    if (!s->alive) { lua_pushinteger(L, 0); return 1; }
+    lua_pushinteger(L, (lua_Integer)s->sb->m_nodes.size());
+    return 1;
+}
+
+// sb:GetNodePosition(idx0) -> x, y, z
+static int l_SB_GetNodePosition(lua_State* L) {
+    SoftBody3D* s = CheckSoftBody(L, 1);
+    if (!s->alive) { lua_pushnumber(L,0); lua_pushnumber(L,0); lua_pushnumber(L,0); return 3; }
+    int i = (int)luaL_checkinteger(L, 2);
+    int n = s->sb->m_nodes.size();
+    if (i < 0 || i >= n) {
+        lua_pushnumber(L,0); lua_pushnumber(L,0); lua_pushnumber(L,0); return 3;
+    }
+    PushVec3(L, s->sb->m_nodes[i].m_x);
+    return 3;
+}
+
+// sb:GetLinkCount() -> int
+static int l_SB_GetLinkCount(lua_State* L) {
+    SoftBody3D* s = CheckSoftBody(L, 1);
+    if (!s->alive) { lua_pushinteger(L, 0); return 1; }
+    lua_pushinteger(L, (lua_Integer)s->sb->m_links.size());
+    return 1;
+}
+
+// sb:GetFaceCount() -> int
+static int l_SB_GetFaceCount(lua_State* L) {
+    SoftBody3D* s = CheckSoftBody(L, 1);
+    if (!s->alive) { lua_pushinteger(L, 0); return 1; }
+    lua_pushinteger(L, (lua_Integer)s->sb->m_faces.size());
+    return 1;
+}
+
+// sb:AppendAnchor(nodeIdx, body, [disableCollision=false], [influence=1])
+static int l_SB_AppendAnchor(lua_State* L) {
+    SoftBody3D* s = CheckSoftBody(L, 1);
+    if (!s->alive) return 0;
+    int nodeIdx = (int)luaL_checkinteger(L, 2);
+    Body3D* b = CheckBody(L, 3);
+    bool disableCollision = lua_isboolean(L, 4) ? (lua_toboolean(L, 4) != 0) : false;
+    float influence = lua_isnumber(L, 5) ? (float)lua_tonumber(L, 5) : 1.0f;
+    int n = s->sb->m_nodes.size();
+    if (nodeIdx < 0 || nodeIdx >= n) {
+        return luaL_error(L, "AppendAnchor: nodeIdx %d out of range [0,%d)", nodeIdx, n);
+    }
+    if (!b->alive || !b->body) {
+        return luaL_error(L, "AppendAnchor: body is dead");
+    }
+    s->sb->appendAnchor(nodeIdx, b->body, disableCollision, influence);
+    return 0;
+}
+
+static int l_SB_IsAlive(lua_State* L) {
+    SoftBody3D* s = CheckSoftBody(L, 1);
+    lua_pushboolean(L, s->alive ? 1 : 0);
+    return 1;
+}
+
+static int l_SB_Delete(lua_State* L) {
+    SoftBody3D* s = CheckSoftBody(L, 1);
+    if (!s->alive) return 0;
+    if (s->owner) {
+        auto& vec = s->owner->softBodies;
+        auto it = std::find(vec.begin(), vec.end(), s);
+        if (it != vec.end()) vec.erase(it);
+    }
+    InvalidateSoftBody(L, s);
+    return 0;
+}
+
+static int l_SB_GC(lua_State* L) {
+    SoftBody3D* s = (SoftBody3D*)luaL_checkudata(L, 1, SOFTBODY_MT);
+    if (s->alive) {
+        if (s->owner) {
+            auto& vec = s->owner->softBodies;
+            auto it = std::find(vec.begin(), vec.end(), s);
+            if (it != vec.end()) vec.erase(it);
+        }
+        InvalidateSoftBody(L, s);
+    }
+    s->~SoftBody3D();
+    return 0;
+}
+
+static int l_SB_Tostring(lua_State* L) {
+    SoftBody3D* s = CheckSoftBody(L, 1);
+    if (!s->alive) { lua_pushstring(L, "Light.Physics3D.SoftBody(dead)"); return 1; }
+    lua_pushfstring(L, "Light.Physics3D.SoftBody(nodes=%d, links=%d, faces=%d)",
+                    s->sb->m_nodes.size(), s->sb->m_links.size(), s->sb->m_faces.size());
+    return 1;
+}
+
 static int l_World_RayCast(lua_State* L) {
     World3D* w = CheckWorld(L, 1);
     if (!w->alive) {
@@ -2158,6 +2548,7 @@ static int l_World_OnContact(lua_State* L) {
 // 前向声明 (实现在下方)
 static void InvalidateCharacter(lua_State* L, Character3D* c);
 static void InvalidateVehicle(lua_State* L, Vehicle3D* v);
+static void InvalidateSoftBody(lua_State* L, SoftBody3D* s);
 
 // 释放 Bullet 资源, 可重复调用 (幂等)
 static void World_ReleaseBullet(lua_State* L, World3D* w) {
@@ -2168,6 +2559,12 @@ static void World_ReleaseBullet(lua_State* L, World3D* w) {
         if (j) j->owner = nullptr;
     }
     w->joints.clear();
+    // Phase AU Step 4.3: softBodies 在 rigid bodies 之前销毁 (anchor 引用 rigid body)
+    for (auto* s : w->softBodies) {
+        InvalidateSoftBody(L, s);
+        if (s) s->owner = nullptr;
+    }
+    w->softBodies.clear();
     // Phase AU Step 4.2: vehicles 在 bodies 之前销毁 (vehicle 引用 chassis body)
     for (auto* v : w->vehicles) {
         InvalidateVehicle(L, v);
@@ -2195,7 +2592,8 @@ static void World_ReleaseBullet(lua_State* L, World3D* w) {
         w->world->setDebugDrawer(nullptr);
     }
     delete w->debugDrawer; w->debugDrawer = nullptr;  // Phase AU Step 4.1
-    delete w->world;       w->world = nullptr;
+    delete w->world;          w->world = nullptr;
+    delete w->softBodySolver; w->softBodySolver = nullptr;  // Phase AU Step 4.3
     delete w->solver;      w->solver = nullptr;
     delete w->broadphase;  w->broadphase = nullptr;
     delete w->dispatcher;  w->dispatcher = nullptr;
@@ -2268,6 +2666,12 @@ static const luaL_Reg kWorldMethods[] = {
     { "CreateVehicle",     l_World_CreateVehicle },
     { "DestroyVehicle",    l_World_DestroyVehicle },
     { "GetVehicleCount",   l_World_GetVehicleCount },
+    // Phase AU Step 4.3 — SoftBody
+    { "NewSoftBodyRope",      l_World_NewSoftBodyRope },
+    { "NewSoftBodyPatch",     l_World_NewSoftBodyPatch },
+    { "NewSoftBodyEllipsoid", l_World_NewSoftBodyEllipsoid },
+    { "DestroySoftBody",      l_World_DestroySoftBody },
+    { "GetSoftBodyCount",     l_World_GetSoftBodyCount },
     { "RayCast",        l_World_RayCast },
     { "OnContact",      l_World_OnContact },
     { "Delete",         l_World_Delete },
@@ -2321,6 +2725,26 @@ static const luaL_Reg kVehicleMethods[] = {
     { "Delete",            l_Veh_Delete },
     { "__gc",              l_Veh_GC },
     { "__tostring",        l_Veh_Tostring },
+    { nullptr, nullptr }
+};
+
+// Phase AU Step 4.3: SoftBody 元表方法
+static const luaL_Reg kSoftBodyMethods[] = {
+    { "SetTotalMass",      l_SB_SetTotalMass },
+    { "SetPressure",       l_SB_SetPressure },
+    { "SetDamping",        l_SB_SetDamping },
+    { "GetVolume",         l_SB_GetVolume },
+    { "GetCenterOfMass",   l_SB_GetCenterOfMass },
+    { "GetAabb",           l_SB_GetAabb },
+    { "GetNodeCount",      l_SB_GetNodeCount },
+    { "GetNodePosition",   l_SB_GetNodePosition },
+    { "GetLinkCount",      l_SB_GetLinkCount },
+    { "GetFaceCount",      l_SB_GetFaceCount },
+    { "AppendAnchor",      l_SB_AppendAnchor },
+    { "IsAlive",           l_SB_IsAlive },
+    { "Delete",            l_SB_Delete },
+    { "__gc",              l_SB_GC },
+    { "__tostring",        l_SB_Tostring },
     { nullptr, nullptr }
 };
 
@@ -2428,6 +2852,14 @@ extern "C" LIGHT_API int luaopen_Light_Physics3D(lua_State* L) {
     // Vehicle 元表 (Phase AU Step 4.2)
     if (luaL_newmetatable(L, VEHICLE_MT)) {
         luaL_setfuncs(L, kVehicleMethods, 0);
+        lua_pushvalue(L, -1);
+        lua_setfield(L, -2, "__index");
+    }
+    lua_pop(L, 1);
+
+    // SoftBody 元表 (Phase AU Step 4.3)
+    if (luaL_newmetatable(L, SOFTBODY_MT)) {
+        luaL_setfuncs(L, kSoftBodyMethods, 0);
         lua_pushvalue(L, -1);
         lua_setfield(L, -2, "__index");
     }

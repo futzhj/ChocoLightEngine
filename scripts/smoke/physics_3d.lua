@@ -652,6 +652,163 @@ chassis2:Delete()
 chassis:Delete()
 chassisShape = nil
 
+-- ==================== 8.9) SoftBody (Phase AU Step 4.3) ====================
+-- 用 do..end 限制 local scope (Lua 5.1 单 chunk 最多 200 active locals)
+do
+print("[8.9] btSoftBody (rope/cloth/ellipsoid)")
+
+-- World 是 SoftRigidDynamicsWorld, 此前 RigidBody/Joint/Vehicle/Character 已验证仍可用
+if w:GetSoftBodyCount() ~= 0 then fail("初始 softbody count != 0") end
+
+-- 1. Rope (绳子, 10 段, 顶端固定)
+local rope = w:NewSoftBodyRope({
+    x1 = 0, y1 = 10, z1 = 0,
+    x2 = 0, y2 = 5,  z2 = 0,
+    segments = 10, fixed = 1,  -- bit0=p1 fixed
+    mass = 0.5,
+})
+if not rope then fail("NewSoftBodyRope 失败") end
+if not rope:IsAlive() then fail("rope IsAlive=false") end
+pass("NewSoftBodyRope (10 segments, top fixed)")
+
+if w:GetSoftBodyCount() ~= 1 then fail("count != 1 after rope") end
+
+-- rope 节点数 = segments + 1
+local nNodes = rope:GetNodeCount()
+if nNodes ~= 11 then fail("rope nodes: " .. nNodes .. " (expected 11)") end
+local nLinks = rope:GetLinkCount()
+if nLinks ~= 10 then fail("rope links: " .. nLinks .. " (expected 10)") end
+pass(string.format("rope nodes=%d, links=%d", nNodes, nLinks))
+
+-- 节点位置
+local nx, ny, nz = rope:GetNodePosition(0)
+pass(string.format("rope node[0] = (%.2f, %.2f, %.2f)", nx, ny, nz))
+-- 越界节点
+local zx, zy, zz = rope:GetNodePosition(99)
+if zx ~= 0 or zy ~= 0 or zz ~= 0 then fail("越界 node 应返回 0,0,0") end
+pass("越界 node idx 返回 0,0,0")
+
+-- 2. 模拟若干步, rope 应下垂 (重力)
+local _, y0_mid, _ = rope:GetNodePosition(5)  -- 中段
+for i = 1, 60 do w:Step(1.0 / 60) end
+local _, y1_mid, _ = rope:GetNodePosition(5)
+pass(string.format("rope 模拟 1s: 中段 y %.2f -> %.2f (下垂)", y0_mid, y1_mid))
+
+-- 3. Cloth (10x10 patch, 4 角固定)
+local cloth = w:NewSoftBodyPatch({
+    p1 = {x = -2, y = 8, z = -2},
+    p2 = {x =  2, y = 8, z = -2},
+    p3 = {x = -2, y = 8, z =  2},
+    p4 = {x =  2, y = 8, z =  2},
+    resx = 8, resy = 8,
+    fixed = 1 + 2 + 4 + 8,  -- 4 corners fixed (bit0..3)
+    genDiags = true,
+    mass = 1.0,
+})
+if not cloth then fail("NewSoftBodyPatch 失败") end
+local clothNodes = cloth:GetNodeCount()
+local clothFaces = cloth:GetFaceCount()
+if clothNodes < 64 then fail("cloth nodes < 64: " .. clothNodes) end
+if clothFaces == 0 then fail("cloth faces = 0") end
+pass(string.format("cloth nodes=%d, links=%d, faces=%d", clothNodes, cloth:GetLinkCount(), clothFaces))
+
+if w:GetSoftBodyCount() ~= 2 then fail("count != 2 after cloth") end
+
+-- 4. Ellipsoid (jello)
+local jello = w:NewSoftBodyEllipsoid({
+    cx = -5, cy = 8, cz = 0,
+    rx = 1, ry = 1, rz = 1,
+    res = 32,
+    mass = 2.0,
+})
+if not jello then fail("NewSoftBodyEllipsoid 失败") end
+local jelloVol = jello:GetVolume()
+pass(string.format("ellipsoid nodes=%d, faces=%d, volume=%.3f",
+    jello:GetNodeCount(), jello:GetFaceCount(), jelloVol))
+
+if w:GetSoftBodyCount() ~= 3 then fail("count != 3 after jello") end
+
+-- 5. SetPressure / SetDamping (jello 内压)
+jello:SetPressure(2500.0)
+jello:SetDamping(0.05)
+pass("jello SetPressure(2500) + SetDamping(0.05)")
+
+-- 6. SetTotalMass roundtrip (检查不崩)
+jello:SetTotalMass(3.0)
+jello:SetTotalMass(3.0, true)  -- fromFaces
+pass("jello SetTotalMass(3.0) + (3.0, fromFaces=true)")
+
+-- 7. CenterOfMass / Aabb
+local cmx, cmy, cmz = jello:GetCenterOfMass()
+pass(string.format("jello CoM = (%.2f, %.2f, %.2f) [near (-5,8,0)]", cmx, cmy, cmz))
+
+local minX, minY, minZ, maxX, maxY, maxZ = jello:GetAabb()
+pass(string.format("jello AABB = (%.2f,%.2f,%.2f) to (%.2f,%.2f,%.2f)",
+    minX, minY, minZ, maxX, maxY, maxZ))
+if maxX <= minX or maxY <= minY or maxZ <= minZ then fail("jello AABB 退化") end
+
+-- 8. 模拟 60 帧, jello 应下落 (无地面)
+local _, jy0, _ = jello:GetCenterOfMass()
+for i = 1, 60 do w:Step(1.0 / 60) end
+local _, jy1, _ = jello:GetCenterOfMass()
+pass(string.format("jello 1s 后 CoM.y: %.2f -> %.2f", jy0, jy1))
+
+-- 9. AppendAnchor: 创建一个 dynamic body 并把 rope 末端 anchor 到它
+local anchorBody = w:CreateBody({
+    type = "dynamic", mass = 0.5,
+    x = 0, y = 4, z = 0,
+    shape = Phys.NewSphere(0.2),
+})
+if not anchorBody then fail("anchor body 创建失败") end
+
+rope:AppendAnchor(nNodes - 1, anchorBody, false, 1.0)  -- 末端 (index N-1)
+pass("rope:AppendAnchor (末端 -> dynamic sphere)")
+
+-- 模拟一段时间, anchor 应限制 sphere 不能远离 rope 末端
+for i = 1, 30 do w:Step(1.0 / 60) end
+pass("anchor 模拟 30 帧不崩")
+
+-- 10. 错误参数: AppendAnchor 越界 nodeIdx
+local ok_err = pcall(function() rope:AppendAnchor(99, anchorBody) end)
+if ok_err then fail("AppendAnchor 越界应抛错") end
+pass("AppendAnchor 越界抛错 OK")
+
+-- 11. tostring
+local _ = tostring(rope)
+local _ = tostring(cloth)
+local _ = tostring(jello)
+pass("softbody:__tostring x3 不崩")
+
+-- 12. DestroySoftBody
+w:DestroySoftBody(jello)
+if w:GetSoftBodyCount() ~= 2 then fail("after DestroySoftBody, count != 2") end
+if jello:IsAlive() then fail("destroyed jello should be dead") end
+pass("DestroySoftBody OK")
+
+-- dead softbody 调方法不崩
+jello:SetPressure(100)
+jello:SetTotalMass(1)
+local dead_n = jello:GetNodeCount()
+if dead_n ~= 0 then fail("dead softbody GetNodeCount != 0") end
+pass("dead softbody 方法不崩 + 返回安全值")
+
+-- 13. :Delete()
+cloth:Delete()
+if w:GetSoftBodyCount() ~= 1 then fail("after cloth:Delete, count != 1") end
+pass("cloth:Delete() OK")
+
+-- 14. 错误参数: 缺 param table
+local sb_err, sb_msg = w:NewSoftBodyRope()
+if sb_err ~= nil then fail("缺 param table 应失败") end
+pass("NewSoftBodyRope() 缺参数 -> nil + err: " .. tostring(sb_msg))
+
+-- 清理 rope
+rope:Delete()
+anchorBody:Delete()
+if w:GetSoftBodyCount() ~= 0 then fail("after cleanup, soft count != 0") end
+pass("rope:Delete() + body 清理 OK")
+end  -- end of [8.9] do block
+
 -- ==================== 9) Body / World 销毁 ====================
 print("[9] 销毁路径")
 local count_before = w:GetBodyCount()
