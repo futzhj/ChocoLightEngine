@@ -401,11 +401,29 @@ static int l_Mesh_GetGLTFMeshCount(lua_State* L) {
     return 1;
 }
 
-// ==================== mesh:Draw([textureId]) ====================
+// ==================== mesh:Draw([textureId | material]) ====================
+// Phase AS.4: 自动判断参数类型
+//   - integer / nil 缺省 -> 老路径 (DrawMesh + textureId)
+//   - userdata (Material) -> 新路径 (DrawMeshMaterial)
+extern "C" const MaterialDesc* CheckMaterialUserdata(lua_State* L, int idx);
+
 static int l_Mesh_Draw(lua_State* L) {
     MeshUserdata* ud = CheckMesh(L, 1);
-    uint32_t texId = (uint32_t)luaL_optinteger(L, 2, 0);
-    if (g_render && ud->meshId) {
+    if (!g_render || !ud->meshId) return 0;
+
+    int t = lua_type(L, 2);
+    if (t == LUA_TUSERDATA) {
+        // 新路径: material 路径
+        const MaterialDesc* desc = CheckMaterialUserdata(L, 2);
+        if (desc) {
+            g_render->DrawMeshMaterial(ud->meshId, desc);
+        } else {
+            // 不是 Material userdata, 报错
+            return luaL_error(L, "mesh:Draw expects integer textureId or Material userdata");
+        }
+    } else {
+        // 老路径: integer / nil
+        uint32_t texId = (uint32_t)luaL_optinteger(L, 2, 0);
         g_render->DrawMesh(ud->meshId, texId);
     }
     return 0;

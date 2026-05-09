@@ -325,6 +325,121 @@ static int l_GetDepthTest(lua_State* L) {
     return 1;
 }
 
+// ==================== Phase AS.4 — 多光源 API ====================
+
+/// @lua_api Light.Graphics.SetDirectionalLight
+/// @brief 设置主方向光 (引擎仅支持 1 个 directional)
+/// @param dx number 光方向 X (世界坐标, 指向光源)
+/// @param dy number 光方向 Y
+/// @param dz number 光方向 Z
+/// @param r  number 颜色 R (0..1)
+/// @param g  number 颜色 G
+/// @param b  number 颜色 B
+/// @param intensity number? 强度 (默认 1)
+static int l_SetDirectionalLight(lua_State* L) {
+    float dx = (float)luaL_checknumber(L, 1);
+    float dy = (float)luaL_checknumber(L, 2);
+    float dz = (float)luaL_checknumber(L, 3);
+    float r  = (float)luaL_checknumber(L, 4);
+    float g  = (float)luaL_checknumber(L, 5);
+    float b  = (float)luaL_checknumber(L, 6);
+    float intensity = (float)luaL_optnumber(L, 7, 1.0);
+    if (g_render) {
+        // 归一化方向 (避免 shader 重复算)
+        float len = sqrtf(dx*dx + dy*dy + dz*dz);
+        if (len > 1e-6f) { dx /= len; dy /= len; dz /= len; }
+        float dir[3]   = { dx, dy, dz };
+        float color[3] = { r, g, b };
+        g_render->SetDirectionalLight(dir, color, intensity, true);
+    }
+    return 0;
+}
+
+/// @lua_api Light.Graphics.SetDirectionalLightEnabled
+/// @brief 启用/禁用主方向光 (不清除颜色, 仅切换是否参与计算)
+static int l_SetDirectionalLightEnabled(lua_State* L) {
+    bool enabled = lua_toboolean(L, 1) != 0;
+    if (g_render) {
+        // 用 dummy dir/color 仅切换 enabled (backend 内部保留之前的值)
+        // 简化: 不传颜色, 让 backend 内部记忆
+        float dir[3]   = { 0, 1, 0 };
+        float color[3] = { 1, 1, 1 };
+        g_render->SetDirectionalLight(dir, color, 1.0f, enabled);
+    }
+    return 0;
+}
+
+/// @lua_api Light.Graphics.SetAmbientLight
+/// @brief 设置全局环境光
+/// @param r number
+/// @param g number
+/// @param b number
+static int l_SetAmbientLight(lua_State* L) {
+    float r = (float)luaL_checknumber(L, 1);
+    float g = (float)luaL_checknumber(L, 2);
+    float b = (float)luaL_checknumber(L, 3);
+    if (g_render) {
+        float rgb[3] = { r, g, b };
+        g_render->SetAmbientLight(rgb);
+    }
+    return 0;
+}
+
+/// @lua_api Light.Graphics.AddPointLight
+/// @brief 添加点光 (最多 4 个, 满了返回 0)
+/// @param x number 位置 X
+/// @param y number 位置 Y
+/// @param z number 位置 Z
+/// @param r number 颜色 R
+/// @param g number 颜色 G
+/// @param b number 颜色 B
+/// @param range number 衰减半径
+/// @param intensity number? 强度 (默认 1)
+/// @return integer light_id (1..4, 0 = 已满)
+static int l_AddPointLight(lua_State* L) {
+    PointLight pl;
+    pl.pos[0]   = (float)luaL_checknumber(L, 1);
+    pl.pos[1]   = (float)luaL_checknumber(L, 2);
+    pl.pos[2]   = (float)luaL_checknumber(L, 3);
+    pl.color[0] = (float)luaL_checknumber(L, 4);
+    pl.color[1] = (float)luaL_checknumber(L, 5);
+    pl.color[2] = (float)luaL_checknumber(L, 6);
+    pl.range    = (float)luaL_checknumber(L, 7);
+    pl.intensity= (float)luaL_optnumber(L, 8, 1.0);
+    int id = 0;
+    if (g_render) id = g_render->AddPointLight(&pl);
+    lua_pushinteger(L, id);
+    return 1;
+}
+
+/// @lua_api Light.Graphics.RemovePointLight
+/// @param id integer
+static int l_RemovePointLight(lua_State* L) {
+    int id = (int)luaL_checkinteger(L, 1);
+    if (g_render) g_render->RemovePointLight(id);
+    return 0;
+}
+
+static int l_ClearPointLights(lua_State* L) {
+    (void)L;
+    if (g_render) g_render->ClearPointLights();
+    return 0;
+}
+
+static int l_GetPointLightCount(lua_State* L) {
+    int n = 0;
+    if (g_render) n = g_render->GetPointLightCount();
+    lua_pushinteger(L, n);
+    return 1;
+}
+
+static int l_GetMaxPointLights(lua_State* L) {
+    int n = 0;
+    if (g_render) n = g_render->GetMaxPointLights();
+    lua_pushinteger(L, n);
+    return 1;
+}
+
 // ==================== Phase AS.1 — Canvas 渲染目标栈 ====================
 // 设计: 软限制 8 层栈深度 (Q2 决策),超出仅警告不中断;
 //      Pop 在空栈时也仅警告不中断,确保 Lua 端误用不会崩。
@@ -1195,6 +1310,15 @@ static const luaL_Reg graphics_funcs[] = {
     {"SetCamera",         l_SetCamera},
     {"SetDepthTest",      l_SetDepthTest},
     {"GetDepthTest",      l_GetDepthTest},
+    // Phase AS.4 — 多光源 API
+    {"SetDirectionalLight",        l_SetDirectionalLight},
+    {"SetDirectionalLightEnabled", l_SetDirectionalLightEnabled},
+    {"SetAmbientLight",            l_SetAmbientLight},
+    {"AddPointLight",              l_AddPointLight},
+    {"RemovePointLight",           l_RemovePointLight},
+    {"ClearPointLights",           l_ClearPointLights},
+    {"GetPointLightCount",         l_GetPointLightCount},
+    {"GetMaxPointLights",          l_GetMaxPointLights},
     // --- 元方法 ---
     {"__call",            l_Graphics_Call},
     {"__tostring",        l_Graphics_Tostring},

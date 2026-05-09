@@ -68,6 +68,35 @@ struct Mat4 {
     Mat4 operator*(const Mat4& other) const;
 };
 
+// ==================== Phase AS.4 — 材质系统数据结构 ====================
+
+/// Material 描述符 (POD; light_graphics_material.cpp 维护, RenderBackend 使用)
+struct MaterialDesc {
+    int   mode;                    // 0=Unlit, 1=PBR
+    float color[4];                // baseColor (default 1,1,1,1)
+    float emissive[3];             // default 0,0,0
+    float metallic;                // default 0
+    float roughness;               // default 1
+    float normalScale;             // normal map 强度, default 1
+    float occlusionStrength;       // AO 贴图权重, default 1
+    uint32_t texBaseColor;         // 0 = 无
+    uint32_t texMetallicRoughness; // 0 = 无 (G=roughness, B=metallic per glTF spec)
+    uint32_t texNormal;            // 0 = 无
+    uint32_t texEmissive;          // 0 = 无
+    uint32_t texOcclusion;         // 0 = 无
+    int   alphaMode;               // 0=opaque, 1=blend, 2=mask
+    float alphaCutoff;             // 仅 mask 时有效, default 0.5
+    int   doubleSided;             // 0/1
+};
+
+/// 单个点光描述
+struct PointLight {
+    float pos[3];
+    float color[3];
+    float range;       // 衰减半径 (世界坐标距离)
+    float intensity;   // 强度 multiplier
+};
+
 // ==================== 渲染后端接口 ====================
 
 class RenderBackend {
@@ -196,6 +225,22 @@ public:
     virtual void LoadView(const float* viewMat4) {}
     /// 加载投影矩阵 (替代 LoadOrtho 的通用版, 用于 Perspective)
     virtual void LoadProjection(const float* projMat4) {}
+
+    // ---- Phase AS.4 新增材质系统 (GL33 真实现, Legacy 默认 no-op) ----
+    /// 用 material 描述符绘制 mesh, 替代 DrawMesh(meshId, textureId)
+    virtual void DrawMeshMaterial(uint32_t meshId, const MaterialDesc* desc) {}
+    /// 设置主方向光 (世界坐标方向, 已归一化指向光源)
+    virtual void SetDirectionalLight(const float* dir, const float* color, float intensity, bool enabled) {}
+    /// 设置环境光 (单色 ambient)
+    virtual void SetAmbientLight(const float* rgb) {}
+    /// 设置摄像机世界坐标位置 (PBR view direction 计算需要)
+    virtual void SetCameraPos(const float* pos) {}
+    /// 添加点光, 返回 id (1..MaxPoint), 0=已满
+    virtual int  AddPointLight(const PointLight* light) { return 0; }
+    virtual void RemovePointLight(int id) {}
+    virtual void ClearPointLights() {}
+    virtual int  GetPointLightCount() const { return 0; }
+    virtual int  GetMaxPointLights() const { return 0; }
 };
 
 // ==================== 工厂函数 ====================

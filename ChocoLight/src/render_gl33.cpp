@@ -96,9 +96,20 @@ void main() {
 )";
 #endif
 
-// ==================== Phase AS.2 — 3D 默认 shader ====================
-// 简单 Lambert 光照 + diffuse texture, 单方向光 (从右上前方照射)
+// ==================== Phase AS.4 — Unlit + PBR 双 3D shader ====================
+//
+// VS3D 为 Unlit 和 PBR 共用 (输出 pos/normal/uv/color/worldPos).
+// FS_UNLIT  — 仅 baseColor*texture*vColor + emissive + alphaMode 处理
+// FS_PBR    — Lambert diffuse + Schlick-Fresnel + GGX D⋅G specular + 1 dir + 4 point + emissive + AO
+//
+// 法线贴图用 derivatives (dFdx/dFdy) 计算 TBN, 不需要 Tangent 顶点属性.
+// 多光源采用固定 4 个点光数组 uniform (MAX_POINT_LIGHTS=4).
+
+#define MAX_POINT_LIGHTS 4
+
 #if defined(__EMSCRIPTEN__) || defined(__ANDROID__) || defined(CHOCO_PLATFORM_IOS)
+
+// ---- VS3D (GLES 3.0) ----
 static const char* VS3D_SOURCE = R"(#version 300 es
 precision highp float;
 layout(location=0) in vec3 aPos;
@@ -108,37 +119,166 @@ layout(location=3) in vec4 aColor;
 uniform mat4 uMVP;
 uniform mat4 uModel;
 out vec3 vNormalW;
+out vec3 vWorldPos;
 out vec2 vTexCoord;
 out vec4 vColor;
 void main() {
     gl_Position = uMVP * vec4(aPos, 1.0);
-    // 法线经模型矩阵变换 (简化: 不做严格 normal matrix)
     vNormalW = mat3(uModel) * aNormal;
+    vWorldPos = (uModel * vec4(aPos, 1.0)).xyz;
     vTexCoord = aUV;
     vColor = aColor;
 }
 )";
-static const char* FS3D_SOURCE = R"(#version 300 es
+
+// ---- FS Unlit (GLES 3.0) ----
+static const char* FS_UNLIT_SOURCE = R"(#version 300 es
 precision mediump float;
-in vec3 vNormalW;
 in vec2 vTexCoord;
 in vec4 vColor;
-uniform sampler2D uTexture;
-uniform int uUseTexture;
-uniform vec3 uLightDir;     // 已归一化, 指向光源
-uniform vec3 uLightColor;
-uniform vec3 uAmbient;
+uniform vec4 uColor;
+uniform vec3 uEmissive;
+uniform sampler2D uTexBaseColor;
+uniform sampler2D uTexEmissive;
+uniform int uHasBaseColorTex;
+uniform int uHasEmissiveTex;
+uniform int uAlphaMode;       // 0=opaque, 1=blend, 2=mask
+uniform float uAlphaCutoff;
 layout(location=0) out vec4 FragColor;
 void main() {
-    vec3 N = normalize(vNormalW);
-    float ndl = max(dot(N, uLightDir), 0.0);
-    vec3 lit = uAmbient + uLightColor * ndl;
-    vec4 base = vColor;
-    if (uUseTexture == 1) base = base * texture(uTexture, vTexCoord);
-    FragColor = vec4(base.rgb * lit, base.a);
+    vec4 base = uColor * vColor;
+    if (uHasBaseColorTex == 1) base *= texture(uTexBaseColor, vTexCoord);
+    vec3 emissive = uEmissive;
+    if (uHasEmissiveTex == 1) emissive *= texture(uTexEmissive, vTexCoord).rgb;
+    if (uAlphaMode == 2 && base.a < uAlphaCutoff) discard;
+    float outAlpha = (uAlphaMode == 1) ? base.a : 1.0;
+    FragColor = vec4(base.rgb + emissive, outAlpha);
 }
 )";
-#else
+
+// ---- FS PBR (GLES 3.0, 简化 Cook-Torrance) ----
+static const char* FS_PBR_SOURCE = R"(#version 300 es
+precision highp float;
+in vec3 vNormalW;
+in vec3 vWorldPos;
+in vec2 vTexCoord;
+in vec4 vColor;
+uniform vec4 uColor;
+uniform vec3 uEmissive;
+uniform float uMetallic;
+uniform float uRoughness;
+uniform float uNormalScale;
+uniform float uOcclusionStrength;
+uniform sampler2D uTexBaseColor;
+uniform sampler2D uTexMetallicRoughness;
+uniform sampler2D uTexNormal;
+uniform sampler2D uTexEmissive;
+uniform sampler2D uTexOcclusion;
+uniform int uHasBaseColorTex;
+uniform int uHasMetallicRoughnessTex;
+uniform int uHasNormalTex;
+uniform int uHasEmissiveTex;
+uniform int uHasOcclusionTex;
+uniform int uAlphaMode;
+uniform float uAlphaCutoff;
+uniform vec3 uCameraPos;
+uniform int  uDirLightEnabled;
+uniform vec3 uDirLightDir;
+uniform vec3 uDirLightColor;
+uniform vec3 uAmbient;
+uniform int   uPointLightCount;
+uniform vec3  uPointLightPos[4];
+uniform vec3  uPointLightColor[4];
+uniform float uPointLightRange[4];
+layout(location=0) out vec4 FragColor;
+const float PI = 3.14159265;
+
+vec3 BRDF(vec3 N, vec3 V, vec3 L, vec3 baseColor, float metallic, float roughness, vec3 F0) {
+    vec3 H = normalize(V + L);
+    float NdotV = max(dot(N, V), 0.0);
+    float NdotL = max(dot(N, L), 0.0);
+    float NdotH = max(dot(N, H), 0.0);
+    float VdotH = max(dot(V, H), 0.0);
+    float a = roughness * roughness;
+    float a2 = a * a;
+    float denom = NdotH * NdotH * (a2 - 1.0) + 1.0;
+    float D = a2 / (PI * denom * denom);
+    float k = (roughness + 1.0); k = k * k / 8.0;
+    float G1V = NdotV / (NdotV * (1.0 - k) + k);
+    float G1L = NdotL / (NdotL * (1.0 - k) + k);
+    float G = G1V * G1L;
+    vec3 F = F0 + (1.0 - F0) * pow(1.0 - VdotH, 5.0);
+    vec3 spec = (D * G * F) / max(4.0 * NdotV * NdotL, 0.001);
+    vec3 kD = (vec3(1.0) - F) * (1.0 - metallic);
+    vec3 diff = kD * baseColor / PI;
+    return diff + spec;
+}
+
+void main() {
+    vec4 base = uColor * vColor;
+    if (uHasBaseColorTex == 1) base *= texture(uTexBaseColor, vTexCoord);
+    if (uAlphaMode == 2 && base.a < uAlphaCutoff) discard;
+
+    float metallic = uMetallic;
+    float roughness = uRoughness;
+    if (uHasMetallicRoughnessTex == 1) {
+        vec3 mr = texture(uTexMetallicRoughness, vTexCoord).rgb;
+        metallic *= mr.b;
+        roughness *= mr.g;
+    }
+    roughness = clamp(roughness, 0.04, 1.0);
+
+    vec3 N = normalize(vNormalW);
+    if (uHasNormalTex == 1) {
+        vec3 mappedN = texture(uTexNormal, vTexCoord).rgb * 2.0 - 1.0;
+        mappedN.xy *= uNormalScale;
+        // derivatives 计算 TBN
+        vec3 dp1 = dFdx(vWorldPos);
+        vec3 dp2 = dFdy(vWorldPos);
+        vec2 duv1 = dFdx(vTexCoord);
+        vec2 duv2 = dFdy(vTexCoord);
+        vec3 dp2perp = cross(dp2, N);
+        vec3 dp1perp = cross(N, dp1);
+        vec3 T = dp2perp * duv1.x + dp1perp * duv2.x;
+        vec3 B = dp2perp * duv1.y + dp1perp * duv2.y;
+        float invmax = inversesqrt(max(dot(T,T), dot(B,B)));
+        mat3 TBN = mat3(T * invmax, B * invmax, N);
+        N = normalize(TBN * mappedN);
+    }
+
+    vec3 V = normalize(uCameraPos - vWorldPos);
+    vec3 F0 = mix(vec3(0.04), base.rgb, metallic);
+    vec3 lightSum = vec3(0.0);
+
+    if (uDirLightEnabled == 1) {
+        vec3 L = uDirLightDir;
+        float NdotL = max(dot(N, L), 0.0);
+        lightSum += BRDF(N, V, L, base.rgb, metallic, roughness, F0) * uDirLightColor * NdotL;
+    }
+    for (int i = 0; i < 4; i++) {
+        if (i >= uPointLightCount) break;
+        vec3 toLight = uPointLightPos[i] - vWorldPos;
+        float d = length(toLight);
+        if (d > uPointLightRange[i]) continue;
+        vec3 L = toLight / max(d, 0.0001);
+        float NdotL = max(dot(N, L), 0.0);
+        float atten = pow(max(1.0 - d / uPointLightRange[i], 0.0), 2.0);
+        lightSum += BRDF(N, V, L, base.rgb, metallic, roughness, F0) * uPointLightColor[i] * NdotL * atten;
+    }
+
+    float ao = 1.0;
+    if (uHasOcclusionTex == 1) ao = mix(1.0, texture(uTexOcclusion, vTexCoord).r, uOcclusionStrength);
+    vec3 ambient = uAmbient * base.rgb * ao;
+    vec3 emissive = uEmissive;
+    if (uHasEmissiveTex == 1) emissive *= texture(uTexEmissive, vTexCoord).rgb;
+    float outAlpha = (uAlphaMode == 1) ? base.a : 1.0;
+    FragColor = vec4(ambient + lightSum + emissive, outAlpha);
+}
+)";
+
+#else  // 桌面 GL 3.3 Core
+
+// ---- VS3D (GL 3.3) ----
 static const char* VS3D_SOURCE = R"(
 #version 330 core
 layout(location=0) in vec3 aPos;
@@ -148,33 +288,159 @@ layout(location=3) in vec4 aColor;
 uniform mat4 uMVP;
 uniform mat4 uModel;
 out vec3 vNormalW;
+out vec3 vWorldPos;
 out vec2 vTexCoord;
 out vec4 vColor;
 void main() {
     gl_Position = uMVP * vec4(aPos, 1.0);
     vNormalW = mat3(uModel) * aNormal;
+    vWorldPos = (uModel * vec4(aPos, 1.0)).xyz;
     vTexCoord = aUV;
     vColor = aColor;
 }
 )";
-static const char* FS3D_SOURCE = R"(
+
+// ---- FS Unlit (GL 3.3) ----
+static const char* FS_UNLIT_SOURCE = R"(
 #version 330 core
-in vec3 vNormalW;
 in vec2 vTexCoord;
 in vec4 vColor;
-uniform sampler2D uTexture;
-uniform int uUseTexture;
-uniform vec3 uLightDir;
-uniform vec3 uLightColor;
-uniform vec3 uAmbient;
+uniform vec4 uColor;
+uniform vec3 uEmissive;
+uniform sampler2D uTexBaseColor;
+uniform sampler2D uTexEmissive;
+uniform int uHasBaseColorTex;
+uniform int uHasEmissiveTex;
+uniform int uAlphaMode;
+uniform float uAlphaCutoff;
 out vec4 FragColor;
 void main() {
+    vec4 base = uColor * vColor;
+    if (uHasBaseColorTex == 1) base *= texture(uTexBaseColor, vTexCoord);
+    vec3 emissive = uEmissive;
+    if (uHasEmissiveTex == 1) emissive *= texture(uTexEmissive, vTexCoord).rgb;
+    if (uAlphaMode == 2 && base.a < uAlphaCutoff) discard;
+    float outAlpha = (uAlphaMode == 1) ? base.a : 1.0;
+    FragColor = vec4(base.rgb + emissive, outAlpha);
+}
+)";
+
+// ---- FS PBR (GL 3.3) ----
+static const char* FS_PBR_SOURCE = R"(
+#version 330 core
+in vec3 vNormalW;
+in vec3 vWorldPos;
+in vec2 vTexCoord;
+in vec4 vColor;
+uniform vec4 uColor;
+uniform vec3 uEmissive;
+uniform float uMetallic;
+uniform float uRoughness;
+uniform float uNormalScale;
+uniform float uOcclusionStrength;
+uniform sampler2D uTexBaseColor;
+uniform sampler2D uTexMetallicRoughness;
+uniform sampler2D uTexNormal;
+uniform sampler2D uTexEmissive;
+uniform sampler2D uTexOcclusion;
+uniform int uHasBaseColorTex;
+uniform int uHasMetallicRoughnessTex;
+uniform int uHasNormalTex;
+uniform int uHasEmissiveTex;
+uniform int uHasOcclusionTex;
+uniform int uAlphaMode;
+uniform float uAlphaCutoff;
+uniform vec3 uCameraPos;
+uniform int  uDirLightEnabled;
+uniform vec3 uDirLightDir;
+uniform vec3 uDirLightColor;
+uniform vec3 uAmbient;
+uniform int   uPointLightCount;
+uniform vec3  uPointLightPos[4];
+uniform vec3  uPointLightColor[4];
+uniform float uPointLightRange[4];
+out vec4 FragColor;
+const float PI = 3.14159265;
+
+vec3 BRDF(vec3 N, vec3 V, vec3 L, vec3 baseColor, float metallic, float roughness, vec3 F0) {
+    vec3 H = normalize(V + L);
+    float NdotV = max(dot(N, V), 0.0);
+    float NdotL = max(dot(N, L), 0.0);
+    float NdotH = max(dot(N, H), 0.0);
+    float VdotH = max(dot(V, H), 0.0);
+    float a = roughness * roughness;
+    float a2 = a * a;
+    float denom = NdotH * NdotH * (a2 - 1.0) + 1.0;
+    float D = a2 / (PI * denom * denom);
+    float k = (roughness + 1.0); k = k * k / 8.0;
+    float G1V = NdotV / (NdotV * (1.0 - k) + k);
+    float G1L = NdotL / (NdotL * (1.0 - k) + k);
+    float G = G1V * G1L;
+    vec3 F = F0 + (1.0 - F0) * pow(1.0 - VdotH, 5.0);
+    vec3 spec = (D * G * F) / max(4.0 * NdotV * NdotL, 0.001);
+    vec3 kD = (vec3(1.0) - F) * (1.0 - metallic);
+    vec3 diff = kD * baseColor / PI;
+    return diff + spec;
+}
+
+void main() {
+    vec4 base = uColor * vColor;
+    if (uHasBaseColorTex == 1) base *= texture(uTexBaseColor, vTexCoord);
+    if (uAlphaMode == 2 && base.a < uAlphaCutoff) discard;
+
+    float metallic = uMetallic;
+    float roughness = uRoughness;
+    if (uHasMetallicRoughnessTex == 1) {
+        vec3 mr = texture(uTexMetallicRoughness, vTexCoord).rgb;
+        metallic *= mr.b;
+        roughness *= mr.g;
+    }
+    roughness = clamp(roughness, 0.04, 1.0);
+
     vec3 N = normalize(vNormalW);
-    float ndl = max(dot(N, uLightDir), 0.0);
-    vec3 lit = uAmbient + uLightColor * ndl;
-    vec4 base = vColor;
-    if (uUseTexture == 1) base = base * texture(uTexture, vTexCoord);
-    FragColor = vec4(base.rgb * lit, base.a);
+    if (uHasNormalTex == 1) {
+        vec3 mappedN = texture(uTexNormal, vTexCoord).rgb * 2.0 - 1.0;
+        mappedN.xy *= uNormalScale;
+        vec3 dp1 = dFdx(vWorldPos);
+        vec3 dp2 = dFdy(vWorldPos);
+        vec2 duv1 = dFdx(vTexCoord);
+        vec2 duv2 = dFdy(vTexCoord);
+        vec3 dp2perp = cross(dp2, N);
+        vec3 dp1perp = cross(N, dp1);
+        vec3 T = dp2perp * duv1.x + dp1perp * duv2.x;
+        vec3 B = dp2perp * duv1.y + dp1perp * duv2.y;
+        float invmax = inversesqrt(max(dot(T,T), dot(B,B)));
+        mat3 TBN = mat3(T * invmax, B * invmax, N);
+        N = normalize(TBN * mappedN);
+    }
+
+    vec3 V = normalize(uCameraPos - vWorldPos);
+    vec3 F0 = mix(vec3(0.04), base.rgb, metallic);
+    vec3 lightSum = vec3(0.0);
+
+    if (uDirLightEnabled == 1) {
+        vec3 L = uDirLightDir;
+        float NdotL = max(dot(N, L), 0.0);
+        lightSum += BRDF(N, V, L, base.rgb, metallic, roughness, F0) * uDirLightColor * NdotL;
+    }
+    for (int i = 0; i < 4; i++) {
+        if (i >= uPointLightCount) break;
+        vec3 toLight = uPointLightPos[i] - vWorldPos;
+        float d = length(toLight);
+        if (d > uPointLightRange[i]) continue;
+        vec3 L = toLight / max(d, 0.0001);
+        float NdotL = max(dot(N, L), 0.0);
+        float atten = pow(max(1.0 - d / uPointLightRange[i], 0.0), 2.0);
+        lightSum += BRDF(N, V, L, base.rgb, metallic, roughness, F0) * uPointLightColor[i] * NdotL * atten;
+    }
+
+    float ao = 1.0;
+    if (uHasOcclusionTex == 1) ao = mix(1.0, texture(uTexOcclusion, vTexCoord).r, uOcclusionStrength);
+    vec3 ambient = uAmbient * base.rgb * ao;
+    vec3 emissive = uEmissive;
+    if (uHasEmissiveTex == 1) emissive *= texture(uTexEmissive, vTexCoord).rgb;
+    float outAlpha = (uAlphaMode == 1) ? base.a : 1.0;
+    FragColor = vec4(ambient + lightSum + emissive, outAlpha);
 }
 )";
 #endif
@@ -215,19 +481,25 @@ class GL33Backend : public RenderBackend {
     int vboCapacity = 0;
     static constexpr int INITIAL_VBO_CAPACITY = 1024;
 
-    // ---- Phase AS.2 — 3D mesh 资源 ----
-    GLuint program3D       = 0;       // 3D 默认 shader (Lambert + diffuse)
-    GLint  loc3D_MVP       = -1;
-    GLint  loc3D_Model     = -1;
-    GLint  loc3D_Texture   = -1;
-    GLint  loc3D_UseTexture= -1;
-    GLint  loc3D_LightDir  = -1;
-    GLint  loc3D_LightColor= -1;
-    GLint  loc3D_Ambient   = -1;
+    // ---- Phase AS.4 — 3D mesh + 材质资源 ----
+    GLuint programUnlit = 0;
+    GLuint programPBR   = 0;
     bool   userShaderActive = false;  // 用户 Shader:Use 时为 true; UseDefaultShader 时复位
     bool   depthTestEnabled = false;  // 当前深度测试状态 (默认关, 与 2D 兼容)
     Mat4   viewMatrix;                // Phase AS.2 — 视图矩阵 (LookAt 结果)
     bool   hasView          = false;  // 是否已 LoadView (false 表示用 modelview 直接)
+
+    // Phase AS.4 — Lighting 状态 (CPU 镜像; DrawMeshMaterial 时上传 uniform)
+    float dirLightDir[3]   = { 0.408f, 0.816f, 0.408f };
+    float dirLightColor[3] = { 0.9f, 0.9f, 0.85f };
+    float dirLightIntensity = 1.0f;
+    bool  dirLightEnabled  = true;
+    float ambientLight[3]  = { 0.2f, 0.2f, 0.25f };
+    float cameraPos[3]     = { 0.0f, 0.0f, 0.0f };
+
+    static constexpr int MAX_PT_LIGHTS = 4;
+    PointLight pointLights[MAX_PT_LIGHTS] = {};
+    bool       pointLightUsed[MAX_PT_LIGHTS] = { false, false, false, false };
 
     // Mesh 资源池
     std::unordered_map<uint32_t, MeshGPU> meshes;
@@ -373,11 +645,9 @@ public:
         program = vao = vbo = ebo = 0;
         eboCapacity = 0;
 
-        // Phase AS.2 — 释放 3D 资源
-        if (program3D) {
-            glDeleteProgram(program3D);
-            program3D = 0;
-        }
+        // Phase AS.4 — 释放 3D 资源
+        if (programUnlit) { glDeleteProgram(programUnlit); programUnlit = 0; }
+        if (programPBR)   { glDeleteProgram(programPBR);   programPBR   = 0; }
         for (auto& kv : meshes) {
             const MeshGPU& m = kv.second;
             if (m.ebo) glDeleteBuffers(1, &m.ebo);
@@ -837,12 +1107,12 @@ public:
 
     // ==================== Phase AS.2 — 3D mesh + 深度测试 + camera ====================
 
-    bool Supports3D() const override { return program3D != 0; }
+    bool Supports3D() const override { return programPBR != 0 || programUnlit != 0; }
 
     uint32_t CreateMesh(const RenderVertex3D* verts, int vCount,
                         const uint32_t* indices, int iCount) override {
         if (!verts || vCount <= 0 || !indices || iCount <= 0) return 0;
-        if (!program3D) return 0;  // 无 3D shader 时不能创建 (Init 失败兜底)
+        if (!programPBR && !programUnlit) return 0;  // 无 3D shader 时不能创建
 
         MeshGPU m;
         glGenVertexArrays(1, &m.vao);
@@ -892,60 +1162,20 @@ public:
         meshes.erase(it);
     }
 
+    /// 旧 API: 用 textureId 简单绘制. 内部走 default PBR + uColor=(1,1,1,1) + texBaseColor 模式.
     void DrawMesh(uint32_t meshId, uint32_t textureId) override {
-        auto it = meshes.find(meshId);
-        if (it == meshes.end()) return;
-        const MeshGPU& m = it->second;
-        if (!m.vao || m.indexCount <= 0) return;
-
-        // 选择 shader: 用户 shader 激活时不切, 否则用引擎 3D 默认
-        if (!userShaderActive && program3D) {
-            glUseProgram(program3D);
-            // 上传 MVP / Model / Light uniforms
-            Mat4 mvp = ComputeMVP3D();
-            glUniformMatrix4fv(loc3D_MVP,   1, GL_FALSE, mvp.m);
-            glUniformMatrix4fv(loc3D_Model, 1, GL_FALSE, modelview.m);
-            // 默认光: 从 (0.5, 1, 0.5) 方向照射 (归一化)
-            float lx = 0.408f, ly = 0.816f, lz = 0.408f;
-            glUniform3f(loc3D_LightDir,   lx, ly, lz);
-            glUniform3f(loc3D_LightColor, 0.9f, 0.9f, 0.85f);
-            glUniform3f(loc3D_Ambient,    0.2f, 0.2f, 0.25f);
-            // 纹理
-            if (textureId) {
-                glActiveTexture(GL_TEXTURE0);
-                glBindTexture(GL_TEXTURE_2D, textureId);
-                glUniform1i(loc3D_Texture,    0);
-                glUniform1i(loc3D_UseTexture, 1);
-            } else {
-                glUniform1i(loc3D_UseTexture, 0);
-            }
-        } else if (textureId) {
-            // 用户 shader: 仅绑定纹理到 slot 0, 用户负责 sampler uniform
-            glActiveTexture(GL_TEXTURE0);
-            glBindTexture(GL_TEXTURE_2D, textureId);
-        }
-
-        // 临时启用深度测试 (如果用户没启用), 绘制完恢复
-        bool tempDepth = !depthTestEnabled;
-        if (tempDepth) {
-            glEnable(GL_DEPTH_TEST);
-            glDepthFunc(GL_LEQUAL);
-        }
-
-        glBindVertexArray(m.vao);
-        glDrawElements(GL_TRIANGLES, m.indexCount, GL_UNSIGNED_INT, (void*)0);
-        glBindVertexArray(0);
-
-        if (tempDepth) {
-            glDisable(GL_DEPTH_TEST);
-        }
-
-        // 切回默认 2D shader (避免 3D shader 残留影响后续 2D 绘制)
-        if (!userShaderActive && program3D) {
-            glUseProgram(program);
-            // 重新绑定 2D VAO 以便后续 2D 绘制
-            glBindVertexArray(vao);
-        }
+        // 构造默认 PBR MaterialDesc, 走 DrawMeshMaterial
+        MaterialDesc desc = {};
+        desc.mode = 1;  // PBR
+        desc.color[0] = desc.color[1] = desc.color[2] = desc.color[3] = 1.0f;
+        desc.metallic = 0.0f;
+        desc.roughness = 1.0f;
+        desc.normalScale = 1.0f;
+        desc.occlusionStrength = 1.0f;
+        desc.alphaMode = 0;
+        desc.alphaCutoff = 0.5f;
+        desc.texBaseColor = textureId;
+        DrawMeshMaterial(meshId, &desc);
     }
 
     void SetDepthTest(bool enable) override {
@@ -989,6 +1219,231 @@ public:
         if (!projMat4) return;
         memcpy(projection.m, projMat4, sizeof(projection.m));
     }
+
+    // ==================== Phase AS.4 — 材质系统 + 多光源实现 ====================
+
+    /// 上传 sampler 绑定 + uHasXxxTex 标志 (PBR 和 Unlit 共用辅助)
+    void BindMaterialTexture(GLuint program, const char* samplerName, const char* hasFlagName,
+                              int slot, uint32_t texId) {
+        GLint locSampler = glGetUniformLocation(program, samplerName);
+        GLint locHas     = glGetUniformLocation(program, hasFlagName);
+        if (texId) {
+            glActiveTexture(GL_TEXTURE0 + slot);
+            glBindTexture(GL_TEXTURE_2D, texId);
+            if (locSampler >= 0) glUniform1i(locSampler, slot);
+            if (locHas >= 0)     glUniform1i(locHas, 1);
+        } else {
+            if (locHas >= 0)     glUniform1i(locHas, 0);
+        }
+    }
+
+    /// 上传 PBR / Unlit 共用的 baseColor / emissive / alpha uniforms
+    void UploadCommonMatUniforms(GLuint program, const MaterialDesc* d) {
+        GLint locColor    = glGetUniformLocation(program, "uColor");
+        GLint locEmissive = glGetUniformLocation(program, "uEmissive");
+        GLint locAMode    = glGetUniformLocation(program, "uAlphaMode");
+        GLint locACutoff  = glGetUniformLocation(program, "uAlphaCutoff");
+        if (locColor >= 0)    glUniform4f(locColor, d->color[0], d->color[1], d->color[2], d->color[3]);
+        if (locEmissive >= 0) glUniform3f(locEmissive, d->emissive[0], d->emissive[1], d->emissive[2]);
+        if (locAMode >= 0)    glUniform1i(locAMode, d->alphaMode);
+        if (locACutoff >= 0)  glUniform1f(locACutoff, d->alphaCutoff);
+    }
+
+    /// 上传 PBR 专用 lighting + scalar uniforms (摄像机 + 光源 + metallic/roughness/AO)
+    void UploadPBRLightingUniforms(GLuint program, const MaterialDesc* d) {
+        // 标量
+        GLint locM   = glGetUniformLocation(program, "uMetallic");
+        GLint locR   = glGetUniformLocation(program, "uRoughness");
+        GLint locNS  = glGetUniformLocation(program, "uNormalScale");
+        GLint locOS  = glGetUniformLocation(program, "uOcclusionStrength");
+        if (locM  >= 0) glUniform1f(locM,  d->metallic);
+        if (locR  >= 0) glUniform1f(locR,  d->roughness);
+        if (locNS >= 0) glUniform1f(locNS, d->normalScale);
+        if (locOS >= 0) glUniform1f(locOS, d->occlusionStrength);
+        // 摄像机 + 环境光
+        GLint locCam  = glGetUniformLocation(program, "uCameraPos");
+        GLint locAmb  = glGetUniformLocation(program, "uAmbient");
+        if (locCam >= 0) glUniform3f(locCam, cameraPos[0], cameraPos[1], cameraPos[2]);
+        if (locAmb >= 0) glUniform3f(locAmb, ambientLight[0], ambientLight[1], ambientLight[2]);
+        // 方向光
+        GLint locDirEn = glGetUniformLocation(program, "uDirLightEnabled");
+        GLint locDirD  = glGetUniformLocation(program, "uDirLightDir");
+        GLint locDirC  = glGetUniformLocation(program, "uDirLightColor");
+        if (locDirEn >= 0) glUniform1i(locDirEn, dirLightEnabled ? 1 : 0);
+        if (locDirD  >= 0) glUniform3f(locDirD, dirLightDir[0], dirLightDir[1], dirLightDir[2]);
+        if (locDirC  >= 0) {
+            // intensity 直接乘进 color (shader 简化, 不单独传 intensity)
+            float c[3] = {
+                dirLightColor[0] * dirLightIntensity,
+                dirLightColor[1] * dirLightIntensity,
+                dirLightColor[2] * dirLightIntensity
+            };
+            glUniform3f(locDirC, c[0], c[1], c[2]);
+        }
+        // 点光数组 (跳过 used=false 的槽)
+        float pos[MAX_PT_LIGHTS * 3]   = {};
+        float col[MAX_PT_LIGHTS * 3]   = {};
+        float range[MAX_PT_LIGHTS]     = {};
+        int   activeCount = 0;
+        for (int i = 0; i < MAX_PT_LIGHTS; i++) {
+            if (!pointLightUsed[i]) continue;
+            const PointLight& pl = pointLights[i];
+            pos[activeCount * 3 + 0] = pl.pos[0];
+            pos[activeCount * 3 + 1] = pl.pos[1];
+            pos[activeCount * 3 + 2] = pl.pos[2];
+            col[activeCount * 3 + 0] = pl.color[0] * pl.intensity;
+            col[activeCount * 3 + 1] = pl.color[1] * pl.intensity;
+            col[activeCount * 3 + 2] = pl.color[2] * pl.intensity;
+            range[activeCount]       = pl.range;
+            activeCount++;
+        }
+        GLint locPLCount = glGetUniformLocation(program, "uPointLightCount");
+        GLint locPLPos   = glGetUniformLocation(program, "uPointLightPos");
+        GLint locPLCol   = glGetUniformLocation(program, "uPointLightColor");
+        GLint locPLRng   = glGetUniformLocation(program, "uPointLightRange");
+        if (locPLCount >= 0) glUniform1i(locPLCount, activeCount);
+        if (locPLPos   >= 0) glUniform3fv(locPLPos,   activeCount, pos);
+        if (locPLCol   >= 0) glUniform3fv(locPLCol,   activeCount, col);
+        if (locPLRng   >= 0) glUniform1fv(locPLRng,   activeCount, range);
+    }
+
+    /// 用 material 描述符绘制 mesh
+    void DrawMeshMaterial(uint32_t meshId, const MaterialDesc* desc) override {
+        if (!desc) return;
+        auto it = meshes.find(meshId);
+        if (it == meshes.end()) return;
+        const MeshGPU& m = it->second;
+        if (!m.vao || m.indexCount <= 0) return;
+
+        GLuint program3D = (desc->mode == 0) ? programUnlit : programPBR;
+
+        // 选择 shader: 用户 shader 激活时不切, 否则用引擎 3D 默认
+        if (!userShaderActive && program3D) {
+            glUseProgram(program3D);
+
+            // MVP / Model
+            Mat4 mvp = ComputeMVP3D();
+            GLint locMVP   = glGetUniformLocation(program3D, "uMVP");
+            GLint locModel = glGetUniformLocation(program3D, "uModel");
+            if (locMVP   >= 0) glUniformMatrix4fv(locMVP,   1, GL_FALSE, mvp.m);
+            if (locModel >= 0) glUniformMatrix4fv(locModel, 1, GL_FALSE, modelview.m);
+
+            // 共用 uniforms (color/emissive/alpha)
+            UploadCommonMatUniforms(program3D, desc);
+
+            // 纹理 (PBR 5 个, Unlit 2 个)
+            BindMaterialTexture(program3D, "uTexBaseColor", "uHasBaseColorTex", 0, desc->texBaseColor);
+            BindMaterialTexture(program3D, "uTexEmissive",  "uHasEmissiveTex",  3, desc->texEmissive);
+            if (desc->mode == 1) {
+                BindMaterialTexture(program3D, "uTexMetallicRoughness", "uHasMetallicRoughnessTex", 1, desc->texMetallicRoughness);
+                BindMaterialTexture(program3D, "uTexNormal",            "uHasNormalTex",            2, desc->texNormal);
+                BindMaterialTexture(program3D, "uTexOcclusion",         "uHasOcclusionTex",         4, desc->texOcclusion);
+                UploadPBRLightingUniforms(program3D, desc);
+            }
+            // 恢复 active texture 到 0 (后续 2D 期望)
+            glActiveTexture(GL_TEXTURE0);
+        } else if (userShaderActive) {
+            // 用户 shader: 仅绑 baseColor 到 slot 0, 用户负责 sampler uniform
+            if (desc->texBaseColor) {
+                glActiveTexture(GL_TEXTURE0);
+                glBindTexture(GL_TEXTURE_2D, desc->texBaseColor);
+            }
+        }
+
+        // 临时启用深度测试 (如果用户没启用)
+        bool tempDepth = !depthTestEnabled;
+        if (tempDepth) {
+            glEnable(GL_DEPTH_TEST);
+            glDepthFunc(GL_LEQUAL);
+        }
+
+        // doubleSided: 关掉面剔除
+        bool restoreCull = false;
+        if (desc->doubleSided) {
+            GLboolean cullEnabled = GL_FALSE;
+            glGetBooleanv(GL_CULL_FACE, &cullEnabled);
+            if (cullEnabled) {
+                glDisable(GL_CULL_FACE);
+                restoreCull = true;
+            }
+        }
+
+        // alphaMode "blend": 确保启用 blend (引擎默认已 enable, 但保险起见)
+        // alphaMode "opaque" / "mask": 不影响 blend (blend 默认 enable, 不动)
+
+        glBindVertexArray(m.vao);
+        glDrawElements(GL_TRIANGLES, m.indexCount, GL_UNSIGNED_INT, (void*)0);
+        glBindVertexArray(0);
+
+        if (restoreCull) glEnable(GL_CULL_FACE);
+        if (tempDepth)   glDisable(GL_DEPTH_TEST);
+
+        // 切回默认 2D shader
+        if (!userShaderActive && program3D) {
+            glUseProgram(program);
+            glBindVertexArray(vao);
+        }
+    }
+
+    void SetDirectionalLight(const float* dir, const float* color, float intensity, bool enabled) override {
+        if (dir) {
+            dirLightDir[0] = dir[0];
+            dirLightDir[1] = dir[1];
+            dirLightDir[2] = dir[2];
+        }
+        if (color) {
+            dirLightColor[0] = color[0];
+            dirLightColor[1] = color[1];
+            dirLightColor[2] = color[2];
+        }
+        dirLightIntensity = intensity;
+        dirLightEnabled   = enabled;
+    }
+
+    void SetAmbientLight(const float* rgb) override {
+        if (!rgb) return;
+        ambientLight[0] = rgb[0];
+        ambientLight[1] = rgb[1];
+        ambientLight[2] = rgb[2];
+    }
+
+    void SetCameraPos(const float* pos) override {
+        if (!pos) return;
+        cameraPos[0] = pos[0];
+        cameraPos[1] = pos[1];
+        cameraPos[2] = pos[2];
+    }
+
+    int AddPointLight(const PointLight* light) override {
+        if (!light) return 0;
+        for (int i = 0; i < MAX_PT_LIGHTS; i++) {
+            if (!pointLightUsed[i]) {
+                pointLights[i] = *light;
+                pointLightUsed[i] = true;
+                return i + 1;  // 1-indexed id
+            }
+        }
+        return 0;  // 已满
+    }
+
+    void RemovePointLight(int id) override {
+        if (id < 1 || id > MAX_PT_LIGHTS) return;
+        pointLightUsed[id - 1] = false;
+    }
+
+    void ClearPointLights() override {
+        for (int i = 0; i < MAX_PT_LIGHTS; i++) {
+            pointLightUsed[i] = false;
+        }
+    }
+
+    int GetPointLightCount() const override {
+        int n = 0;
+        for (int i = 0; i < MAX_PT_LIGHTS; i++) if (pointLightUsed[i]) n++;
+        return n;
+    }
+
+    int GetMaxPointLights() const override { return MAX_PT_LIGHTS; }
 };
 
 // ==================== GL33Backend 工厂 ====================

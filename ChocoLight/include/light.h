@@ -200,6 +200,9 @@ LIGHT_API int luaopen_Light_Event(lua_State* L);
 // 3D mesh (Phase AS.2)
 LIGHT_API int luaopen_Light_Graphics_Mesh(lua_State* L);
 
+// Material (Phase AS.4)
+LIGHT_API int luaopen_Light_Graphics_Material(lua_State* L);
+
 // SQLite3 扩展导出 (原始DLL静态链接SQLite后暴露的扩展接口)
 LIGHT_API int sqlite3_carray_init(void* db, char** pzErrMsg, void* pApi);
 LIGHT_API int sqlite3_fileio_init(void* db, char** pzErrMsg, void* pApi);

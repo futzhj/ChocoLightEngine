@@ -159,6 +159,7 @@ set(LIGHT_SOURCES
     ${CHOCO_SRC}/light_time.cpp
     ${CHOCO_SRC}/light_event.cpp
     ${CHOCO_SRC}/light_graphics_mesh.cpp
+    ${CHOCO_SRC}/light_graphics_material.cpp
     ${CHOCO_SRC}/light_endian.cpp
     ${CHOCO_SRC}/light_log.cpp
     ${CHOCO_SRC}/light_pixels.cpp
