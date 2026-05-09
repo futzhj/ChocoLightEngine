@@ -102,7 +102,23 @@ struct AnimationClip {
     bool                 alive = true;
 };
 
+// Step 4: 状态转换定义 (按 priority 顺序遍历, 第一个 condFn 返回 true 的触发 crossfade)
+struct TransitionDef {
+    std::string fromState;     // 空 = 任意 state (Any state); 否则只在该 state 时检查
+    std::string toState;
+    int         condFnRef  = LUA_NOREF;   // Lua function ref; pcall(animator) → bool
+    float       duration   = 0.0f;        // crossfade 时长 (秒); 0 = 立即切换 (无 fade)
+};
+
+// Step 4: 事件帧定义 (在 Update 推进 currentTime 时, 判断 triggerTime 是否被跨过)
+struct EventDef {
+    std::string state;             // 关联 state 名 (必须已 AddState)
+    float       triggerTime = 0.0f;
+    int         callbackRef = LUA_NOREF;   // Lua function ref; pcall(animator)
+};
+
 // Animator (Step 2 完整化: sampler eval + 关节变换树 + 状态机基础)
+// Step 4: + Transition / Crossfade / Event / Param
 struct Animator {
     Skeleton*  skeletonPtr  = nullptr;
     int        skeletonRef  = LUA_NOREF;     // 防 Skeleton GC 的强引用
@@ -111,6 +127,7 @@ struct Animator {
     bool       paused      = false;
     float      speed       = 1.0f;
     float      currentTime = 0.0f;
+    float      prevTime    = 0.0f;     // Step 4: 上一帧 currentTime (供 event 跨帧检测)
 
     // Step 2: 状态机基础 (单状态切换, 无 Transition; Step 4 引入 crossfade)
     std::unordered_map<std::string, AnimationClip*> states;       // name → clip 指针
@@ -118,6 +135,25 @@ struct Animator {
     std::string                                     currentState; // 空串 = 未播放
     AnimationClip*                                  activeClip = nullptr;
     bool                                            looping    = true;
+
+    // Step 4: 状态转换 (全局列表, 按 AddTransition 顺序遍历)
+    std::vector<TransitionDef> transitions;
+
+    // Step 4: 当前 crossfade (如果在 fade 中)
+    std::string    crossfadeTarget;          // 目标 state 名; 空 = 无 crossfade
+    AnimationClip* crossfadeClip      = nullptr;
+    float          crossfadeClipTime  = 0.0f;     // target clip 的独立 time
+    float          crossfadeProgress  = 0.0f;     // [0, 1] 已完成的 fade 比例
+    float          crossfadeDuration  = 0.0f;     // 总时长 (秒)
+
+    // Step 4: 同帧 transition 锁 (防止一帧多次切换)
+    bool                       transitionedThisFrame = false;
+
+    // Step 4: 事件帧 (按 AddEvent 顺序; Update 时按 prevTime → currentTime 区间触发)
+    std::vector<EventDef>      events;
+
+    // Step 4: 参数表 (number 类型; 供 transition condFn 读取)
+    std::unordered_map<std::string, float> params;
 
     // Step 2: 关节矩阵缓存 (Update 时填充, GetJointMatrices 直接读)
     // 布局: 每关节 16 floats (列主序 mat4), 共 N×16 floats
@@ -160,6 +196,8 @@ using LT::Anim::Sampler;
 using LT::Anim::JointNode;
 using LT::Anim::Animator;
 using LT::Anim::SkinnedMeshAsset;
+using LT::Anim::TransitionDef;     // Step 4
+using LT::Anim::EventDef;          // Step 4
 using LT::Anim::InterpMode;
 using LT::Anim::ChannelTarget;
 
@@ -401,47 +439,43 @@ static void EvaluateSampler(const Sampler& s, float t, float* out, int outComps)
 }
 
 // ---------- 前向变换树 ----------
-// 对每个关节: 在 clip 中找匹配 sampler 求 local TRS;
-// 然后 DFS world[i] = world[parent] * local[i];
-// 最后 skinning[i] = world[i] * inverseBind[i].
-// 输出 outMatrices 大小 = jointCount * 16, 列主序.
-static void ComputeJointMatrices(Skeleton* sk, AnimationClip* clip, float t,
-                                  std::vector<float>& outMatrices) {
-    int N = (int)sk->joints.size();
-    outMatrices.assign((size_t)N * 16, 0.0f);
-    if (N == 0) return;
 
-    // 临时缓冲: 每关节 local mat4 + world mat4
-    std::vector<float> localMats(N * 16, 0.0f);
-    std::vector<float> worldMats(N * 16, 0.0f);
-    std::vector<uint8_t> computed(N, 0);
+// vec3 线性插值 (Step 4 crossfade 用)
+inline void Vec3Lerp(const float* a, const float* b, float t, float* out) {
+    out[0] = a[0] + t * (b[0] - a[0]);
+    out[1] = a[1] + t * (b[1] - a[1]);
+    out[2] = a[2] + t * (b[2] - a[2]);
+}
 
-    // 构造每关节的 local TRS → mat4 (sampler 覆盖优先, 否则 bind pose)
-    for (int i = 0; i < N; ++i) {
-        const JointNode& jn = sk->joints[i];
-        float trans[3] = { jn.local_t[0], jn.local_t[1], jn.local_t[2] };
-        float rot  [4] = { jn.local_r[0], jn.local_r[1], jn.local_r[2], jn.local_r[3] };  // wxyz
-        float scl  [3] = { jn.local_s[0], jn.local_s[1], jn.local_s[2] };
+// 评估单关节 local TRS: 默认用 bind pose, sampler 覆盖优先
+//   jn:        关节 bind pose
+//   clip:      动画 clip (nullptr → 完全 bind pose)
+//   jointIdx:  关节在 skeleton 中的索引 (sampler 用 jointIndex 匹配)
+//   t:         clip 时间
+//   out{T,R,S}: 输出 (3, 4, 3 floats; R 为 wxyz 四元数)
+static void EvaluateLocalTRS(const JointNode& jn, AnimationClip* clip, int jointIdx, float t,
+                              float* outT, float* outR, float* outS) {
+    outT[0] = jn.local_t[0]; outT[1] = jn.local_t[1]; outT[2] = jn.local_t[2];
+    outR[0] = jn.local_r[0]; outR[1] = jn.local_r[1]; outR[2] = jn.local_r[2]; outR[3] = jn.local_r[3];
+    outS[0] = jn.local_s[0]; outS[1] = jn.local_s[1]; outS[2] = jn.local_s[2];
 
-        if (clip) {
-            for (const Sampler& s : clip->samplers) {
-                if (s.jointIndex != i) continue;
-                if (s.target == ChannelTarget::TRANSLATION) {
-                    EvaluateSampler(s, t, trans, 3);
-                } else if (s.target == ChannelTarget::ROTATION) {
-                    EvaluateSampler(s, t, rot, 4);
-                } else if (s.target == ChannelTarget::SCALE) {
-                    EvaluateSampler(s, t, scl, 3);
-                }
-            }
-        }
-        TRSToMat4(trans, rot, scl, &localMats[i * 16]);
+    if (!clip) return;
+    for (const Sampler& s : clip->samplers) {
+        if (s.jointIndex != jointIdx) continue;
+        if (s.target == ChannelTarget::TRANSLATION)      EvaluateSampler(s, t, outT, 3);
+        else if (s.target == ChannelTarget::ROTATION)    EvaluateSampler(s, t, outR, 4);
+        else if (s.target == ChannelTarget::SCALE)       EvaluateSampler(s, t, outS, 3);
     }
+}
 
-    // DFS 计算 world 矩阵 (拓扑顺序保证: 父先于子)
-    // 用迭代式: 关节按 0..N-1 多次扫描直到全部 computed (典型骨骼<64, 一两次扫描就完)
-    // 由于 cgltf 输出的关节列表通常已是 BFS/DFS 顺序, 也就是父索引<子索引,
-    // 一次扫描通常足够, 但为安全起见循环扫描.
+// 公共: DFS world 矩阵 + skinning 矩阵 (cgltf 关节顺序通常已是父先于子, N+4 迭代上限保安全)
+static void ComputeWorldAndSkinning(Skeleton* sk,
+                                     const std::vector<float>& localMats,
+                                     std::vector<float>& outMatrices) {
+    int N = (int)sk->joints.size();
+    std::vector<float> worldMats((size_t)N * 16, 0.0f);
+    std::vector<uint8_t> computed((size_t)N, 0);
+
     int safetyIter = 0;
     while (safetyIter++ < N + 4) {
         bool allDone = true;
@@ -466,6 +500,55 @@ static void ComputeJointMatrices(Skeleton* sk, AnimationClip* clip, float t,
         const float* invBind = &sk->inverseBindMatrices[i * 16];
         Mat4Mul(&outMatrices[i * 16], &worldMats[i * 16], invBind);
     }
+}
+
+// 单 clip 关节矩阵 (Step 2; Step 4 内部走 EvaluateLocalTRS + ComputeWorldAndSkinning)
+static void ComputeJointMatrices(Skeleton* sk, AnimationClip* clip, float t,
+                                  std::vector<float>& outMatrices) {
+    int N = (int)sk->joints.size();
+    outMatrices.assign((size_t)N * 16, 0.0f);
+    if (N == 0) return;
+
+    std::vector<float> localMats((size_t)N * 16, 0.0f);
+    for (int i = 0; i < N; ++i) {
+        float trans[3], rot[4], scl[3];
+        EvaluateLocalTRS(sk->joints[i], clip, i, t, trans, rot, scl);
+        TRSToMat4(trans, rot, scl, &localMats[i * 16]);
+    }
+    ComputeWorldAndSkinning(sk, localMats, outMatrices);
+}
+
+// Step 4: 双 clip 混合 (crossfade) 关节矩阵
+//   weight ∈ [0, 1]: 0 = 完全 clipA, 1 = 完全 clipB
+//   按关节做 (T,R,S) 各自混合 (T/S lerp, R slerp), 再走 TRSToMat4 + 同 DFS 拓扑
+static void ComputeJointMatricesBlended(Skeleton* sk,
+                                          AnimationClip* clipA, float tA,
+                                          AnimationClip* clipB, float tB,
+                                          float weight,
+                                          std::vector<float>& outMatrices) {
+    int N = (int)sk->joints.size();
+    outMatrices.assign((size_t)N * 16, 0.0f);
+    if (N == 0) return;
+
+    if (weight < 0.0f) weight = 0.0f;
+    if (weight > 1.0f) weight = 1.0f;
+
+    std::vector<float> localMats((size_t)N * 16, 0.0f);
+    for (int i = 0; i < N; ++i) {
+        const JointNode& jn = sk->joints[i];
+        float tAv[3], rAv[4], sAv[3];
+        float tBv[3], rBv[4], sBv[3];
+        EvaluateLocalTRS(jn, clipA, i, tA, tAv, rAv, sAv);
+        EvaluateLocalTRS(jn, clipB, i, tB, tBv, rBv, sBv);
+
+        float trans[3], rot[4], scl[3];
+        Vec3Lerp(tAv, tBv, weight, trans);
+        Vec3Lerp(sAv, sBv, weight, scl);
+        QuatSlerp(rAv, rBv, weight, rot);     // 内部含归一化
+
+        TRSToMat4(trans, rot, scl, &localMats[i * 16]);
+    }
+    ComputeWorldAndSkinning(sk, localMats, outMatrices);
 }
 
 // ==================== Step 3: CPU 蒙皮 ====================
@@ -516,7 +599,57 @@ static void CpuSkinVertex(const float* matrices, int jointCount,
     Mat4ApplyDir(blend,  nrmIn, nrmOut);
 }
 
+// ==================== Step 4: Event 触发判定 ====================
+
+// 在 [prev, cur] 区间内是否跨过 trigger (含 looping 跨边界)
+//   prev <= cur:  单周期内, 直接判定 trigger ∈ [prev, cur]
+//   prev > cur:   跨循环 (currentTime 已 fmod 回滚), 触发条件 trigger ∈ [prev, dur] ∪ [0, cur]
+inline bool EventTriggered(float prev, float cur, float trigger, float duration, bool looping) {
+    if (prev <= cur) {
+        return (prev <= trigger && trigger <= cur);
+    }
+    if (looping && duration > 1e-6f) {
+        return (trigger >= prev && trigger <= duration) ||
+               (trigger >= 0.0f && trigger <= cur);
+    }
+    return false;
+}
+
 } // anonymous namespace
+
+// ==================== Step 4: Lua callback helpers ====================
+
+// pcall transition condFn(animator) → bool. 出错记录到 stderr 视为 false.
+//   animatorIdx: animator userdata 在 Lua 栈上的位置 (Update 调用时是 1)
+//   condFnRef:   registry ref to Lua function
+static bool CallTransitionCond(lua_State* L, int animatorIdx, int condFnRef) {
+    if (condFnRef == LUA_NOREF) return false;
+    lua_rawgeti(L, LUA_REGISTRYINDEX, condFnRef);
+    if (!lua_isfunction(L, -1)) { lua_pop(L, 1); return false; }
+    lua_pushvalue(L, animatorIdx);
+    if (lua_pcall(L, 1, 1, 0) != 0) {
+        const char* err = lua_tostring(L, -1);
+        std::fprintf(stderr, "[Light.Animation] transition cond error: %s\n", err ? err : "?");
+        lua_pop(L, 1);
+        return false;
+    }
+    bool ret = (lua_type(L, -1) != LUA_TNIL) && (lua_toboolean(L, -1) != 0);
+    lua_pop(L, 1);
+    return ret;
+}
+
+// pcall event callback(animator). 出错记录到 stderr.
+static void CallEventCallback(lua_State* L, int animatorIdx, int callbackRef) {
+    if (callbackRef == LUA_NOREF) return;
+    lua_rawgeti(L, LUA_REGISTRYINDEX, callbackRef);
+    if (!lua_isfunction(L, -1)) { lua_pop(L, 1); return; }
+    lua_pushvalue(L, animatorIdx);
+    if (lua_pcall(L, 1, 0, 0) != 0) {
+        const char* err = lua_tostring(L, -1);
+        std::fprintf(stderr, "[Light.Animation] event callback error: %s\n", err ? err : "?");
+        lua_pop(L, 1);
+    }
+}
 
 // ==================== userdata 检查辅助 ====================
 
@@ -1335,34 +1468,114 @@ static int l_Animator_GetSkeleton(lua_State* L) {
     return 1;
 }
 
-// Step 2: 推进时间 + 处理 looping + 重新计算关节矩阵
+// Helper: clip time wrap/clamp 一次 (用于 active 与 crossfade clip 共用)
+static float WrapClipTime(float t, float dur, bool looping) {
+    if (dur <= 1e-6f) return t;
+    if (looping) {
+        float r = std::fmod(t, dur);
+        if (r < 0) r += dur;
+        return r;
+    }
+    if (t < 0)   t = 0;
+    if (t > dur) t = dur;
+    return t;
+}
+
+// Step 2/4: 推进时间 + 处理 looping + crossfade + transitions + events + 重新计算关节矩阵
 static int l_Animator_Update(lua_State* L) {
     Animator* an = CheckAnimator(L, 1);
     float dt = (float)luaL_checknumber(L, 2);
 
+    an->transitionedThisFrame = false;
+    an->prevTime              = an->currentTime;
+
+    // 推进 active clip 时间
     if (!an->paused) {
         an->currentTime += dt * an->speed;
     }
+    if (an->activeClip) {
+        an->currentTime = WrapClipTime(an->currentTime, an->activeClip->duration, an->looping);
+    }
 
-    // 处理 looping / clamping
-    if (an->activeClip && an->activeClip->duration > 1e-6f) {
+    // Step 4: crossfade 推进
+    if (!an->crossfadeTarget.empty() && an->crossfadeClip && an->crossfadeDuration > 1e-6f) {
+        if (!an->paused) {
+            an->crossfadeProgress += dt / an->crossfadeDuration;
+            an->crossfadeClipTime += dt * an->speed;
+        }
+        an->crossfadeClipTime = WrapClipTime(an->crossfadeClipTime,
+                                              an->crossfadeClip->duration, an->looping);
+        // 完成 → 切换到目标 state
+        if (an->crossfadeProgress >= 1.0f) {
+            an->currentState     = an->crossfadeTarget;
+            an->activeClip       = an->crossfadeClip;
+            an->currentTime      = an->crossfadeClipTime;
+            an->prevTime         = an->currentTime;     // 防止事件被立即触发
+            an->crossfadeTarget.clear();
+            an->crossfadeClip    = nullptr;
+            an->crossfadeProgress = 0.0f;
+            an->crossfadeDuration = 0.0f;
+            an->crossfadeClipTime = 0.0f;
+        }
+    }
+
+    // Step 4: 检查 transitions (同帧最多一次, 不在 crossfade 中检查)
+    if (!an->transitionedThisFrame && an->crossfadeTarget.empty()) {
+        for (TransitionDef& tr : an->transitions) {
+            // fromState 检查 (空 = Any state)
+            if (!tr.fromState.empty() && tr.fromState != an->currentState) continue;
+            if (tr.toState.empty())                     continue;
+            if (tr.toState == an->currentState)         continue;       // idle→idle 拒绝
+            auto it = an->states.find(tr.toState);
+            if (it == an->states.end())                 continue;
+            if (!CallTransitionCond(L, 1, tr.condFnRef)) continue;
+
+            // 触发: 立即切换 (duration<=0) 或启动 crossfade
+            if (tr.duration < 1e-6f) {
+                an->currentState = tr.toState;
+                an->activeClip   = it->second;
+                an->currentTime  = 0.0f;
+                an->prevTime     = 0.0f;
+            } else {
+                an->crossfadeTarget   = tr.toState;
+                an->crossfadeClip     = it->second;
+                an->crossfadeClipTime = 0.0f;
+                an->crossfadeProgress = 0.0f;
+                an->crossfadeDuration = tr.duration;
+            }
+            an->transitionedThisFrame = true;
+            break;     // 同帧最多一次
+        }
+    }
+
+    // Step 4: 触发 events (基于 prevTime → currentTime 区间)
+    if (an->activeClip && !an->currentState.empty()) {
         float dur = an->activeClip->duration;
-        if (an->looping) {
-            // wrap to [0, duration); 处理负 speed (回退播放) 也要正确
-            float t = an->currentTime;
-            t = std::fmod(t, dur);
-            if (t < 0) t += dur;
-            an->currentTime = t;
-        } else {
-            // 不循环: clamp 到 [0, duration]; speed<0 时 clamp 到 [0, duration]
-            if (an->currentTime < 0)   an->currentTime = 0;
-            if (an->currentTime > dur) an->currentTime = dur;
+        // 复制一份 events 防止 callback 改 events 列表 (e.g. AddEvent / ClearEvents)
+        // 但这里 callback 通常不会改, 性能优先不复制
+        for (size_t k = 0; k < an->events.size(); ++k) {
+            const EventDef& ev = an->events[k];
+            if (ev.state != an->currentState) continue;
+            if (EventTriggered(an->prevTime, an->currentTime, ev.triggerTime, dur, an->looping)) {
+                CallEventCallback(L, 1, ev.callbackRef);
+                // callback 可能 Delete animator 或修 events 数组; 若 alive 标志变 false 则停止
+                if (!an->alive) return 0;
+            }
         }
     }
 
     // 重新计算关节矩阵 (即使 paused 也要算一次, 因为 SetCurrentTime 后用户可能手动 Update(0))
     if (an->skeletonPtr && an->skeletonPtr->alive) {
-        ComputeJointMatrices(an->skeletonPtr, an->activeClip, an->currentTime, an->jointMatrices);
+        if (!an->crossfadeTarget.empty() && an->crossfadeClip) {
+            ComputeJointMatricesBlended(an->skeletonPtr,
+                                          an->activeClip,    an->currentTime,
+                                          an->crossfadeClip, an->crossfadeClipTime,
+                                          an->crossfadeProgress,
+                                          an->jointMatrices);
+        } else {
+            ComputeJointMatrices(an->skeletonPtr, an->activeClip,
+                                   an->currentTime, an->jointMatrices);
+        }
     }
     return 0;
 }
@@ -1470,6 +1683,13 @@ static int l_Animator_Stop(lua_State* L) {
     an->currentState.clear();
     an->activeClip = nullptr;
     an->currentTime = 0.0f;
+    an->prevTime    = 0.0f;     // Step 4: 重置, 防止后续 Update 触发跨周期 event
+    // Step 4: 清 crossfade
+    an->crossfadeTarget.clear();
+    an->crossfadeClip     = nullptr;
+    an->crossfadeProgress = 0.0f;
+    an->crossfadeDuration = 0.0f;
+    an->crossfadeClipTime = 0.0f;
     // 关节矩阵保留 bind pose: 用 skeleton 重新算一次
     if (an->skeletonPtr && an->skeletonPtr->alive) {
         ComputeJointMatrices(an->skeletonPtr, nullptr, 0.0f, an->jointMatrices);
@@ -1513,6 +1733,206 @@ static int l_Animator_IsLooping(lua_State* L) {
     return 1;
 }
 
+// ---------- Step 4: 状态转换 (Transition) ----------
+
+// AddTransition(fromState_or_empty, toState, condFn, duration_or_0)
+//   fromState: string 或 "" (Any state); condFn: function(animator) -> bool
+//   duration: 秒, 0 = 立即切换 (无 fade)
+static int l_Animator_AddTransition(lua_State* L) {
+    Animator* an   = CheckAnimator(L, 1);
+    const char* from = luaL_checkstring(L, 2);     // 可空串
+    const char* to   = luaL_checkstring(L, 3);
+    luaL_checktype(L, 4, LUA_TFUNCTION);
+    float dur = (float)luaL_optnumber(L, 5, 0.0);
+    if (dur < 0) dur = 0;
+
+    // 持 condFn 强引用
+    lua_pushvalue(L, 4);
+    int ref = luaL_ref(L, LUA_REGISTRYINDEX);
+
+    TransitionDef tr;
+    tr.fromState  = from;
+    tr.toState    = to;
+    tr.condFnRef  = ref;
+    tr.duration   = dur;
+    an->transitions.push_back(std::move(tr));
+
+    lua_pushinteger(L, (lua_Integer)an->transitions.size());     // 返回新 transition 的索引 (1-based)
+    return 1;
+}
+
+// ClearTransitions(): 清所有 transition + 释放 condFn ref
+static int l_Animator_ClearTransitions(lua_State* L) {
+    Animator* an = CheckAnimator(L, 1);
+    for (TransitionDef& tr : an->transitions) {
+        if (tr.condFnRef != LUA_NOREF) {
+            luaL_unref(L, LUA_REGISTRYINDEX, tr.condFnRef);
+            tr.condFnRef = LUA_NOREF;
+        }
+    }
+    an->transitions.clear();
+    return 0;
+}
+
+static int l_Animator_GetTransitionCount(lua_State* L) {
+    Animator* an = CheckAnimator(L, 1);
+    lua_pushinteger(L, (lua_Integer)an->transitions.size());
+    return 1;
+}
+
+// ---------- Step 4: Crossfade (手动触发) ----------
+
+// Crossfade(targetState, duration): 立即启动 crossfade 到目标 state
+//   找不到目标 state → nil + err
+//   duration <= 0 → 立即切换 (无 fade)
+//   已在 crossfade 中 → 覆盖原 crossfade
+static int l_Animator_Crossfade(lua_State* L) {
+    Animator* an = CheckAnimator(L, 1);
+    const char* nm = luaL_checkstring(L, 2);
+    float dur = (float)luaL_optnumber(L, 3, 0.3);
+    if (dur < 0) dur = 0;
+
+    auto it = an->states.find(nm);
+    if (it == an->states.end()) {
+        lua_pushnil(L);
+        lua_pushfstring(L, "state not found: %s", nm);
+        return 2;
+    }
+    // 已在该 state 且无 crossfade → 拒绝 (避免抖动)
+    if (an->currentState == nm && an->crossfadeTarget.empty()) {
+        lua_pushboolean(L, 0);
+        lua_pushstring(L, "already in target state");
+        return 2;
+    }
+
+    if (dur < 1e-6f) {
+        // 立即切换
+        an->currentState = nm;
+        an->activeClip   = it->second;
+        an->currentTime  = 0.0f;
+        an->prevTime     = 0.0f;
+        an->crossfadeTarget.clear();
+        an->crossfadeClip = nullptr;
+        an->crossfadeProgress = 0.0f;
+        an->crossfadeDuration = 0.0f;
+        an->crossfadeClipTime = 0.0f;
+    } else {
+        an->crossfadeTarget   = nm;
+        an->crossfadeClip     = it->second;
+        an->crossfadeClipTime = 0.0f;
+        an->crossfadeProgress = 0.0f;
+        an->crossfadeDuration = dur;
+    }
+
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+static int l_Animator_IsCrossfading(lua_State* L) {
+    Animator* an = CheckAnimator(L, 1);
+    bool fading = !an->crossfadeTarget.empty() && an->crossfadeClip &&
+                  an->crossfadeDuration > 1e-6f;
+    lua_pushboolean(L, fading ? 1 : 0);
+    return 1;
+}
+
+static int l_Animator_GetCrossfadeProgress(lua_State* L) {
+    Animator* an = CheckAnimator(L, 1);
+    lua_pushnumber(L, an->crossfadeProgress);
+    return 1;
+}
+
+static int l_Animator_GetCrossfadeTarget(lua_State* L) {
+    Animator* an = CheckAnimator(L, 1);
+    if (an->crossfadeTarget.empty()) {
+        lua_pushnil(L);
+    } else {
+        lua_pushstring(L, an->crossfadeTarget.c_str());
+    }
+    return 1;
+}
+
+// ---------- Step 4: 事件帧 (Event) ----------
+
+// AddEvent(state, triggerTime, callbackFn): 关联到指定 state
+//   state: string (必须已 AddState; 不强校验, 后续 Update 时按 currentState 过滤)
+//   triggerTime: 秒
+//   callbackFn: function(animator)
+static int l_Animator_AddEvent(lua_State* L) {
+    Animator* an = CheckAnimator(L, 1);
+    const char* st = luaL_checkstring(L, 2);
+    float tt = (float)luaL_checknumber(L, 3);
+    luaL_checktype(L, 4, LUA_TFUNCTION);
+
+    lua_pushvalue(L, 4);
+    int ref = luaL_ref(L, LUA_REGISTRYINDEX);
+
+    EventDef ev;
+    ev.state       = st;
+    ev.triggerTime = tt;
+    ev.callbackRef = ref;
+    an->events.push_back(std::move(ev));
+
+    lua_pushinteger(L, (lua_Integer)an->events.size());
+    return 1;
+}
+
+// ClearEvents(): 清所有 event + 释放 callback ref
+static int l_Animator_ClearEvents(lua_State* L) {
+    Animator* an = CheckAnimator(L, 1);
+    for (EventDef& ev : an->events) {
+        if (ev.callbackRef != LUA_NOREF) {
+            luaL_unref(L, LUA_REGISTRYINDEX, ev.callbackRef);
+            ev.callbackRef = LUA_NOREF;
+        }
+    }
+    an->events.clear();
+    return 0;
+}
+
+static int l_Animator_GetEventCount(lua_State* L) {
+    Animator* an = CheckAnimator(L, 1);
+    lua_pushinteger(L, (lua_Integer)an->events.size());
+    return 1;
+}
+
+// ---------- Step 4: 参数 (Param) ----------
+
+// SetParam(name, value): 设 number 参数 (供 transition condFn 读取)
+static int l_Animator_SetParam(lua_State* L) {
+    Animator* an = CheckAnimator(L, 1);
+    const char* nm = luaL_checkstring(L, 2);
+    float v = (float)luaL_checknumber(L, 3);
+    an->params[nm] = v;
+    return 0;
+}
+
+// GetParam(name) → number 或 nil (未设置)
+static int l_Animator_GetParam(lua_State* L) {
+    Animator* an = CheckAnimator(L, 1);
+    const char* nm = luaL_checkstring(L, 2);
+    auto it = an->params.find(nm);
+    if (it == an->params.end()) {
+        lua_pushnil(L);
+    } else {
+        lua_pushnumber(L, it->second);
+    }
+    return 1;
+}
+
+static int l_Animator_HasParam(lua_State* L) {
+    Animator* an = CheckAnimator(L, 1);
+    const char* nm = luaL_checkstring(L, 2);
+    lua_pushboolean(L, an->params.count(nm) ? 1 : 0);
+    return 1;
+}
+
+static int l_Animator_GetPrevTime(lua_State* L) {
+    Animator* an = CheckAnimator(L, 1);
+    lua_pushnumber(L, an->prevTime);
+    return 1;
+}
+
 static int l_Animator_IsAlive(lua_State* L) {
     Animator* an = CheckAnimator(L, 1);
     lua_pushboolean(L, an->alive ? 1 : 0);
@@ -1537,6 +1957,25 @@ static int l_Animator_Delete(lua_State* L) {
         an->stateRefs.clear();
         an->states.clear();
         an->activeClip = nullptr;
+
+        // Step 4: 释放 transition condFn refs + event callback refs
+        for (TransitionDef& tr : an->transitions) {
+            if (tr.condFnRef != LUA_NOREF) {
+                luaL_unref(L, LUA_REGISTRYINDEX, tr.condFnRef);
+                tr.condFnRef = LUA_NOREF;
+            }
+        }
+        an->transitions.clear();
+        for (EventDef& ev : an->events) {
+            if (ev.callbackRef != LUA_NOREF) {
+                luaL_unref(L, LUA_REGISTRYINDEX, ev.callbackRef);
+                ev.callbackRef = LUA_NOREF;
+            }
+        }
+        an->events.clear();
+        an->params.clear();
+        an->crossfadeClip = nullptr;
+
         delete an;
         *pp = nullptr;
     }
@@ -1816,29 +2255,44 @@ static const luaL_Reg kClipMethods[] = {
 };
 
 static const luaL_Reg kAnimatorMethods[] = {
-    {"Update",            l_Animator_Update},
-    {"GetSkeleton",       l_Animator_GetSkeleton},
-    {"GetCurrentTime",    l_Animator_GetCurrentTime},
-    {"SetCurrentTime",    l_Animator_SetCurrentTime},
-    {"SetSpeed",          l_Animator_SetSpeed},
-    {"Pause",             l_Animator_Pause},
-    {"Resume",            l_Animator_Resume},
-    {"IsPaused",          l_Animator_IsPaused},
-    {"GetJointMatrices",  l_Animator_GetJointMatrices},
+    {"Update",                l_Animator_Update},
+    {"GetSkeleton",           l_Animator_GetSkeleton},
+    {"GetCurrentTime",        l_Animator_GetCurrentTime},
+    {"SetCurrentTime",        l_Animator_SetCurrentTime},
+    {"GetPrevTime",           l_Animator_GetPrevTime},          // Step 4
+    {"SetSpeed",              l_Animator_SetSpeed},
+    {"Pause",                 l_Animator_Pause},
+    {"Resume",                l_Animator_Resume},
+    {"IsPaused",              l_Animator_IsPaused},
+    {"GetJointMatrices",      l_Animator_GetJointMatrices},
     // Step 2: 状态机基础
-    {"AddState",          l_Animator_AddState},
-    {"Play",              l_Animator_Play},
-    {"Stop",              l_Animator_Stop},
-    {"GetCurrentState",   l_Animator_GetCurrentState},
-    {"GetStateCount",     l_Animator_GetStateCount},
-    {"HasState",          l_Animator_HasState},
-    {"SetLooping",        l_Animator_SetLooping},
-    {"IsLooping",         l_Animator_IsLooping},
+    {"AddState",              l_Animator_AddState},
+    {"Play",                  l_Animator_Play},
+    {"Stop",                  l_Animator_Stop},
+    {"GetCurrentState",       l_Animator_GetCurrentState},
+    {"GetStateCount",         l_Animator_GetStateCount},
+    {"HasState",              l_Animator_HasState},
+    {"SetLooping",            l_Animator_SetLooping},
+    {"IsLooping",             l_Animator_IsLooping},
+    // Step 4: Transition / Crossfade / Event / Param
+    {"AddTransition",         l_Animator_AddTransition},
+    {"ClearTransitions",      l_Animator_ClearTransitions},
+    {"GetTransitionCount",    l_Animator_GetTransitionCount},
+    {"Crossfade",             l_Animator_Crossfade},
+    {"IsCrossfading",         l_Animator_IsCrossfading},
+    {"GetCrossfadeProgress",  l_Animator_GetCrossfadeProgress},
+    {"GetCrossfadeTarget",    l_Animator_GetCrossfadeTarget},
+    {"AddEvent",              l_Animator_AddEvent},
+    {"ClearEvents",           l_Animator_ClearEvents},
+    {"GetEventCount",         l_Animator_GetEventCount},
+    {"SetParam",              l_Animator_SetParam},
+    {"GetParam",              l_Animator_GetParam},
+    {"HasParam",              l_Animator_HasParam},
     // 生命周期
-    {"IsAlive",           l_Animator_IsAlive},
-    {"Delete",            l_Animator_Delete},
-    {"__gc",              l_Animator_GC},
-    {"__tostring",        l_Animator_ToString},
+    {"IsAlive",               l_Animator_IsAlive},
+    {"Delete",                l_Animator_Delete},
+    {"__gc",                  l_Animator_GC},
+    {"__tostring",            l_Animator_ToString},
     {nullptr, nullptr},
 };
 

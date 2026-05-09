@@ -1,6 +1,6 @@
 # ChocoLight Lua API 模块索引
 
-ChocoLight Lua 引擎当前共 **56 个 `Light.*` 模块**,按用途分组列出。所有模块通过 `require 'Light.XXX'` 加载。
+ChocoLight Lua 引擎已演进至 **80+ 个 `Light.*` 模块**（核心 + Phase C-K + Phase AM~AV），按用途分组列出。所有模块通过 `require 'Light.XXX'` 加载。
 
 ---
 
@@ -18,6 +18,8 @@ ChocoLight Lua 引擎当前共 **56 个 `Light.*` 模块**,按用途分组列出
 - [网络](#网络)
 - [物理 / ECS / 场景](#物理--ecs--场景)
 - [安全 / 工具](#安全--工具)
+- [骨骼动画 (Phase AV)](#骨骼动画-phase-av)
+- [SDL3 直接绑定 (Phase AR)](#sdl3-直接绑定-phase-ar)
 - [插件](#插件)
 
 ---
@@ -45,6 +47,8 @@ ChocoLight Lua 引擎当前共 **56 个 `Light.*` 模块**,按用途分组列出
 | `Light.Graphics.Shader` | GLSL Shader 程序 |
 | `Light.Graphics.SpriteAnimation` | 精灵动画 (帧序列 + 时间轴) |
 | `Light.Graphics.Tilemap` | 瓦片地图 |
+| `Light.Graphics.Mesh` | 3D 静态 mesh + glTF 加载 (Phase AS) |
+| `Light.Graphics.Material` | PBR 材质 (baseColor / metallic / roughness / emissive / textures, Phase AS) |
 
 详见 `docs/api/Light_Graphics*.md`。
 
@@ -58,6 +62,10 @@ ChocoLight Lua 引擎当前共 **56 个 `Light.*` 模块**,按用途分组列出
 | `Light.AV.Audio` | 音频播放 (miniaudio) |
 | `Light.AV.AudioData` | PCM 数据缓冲 |
 | `Light.AV.Video` | 视频解码 (FFmpeg 动态加载,可选) |
+| `Light.Audio` | SDL3 audio device + stream + 回调 (Phase AM/AN 全新绑定 + 回调补完) |
+| `Light.Audio.Sound` | 3D 空间化音源 (位置/速度/距离衰减, Phase AT) |
+| `Light.Audio.SoundGroup` | 音源分组混音 + 总线 (Phase AT) |
+| `Light.Audio.Effect` | 音效 (Reverb / Echo / Filter, Phase AT) |
 
 详见 `docs/api/Light_AV*.md`。
 
@@ -153,6 +161,7 @@ ChocoLight Lua 引擎当前共 **56 个 `Light.*` 模块**,按用途分组列出
 |------|------|
 | `Light.Physics` | 物理顶层 (Box2D v2.4.1) |
 | `Light.Physics.World` | 物理世界 (重力 / 步进) |
+| `Light.Physics3D` | 3D 物理 (Bullet 3): RigidBody / Vehicle / SoftBody / Constraints (Phase AU) |
 | `Light.ECS` | Entity-Component-System |
 | `Light.Scene` | 场景树 + 节点 |
 
@@ -166,6 +175,56 @@ ChocoLight Lua 引擎当前共 **56 个 `Light.*` 模块**,按用途分组列出
 |------|------|
 | `Light.Crypto` | AES-128 / SHA / HMAC / Base64 |
 | `Light.Debug` | 反调试 (5 层检测 + 静默异常) |
+
+---
+
+## 骨骼动画 (Phase AV)
+
+| 模块 | 用途 |
+|------|------|
+| `Light.Animation` | 顶层: `LoadSkinnedGLTF` / `NewAnimator` / `DrawSkinnedMesh` |
+| `Light.Animation.Skeleton` | 骨骼数据 (≤ 64 关节) + bind pose + inverseBind 矩阵 |
+| `Light.Animation.Clip` | AnimationClip (LINEAR/STEP/CUBICSPLINE 采样器) |
+| `Light.Animation.Animator` | 状态机 + Transition / Crossfade / Event / Param + 关节矩阵计算 |
+| `Light.Animation.SkinnedMesh` | 蒙皮网格 (CPU skinning) |
+
+详见 `docs/api/Light_Animation.md`、`docs/Phase AV 骨骼动画/`。
+
+---
+
+## SDL3 直接绑定 (Phase AR)
+
+Phase AR 把 SDL3 的核心子系统直接以 1:1 形式暴露给 Lua（用于需要更底层控制的场景）。多数业务推荐使用上层封装（`Light.Graphics` / `Light.Audio` 等），SDL3 直接绑定适合编写引擎扩展或迁移 SDL2/3 C 代码的项目。
+
+| 模块 | SDL3 子系统 |
+|------|------------|
+| `Light.Touch` | 触摸输入（设备 + 手指 + 多点） |
+| `Light.Hints` | 引擎/平台 hint |
+| `Light.Time` | 时间 / 计时器 |
+| `Light.Endian` | 字节序 + 转换 |
+| `Light.Log` | SDL3 日志输出 |
+| `Light.Pixels` | 像素格式工具 |
+| `Light.BlendMode` | 混合模式枚举 |
+| `Light.Filesystem` | SDL3 文件系统 |
+| `Light.CPUInfo` | CPU 特性查询（与 `Light.System` 部分重叠） |
+| `Light.Error` | SDL3 错误字符串 |
+| `Light.Loadso` | 动态库加载 |
+| `Light.Version` | SDL3 版本信息 |
+| `Light.Properties` | KV 属性容器 |
+| `Light.Misc` | 杂项工具 |
+| `Light.Rect` | 矩形 / 点 数学 |
+| `Light.Atomic` | 原子操作 |
+| `Light.Mutex` | 互斥锁 / 信号量 / 条件变量 |
+| `Light.IOStream` | SDL_IOStream（替代 SDL_RWops） |
+| `Light.Surface` | CPU 像素 surface |
+| `Light.Keyboard` | 键盘状态查询 |
+| `Light.Mouse` | 鼠标状态查询 |
+| `Light.Joystick` | 原始 joystick（区别于上层 `Light.Gamepad`） |
+| `Light.Audio` | SDL3 audio device + stream（Phase AM 全新绑定 + Phase AN 回调补完） |
+| `Light.Event` | SDL3 事件队列 + 注册过滤器 |
+| `Light.Dialog` | 系统文件/文件夹选择对话框 |
+
+**注**：`Light.Input` 在 Phase AQ 增强了 TextInput / IME 子集（`StartTextInput` / `StopTextInput` / `SetIMERect` / `IsTextInputActive`），不是新模块。
 
 ---
 

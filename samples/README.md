@@ -36,6 +36,7 @@ light samples/demo_io_storage/main.lua
 | `demo_hidapi/` | `Light.Hidapi` | J |
 | `demo_haptic/` | `Light.Haptic`, `Light.System` | K |
 | `demo_physics3d/` | `Light.Physics3D` (RigidBody / Vehicle / SoftBody / Wheel info / Wind) | AU |
+| `demo_animation/` | `Light.Animation` (glTF Skeleton / Clip / Animator / Transition / Crossfade / Event / SkinnedMesh) | AV |
 | `perf_benchmark/` | 性能基准测试 | - |
 
 ## 设计约定

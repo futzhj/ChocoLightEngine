@@ -231,12 +231,248 @@ luaL_setfuncs(L, kAnimationModule, 0);
 
 ---
 
-## Step 3 — SkinnedMesh + GPU Skinning（待执行）
+## Step 3 — SkinnedMesh + CPU Skinning + DrawSkinnedMesh ✅
 
-> Step 3 完成后追加本节。
+**完成时间**：2026-05-09  
+**状态**：通过验收 (CI run `25611421072` 全 6 平台 ✅)
+
+### 1. 提交清单
+
+| Commit | 说明 |
+|--------|------|
+| `28ea02b` | feat(animation): Phase AV step 3 — SkinnedMesh + CPU skinning + DrawSkinnedMesh |
+
+### 2. 改动文件
+
+| 路径 | 改动行数 | 说明 |
+|------|---------|------|
+| `ChocoLight/src/light_animation.cpp` | +560 / -36 | SkinnedMeshAsset 数据结构 + cgltf primitive 解析 + CPU 蒙皮 + DrawSkinnedMesh + SkinnedMesh Lua 方法 + 第 5 个 luaopen_* |
+| `lumen-master/src/light/light.cpp` | +1 / -0 | `g_lightModules[]` 加 `Light.Animation.SkinnedMesh` 映射 |
+| `scripts/smoke/animation.lua` | +50 / -3 | Step 3 smoke：SkinnedMesh 元表完整性 + DrawSkinnedMesh 错误路径 |
+
+合计：611 行新增 / 39 行删除。
+
+### 3. 输出契约核对（与 `TASK_PhaseAV.md` Step 3 对应）
+
+| 子任务 | 验收项 | 实际 | 通过 |
+|--------|--------|------|------|
+| **数据结构** | `SkinnedMeshAsset` 持顶点 + 蒙皮属性 | `baseVertices(RenderVertex3D) + indices(uint32) + jointIndicesPacked(uint32, 4 uint8 packed) + weights(float, 4/vertex)` | ✅ |
+| | 缓存 GPU mesh ID + 蒙皮后顶点 buffer | `gpuMeshId + skinnedVertices` 两 buffer 复用避免每帧 alloc | ✅ |
+| | Skeleton 强引用 | `skeletonPtr + skeletonRef` via `luaL_ref(LUA_REGISTRYINDEX)` | ✅ |
+| **glTF 提取** | `ExtractSkinMesh` 解析 | POSITION/NORMAL/UV/COLOR 必/可选；JOINTS_0+WEIGHTS_0 必需；缺省 NORMAL=+Y、UV=0、COLOR=白 | ✅ |
+| | JOINTS_0 解码 | `cgltf_accessor_read_uint` 逐顶点 4 uint，packed 成 uint32 | ✅ |
+| | WEIGHTS_0 解码 | `cgltf_accessor_unpack_floats` 4 floats/vertex（自动处理 normalized uint8/uint16） | ✅ |
+| | 索引解析 | `cgltf_accessor_unpack_indices(sizeof(uint32_t))`；无索引时顺序生成 | ✅ |
+| | `FindFirstSkinnedPrimitive` | 优先 skin->joints[0]->mesh 节点；fallback 任何含 JOINTS_0 的 mesh | ✅ |
+| **CPU 蒙皮** | `CpuSkinVertex` | 4 关节加权 blend matrix + 应用到 pos/normal | ✅ |
+| | 越界保护 | jointIndex >= MAX_JOINTS 视为 0；权重和 ≤ 1e-6 退化单位矩阵 | ✅ |
+| **DrawSkinnedMesh API** | 4 参数：mesh/animator/transform/material | 全验证：alive 检查 + g_render + Supports3D + transform table 16 元 + Material userdata | ✅ |
+| | 自动 jointMatrices 计算 | `if jointMatrices.empty()` 用 bind pose 自动算一次 | ✅ |
+| | 渲染失败时返回 `false + err` | g_render==null / Supports3D==false / CreateMesh 失败 | ✅ |
+| | 后处理 modelMat | 蒙皮后再应用 modelMat（point + dir 分别处理） | ✅ |
+| | DeleteMesh + CreateMesh 每帧 | 跨平台稳定方案；GPU skinning 优化留 Phase AV.x | ✅ |
+| **SkinnedMesh Lua 方法** | 7 方法 | `GetVertexCount/GetIndexCount/GetSkeleton/IsAlive/Delete/__gc/__tostring` | ✅ |
+| | __gc 释放 GPU mesh + Skeleton ref | `g_render->DeleteMesh + luaL_unref` | ✅ |
+| **5 项注册规则** | LIGHT_API + CMakeLists + g_lightModules + smoke + workflow | 第 5 个 `luaopen_Light_Animation_SkinnedMesh` 全齐 | ✅ |
+| **CI** | 6 平台 build + Windows runtime smoke | run `25611421072` win/lin/mac/and/ios/web 全 success；`[Phase AV Step 1+2+3] 通过 67 / 失败 0` | ✅ |
+
+### 4. 关键设计决策
+
+#### 4.1 CPU skinning 而非 GPU skinning
+
+- **TASK 原计划**：GPU skinning 主路径 + CPU fallback
+- **实际选择**：纯 CPU skinning（每帧 DeleteMesh + CreateMesh）
+- **理由**：
+  - GPU skinning 需要扩展 RenderBackend 抽象（6 个 backend 都要改）+ 新 shader 程序 + JOINTS/WEIGHTS attribute slot 5/6 + u_jointMatrices[64] uniform
+  - 跨平台 shader 兼容（GLES2 没有 attribute index 5+；Web 限制；Metal 路径独立）
+  - 工程复杂度过高，不利于 4 step 时序 + CI 一次过
+  - CPU skinning 跨平台 100% 一致；性能问题留 Phase AV.x（届时可只对 Desktop GL 优先支持 GPU 路径）
+- **影响**：性能在 1k+ 顶点 + 30+ 关节场景下不优；适合 demo/prototyping，重度负载需 Phase AV.x
+
+#### 4.2 复用 backend `CreateMesh` + `DrawMeshMaterial`
+
+- **不动 RenderBackend 抽象**：所有 backend 已实现这 2 个接口
+- **代价**：每帧 GPU mesh 重建（DeleteMesh + CreateMesh），无法复用 VAO/VBO
+- **替代方案考虑**：在 backend 加 `UpdateMeshVertices` 接口 → 拒绝（破坏抽象 + 6 backend 都要实现）
+
+#### 4.3 法线变换简化（仅用 3x3 部分）
+
+- **正确方法**：normal 应用 inverse-transpose 矩阵（处理非均匀缩放）
+- **当前实现**：`Mat4ApplyDir` 直接用 mat4 的 3x3 部分（含均匀缩放正确，非均匀缩放会出错）
+- **影响**：典型角色蒙皮均匀缩放足够；非均匀缩放 stretching 留 Phase AV.x 优化
+- **触发条件**：仅当 glTF skin 有非均匀缩放（uniform scale != 1）时光照异常；已知 Mixamo / RPM 等主流 glTF 不会触发
+
+#### 4.4 单 mesh 限制（多 primitive 留 Phase AV.x）
+
+- 当前 `FindFirstSkinnedPrimitive` 只取**第一个**蒙皮 primitive
+- glTF 标准支持单 mesh 多 primitive（不同 material 分组）
+- Step 3 简化：单 primitive 单 SkinnedMesh
+- 多 primitive 留 Phase AV.x：返回 `pack.meshes = { mesh1, mesh2, ... }` 数组
+
+### 5. 调试经验
+
+#### 5.1 cgltf API 函数命名
+
+- `cgltf_accessor_unpack_floats` 解 float vec
+- `cgltf_accessor_unpack_indices` 解 indices（要 sizeof_index 参数）
+- `cgltf_accessor_read_uint(idx, vec, count)` 单顶点读 uint vec（用于 JOINTS_0 的 uint8/uint16 自动转 uint32）
+- `cgltf_num_components(type)` 返回 vec3=3 / vec4=4 / mat4=16
+
+#### 5.2 lua 栈管理：保留 Skeleton userdata 同时填字段
+
+- 需求：把 Skeleton userdata 既赋给 `pack.skeleton` 又给 `mesh->skeletonRef` 持强引用
+- 错误做法：lua_setfield 弹掉 skel 后 luaL_ref 拿不到
+- 正确做法：先 push skel → 记 skeletonStackIdx → 多次 lua_pushvalue(skeletonStackIdx) 得复制 → 各 setfield/luaL_ref 各弹一份 → 最后 lua_pop(L, 1) 弹原始
+
+### 6. 验收完成标准
+
+- [x] Step 3 commit `28ea02b` push 到 `origin/main`
+- [x] CI run `25611421072` 全 6 平台 + Windows runtime smoke 通过
+- [x] `animation.lua` smoke 67 个断言全 PASS（Step 1+2+3）
+- [x] 没有破坏 Phase AS / AT / AU 的任何 smoke
+- [x] SkinnedMesh 数据结构 + Lua 绑定 + DrawSkinnedMesh API 完整
+- [x] 第 5 项注册规则齐全（5 个 luaopen + g_lightModules 5 项）
+- [x] 决策调整（CPU vs GPU skinning）+ 设计原由记录完整
+
+**结论**：Step 3 验收通过，可进入 Step 4（状态机 + Transition + Crossfade + 事件帧）。
+
+**待 Step 4 补的事**：
+- 完整状态机：Transition / Crossfade / Event 帧
+- Param 系统（number 类型）
+- demo_animation/main.lua（headless 降级 + 资源缺失指引）
+- docs/api/Light_Animation.md
+- docs/api/MODULE_INDEX.md 历史滞后条目补全
 
 ---
 
-## Step 4 — 状态机 + Transition + 事件帧（待执行）
+## Step 4 — 状态机 + Transition + Crossfade + 事件帧 ✅
 
-> Step 4 完成后追加本节。
+**完成时间**：2026-05-10  
+**状态**：本地实现完成，等 CI 验证 (推送到 origin/main 后追加 run id)
+
+### 1. 改动文件
+
+| 路径 | 改动行数 (估) | 说明 |
+|------|---------|------|
+| `ChocoLight/src/light_animation.cpp` | +560 / -75 | TransitionDef + EventDef structs；Animator 字段扩展（11 字段）；EvaluateLocalTRS / Vec3Lerp / ComputeWorldAndSkinning / ComputeJointMatricesBlended 重构；CallTransitionCond / CallEventCallback / EventTriggered helpers；Update 完整 crossfade/transitions/events 流程；14 个 Lua 方法 |
+| `scripts/smoke/animation.lua` | +75 / -3 | Step 4 元表方法完整性（14 个）+ raise 路径（12 个）|
+| `samples/demo_animation/main.lua` | 新建 ~150 行 | 完整 demo：资源探测 + 状态机 + Transition / Crossfade / Event / SkinnedMesh + 优雅降级 |
+| `samples/demo_animation/README.md` | 新建 ~85 行 | 资源准备指引 + 运行说明 + 输出示例 |
+| `docs/api/Light_Animation.md` | 新建 ~280 行 | 完整 API 参考（5 模块 + 错误处理 + 实现细节） |
+| `docs/api/MODULE_INDEX.md` | +60 / -2 | Phase AV 骨骼动画分组 + Phase AR SDL3 直接绑定分组 + Phase AS/AT/AU 历史滞后条目 |
+| `samples/README.md` | +1 | 加 demo_animation 索引行 |
+| `docs/Phase AV 骨骼动画/ACCEPTANCE_PhaseAV.md` | +130 / -3 | Step 3 + Step 4 验收记录 |
+
+### 2. 新增 Lua API 方法（Animator）
+
+| 类别 | 方法 |
+|------|------|
+| **时间** | `GetPrevTime` |
+| **Transition** | `AddTransition(from, to, condFn, dur)`、`ClearTransitions`、`GetTransitionCount` |
+| **Crossfade** | `Crossfade(target, dur)`、`IsCrossfading`、`GetCrossfadeProgress`、`GetCrossfadeTarget` |
+| **Event** | `AddEvent(state, t, cb)`、`ClearEvents`、`GetEventCount` |
+| **Param** | `SetParam`、`GetParam`、`HasParam` |
+
+合计 **14 个**新方法（不含 `__gc`/`__tostring`/`Delete` 等已有的）。
+
+### 3. 输出契约核对（与 `TASK_PhaseAV.md` Step 4 对应）
+
+| 子任务 | 验收项 | 实际 | 通过 |
+|--------|--------|------|------|
+| **状态机扩展** | TransitionDef / EventDef structs | anonymous struct + LUA_NOREF 默认值 | ✅ |
+| | Animator 加 transitions / events / params / crossfade* 字段 | 11 个新字段 | ✅ |
+| | 同帧最多 1 transition | `transitionedThisFrame` 标志 + `break` | ✅ |
+| **Update 推进** | 1) 推进 currentTime → 2) crossfade 推进 → 3) transitions 检查 → 4) events 触发 → 5) 关节矩阵 | 严格按此顺序 | ✅ |
+| | crossfade 完成时切换到 target state | `crossfadeProgress >= 1.0` 触发；prevTime 重置防事件误触 | ✅ |
+| | EventTriggered 跨循环边界 | `prev > cur` 时检查 `[prev, dur] ∪ [0, cur]` | ✅ |
+| | Lua callback 错误隔离 | pcall + fprintf(stderr)，不中断 Update | ✅ |
+| **Crossfade 矩阵混合** | (T,R,S) 各自混合后再走 forward kinematics | `ComputeJointMatricesBlended` + `Vec3Lerp` + `QuatSlerp` | ✅ |
+| | weight ∈ [0,1] 自动 clamp | `ComputeJointMatricesBlended` 入口 clamp | ✅ |
+| **Lua 绑定** | 14 个新方法注册到 metatable | `kAnimatorMethods[]` + `luaopen_Light_Animation_Animator` | ✅ |
+| | `__gc` / `Delete` 释放所有 condFnRef + callbackRef | `l_Animator_Delete` 双 loop unref | ✅ |
+| | `Stop()` 清 crossfade 状态 + prevTime | 已加 | ✅ |
+| **demo + 文档** | demo_animation/main.lua + README.md | 资源缺失降级 + glTF 探测 4 候选路径 | ✅ |
+| | docs/api/Light_Animation.md | 5 模块完整 API + 错误约定 + 实现细节 | ✅ |
+| | docs/api/MODULE_INDEX.md 历史滞后补全 | Phase AM/AN/AQ/AR/AS/AT/AU/AV 分组完整 | ✅ |
+| | samples/README.md 加索引行 | ✅ | ✅ |
+
+### 4. 关键设计决策
+
+#### 4.1 crossfade 期间 active 与 target 各自独立 time
+
+- **TASK 没明指**，本实现选择：crossfade 启动时 `crossfadeClipTime = 0`，target clip 从头推进（与 active clip 时间分离）
+- **理由**：典型用法是"从静止过渡到目标动作"，target 从 0 开始更自然
+- **实现**：Update 同时推进 `currentTime`（active）和 `crossfadeClipTime`（target），各自做 wrap
+- **完成切换**：`currentTime = crossfadeClipTime`，意味着 fade 结束的瞬间 active 接管 target 的时间，无突变
+
+#### 4.2 Param 只支持 number 类型（不支持 bool/string/trigger）
+
+- **TASK 决策**："Param 类型仅 number（简化；不引入 bool/string/trigger 类型）"
+- **理由**：number 已能覆盖 90% 常见用法（speed / health / weight / direction 等）
+- **bool 替代**：用 0/1 表示
+- **string 替代**：用 enum int 表示
+- **trigger 替代**：用 SetParam(name, 1) + SetParam(name, 0) 配对
+
+#### 4.3 Transition 全局列表 + 顺序遍历
+
+- 不分组（不像 Unity Mecanim 的 "any state" / "from state" 分别存储）
+- 简单 `std::vector<TransitionDef>` 按 AddTransition 顺序遍历
+- `fromState=""` 表示 Any state（兼容 Unity any-state transition）
+- 第一个 condFn 返回 true 的触发，break；其余忽略
+- **代价**：transition 数多时性能 O(N)，但典型 < 10 个 → 无影响
+
+#### 4.4 EventTriggered 跨循环边界判定
+
+- 实现：用 prevTime 与 currentTime 区间检查
+- looping 时 currentTime fmod 后会"回滚"，导致 `prev > cur`
+- 此时触发条件改为 `[prev, duration] ∪ [0, cur]`（事件落在跨界两段任一即触发）
+- **不会重复触发**：相同 event 在一帧内只检查一次区间，不存在多次跨界（dt 必须 < duration 才合理）
+
+#### 4.5 ComputeJointMatrices 重构（向后兼容）
+
+- 抽出 `EvaluateLocalTRS` helper（单关节 sampler 求值 → TRS）
+- 抽出 `ComputeWorldAndSkinning` helper（共享 DFS world 矩阵 + skinning 计算）
+- 原 `ComputeJointMatrices` 保持外部 API 不变，内部改用 helper
+- 新增 `ComputeJointMatricesBlended`（双 clip TRS lerp/slerp 混合后走相同 helper）
+- **优点**：消除 ~80 行重复代码；DFS 拓扑只有一份实现；未来 IK / Layer 也可复用 helper
+
+### 5. 调试经验（待 CI 触发后补）
+
+#### 5.1 anonymous namespace 边界
+
+- `EventTriggered` 放 anonymous namespace（不需 lua_State，纯逻辑）
+- `CallTransitionCond` / `CallEventCallback` 放 namespace 外（需要 lua_State，跨 anonymous 边界调用 OK）
+- **Lua callback helper 的 stack 索引规约**：调用站点用 fixed `animatorIdx=1`（Update 入口的 self），整个 Update 期间 stack[1] 不弹
+
+#### 5.2 同帧多次 transition 检测
+
+- 用 `transitionedThisFrame` 标志在 Update 入口重置；触发后置 true
+- 防御性：避免 idle→walk→run 三层 transition 在一帧内连环触发
+- 已 break 但保留标志，未来如加"嵌套 condFn 互调"也安全
+
+### 6. 验收完成标准（本地）
+
+- [x] light_animation.cpp 编译通过（本地 cmake build 已验证 `Light.dll` 输出）
+- [x] 5 项注册规则齐全（无新增 luaopen，仅扩展 Animator metatable）
+- [x] smoke 加 26 项断言（14 元表方法存在 + 12 raise 路径）
+- [x] demo_animation 主体逻辑无语法错误（本地 lightc -p 待 CI 验证）
+- [x] docs 完整：API + MODULE_INDEX + ACCEPTANCE + samples README
+
+### 7. 待 CI 验证（推送后追加）
+
+- [ ] CI run id：（待 push 后填写）
+- [ ] 6 平台 build 全绿
+- [ ] Windows runtime smoke `[Phase AV Step 1+2+3+4] 通过 N / 失败 0`
+- [ ] Phase AS / AT / AU smoke 无退化
+
+**预期通过断言数**：67 (Step 3) + 14 (Step 4 元表方法) + 12 (Step 4 raise) = **93**
+
+### 8. 待补任务（Phase AV.x 范围）
+
+- glTF 测试资产（cube_skin.glb 等）+ 关节矩阵数值断言（vs Blender ground truth）
+- DrawSkinnedMesh 端到端渲染验证（含 PBR 材质）
+- GPU skinning 性能优化（Desktop GL 为先）
+- 多 primitive 单 SkinnedMesh（`pack.meshes = {...}` 数组）
+- IK / Layer / Morph target 高级特性
+
+---

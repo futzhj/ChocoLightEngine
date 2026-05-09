@@ -222,12 +222,76 @@ if mt_skmesh and type(mt_skmesh.GetVertexCount) == 'function' then
 end
 
 -- 备注: DrawSkinnedMesh 成功路径需 (mesh, animator) userdata, 需 glTF 资源 + 渲染上下文,
--- 留 Step 4 引入 demo_animation 时补 / Phase AV.x 引入测试资产时补完整端到端.
-print('  INFO: DrawSkinnedMesh 数值/渲染验证留 Step 4 demo_animation + Phase AV.x 资产')
+-- 留 Phase AV.x 引入测试资产时补完整端到端.
+print('  INFO: DrawSkinnedMesh 数值/渲染验证留 Phase AV.x 资产')
+
+-- ==================== [10] Step 4: 状态机扩展 (Transition / Crossfade / Event / Param) 元表 ====================
+
+print('[10] Step 4: Animator 元表 Step 4 方法完整性')
+
+if mt_animator and type(mt_animator) == 'table' then
+    local need_step4 = {
+        -- Transition
+        'AddTransition', 'ClearTransitions', 'GetTransitionCount',
+        -- Crossfade
+        'Crossfade', 'IsCrossfading', 'GetCrossfadeProgress', 'GetCrossfadeTarget',
+        -- Event
+        'AddEvent', 'ClearEvents', 'GetEventCount',
+        -- Param
+        'SetParam', 'GetParam', 'HasParam',
+        -- Time
+        'GetPrevTime',
+    }
+    for _, mname in ipairs(need_step4) do
+        CHECK(type(mt_animator[mname]) == 'function', 'Animator:' .. mname .. ' 存在 (Step 4)')
+    end
+else
+    print('  SKIP: 无法访问 Animator 元表 (Step 4)')
+end
+
+-- ==================== [11] Step 4: Animator Step 4 方法 raise 路径 (无 self 调用) ====================
+
+print('[11] Step 4: 状态机扩展方法 raise 路径')
+
+if mt_animator and type(mt_animator.AddTransition) == 'function' then
+    local ok_at  = pcall(mt_animator.AddTransition)            -- 无参数
+    local ok_ct  = pcall(mt_animator.ClearTransitions)         -- 无 self
+    local ok_cf  = pcall(mt_animator.Crossfade)                -- 无参数
+    local ok_isc = pcall(mt_animator.IsCrossfading)            -- 无 self
+    local ok_ae  = pcall(mt_animator.AddEvent)                 -- 无参数
+    local ok_ce  = pcall(mt_animator.ClearEvents)              -- 无 self
+    local ok_sp  = pcall(mt_animator.SetParam)                 -- 无参数
+    local ok_gp  = pcall(mt_animator.GetParam)                 -- 无参数
+    local ok_hp  = pcall(mt_animator.HasParam)                 -- 无参数
+    local ok_pt  = pcall(mt_animator.GetPrevTime)              -- 无 self
+    local ok_cp  = pcall(mt_animator.GetCrossfadeProgress)     -- 无 self
+    local ok_ct2 = pcall(mt_animator.GetCrossfadeTarget)       -- 无 self
+    CHECK(ok_at  == false, 'Animator.AddTransition() 无参数 → raise')
+    CHECK(ok_ct  == false, 'Animator.ClearTransitions() 无 self → raise')
+    CHECK(ok_cf  == false, 'Animator.Crossfade() 无参数 → raise')
+    CHECK(ok_isc == false, 'Animator.IsCrossfading() 无 self → raise')
+    CHECK(ok_ae  == false, 'Animator.AddEvent() 无参数 → raise')
+    CHECK(ok_ce  == false, 'Animator.ClearEvents() 无 self → raise')
+    CHECK(ok_sp  == false, 'Animator.SetParam() 无参数 → raise')
+    CHECK(ok_gp  == false, 'Animator.GetParam() 无参数 → raise')
+    CHECK(ok_hp  == false, 'Animator.HasParam() 无参数 → raise')
+    CHECK(ok_pt  == false, 'Animator.GetPrevTime() 无 self → raise')
+    CHECK(ok_cp  == false, 'Animator.GetCrossfadeProgress() 无 self → raise')
+    CHECK(ok_ct2 == false, 'Animator.GetCrossfadeTarget() 无 self → raise')
+
+    -- AddTransition 第 4 参数必须是 function (其他参数是 string), 错误参数应 raise
+    -- 注: 没有 Animator userdata 这步会被 self 检查先挡, 此段并非测参数类型
+    -- 真正的成功路径需 Animator userdata, 留 Phase AV.x 引入测试 glTF 资产时补
+else
+    print('  SKIP: Step 4 元表方法不可用')
+end
+
+print('  INFO: Step 4 状态机/事件/Crossfade 端到端语义验证 (Update 时序 / fade 中点权重 / 事件循环边界)')
+print('        留 Phase AV.x 引入测试 glTF 资产时补完整成功路径 (与 Step 1+2+3 数值断言策略一致)')
 
 -- ==================== 汇总 ====================
 
-print(string.format('[Phase AV Step 1+2+3] 通过 %d / 失败 %d', PASS, FAIL))
+print(string.format('[Phase AV Step 1+2+3+4] 通过 %d / 失败 %d', PASS, FAIL))
 if FAIL > 0 then
     error(string.format('animation smoke 失败: %d 个断言不通过', FAIL))
 end
