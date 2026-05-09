@@ -1,8 +1,9 @@
 -- scripts/smoke/animation.lua
--- Phase AV Step 1+2 smoke: Light.Animation 模块加载 + Skeleton/Clip/Animator + 状态机 + 错误边界
+-- Phase AV Step 1+2+3 smoke: Light.Animation 模块加载 + Skeleton/Clip/Animator/SkinnedMesh + 状态机 + 错误边界
 --
 -- Step 1: 加载失败路径 + API 表面
--- Step 2: 状态机 API + sampler/关节矩阵错误路径 (数值验证需 Step 3 的 glTF 资源)
+-- Step 2: 状态机 API + sampler/关节矩阵错误路径
+-- Step 3: SkinnedMesh API 表面 + DrawSkinnedMesh 错误路径 (headless 不渲染)
 --
 -- 不依赖任何外部 glTF 资源 (与 Phase AS mesh_3d.lua 风格一致)
 -- 兼容 Lua 5.1 (lightc -p 严格语法检查 + light.exe runtime)
@@ -42,6 +43,7 @@ print('[1] Light.Animation 顶层 API 表')
 CHECK(type(Anim) == 'table', 'Light.Animation 是 table')
 CHECK(type(Anim.LoadSkinnedGLTF) == 'function', 'Anim.LoadSkinnedGLTF is function')
 CHECK(type(Anim.NewAnimator) == 'function', 'Anim.NewAnimator is function')
+CHECK(type(Anim.DrawSkinnedMesh) == 'function', 'Anim.DrawSkinnedMesh is function (Step 3)')
 
 -- ==================== [2] LoadSkinnedGLTF 错误路径 ====================
 
@@ -80,10 +82,12 @@ print('[4] 子模块独立 require')
 local sk_mod  = safe_require('Light.Animation.Skeleton')
 local cl_mod  = safe_require('Light.Animation.Clip')
 local an_mod  = safe_require('Light.Animation.Animator')
+local sm_mod  = safe_require('Light.Animation.SkinnedMesh')   -- Step 3
 
 CHECK(sk_mod ~= nil, 'require Light.Animation.Skeleton 不崩')
 CHECK(cl_mod ~= nil, 'require Light.Animation.Clip 不崩')
 CHECK(an_mod ~= nil, 'require Light.Animation.Animator 不崩')
+CHECK(sm_mod ~= nil, 'require Light.Animation.SkinnedMesh 不崩 (Step 3)')
 
 -- ==================== [5] Step 2: Animator 状态机 API 错误路径 ====================
 
@@ -169,9 +173,61 @@ else
     print('  SKIP: 无法获取 Animator 元表方法')
 end
 
+-- ==================== [8] Step 3: SkinnedMesh 元表 + DrawSkinnedMesh 错误路径 ====================
+
+print('[8] Step 3: SkinnedMesh 元表方法完整性')
+
+local mt_skmesh = debug and debug.getregistry and debug.getregistry()['Light.Animation.SkinnedMesh']
+
+if mt_skmesh and type(mt_skmesh) == 'table' then
+    local need_skmesh = {
+        'GetVertexCount', 'GetIndexCount', 'GetSkeleton',
+        'IsAlive', 'Delete'
+    }
+    for _, mname in ipairs(need_skmesh) do
+        CHECK(type(mt_skmesh[mname]) == 'function', 'SkinnedMesh:' .. mname .. ' 存在')
+    end
+else
+    print('  SKIP: 无法访问 SkinnedMesh 元表')
+end
+
+print('[9] Step 3: DrawSkinnedMesh 错误路径')
+
+-- 不传参 → raise
+local ok_draw1 = pcall(Anim.DrawSkinnedMesh)
+CHECK(ok_draw1 == false, 'DrawSkinnedMesh() 无参数 → raise')
+
+-- 第一参数错 → raise
+local ok_draw2 = pcall(Anim.DrawSkinnedMesh, 'not a mesh')
+CHECK(ok_draw2 == false, 'DrawSkinnedMesh(string,...) → raise')
+
+-- 第一参数 table → raise
+local ok_draw3 = pcall(Anim.DrawSkinnedMesh, {})
+CHECK(ok_draw3 == false, 'DrawSkinnedMesh(table,...) → raise')
+
+-- 第一参数 nil → raise
+local ok_draw4 = pcall(Anim.DrawSkinnedMesh, nil, nil)
+CHECK(ok_draw4 == false, 'DrawSkinnedMesh(nil,nil) → raise')
+
+-- 元表方法直接调 (无 self) → raise
+if mt_skmesh and type(mt_skmesh.GetVertexCount) == 'function' then
+    local ok_skmesh1 = pcall(mt_skmesh.GetVertexCount)
+    local ok_skmesh2 = pcall(mt_skmesh.GetIndexCount)
+    local ok_skmesh3 = pcall(mt_skmesh.GetSkeleton)
+    local ok_skmesh4 = pcall(mt_skmesh.Delete)
+    CHECK(ok_skmesh1 == false, 'SkinnedMesh.GetVertexCount() 无 self → raise')
+    CHECK(ok_skmesh2 == false, 'SkinnedMesh.GetIndexCount() 无 self → raise')
+    CHECK(ok_skmesh3 == false, 'SkinnedMesh.GetSkeleton() 无 self → raise')
+    CHECK(ok_skmesh4 == false, 'SkinnedMesh.Delete() 无 self → raise')
+end
+
+-- 备注: DrawSkinnedMesh 成功路径需 (mesh, animator) userdata, 需 glTF 资源 + 渲染上下文,
+-- 留 Step 4 引入 demo_animation 时补 / Phase AV.x 引入测试资产时补完整端到端.
+print('  INFO: DrawSkinnedMesh 数值/渲染验证留 Step 4 demo_animation + Phase AV.x 资产')
+
 -- ==================== 汇总 ====================
 
-print(string.format('[Phase AV Step 1+2] 通过 %d / 失败 %d', PASS, FAIL))
+print(string.format('[Phase AV Step 1+2+3] 通过 %d / 失败 %d', PASS, FAIL))
 if FAIL > 0 then
     error(string.format('animation smoke 失败: %d 个断言不通过', FAIL))
 end

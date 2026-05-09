@@ -1,23 +1,22 @@
 /**
  * @file light_animation.cpp
- * @brief Light.Animation — 3D 骨骼动画 + 动画状态机 (Phase AV Step 1)
+ * @brief Light.Animation — 3D 骨骼动画 + 动画状态机 (Phase AV Step 1/2/3)
  *
  * 模块布局:
- *   Light.Animation              顶层 (LoadSkinnedGLTF / NewAnimator)
- *   Light.Animation.Skeleton     骨骼层级 (静态, 关节树 + 反向绑定矩阵)
- *   Light.Animation.Clip         动画时间轴 (静态, 一组 sampler)
- *   Light.Animation.Animator     运行时 (Step 1 占位, Step 2/4 完整化)
+ *   Light.Animation               顶层 (LoadSkinnedGLTF / NewAnimator / DrawSkinnedMesh)
+ *   Light.Animation.Skeleton      骨骼层级 (静态, 关节树 + 反向绑定矩阵)
+ *   Light.Animation.Clip          动画时间轴 (静态, 一组 sampler)
+ *   Light.Animation.Animator      运行时 (sampler 评估 + 关节变换树 + 状态机基础)
+ *   Light.Animation.SkinnedMesh   蒙皮网格 (CPU 蒙皮 + 复用 backend CreateMesh) — Step 3
  *
- * Step 1 范围: Skeleton + Clip 数据结构 + Lua 绑定 + Animator 占位
- *   - 不实现 sampler 评估 (Step 2)
- *   - 不实现关节变换树前向计算 (Step 2)
- *   - 不实现 SkinnedMesh 渲染 (Step 3)
- *   - 不实现状态机 (Step 4)
+ * 当前覆盖: Step 1 + Step 2 + Step 3
+ *   - Step 4 状态机完整化 (Transition/Crossfade/事件帧) 待实施
  *
  * 见 docs/Phase AV 骨骼动画/{ALIGNMENT,CONSENSUS,DESIGN,TASK}_PhaseAV.md
  */
 
 #include "light.h"
+#include "render_backend.h"   // Step 3: g_render + RenderVertex3D + MaterialDesc
 
 #include <vector>
 #include <string>
@@ -34,6 +33,9 @@ extern "C" {
 #include "cgltf.h"   // glTF 2.0 解析 (single-header), 已在 third_party
 }
 
+// Step 3: 复用 light_graphics_material.cpp 暴露的 Material userdata 检查
+extern "C" const MaterialDesc* CheckMaterialUserdata(lua_State* L, int idx);
+
 // ==================== 常量 ====================
 
 static constexpr int MAX_JOINTS         = 64;        // 关节数硬上限 (uniform 16 KB / Mat4×64)
@@ -43,9 +45,10 @@ static constexpr int FLOATS_R           = 4;         // rotation (quat wxyz)
 static constexpr int FLOATS_S           = 3;         // scale
 
 // userdata 元表名 (与 Lua 模块名对应)
-static const char* SKELETON_MT  = "Light.Animation.Skeleton";
-static const char* CLIP_MT      = "Light.Animation.Clip";
-static const char* ANIMATOR_MT  = "Light.Animation.Animator";
+static const char* SKELETON_MT      = "Light.Animation.Skeleton";
+static const char* CLIP_MT          = "Light.Animation.Clip";
+static const char* ANIMATOR_MT      = "Light.Animation.Animator";
+static const char* SKINNED_MESH_MT  = "Light.Animation.SkinnedMesh";   // Step 3
 
 // ==================== 数据结构 ====================
 
@@ -123,6 +126,32 @@ struct Animator {
     bool alive = true;
 };
 
+// Step 3: 蒙皮网格资产 (CPU 蒙皮路径)
+//   - 持原始顶点 (POSITION/NORMAL/UV/COLOR) 备份, 每帧用 jointMatrices CPU 变换后重建 GPU mesh
+//   - JOINTS_0 (4 关节索引/顶点, packed uint32) 与 WEIGHTS_0 (4 weights/顶点) 仅 CPU 用, 不上传
+//   - 暂不实现 GPU skinning (留 Phase AV.x 性能优化阶段)
+struct SkinnedMeshAsset {
+    // 原始顶点 (绑定姿态; 每帧蒙皮变换的输入)
+    std::vector<RenderVertex3D> baseVertices;
+    std::vector<uint32_t>       indices;
+
+    // 蒙皮属性: 每顶点 4 关节索引 (小端 packed) + 4 权重
+    std::vector<uint32_t> jointIndicesPacked; // 每元素打包 4 个 uint8 关节 idx
+    std::vector<float>    weights;            // 4 floats / 顶点 (按顺序排列)
+
+    // 关联的骨骼 (强引用 via registry ref)
+    Skeleton* skeletonPtr = nullptr;
+    int       skeletonRef = LUA_NOREF;
+
+    // 缓存的 GPU mesh (每帧 DrawSkinnedMesh 时 DeleteMesh + CreateMesh)
+    uint32_t gpuMeshId = 0;
+
+    // 上一次蒙皮后的顶点 (供 backend CreateMesh 用; 复用 buffer 避免每帧 alloc)
+    std::vector<RenderVertex3D> skinnedVertices;
+
+    bool alive = true;
+};
+
 } } // namespace LT::Anim
 
 using LT::Anim::Skeleton;
@@ -130,6 +159,7 @@ using LT::Anim::AnimationClip;
 using LT::Anim::Sampler;
 using LT::Anim::JointNode;
 using LT::Anim::Animator;
+using LT::Anim::SkinnedMeshAsset;
 using LT::Anim::InterpMode;
 using LT::Anim::ChannelTarget;
 
@@ -438,6 +468,54 @@ static void ComputeJointMatrices(Skeleton* sk, AnimationClip* clip, float t,
     }
 }
 
+// ==================== Step 3: CPU 蒙皮 ====================
+
+// 把 mat4 (列主序) 应用到点 (w=1) 或向量 (w=0)
+inline void Mat4ApplyPoint(const float* m, const float* in3, float* out3) {
+    out3[0] = m[0] * in3[0] + m[4] * in3[1] + m[8]  * in3[2] + m[12];
+    out3[1] = m[1] * in3[0] + m[5] * in3[1] + m[9]  * in3[2] + m[13];
+    out3[2] = m[2] * in3[0] + m[6] * in3[1] + m[10] * in3[2] + m[14];
+}
+
+inline void Mat4ApplyDir(const float* m, const float* in3, float* out3) {
+    // 仅 3x3 部分 (忽略平移); 注意法线严格应该用 inverse-transpose, 但常规均匀缩放下足够
+    out3[0] = m[0] * in3[0] + m[4] * in3[1] + m[8]  * in3[2];
+    out3[1] = m[1] * in3[0] + m[5] * in3[1] + m[9]  * in3[2];
+    out3[2] = m[2] * in3[0] + m[6] * in3[1] + m[10] * in3[2];
+}
+
+// 对单顶点做 4 关节加权变换 (CPU 蒙皮核心)
+//   matrices: 关节蒙皮矩阵 (N*16, 列主序)
+//   joints:   该顶点 4 个关节索引
+//   weights:  该顶点 4 个权重 (期望和约 1.0; 不做强制归一化以匹配 glTF 数据)
+//   in/out: 顶点位置 + 法线 (3 floats each)
+static void CpuSkinVertex(const float* matrices, int jointCount,
+                          const uint8_t* joints, const float* weights,
+                          const float* posIn, const float* nrmIn,
+                          float* posOut, float* nrmOut) {
+    // 计算 weighted blend matrix (4x4 加权和)
+    float blend[16] = {0};
+    float wsum = 0;
+    for (int k = 0; k < 4; ++k) {
+        float w = weights[k];
+        if (w <= 0) continue;
+        int j = joints[k];
+        if (j < 0 || j >= jointCount) continue;     // 越界保护
+        const float* M = &matrices[j * 16];
+        for (int i = 0; i < 16; ++i) {
+            blend[i] += M[i] * w;
+        }
+        wsum += w;
+    }
+    // 权重和为 0 (异常: 顶点未绑定任何关节) → 退化为单位矩阵
+    if (wsum <= 1e-6f) {
+        std::memset(blend, 0, sizeof(blend));
+        blend[0] = blend[5] = blend[10] = blend[15] = 1.0f;
+    }
+    Mat4ApplyPoint(blend, posIn, posOut);
+    Mat4ApplyDir(blend,  nrmIn, nrmOut);
+}
+
 } // anonymous namespace
 
 // ==================== userdata 检查辅助 ====================
@@ -469,6 +547,16 @@ static Animator* CheckAnimator(lua_State* L, int idx) {
     return *pp;
 }
 
+// Step 3: SkinnedMesh userdata 检查
+static SkinnedMeshAsset* CheckSkinnedMesh(lua_State* L, int idx) {
+    SkinnedMeshAsset** pp = (SkinnedMeshAsset**)luaL_checkudata(L, idx, SKINNED_MESH_MT);
+    if (!pp || !*pp) {
+        luaL_error(L, "SkinnedMesh: invalid userdata");
+        return nullptr;
+    }
+    return *pp;
+}
+
 // 创建 Skeleton userdata (持指针, __gc 时 delete)
 static void PushSkeletonUserdata(lua_State* L, Skeleton* sk) {
     Skeleton** pp = (Skeleton**)lua_newuserdata(L, sizeof(Skeleton*));
@@ -486,6 +574,12 @@ static void PushAnimatorUserdata(lua_State* L, Animator* an) {
     Animator** pp = (Animator**)lua_newuserdata(L, sizeof(Animator*));
     *pp = an;
     luaL_getmetatable(L, ANIMATOR_MT);
+    lua_setmetatable(L, -2);
+}
+static void PushSkinnedMeshUserdata(lua_State* L, SkinnedMeshAsset* sm) {
+    SkinnedMeshAsset** pp = (SkinnedMeshAsset**)lua_newuserdata(L, sizeof(SkinnedMeshAsset*));
+    *pp = sm;
+    luaL_getmetatable(L, SKINNED_MESH_MT);
     lua_setmetatable(L, -2);
 }
 
@@ -585,6 +679,156 @@ static Skeleton* BuildSkeleton(const cgltf_skin* skin, std::string& errOut) {
     }
 
     return sk;
+}
+
+// ==================== Step 3: cgltf → SkinnedMeshAsset 提取 ====================
+
+// 在 cgltf_primitive::attributes 中查找指定 name 的 attribute, 找不到返回 nullptr
+static const cgltf_attribute* FindAttr(const cgltf_primitive* prim, const char* name) {
+    for (cgltf_size i = 0; i < prim->attributes_count; ++i) {
+        if (prim->attributes[i].name && std::strcmp(prim->attributes[i].name, name) == 0) {
+            return &prim->attributes[i];
+        }
+    }
+    return nullptr;
+}
+
+// 从 cgltf_primitive 提取蒙皮所需所有数据 (POSITION/NORMAL/UV/COLOR + JOINTS_0 + WEIGHTS_0 + indices)
+// 失败时填 errOut 返回 false. 若 prim 缺 JOINTS_0/WEIGHTS_0 视为非蒙皮 mesh 也返回失败.
+static bool ExtractSkinMesh(const cgltf_primitive* prim,
+                             SkinnedMeshAsset* outMesh,
+                             std::string& errOut) {
+    if (!prim) { errOut = "primitive is null"; return false; }
+    if (prim->type != cgltf_primitive_type_triangles) {
+        errOut = "primitive is not triangles";
+        return false;
+    }
+
+    // POSITION (必须 vec3 float)
+    const cgltf_attribute* posAttr = FindAttr(prim, "POSITION");
+    if (!posAttr || !posAttr->data) {
+        errOut = "skinned primitive missing POSITION";
+        return false;
+    }
+    cgltf_size vCount = posAttr->data->count;
+    if (vCount == 0) {
+        errOut = "skinned primitive has 0 vertices";
+        return false;
+    }
+
+    // JOINTS_0 + WEIGHTS_0 (蒙皮必须)
+    const cgltf_attribute* joinAttr = FindAttr(prim, "JOINTS_0");
+    const cgltf_attribute* wAttr    = FindAttr(prim, "WEIGHTS_0");
+    if (!joinAttr || !joinAttr->data || !wAttr || !wAttr->data) {
+        errOut = "primitive missing JOINTS_0 or WEIGHTS_0 (not a skinned mesh)";
+        return false;
+    }
+    if (joinAttr->data->count != vCount || wAttr->data->count != vCount) {
+        errOut = "JOINTS_0 / WEIGHTS_0 count mismatches POSITION count";
+        return false;
+    }
+
+    // 可选 attributes
+    const cgltf_attribute* nrmAttr   = FindAttr(prim, "NORMAL");
+    const cgltf_attribute* uvAttr    = FindAttr(prim, "TEXCOORD_0");
+    const cgltf_attribute* colorAttr = FindAttr(prim, "COLOR_0");
+
+    // 解包 POSITION (3 floats / vertex)
+    std::vector<float> pos(vCount * 3);
+    cgltf_accessor_unpack_floats(posAttr->data, pos.data(), pos.size());
+
+    // 解包可选 attributes (默认值)
+    std::vector<float> nrm(vCount * 3, 0.0f);
+    if (nrmAttr && nrmAttr->data && nrmAttr->data->count == vCount) {
+        cgltf_accessor_unpack_floats(nrmAttr->data, nrm.data(), nrm.size());
+    } else {
+        for (cgltf_size i = 0; i < vCount; ++i) nrm[i * 3 + 1] = 1.0f;     // 默认 +Y
+    }
+
+    std::vector<float> uv(vCount * 2, 0.0f);
+    if (uvAttr && uvAttr->data && uvAttr->data->count == vCount) {
+        cgltf_accessor_unpack_floats(uvAttr->data, uv.data(), uv.size());
+    }
+
+    std::vector<float> color(vCount * 4, 1.0f);    // 默认白
+    if (colorAttr && colorAttr->data && colorAttr->data->count == vCount) {
+        // cgltf_num_components 给当前 accessor type 的分量数 (3 或 4)
+        cgltf_size cc = cgltf_num_components(colorAttr->data->type);
+        std::vector<float> tmp(vCount * cc);
+        cgltf_accessor_unpack_floats(colorAttr->data, tmp.data(), tmp.size());
+        for (cgltf_size i = 0; i < vCount; ++i) {
+            color[i * 4 + 0] = tmp[i * cc + 0];
+            color[i * 4 + 1] = tmp[i * cc + 1];
+            color[i * 4 + 2] = tmp[i * cc + 2];
+            color[i * 4 + 3] = (cc >= 4) ? tmp[i * cc + 3] : 1.0f;
+        }
+    }
+
+    // 解包 JOINTS_0: 用 cgltf_accessor_read_uint 逐顶点读 4 个 uint
+    outMesh->jointIndicesPacked.resize(vCount);
+    for (cgltf_size i = 0; i < vCount; ++i) {
+        cgltf_uint vec[4] = {0, 0, 0, 0};
+        cgltf_accessor_read_uint(joinAttr->data, i, vec, 4);
+        // 关节索引上限 64 → 单字节足够; 越界保护
+        uint8_t b0 = (uint8_t)((vec[0] < (cgltf_uint)MAX_JOINTS) ? vec[0] : 0);
+        uint8_t b1 = (uint8_t)((vec[1] < (cgltf_uint)MAX_JOINTS) ? vec[1] : 0);
+        uint8_t b2 = (uint8_t)((vec[2] < (cgltf_uint)MAX_JOINTS) ? vec[2] : 0);
+        uint8_t b3 = (uint8_t)((vec[3] < (cgltf_uint)MAX_JOINTS) ? vec[3] : 0);
+        outMesh->jointIndicesPacked[i] = (uint32_t)b0 | ((uint32_t)b1 << 8) |
+                                          ((uint32_t)b2 << 16) | ((uint32_t)b3 << 24);
+    }
+
+    // 解包 WEIGHTS_0: 4 floats / vertex (cgltf 自动处理 normalized uint8/uint16)
+    outMesh->weights.resize(vCount * 4);
+    cgltf_accessor_unpack_floats(wAttr->data, outMesh->weights.data(), outMesh->weights.size());
+
+    // 拼装 RenderVertex3D 数组 (蒙皮基础数据, 每顶点 12 floats)
+    outMesh->baseVertices.resize(vCount);
+    for (cgltf_size i = 0; i < vCount; ++i) {
+        RenderVertex3D& v = outMesh->baseVertices[i];
+        v.x  = pos[i * 3 + 0]; v.y  = pos[i * 3 + 1]; v.z  = pos[i * 3 + 2];
+        v.nx = nrm[i * 3 + 0]; v.ny = nrm[i * 3 + 1]; v.nz = nrm[i * 3 + 2];
+        v.u  = uv[i * 2 + 0];  v.v  = uv[i * 2 + 1];
+        v.r  = color[i * 4 + 0]; v.g = color[i * 4 + 1];
+        v.b  = color[i * 4 + 2]; v.a = color[i * 4 + 3];
+    }
+
+    // 索引: cgltf_accessor_unpack_indices 直接解包到 uint32
+    if (prim->indices && prim->indices->count > 0) {
+        outMesh->indices.resize(prim->indices->count);
+        // cgltf v1.13: cgltf_accessor_unpack_indices(accessor, out, sizeof_index, count)
+        cgltf_accessor_unpack_indices(prim->indices, outMesh->indices.data(),
+                                       sizeof(uint32_t), outMesh->indices.size());
+    } else {
+        // 无索引: 顺序索引 (适用于 cgltf 解析后的非索引 triangles)
+        outMesh->indices.resize(vCount);
+        for (cgltf_size i = 0; i < vCount; ++i) outMesh->indices[i] = (uint32_t)i;
+    }
+
+    // 蒙皮后顶点缓冲: 与 baseVertices 同大小, 内容初始化为 baseVertices
+    outMesh->skinnedVertices = outMesh->baseVertices;
+    return true;
+}
+
+// 在 cgltf_data 中查找第一个有 mesh 的 node 关联的 primitive (优先 skin->joints[0]->mesh)
+// 返回 nullptr 表示该 glTF 无蒙皮 mesh
+static const cgltf_primitive* FindFirstSkinnedPrimitive(const cgltf_data* data,
+                                                         const cgltf_skin* skin) {
+    // 策略 1: 找第一个 skin == 当前 skin 的 node 上的 mesh primitive
+    for (cgltf_size i = 0; i < data->nodes_count; ++i) {
+        const cgltf_node& n = data->nodes[i];
+        if (n.skin == skin && n.mesh && n.mesh->primitives_count > 0) {
+            return &n.mesh->primitives[0];
+        }
+    }
+    // 策略 2: 退而求其次, 找任何有 JOINTS_0 attribute 的 mesh primitive
+    for (cgltf_size i = 0; i < data->meshes_count; ++i) {
+        const cgltf_mesh& m = data->meshes[i];
+        for (cgltf_size p = 0; p < m.primitives_count; ++p) {
+            if (FindAttr(&m.primitives[p], "JOINTS_0")) return &m.primitives[p];
+        }
+    }
+    return nullptr;
 }
 
 // ==================== cgltf → AnimationClip 提取 ====================
@@ -715,26 +959,39 @@ static int l_Anim_LoadSkinnedGLTF(lua_State* L) {
         clips.push_back(c);
     }
 
-    cgltf_free(data);    // skin/animation 指针之后不可访问 (我们已经拷贝完所需数据)
+    // Step 3: 提取 SkinnedMesh (在 cgltf_free 前, 因为 prim 指针指向 cgltf_data 内部)
+    SkinnedMeshAsset* skMesh = nullptr;
+    const cgltf_primitive* prim = FindFirstSkinnedPrimitive(data, skin);
+    if (prim) {
+        skMesh = new SkinnedMeshAsset();
+        std::string meshErr;
+        if (!ExtractSkinMesh(prim, skMesh, meshErr)) {
+            // 提取失败: 仅释放 mesh 资产, 不视为致命错误 (允许仅骨骼/动画的 glTF)
+            delete skMesh;
+            skMesh = nullptr;
+        } else {
+            skMesh->skeletonPtr = sk;     // 关联骨骼 (registry ref 在下面 push 后设)
+        }
+    }
+
+    cgltf_free(data);    // skin/animation/primitive 指针之后不可访问 (我们已经拷贝完所需数据)
 
     // 输出 table
     lua_newtable(L);
 
     // pack.skeleton
     PushSkeletonUserdata(L, sk);
-    lua_setfield(L, -2, "skeleton");
+    int skeletonStackIdx = lua_gettop(L);     // 记下 Skeleton userdata 在栈上的位置 (供 mesh ref 用)
+    lua_pushvalue(L, skeletonStackIdx);
+    lua_setfield(L, -3, "skeleton");          // table.skeleton = skeleton
 
-    // pack.clips = { [name] = clip, ... } + 整数索引数组形式 (兼容 ipairs)
+    // pack.clips = { [name] = clip, ... }
     lua_newtable(L);
     for (size_t i = 0; i < clips.size(); ++i) {
-        // map by name
         PushClipUserdata(L, clips[i]);
         lua_setfield(L, -2, clips[i]->name.c_str());
-        // 也按索引 (1-based) 复用 - 推同样的 userdata 引用 (但 userdata 是单一所有权,
-        // 多次 push 同一指针会让多个 __gc 都 delete, 导致 double free)
-        // 故索引数组只存 name 字符串便于遍历:
     }
-    lua_setfield(L, -2, "clips");
+    lua_setfield(L, -3, "clips");
 
     // pack.clipNames = { name1, name2, ... } 数组顺序
     lua_newtable(L);
@@ -742,12 +999,21 @@ static int l_Anim_LoadSkinnedGLTF(lua_State* L) {
         lua_pushstring(L, clips[i]->name.c_str());
         lua_rawseti(L, -2, (int)i + 1);
     }
-    lua_setfield(L, -2, "clipNames");
+    lua_setfield(L, -3, "clipNames");
 
-    // pack.mesh: Step 3 填充 (Step 1 用 nil)
-    lua_pushnil(L);
-    lua_setfield(L, -2, "mesh");
+    // pack.mesh: Step 3 — SkinnedMesh userdata 或 nil
+    if (skMesh) {
+        // 先把 Skeleton userdata 放到 registry, 防止被 GC (mesh 保活 skeleton)
+        lua_pushvalue(L, skeletonStackIdx);
+        skMesh->skeletonRef = luaL_ref(L, LUA_REGISTRYINDEX);
+        PushSkinnedMeshUserdata(L, skMesh);
+    } else {
+        lua_pushnil(L);
+    }
+    lua_setfield(L, -3, "mesh");
 
+    // 弹出栈顶的 Skeleton userdata (复制保留, 字段已 setfield)
+    lua_pop(L, 1);
     return 1;
 }
 
@@ -1293,6 +1559,224 @@ static int l_Animator_ToString(lua_State* L) {
     return 1;
 }
 
+// ==================== Step 3: SkinnedMesh 方法 ====================
+
+static int l_SkinnedMesh_GetVertexCount(lua_State* L) {
+    SkinnedMeshAsset* sm = CheckSkinnedMesh(L, 1);
+    lua_pushinteger(L, (lua_Integer)sm->baseVertices.size());
+    return 1;
+}
+
+static int l_SkinnedMesh_GetIndexCount(lua_State* L) {
+    SkinnedMeshAsset* sm = CheckSkinnedMesh(L, 1);
+    lua_pushinteger(L, (lua_Integer)sm->indices.size());
+    return 1;
+}
+
+// 返回 Skeleton userdata (复用 mesh 持的 registry ref, 保持身份一致)
+static int l_SkinnedMesh_GetSkeleton(lua_State* L) {
+    SkinnedMeshAsset* sm = CheckSkinnedMesh(L, 1);
+    if (sm->skeletonRef != LUA_NOREF) {
+        lua_rawgeti(L, LUA_REGISTRYINDEX, sm->skeletonRef);
+    } else {
+        lua_pushnil(L);
+    }
+    return 1;
+}
+
+static int l_SkinnedMesh_IsAlive(lua_State* L) {
+    SkinnedMeshAsset* sm = CheckSkinnedMesh(L, 1);
+    lua_pushboolean(L, sm->alive ? 1 : 0);
+    return 1;
+}
+
+static int l_SkinnedMesh_Delete(lua_State* L) {
+    SkinnedMeshAsset** pp = (SkinnedMeshAsset**)luaL_checkudata(L, 1, SKINNED_MESH_MT);
+    if (pp && *pp) {
+        SkinnedMeshAsset* sm = *pp;
+        sm->alive = false;
+        // 释放 GPU mesh (若已创建)
+        if (sm->gpuMeshId && g_render) {
+            g_render->DeleteMesh(sm->gpuMeshId);
+            sm->gpuMeshId = 0;
+        }
+        // 释放 Skeleton 强引用
+        if (sm->skeletonRef != LUA_NOREF) {
+            luaL_unref(L, LUA_REGISTRYINDEX, sm->skeletonRef);
+            sm->skeletonRef = LUA_NOREF;
+        }
+        delete sm;
+        *pp = nullptr;
+    }
+    return 0;
+}
+
+static int l_SkinnedMesh_GC(lua_State* L) {
+    return l_SkinnedMesh_Delete(L);
+}
+
+static int l_SkinnedMesh_ToString(lua_State* L) {
+    SkinnedMeshAsset** pp = (SkinnedMeshAsset**)luaL_checkudata(L, 1, SKINNED_MESH_MT);
+    if (!pp || !*pp) {
+        lua_pushstring(L, "SkinnedMesh(dead)");
+    } else {
+        lua_pushfstring(L, "SkinnedMesh(verts=%d, idx=%d)",
+                        (int)(*pp)->baseVertices.size(),
+                        (int)(*pp)->indices.size());
+    }
+    return 1;
+}
+
+// ==================== Step 3: Light.Animation.DrawSkinnedMesh ====================
+
+// 从 Lua table (16 floats, 列主序) 读 mat4. 返回 false 表示不是 16 元 table.
+static bool ReadMat4FromTable(lua_State* L, int idx, float* outMat) {
+    if (lua_type(L, idx) != LUA_TTABLE) return false;
+    for (int i = 0; i < 16; ++i) {
+        lua_rawgeti(L, idx, i + 1);
+        if (lua_type(L, -1) != LUA_TNUMBER) {
+            lua_pop(L, 1);
+            return false;
+        }
+        outMat[i] = (float)lua_tonumber(L, -1);
+        lua_pop(L, 1);
+    }
+    return true;
+}
+
+// Light.Animation.DrawSkinnedMesh(mesh, animator, transform_mat4_or_nil, material_or_nil)
+//   - mesh:           SkinnedMesh userdata (必需)
+//   - animator:       Animator userdata (必需; 提供 jointMatrices)
+//   - transform_mat4: 16-element table (列主序) 或 nil (单位矩阵)
+//   - material:       Material userdata (Phase AS.4) 或 nil (默认白底 PBR)
+// 返回: ok (bool), err (string 或 nil)
+static int l_Anim_DrawSkinnedMesh(lua_State* L) {
+    SkinnedMeshAsset* sm = CheckSkinnedMesh(L, 1);
+    Animator* an = CheckAnimator(L, 2);
+    if (!sm->alive || !an->alive) {
+        lua_pushboolean(L, 0);
+        lua_pushstring(L, "skinned mesh or animator is dead");
+        return 2;
+    }
+    if (!sm->skeletonPtr || !sm->skeletonPtr->alive) {
+        lua_pushboolean(L, 0);
+        lua_pushstring(L, "skeleton is dead");
+        return 2;
+    }
+
+    // 检查渲染后端
+    if (!g_render) {
+        lua_pushboolean(L, 0);
+        lua_pushstring(L, "graphics not initialized");
+        return 2;
+    }
+    if (!g_render->Supports3D()) {
+        lua_pushboolean(L, 0);
+        lua_pushstring(L, "render backend does not support 3D mesh");
+        return 2;
+    }
+
+    // 获取 transform mat4 (可选)
+    float modelMat[16];
+    {
+        bool hasTransform = (lua_type(L, 3) == LUA_TTABLE);
+        if (hasTransform) {
+            if (!ReadMat4FromTable(L, 3, modelMat)) {
+                lua_pushboolean(L, 0);
+                lua_pushstring(L, "transform must be a 16-element table or nil");
+                return 2;
+            }
+        } else {
+            // 单位矩阵
+            std::memset(modelMat, 0, sizeof(modelMat));
+            modelMat[0] = modelMat[5] = modelMat[10] = modelMat[15] = 1.0f;
+        }
+    }
+
+    // 获取 Material (可选)
+    const MaterialDesc* matDesc = nullptr;
+    MaterialDesc fallbackMat = {};
+    if (lua_type(L, 4) == LUA_TUSERDATA) {
+        matDesc = CheckMaterialUserdata(L, 4);
+        if (!matDesc) {
+            lua_pushboolean(L, 0);
+            lua_pushstring(L, "material must be a Material userdata or nil");
+            return 2;
+        }
+    } else {
+        // 默认 PBR 白底
+        fallbackMat.mode = 1;     // PBR
+        fallbackMat.color[0] = fallbackMat.color[1] = fallbackMat.color[2] = fallbackMat.color[3] = 1.0f;
+        fallbackMat.metallic = 0.0f;
+        fallbackMat.roughness = 0.8f;
+        fallbackMat.normalScale = 1.0f;
+        fallbackMat.occlusionStrength = 1.0f;
+        fallbackMat.alphaMode = 0;
+        fallbackMat.alphaCutoff = 0.5f;
+        matDesc = &fallbackMat;
+    }
+
+    // 确保 animator 有最新关节矩阵 (若用户未调 Update, 自动用 bind pose 计算)
+    if (an->jointMatrices.empty()) {
+        ComputeJointMatrices(an->skeletonPtr, an->activeClip, an->currentTime, an->jointMatrices);
+    }
+
+    // CPU 蒙皮: 每顶点用 jointMatrices 加权变换 pos/normal
+    int N    = (int)sm->baseVertices.size();
+    int jCnt = (int)(an->jointMatrices.size() / 16);
+    if (sm->skinnedVertices.size() != (size_t)N) sm->skinnedVertices.resize(N);
+
+    for (int i = 0; i < N; ++i) {
+        const RenderVertex3D& vBase = sm->baseVertices[i];
+        RenderVertex3D&       vOut  = sm->skinnedVertices[i];
+        // 拷贝 UV / color (蒙皮不变)
+        vOut.u = vBase.u; vOut.v = vBase.v;
+        vOut.r = vBase.r; vOut.g = vBase.g; vOut.b = vBase.b; vOut.a = vBase.a;
+
+        uint32_t packed = sm->jointIndicesPacked[i];
+        uint8_t joints[4] = {
+            (uint8_t)(packed & 0xFF),
+            (uint8_t)((packed >> 8)  & 0xFF),
+            (uint8_t)((packed >> 16) & 0xFF),
+            (uint8_t)((packed >> 24) & 0xFF),
+        };
+        const float* w = &sm->weights[(size_t)i * 4];
+        float posIn[3] = { vBase.x, vBase.y, vBase.z };
+        float nrmIn[3] = { vBase.nx, vBase.ny, vBase.nz };
+        float posOut[3], nrmOut[3];
+        CpuSkinVertex(an->jointMatrices.data(), jCnt, joints, w,
+                       posIn, nrmIn, posOut, nrmOut);
+
+        // 应用 modelMat (transform) 在蒙皮之上
+        vOut.x  = modelMat[0] * posOut[0] + modelMat[4] * posOut[1] + modelMat[8]  * posOut[2] + modelMat[12];
+        vOut.y  = modelMat[1] * posOut[0] + modelMat[5] * posOut[1] + modelMat[9]  * posOut[2] + modelMat[13];
+        vOut.z  = modelMat[2] * posOut[0] + modelMat[6] * posOut[1] + modelMat[10] * posOut[2] + modelMat[14];
+        vOut.nx = modelMat[0] * nrmOut[0] + modelMat[4] * nrmOut[1] + modelMat[8]  * nrmOut[2];
+        vOut.ny = modelMat[1] * nrmOut[0] + modelMat[5] * nrmOut[1] + modelMat[9]  * nrmOut[2];
+        vOut.nz = modelMat[2] * nrmOut[0] + modelMat[6] * nrmOut[1] + modelMat[10] * nrmOut[2];
+    }
+
+    // 重建 GPU mesh: 性能不优 (DeleteMesh + CreateMesh) 但跨平台稳定;
+    // GPU skinning 优化留 Phase AV.x (需要 backend 抽象扩展 + shader 支持)
+    if (sm->gpuMeshId) {
+        g_render->DeleteMesh(sm->gpuMeshId);
+        sm->gpuMeshId = 0;
+    }
+    sm->gpuMeshId = g_render->CreateMesh(sm->skinnedVertices.data(), N,
+                                           sm->indices.data(), (int)sm->indices.size());
+    if (!sm->gpuMeshId) {
+        lua_pushboolean(L, 0);
+        lua_pushstring(L, "CreateMesh failed (GPU upload error)");
+        return 2;
+    }
+
+    // 调用 backend 渲染
+    g_render->DrawMeshMaterial(sm->gpuMeshId, matDesc);
+
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
 // ==================== 元表注册辅助 ====================
 
 static void RegisterMetatable(lua_State* L, const char* mtName, const luaL_Reg* methods) {
@@ -1358,19 +1842,33 @@ static const luaL_Reg kAnimatorMethods[] = {
     {nullptr, nullptr},
 };
 
+// Step 3: SkinnedMesh 元表方法
+static const luaL_Reg kSkinnedMeshMethods[] = {
+    {"GetVertexCount",  l_SkinnedMesh_GetVertexCount},
+    {"GetIndexCount",   l_SkinnedMesh_GetIndexCount},
+    {"GetSkeleton",     l_SkinnedMesh_GetSkeleton},
+    {"IsAlive",         l_SkinnedMesh_IsAlive},
+    {"Delete",          l_SkinnedMesh_Delete},
+    {"__gc",            l_SkinnedMesh_GC},
+    {"__tostring",      l_SkinnedMesh_ToString},
+    {nullptr, nullptr},
+};
+
 static const luaL_Reg kAnimationModule[] = {
     {"LoadSkinnedGLTF", l_Anim_LoadSkinnedGLTF},
     {"NewAnimator",     l_Anim_NewAnimator},
+    {"DrawSkinnedMesh", l_Anim_DrawSkinnedMesh},     // Step 3
     {nullptr, nullptr},
 };
 
 // ==================== Lua 模块入口 (5 个 luaopen, 全部 LIGHT_API) ====================
 
 extern "C" LIGHT_API int luaopen_Light_Animation(lua_State* L) {
-    // 注册三个元表 (即使本模块已加载多次也无碍, luaL_newmetatable 是幂等的)
-    RegisterMetatable(L, SKELETON_MT, kSkeletonMethods);
-    RegisterMetatable(L, CLIP_MT,     kClipMethods);
-    RegisterMetatable(L, ANIMATOR_MT, kAnimatorMethods);
+    // 注册四个元表 (即使本模块已加载多次也无碍, luaL_newmetatable 是幂等的)
+    RegisterMetatable(L, SKELETON_MT,     kSkeletonMethods);
+    RegisterMetatable(L, CLIP_MT,         kClipMethods);
+    RegisterMetatable(L, ANIMATOR_MT,     kAnimatorMethods);
+    RegisterMetatable(L, SKINNED_MESH_MT, kSkinnedMeshMethods);    // Step 3
 
     // 注意: 不能用 luaL_register(L, "Light.Animation", ...) 因为 ChocoLight 的 Light
     // 是 OOP 框架特殊全局, 其 __index/__newindex 拦截会触发 'object is a static module'.
@@ -1395,6 +1893,13 @@ extern "C" LIGHT_API int luaopen_Light_Animation_Clip(lua_State* L) {
 
 extern "C" LIGHT_API int luaopen_Light_Animation_Animator(lua_State* L) {
     RegisterMetatable(L, ANIMATOR_MT, kAnimatorMethods);
+    lua_newtable(L);
+    return 1;
+}
+
+// Step 3: SkinnedMesh 子模块入口
+extern "C" LIGHT_API int luaopen_Light_Animation_SkinnedMesh(lua_State* L) {
+    RegisterMetatable(L, SKINNED_MESH_MT, kSkinnedMeshMethods);
     lua_newtable(L);
     return 1;
 }
