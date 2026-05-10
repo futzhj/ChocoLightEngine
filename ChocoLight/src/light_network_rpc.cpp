@@ -169,8 +169,8 @@ static cJSON* PushLuaAsCJson(lua_State* L, int idx) {
             return cJSON_CreateString(s ? s : "");
         }
         case LUA_TTABLE: {
-            // 判 array 还是 object: 用 lua_rawlen + 遍历检查 1..n 都是 number key
-            int len = (int)lua_rawlen(L, absIdx);
+            // 判 array 还是 object: 用 lua_objlen (Lua 5.1 API) + 遍历检查 1..n 都是 number key
+            int len = (int)lua_objlen(L, absIdx);
             bool isArray = (len > 0);
             if (isArray) {
                 // 检查每个 1..len 是否都存在 + 是否有非数字 key

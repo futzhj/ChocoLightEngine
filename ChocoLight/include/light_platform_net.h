@@ -197,6 +197,17 @@ const char* EnetPeerAddress(EnetPeer* peer);
 /// 查询 peer ID (host 内部分配的小整数, 0 ~ maxPeers-1)
 uint32_t    EnetPeerID(EnetPeer* peer);
 
+/// 广播数据到 host 下所有已连接 peer (Phase BC T8 房间事件 / 状态用)
+///   channel  = 0..N-1, 同 EnetSend
+///   reliable = true: 所有 peer 都用 RELIABLE flag; false: 默认 unsequenced
+/// 返回成功投递包数 (queue 入队, 不保证到达)
+int EnetBroadcast(EnetHost* host, int channel,
+                   const char* data, int len, bool reliable);
+
+/// 按 peer ID 查找并断开 (T8 房间 Kick 用)
+///   返回 true 表示找到并发出 disconnect 请求
+bool EnetDisconnectPeerById(EnetHost* host, uint32_t peerId, uint32_t userData);
+
 // ==================== 辅助 ====================
 
 /// 获取底层 libuv 事件循环 (高级用途)

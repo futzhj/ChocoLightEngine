@@ -226,6 +226,7 @@ set(LIGHT_SOURCES
     ${CHOCO_SRC}/light_network_packet.cpp
     ${CHOCO_SRC}/light_network_udp.cpp
     ${CHOCO_SRC}/light_network_rpc.cpp
+    ${CHOCO_SRC}/light_network_room.cpp
     ${CHOCO_SRC}/light_record.cpp
     ${CHOCO_SRC}/light_plugins.cpp
     ${CHOCO_SRC}/light_particles.cpp

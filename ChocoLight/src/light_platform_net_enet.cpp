@@ -249,6 +249,42 @@ uint32_t EnetPeerID(EnetPeer* peer) {
     return (uint32_t)((ENetPeer*)peer)->incomingPeerID;
 }
 
+int EnetBroadcast(EnetHost* host, int channel,
+                   const char* data, int len, bool reliable) {
+    if (!host || !data || len <= 0 || channel < 0) return 0;
+    auto* eh = (ENetHost*)host;
+    if ((size_t)channel >= eh->channelLimit) return 0;
+
+    enet_uint32 flags = reliable ? ENET_PACKET_FLAG_RELIABLE : 0;
+    ENetPacket* packet = enet_packet_create(data, (size_t)len, flags);
+    if (!packet) return 0;
+
+    // enet_host_broadcast 把 packet 推入所有已连接 peer 的发送队列.
+    // 它内部对每个 peer 调 enet_peer_send, 若 packet referenceCount 为 0
+    // 会 packet 自动释放, 否则保留. 不需手动 destroy 后续.
+    enet_host_broadcast(eh, (enet_uint8)channel, packet);
+
+    // 统计已连接 peer 数 (返回值语义"投递包数")
+    int sent = 0;
+    for (size_t i = 0; i < eh->peerCount; ++i) {
+        if (eh->peers[i].state == ENET_PEER_STATE_CONNECTED) ++sent;
+    }
+    return sent;
+}
+
+bool EnetDisconnectPeerById(EnetHost* host, uint32_t peerId, uint32_t userData) {
+    if (!host) return false;
+    auto* eh = (ENetHost*)host;
+    if ((size_t)peerId >= eh->peerCount) return false;
+    ENetPeer* p = &eh->peers[peerId];
+    if (p->state == ENET_PEER_STATE_DISCONNECTED ||
+        p->state == ENET_PEER_STATE_ZOMBIE) {
+        return false;
+    }
+    enet_peer_disconnect(p, (enet_uint32)userData);
+    return true;
+}
+
 }  // namespace PlatformNet
 
 #endif  // !__EMSCRIPTEN__
