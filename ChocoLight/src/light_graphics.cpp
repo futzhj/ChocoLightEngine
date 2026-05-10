@@ -440,6 +440,20 @@ static int l_GetMaxPointLights(lua_State* L) {
     return 1;
 }
 
+// ==================== Phase AW.x — Backend 内省 ====================
+// 返回当前渲染后端的静态名称字符串, 永不 raise / 永不返回 nil。
+// 已知返回值: "GL33Core" / "LegacyGL" / "None" (无后端) / "Unknown" (异常)
+// 用于调试 / sample 显示 / smoke 验证。
+static int l_Graphics_GetBackendName(lua_State* L) {
+    if (!g_render) {
+        lua_pushliteral(L, "None");
+        return 1;
+    }
+    const char* name = g_render->GetName();
+    lua_pushstring(L, (name && *name) ? name : "Unknown");
+    return 1;
+}
+
 // ==================== Phase AS.1 — Canvas 渲染目标栈 ====================
 // 设计: 软限制 8 层栈深度 (Q2 决策),超出仅警告不中断;
 //      Pop 在空栈时也仅警告不中断,确保 Lua 端误用不会崩。
@@ -1319,6 +1333,8 @@ static const luaL_Reg graphics_funcs[] = {
     {"ClearPointLights",           l_ClearPointLights},
     {"GetPointLightCount",         l_GetPointLightCount},
     {"GetMaxPointLights",          l_GetMaxPointLights},
+    // Phase AW.x — Backend 内省
+    {"GetBackendName",             l_Graphics_GetBackendName},
     // --- 元方法 ---
     {"__call",            l_Graphics_Call},
     {"__tostring",        l_Graphics_Tostring},
