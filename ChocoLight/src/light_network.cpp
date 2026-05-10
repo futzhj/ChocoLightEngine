@@ -395,6 +395,30 @@ static int l_Http_GetFD(lua_State* L) {
     return 1;
 }
 
+/// Phase AY T01: HttpContext userdata __gc — 修复 std::string recvBuf 析构泄漏
+//   placement new 构造的 std::string 必须显式析构, 否则 Lua GC 时只释放 raw memory
+//   导致 recvBuf 内堆内存泄漏 (大 buffer 长连接尤其严重).
+//   同时关闭未释放的 libuv handle 避免悬空回调.
+static const char* HTTP_CTX_MT = "Light.Network.Http.Userdata";
+
+static int l_Http_GC(lua_State* L) {
+    HttpContext* ctx = (HttpContext*)lua_touserdata(L, 1);
+    if (!ctx) return 0;
+    // 1. 关闭 libuv handle (避免悬空 read 回调访问已 GC 的 ctx)
+    if (ctx->handle) {
+        PlatformNet::Close(ctx->handle);
+        ctx->handle = nullptr;
+    }
+    // 2. 释放 self 表 ref (与 Close 路径一致)
+    if (ctx->selfRef != LUA_NOREF) {
+        luaL_unref(L, LUA_REGISTRYINDEX, ctx->selfRef);
+        ctx->selfRef = LUA_NOREF;
+    }
+    // 3. 显式析构 std::string (与 l_Http_Call 中 placement new 配对)
+    ctx->recvBuf.~basic_string();
+    return 0;
+}
+
 /// @lua_api Light.Network.Http.__call
 /// @brief 构造函数, 创建 HTTP 客户端实例
 /// @param ip string 服务器 IP/域名
@@ -414,6 +438,14 @@ static int l_Http_Call(lua_State* L) {
     ctx->L = nullptr;
     // 就地构造 std::string (userdata 内存已 memset 0, 手动初始化)
     new (&ctx->recvBuf) std::string();
+
+    // Phase AY T01: 设置 __gc 元表, 防止 Lua GC 时跳过 std::string 析构
+    //   luaL_newmetatable 幂等; 首次返回 1 时初始化, 之后只 lua_setmetatable
+    if (luaL_newmetatable(L, HTTP_CTX_MT)) {
+        lua_pushcfunction(L, l_Http_GC);
+        lua_setfield(L, -2, "__gc");
+    }
+    lua_setmetatable(L, -2);
 
     lua_setfield(L, 1, "__instance");
     return 0;
