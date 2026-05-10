@@ -113,6 +113,38 @@ if(NOT EMSCRIPTEN AND NOT ANDROID AND NOT CHOCO_IOS)
     add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/third_party/libuv ${CMAKE_CURRENT_BINARY_DIR}/libuv EXCLUDE_FROM_ALL)
 endif()
 
+# ==================== Phase BC T6: cJSON (FetchContent) ====================
+# cJSON v1.7.18 — JSON 解析器/构造器, MIT license
+# 用于 Phase BC RPC + Room state 序列化
+# 全平台启用 (含 Web), 因 cJSON 纯 C 无平台依赖
+#
+# 关键 option:
+#   ENABLE_CUSTOM_COMPILER_FLAGS=OFF: 关闭 cJSON 自带 -Werror -Wconversion 等
+#       (跨 GCC/Clang/MSVC 版本可能噪音, 我们用自己的 -Wall 规则)
+#   CJSON_OVERRIDE_BUILD_SHARED_LIBS=ON + CJSON_BUILD_SHARED_LIBS=OFF: 强制 STATIC
+#   ENABLE_TARGET_EXPORT=OFF: 不污染 install/export
+set(ENABLE_CJSON_TEST              OFF CACHE BOOL "" FORCE)
+set(ENABLE_CJSON_UTILS             OFF CACHE BOOL "" FORCE)
+set(ENABLE_CUSTOM_COMPILER_FLAGS   OFF CACHE BOOL "" FORCE)
+set(CJSON_OVERRIDE_BUILD_SHARED_LIBS ON  CACHE BOOL "" FORCE)
+set(CJSON_BUILD_SHARED_LIBS        OFF CACHE BOOL "" FORCE)
+set(ENABLE_TARGET_EXPORT           OFF CACHE BOOL "" FORCE)
+
+FetchContent_Declare(
+    cjson
+    GIT_REPOSITORY https://github.com/DaveGamble/cJSON.git
+    GIT_TAG        v1.7.18
+    GIT_SHALLOW    TRUE
+)
+FetchContent_MakeAvailable(cjson)
+
+# 修补: cJSON 上游不暴露 target_include_directories, 消费者拿不到 cJSON.h
+target_include_directories(cjson INTERFACE
+    $<BUILD_INTERFACE:${cjson_SOURCE_DIR}>
+)
+
+message(STATUS "cJSON: integrated via FetchContent (v1.7.18)")
+
 # ==================== Phase BC T1: ENet (FetchContent) ====================
 # ENet 1.3.18 — reliable UDP library, MIT license
 # 桌面 + Android + iOS 使用 (ENet 基于 BSD socket, 跨平台原生支持)
@@ -185,6 +217,7 @@ set(LIGHT_SOURCES
     ${CHOCO_SRC}/light_av.cpp
     ${CHOCO_SRC}/light_db.cpp
     ${CHOCO_SRC}/light_network.cpp
+    ${CHOCO_SRC}/light_network_packet.cpp
     ${CHOCO_SRC}/light_record.cpp
     ${CHOCO_SRC}/light_plugins.cpp
     ${CHOCO_SRC}/light_particles.cpp
@@ -408,6 +441,9 @@ if(NOT EMSCRIPTEN)
 else()
     target_compile_definitions(Light PRIVATE CHOCO_NET_ENET_ENABLED=0)
 endif()
+
+# Phase BC T6 — cJSON (RPC + Room 序列化, 全平台启用)
+target_link_libraries(Light PRIVATE cjson)
 
 # ==================== 编译定义 ====================
 
