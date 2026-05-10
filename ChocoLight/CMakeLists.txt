@@ -123,12 +123,18 @@ endif()
 #       (跨 GCC/Clang/MSVC 版本可能噪音, 我们用自己的 -Wall 规则)
 #   CJSON_OVERRIDE_BUILD_SHARED_LIBS=ON + CJSON_BUILD_SHARED_LIBS=OFF: 强制 STATIC
 #   ENABLE_TARGET_EXPORT=OFF: 不污染 install/export
-set(ENABLE_CJSON_TEST              OFF CACHE BOOL "" FORCE)
-set(ENABLE_CJSON_UTILS             OFF CACHE BOOL "" FORCE)
-set(ENABLE_CUSTOM_COMPILER_FLAGS   OFF CACHE BOOL "" FORCE)
-set(CJSON_OVERRIDE_BUILD_SHARED_LIBS ON  CACHE BOOL "" FORCE)
-set(CJSON_BUILD_SHARED_LIBS        OFF CACHE BOOL "" FORCE)
-set(ENABLE_TARGET_EXPORT           OFF CACHE BOOL "" FORCE)
+#
+# 兼容性修补: cJSON 1.7.18 的 CMakeLists.txt 用 cmake_minimum_required(VERSION 3.0),
+# 在 CMake 4.0+ (macOS-latest runner) 被拒绝 ("Compatibility with CMake < 3.5
+# has been removed from CMake"). 通过设置 CMAKE_POLICY_VERSION_MINIMUM=3.5
+# 强制兼容 (CMake 3.24+ 才读此变量, 旧 CMake 静默忽略, 不影响其他平台).
+set(CMAKE_POLICY_VERSION_MINIMUM    3.5 CACHE STRING "" FORCE)
+set(ENABLE_CJSON_TEST              OFF CACHE BOOL   "" FORCE)
+set(ENABLE_CJSON_UTILS             OFF CACHE BOOL   "" FORCE)
+set(ENABLE_CUSTOM_COMPILER_FLAGS   OFF CACHE BOOL   "" FORCE)
+set(CJSON_OVERRIDE_BUILD_SHARED_LIBS ON CACHE BOOL  "" FORCE)
+set(CJSON_BUILD_SHARED_LIBS        OFF CACHE BOOL   "" FORCE)
+set(ENABLE_TARGET_EXPORT           OFF CACHE BOOL   "" FORCE)
 
 FetchContent_Declare(
     cjson
