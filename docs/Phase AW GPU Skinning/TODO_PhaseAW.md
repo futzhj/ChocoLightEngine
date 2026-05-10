@@ -6,7 +6,11 @@
 
 ## 一、强烈建议跟进（P0）
 
-### 1.1 真机性能 baseline 测量
+### ✅ 1.1 真机性能 baseline 测量
+
+**已完成 (Phase AW.x)**：见 `samples/demo_skinning_perf/`。启动后自动跑 60 帧 CPU + 60 帧 GPU baseline 并打印对比表（含 speedup ratio）；OSD 实时显示 frame ms。详见 `docs/Phase AW.x/` 与 `samples/demo_skinning_perf/README.md`。
+
+**原文（保留以便回溯）**：
 
 **为什么**：CI 是 headless 环境（无 GL 上下文），实际 windows runner 跑的是 LegacyBackend → CPU 路径。GPU 路径**编译通过 ✓** 但**未在真实 GPU 上端到端运行验证过**。
 
@@ -33,7 +37,11 @@ print(string.format('Speedup: %.1fx', cpu_avg / gpu_avg))
 
 ---
 
-### 1.2 GPU vs CPU 数值一致性验证
+### ✅ 1.2 GPU vs CPU 数值一致性验证
+
+**已完成 (Phase AW.x，方案 B - 视觉对比)**：在 `samples/demo_skinning_perf/` 中按 G/C 键运行时切换 GPU/CPU 模式，肉眼对比同一帧渲染结果。Phase AW.x 提供了切换工具但仍未做像素级数值对比（CONSENSUS Q6 决策维持，工程量过大）。
+
+**原文（保留以便回溯）**：
 
 **为什么**：CONSENSUS Q6 已决策"用 runtime smoke + GL error 替代离线 baseline 数值对比"。但 smoke 只验证了 API 表面契约，未验证**两路径产出的实际像素**等价性。
 
@@ -129,7 +137,11 @@ print(string.format('Speedup: %.1fx', cpu_avg / gpu_avg))
 
 ---
 
-### 3.3 demo 示例补充
+### ✅ 3.3 demo 示例补充
+
+**已完成 (Phase AW.x)**：新建 `samples/demo_skinning_perf/main.lua`（独立 OOP Window demo）+ `setup.ps1`/`setup.sh` 一键下载 Khronos RiggedSimple.glb。比下面建议的伪代码更完整。
+
+**原建议（保留以便回溯）**：
 
 `samples/demo_animation/` 当前可能没有 GPU skinning 演示。建议补一个：
 
@@ -191,4 +203,4 @@ cd e:\jinyiNew\Light\Light-0.2.3\demo_animation  # 或任一 demo
 
 ### 完成日志
 
-（首次完成 TODO 项时在此添加）
+- **2026-05-10** Phase AW.x 完成 §1.1 / §1.2 / §3.3：交付 `samples/demo_skinning_perf/` 工具链（main.lua + setup 脚本 + README）+ `Light.Graphics.GetBackendName` 新 API + `scripts/smoke/graphics.lua` smoke 验证 + 主文档同步。详见 `docs/Phase AW.x/`。

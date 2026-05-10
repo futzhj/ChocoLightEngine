@@ -523,10 +523,37 @@ assert(r == nil and type(e) == 'string')
 | Q6 | 测试方式 | runtime smoke + GL error | 性价比 |
 | Q7 | Web 默认 | 禁用（CPU 路径）| Safari WebGL2 风险规避 |
 
+### 真机验证 GPU Skinning 收益（Phase AW.x）
+
+桌面 GPU 机器（Windows / Linux / macOS）上运行 `samples/demo_skinning_perf/` 即可量化 CPU vs GPU 的实际帧时间差异：
+
+#### Windows
+
+```powershell
+cd <ChocoLight 根目录>
+.\samples\demo_skinning_perf\setup.ps1                                   # 下载默认资产 (~80KB)
+.\Light-0.2.3\windows-x64\light.exe samples\demo_skinning_perf\main.lua  # 启动
+```
+
+#### Linux / macOS
+
+```bash
+cd <ChocoLight 根目录>
+chmod +x samples/demo_skinning_perf/setup.sh
+./samples/demo_skinning_perf/setup.sh
+./Light-0.2.3/<platform>/light samples/demo_skinning_perf/main.lua
+```
+
+启动后会自动跑 60 帧 CPU + 60 帧 GPU baseline 并打印对比表（典型 5000 顶点模型在桌面 GL3.3 上能看到 **20-30x** 提升）；之后按 **G/C/A** 键运行时切换 GPU/CPU/AUTO 模式，OSD 实时显示 frame ms。
+
+详见 `samples/demo_skinning_perf/README.md` 与 `docs/Phase AW.x/`。
+
+> 也可以通过 `Light.Graphics.GetBackendName()`（Phase AW.x 新增）查询当前 backend 名称（`GL33Core` / `LegacyGL` 等），用于性能日志与诊断。
+
 ---
 
 ## 相关
 
-- 工作流文档：`docs/Phase AV 骨骼动画/`、`docs/Phase AW GPU Skinning/`
-- 示例：`samples/demo_animation/`
-- Smoke：`scripts/smoke/animation.lua`
+- 工作流文档：`docs/Phase AV 骨骼动画/`、`docs/Phase AW GPU Skinning/`、`docs/Phase AW.x/`
+- 示例：`samples/demo_animation/`、`samples/demo_skinning_perf/`
+- Smoke：`scripts/smoke/animation.lua`、`scripts/smoke/graphics.lua`
