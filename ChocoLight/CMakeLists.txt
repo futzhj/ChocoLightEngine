@@ -113,6 +113,32 @@ if(NOT EMSCRIPTEN AND NOT ANDROID AND NOT CHOCO_IOS)
     add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/third_party/libuv ${CMAKE_CURRENT_BINARY_DIR}/libuv EXCLUDE_FROM_ALL)
 endif()
 
+# ==================== Phase BC T1: ENet (FetchContent) ====================
+# ENet 1.3.18 — reliable UDP library, MIT license
+# 桌面 + Android + iOS 使用 (ENet 基于 BSD socket, 跨平台原生支持)
+# Web (Emscripten) 跳过 (浏览器无 raw UDP, 走 WebRTC 是另一套 API)
+#
+# 注: ENet 上游 CMakeLists.txt 写死 add_library(enet STATIC ...), 无 STATIC/SHARED
+#     选项. 上游用 include_directories() 而非 target_include_directories(),
+#     FetchContent 集成后消费者拿不到 include path -> 必须手动给 enet target
+#     追加 INTERFACE include directory.
+if(NOT EMSCRIPTEN)
+    FetchContent_Declare(
+        enet
+        GIT_REPOSITORY https://github.com/lsalzman/enet.git
+        GIT_TAG        v1.3.18
+        GIT_SHALLOW    TRUE
+    )
+    FetchContent_MakeAvailable(enet)
+
+    # 修补: 让消费者能 #include "enet/enet.h"
+    target_include_directories(enet INTERFACE
+        $<BUILD_INTERFACE:${enet_SOURCE_DIR}/include>
+    )
+
+    message(STATUS "ENet: integrated via FetchContent (v1.3.18)")
+endif()
+
 # ==================== Lumen (lua51) 库路径 ====================
 
 # 允许外部指定, 否则使用默认路径
@@ -373,6 +399,15 @@ endif()
 # Phase AU — Bullet 3 全平台 link (含 Web), 用于 Light.Physics3D
 target_link_libraries(Light PRIVATE bullet3)
 target_compile_definitions(Light PRIVATE CHOCO_HAS_BULLET=1)
+
+# Phase BC T1 — ENet reliable UDP, 桌面 + 移动, Web 跳过 (浏览器无 raw UDP)
+if(NOT EMSCRIPTEN)
+    target_link_libraries(Light PRIVATE enet)
+    target_compile_definitions(Light PRIVATE CHOCO_NET_ENET_ENABLED=1)
+    # ENet 在 Windows 需要 winsock2 (已由 Light 自身链接 ws2_32), 其他平台 ENet 自管
+else()
+    target_compile_definitions(Light PRIVATE CHOCO_NET_ENET_ENABLED=0)
+endif()
 
 # ==================== 编译定义 ====================
 
