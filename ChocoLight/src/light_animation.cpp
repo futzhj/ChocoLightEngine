@@ -163,10 +163,11 @@ struct Animator {
     bool alive = true;
 };
 
-// Step 3: 蒙皮网格资产 (CPU 蒙皮路径)
-//   - 持原始顶点 (POSITION/NORMAL/UV/COLOR) 备份, 每帧用 jointMatrices CPU 变换后重建 GPU mesh
-//   - JOINTS_0 (4 关节索引/顶点, packed uint32) 与 WEIGHTS_0 (4 weights/顶点) 仅 CPU 用, 不上传
-//   - 暂不实现 GPU skinning (留 Phase AV.x 性能优化阶段)
+// Step 3: 蒙皮网格资产 (CPU 蒙皮路径 + Phase AW GPU 蒙皮路径并存)
+//   - 持原始顶点 (POSITION/NORMAL/UV/COLOR) 备份;
+//   - CPU 路径: 每帧 jointMatrices 变换 baseVertices -> skinnedVertices -> CreateMesh -> DrawMeshMaterial
+//   - GPU 路径 (Phase AW): 首次 Draw 时把 baseVertices+joints+weights 一次性上传到 gpuSkinnedMeshId,
+//                          之后每帧只上传 jointMatrices UBO
 struct SkinnedMeshAsset {
     // 原始顶点 (绑定姿态; 每帧蒙皮变换的输入)
     std::vector<RenderVertex3D> baseVertices;
@@ -180,16 +181,31 @@ struct SkinnedMeshAsset {
     Skeleton* skeletonPtr = nullptr;
     int       skeletonRef = LUA_NOREF;
 
-    // 缓存的 GPU mesh (每帧 DrawSkinnedMesh 时 DeleteMesh + CreateMesh)
+    // CPU 路径: 每帧 DeleteMesh + CreateMesh 重传
     uint32_t gpuMeshId = 0;
+    std::vector<RenderVertex3D> skinnedVertices;     // 蒙皮后的顶点 (复用 buffer)
 
-    // 上一次蒙皮后的顶点 (供 backend CreateMesh 用; 复用 buffer 避免每帧 alloc)
-    std::vector<RenderVertex3D> skinnedVertices;
+    // Phase AW GPU 路径: 首次 Draw 时一次性上传, 永不重传
+    uint32_t gpuSkinnedMeshId = 0;
+    bool     gpuMeshUploaded  = false;
 
     bool alive = true;
 };
 
+// Phase AW — 全局蒙皮模式枚举
+//   AUTO: 桌面 GL33 + GPU skinning 支持 -> GPU; LegacyBackend / Web -> CPU
+//   CPU : 强制 CPU (用于调试 / 设备对比)
+//   GPU : 优先 GPU (不支持时 fallback CPU)
+enum class SkinningMode : uint8_t {
+    AUTO = 0,
+    CPU  = 1,
+    GPU  = 2,
+};
+
 } } // namespace LT::Anim
+
+// 全局蒙皮模式 (file-scope 静态; 仅 light_animation.cpp 用)
+static LT::Anim::SkinningMode g_skinningMode = LT::Anim::SkinningMode::AUTO;
 
 using LT::Anim::Skeleton;
 using LT::Anim::AnimationClip;
@@ -201,6 +217,7 @@ using LT::Anim::TransitionDef;     // Step 4
 using LT::Anim::EventDef;          // Step 4
 using LT::Anim::InterpMode;
 using LT::Anim::ChannelTarget;
+using LT::Anim::SkinningMode;      // Phase AW
 
 // ==================== Step 2: 数学库 + sampler 评估 + 关节变换树 ====================
 // 矩阵格式: 16 floats 列主序 (column-major), 与 OpenGL/glm/cgltf 一致.
@@ -2416,10 +2433,16 @@ static int l_SkinnedMesh_Delete(lua_State* L) {
     if (pp && *pp) {
         SkinnedMeshAsset* sm = *pp;
         sm->alive = false;
-        // 释放 GPU mesh (若已创建)
+        // 释放 CPU 路径 GPU mesh (若已创建)
         if (sm->gpuMeshId && g_render) {
             g_render->DeleteMesh(sm->gpuMeshId);
             sm->gpuMeshId = 0;
+        }
+        // Phase AW: 释放 GPU skinning 路径的 mesh (若已上传)
+        if (sm->gpuSkinnedMeshId && g_render) {
+            g_render->DeleteMesh(sm->gpuSkinnedMeshId);
+            sm->gpuSkinnedMeshId = 0;
+            sm->gpuMeshUploaded  = false;
         }
         // 释放 Skeleton 强引用
         if (sm->skeletonRef != LUA_NOREF) {
@@ -2465,12 +2488,166 @@ static bool ReadMat4FromTable(lua_State* L, int idx, float* outMat) {
     return true;
 }
 
+// Phase AW — 决定本次 DrawSkinnedMesh 走哪条路径
+//   返回 true => GPU skinning; false => CPU skinning (现有路径).
+static bool ShouldUseGPUSkinning() {
+    if (!g_render) return false;
+    switch (g_skinningMode) {
+        case SkinningMode::CPU: return false;
+        case SkinningMode::GPU: return g_render->SupportsGPUSkinning();
+        case SkinningMode::AUTO:
+        default:
+#if defined(__EMSCRIPTEN__)
+            // Q7: Web (Emscripten) 默认 CPU 路径; 用户可 SetSkinningMode("gpu") 强开
+            return false;
+#else
+            return g_render->SupportsGPUSkinning();
+#endif
+    }
+}
+
+// CPU 蒙皮主体 (Phase AV Step 3 路径; Phase AW 抽函数, 算法不变)
+//   语义: 每帧 CPU 加权变换 baseVertices 到 skinnedVertices, 烘焙 modelMat,
+//         然后 DeleteMesh + CreateMesh 全量重传 -> DrawMeshMaterial
+static int DrawSkinnedMeshCPU(lua_State* L, SkinnedMeshAsset* sm, Animator* an,
+                                const float* modelMat, const MaterialDesc* matDesc) {
+    int N    = (int)sm->baseVertices.size();
+    int jCnt = (int)(an->jointMatrices.size() / 16);
+    if (sm->skinnedVertices.size() != (size_t)N) sm->skinnedVertices.resize(N);
+
+    for (int i = 0; i < N; ++i) {
+        const RenderVertex3D& vBase = sm->baseVertices[i];
+        RenderVertex3D&       vOut  = sm->skinnedVertices[i];
+        // 拷贝 UV / color (蒙皮不变)
+        vOut.u = vBase.u; vOut.v = vBase.v;
+        vOut.r = vBase.r; vOut.g = vBase.g; vOut.b = vBase.b; vOut.a = vBase.a;
+
+        uint32_t packed = sm->jointIndicesPacked[i];
+        uint8_t joints[4] = {
+            (uint8_t)(packed & 0xFF),
+            (uint8_t)((packed >> 8)  & 0xFF),
+            (uint8_t)((packed >> 16) & 0xFF),
+            (uint8_t)((packed >> 24) & 0xFF),
+        };
+        const float* w = &sm->weights[(size_t)i * 4];
+        float posIn[3] = { vBase.x, vBase.y, vBase.z };
+        float nrmIn[3] = { vBase.nx, vBase.ny, vBase.nz };
+        float posOut[3], nrmOut[3];
+        CpuSkinVertex(an->jointMatrices.data(), jCnt, joints, w,
+                       posIn, nrmIn, posOut, nrmOut);
+
+        // 应用 modelMat (transform) 在蒙皮之上
+        vOut.x  = modelMat[0] * posOut[0] + modelMat[4] * posOut[1] + modelMat[8]  * posOut[2] + modelMat[12];
+        vOut.y  = modelMat[1] * posOut[0] + modelMat[5] * posOut[1] + modelMat[9]  * posOut[2] + modelMat[13];
+        vOut.z  = modelMat[2] * posOut[0] + modelMat[6] * posOut[1] + modelMat[10] * posOut[2] + modelMat[14];
+        vOut.nx = modelMat[0] * nrmOut[0] + modelMat[4] * nrmOut[1] + modelMat[8]  * nrmOut[2];
+        vOut.ny = modelMat[1] * nrmOut[0] + modelMat[5] * nrmOut[1] + modelMat[9]  * nrmOut[2];
+        vOut.nz = modelMat[2] * nrmOut[0] + modelMat[6] * nrmOut[1] + modelMat[10] * nrmOut[2];
+    }
+
+    // 重建 GPU mesh: 每帧 DeleteMesh + CreateMesh
+    if (sm->gpuMeshId) {
+        g_render->DeleteMesh(sm->gpuMeshId);
+        sm->gpuMeshId = 0;
+    }
+    sm->gpuMeshId = g_render->CreateMesh(sm->skinnedVertices.data(), N,
+                                           sm->indices.data(), (int)sm->indices.size());
+    if (!sm->gpuMeshId) {
+        lua_pushboolean(L, 0);
+        lua_pushstring(L, "CreateMesh failed (GPU upload error)");
+        return 2;
+    }
+
+    g_render->DrawMeshMaterial(sm->gpuMeshId, matDesc);
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+// Phase AW — GPU 蒙皮主体 (一次性上传顶点 + 每帧上传 jointMatrices UBO)
+//   - 首次调用时构建 RenderVertex3DSkin 数组 + CreateSkinnedMesh -> gpuSkinnedMeshId
+//   - 把 modelMat 前乘到每个 jointMatrix (烘焙 transform), 上传 UBO + 渲染
+//   - 失败时 fallback 到 CPU 路径
+static int DrawSkinnedMeshGPU(lua_State* L, SkinnedMeshAsset* sm, Animator* an,
+                                const float* modelMat, const MaterialDesc* matDesc) {
+    // 1. 首次调用: 构建 skin verts 并上传
+    if (!sm->gpuMeshUploaded) {
+        int N = (int)sm->baseVertices.size();
+        if (N <= 0) {
+            lua_pushboolean(L, 0);
+            lua_pushstring(L, "empty skinned mesh");
+            return 2;
+        }
+        std::vector<RenderVertex3DSkin> skinVerts(N);
+        for (int i = 0; i < N; ++i) {
+            const RenderVertex3D& v = sm->baseVertices[i];
+            RenderVertex3DSkin& vs = skinVerts[i];
+            vs.x  = v.x;  vs.y  = v.y;  vs.z  = v.z;
+            vs.nx = v.nx; vs.ny = v.ny; vs.nz = v.nz;
+            vs.u  = v.u;  vs.v  = v.v;
+            vs.r  = v.r;  vs.g  = v.g;  vs.b = v.b; vs.a = v.a;
+            vs.joints_packed = sm->jointIndicesPacked[i];
+            vs.weights[0] = sm->weights[(size_t)i * 4 + 0];
+            vs.weights[1] = sm->weights[(size_t)i * 4 + 1];
+            vs.weights[2] = sm->weights[(size_t)i * 4 + 2];
+            vs.weights[3] = sm->weights[(size_t)i * 4 + 3];
+        }
+        sm->gpuSkinnedMeshId = g_render->CreateSkinnedMesh(skinVerts.data(), N,
+                                                            sm->indices.data(),
+                                                            (int)sm->indices.size());
+        if (!sm->gpuSkinnedMeshId) {
+            // GPU 上传失败 -> fallback CPU (避免用户感知)
+            return DrawSkinnedMeshCPU(L, sm, an, modelMat, matDesc);
+        }
+        sm->gpuMeshUploaded = true;
+    }
+
+    // 2. 准备最终的 jointMatrices (modelMat × jointMatrix[j])
+    int jCnt = (int)(an->jointMatrices.size() / 16);
+    if (jCnt <= 0) {
+        lua_pushboolean(L, 0);
+        lua_pushstring(L, "no joint matrices");
+        return 2;
+    }
+    if (jCnt > 64) jCnt = 64;       // 与 GL33 SKIN_MAX_JOINTS 一致
+
+    // identity 检测: 跳过乘法
+    bool isIdentity = (modelMat[0]==1 && modelMat[5]==1 && modelMat[10]==1 && modelMat[15]==1
+                      && modelMat[1]==0 && modelMat[2]==0 && modelMat[3]==0
+                      && modelMat[4]==0 && modelMat[6]==0 && modelMat[7]==0
+                      && modelMat[8]==0 && modelMat[9]==0 && modelMat[11]==0
+                      && modelMat[12]==0 && modelMat[13]==0 && modelMat[14]==0);
+
+    const float* jointPtr;
+    std::vector<float> finalJoints;
+    if (isIdentity) {
+        jointPtr = an->jointMatrices.data();
+    } else {
+        finalJoints.resize((size_t)jCnt * 16);
+        Mat4 model;
+        std::memcpy(model.m, modelMat, sizeof(model.m));
+        for (int j = 0; j < jCnt; ++j) {
+            Mat4 J;
+            std::memcpy(J.m, &an->jointMatrices[j * 16], sizeof(J.m));
+            Mat4 R = model * J;     // result = modelMat × jointMat
+            std::memcpy(&finalJoints[j * 16], R.m, sizeof(R.m));
+        }
+        jointPtr = finalJoints.data();
+    }
+
+    // 3. 调用 backend 渲染
+    g_render->DrawSkinnedMeshMaterial(sm->gpuSkinnedMeshId, matDesc, jointPtr, jCnt);
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
 // Light.Animation.DrawSkinnedMesh(mesh, animator, transform_mat4_or_nil, material_or_nil)
 //   - mesh:           SkinnedMesh userdata (必需)
 //   - animator:       Animator userdata (必需; 提供 jointMatrices)
 //   - transform_mat4: 16-element table (列主序) 或 nil (单位矩阵)
 //   - material:       Material userdata (Phase AS.4) 或 nil (默认白底 PBR)
 // 返回: ok (bool), err (string 或 nil)
+//
+// Phase AW: 入口分流 — 通用校验 + 解析后, 按 ShouldUseGPUSkinning() 决定走 CPU 或 GPU 路径
 static int l_Anim_DrawSkinnedMesh(lua_State* L) {
     SkinnedMeshAsset* sm = CheckSkinnedMesh(L, 1);
     Animator* an = CheckAnimator(L, 2);
@@ -2542,59 +2719,37 @@ static int l_Anim_DrawSkinnedMesh(lua_State* L) {
         ComputeJointMatrices(an->skeletonPtr, an->activeClip, an->currentTime, an->jointMatrices);
     }
 
-    // CPU 蒙皮: 每顶点用 jointMatrices 加权变换 pos/normal
-    int N    = (int)sm->baseVertices.size();
-    int jCnt = (int)(an->jointMatrices.size() / 16);
-    if (sm->skinnedVertices.size() != (size_t)N) sm->skinnedVertices.resize(N);
-
-    for (int i = 0; i < N; ++i) {
-        const RenderVertex3D& vBase = sm->baseVertices[i];
-        RenderVertex3D&       vOut  = sm->skinnedVertices[i];
-        // 拷贝 UV / color (蒙皮不变)
-        vOut.u = vBase.u; vOut.v = vBase.v;
-        vOut.r = vBase.r; vOut.g = vBase.g; vOut.b = vBase.b; vOut.a = vBase.a;
-
-        uint32_t packed = sm->jointIndicesPacked[i];
-        uint8_t joints[4] = {
-            (uint8_t)(packed & 0xFF),
-            (uint8_t)((packed >> 8)  & 0xFF),
-            (uint8_t)((packed >> 16) & 0xFF),
-            (uint8_t)((packed >> 24) & 0xFF),
-        };
-        const float* w = &sm->weights[(size_t)i * 4];
-        float posIn[3] = { vBase.x, vBase.y, vBase.z };
-        float nrmIn[3] = { vBase.nx, vBase.ny, vBase.nz };
-        float posOut[3], nrmOut[3];
-        CpuSkinVertex(an->jointMatrices.data(), jCnt, joints, w,
-                       posIn, nrmIn, posOut, nrmOut);
-
-        // 应用 modelMat (transform) 在蒙皮之上
-        vOut.x  = modelMat[0] * posOut[0] + modelMat[4] * posOut[1] + modelMat[8]  * posOut[2] + modelMat[12];
-        vOut.y  = modelMat[1] * posOut[0] + modelMat[5] * posOut[1] + modelMat[9]  * posOut[2] + modelMat[13];
-        vOut.z  = modelMat[2] * posOut[0] + modelMat[6] * posOut[1] + modelMat[10] * posOut[2] + modelMat[14];
-        vOut.nx = modelMat[0] * nrmOut[0] + modelMat[4] * nrmOut[1] + modelMat[8]  * nrmOut[2];
-        vOut.ny = modelMat[1] * nrmOut[0] + modelMat[5] * nrmOut[1] + modelMat[9]  * nrmOut[2];
-        vOut.nz = modelMat[2] * nrmOut[0] + modelMat[6] * nrmOut[1] + modelMat[10] * nrmOut[2];
+    // Phase AW: 入口分流
+    if (ShouldUseGPUSkinning()) {
+        return DrawSkinnedMeshGPU(L, sm, an, modelMat, matDesc);
     }
+    return DrawSkinnedMeshCPU(L, sm, an, modelMat, matDesc);
+}
 
-    // 重建 GPU mesh: 性能不优 (DeleteMesh + CreateMesh) 但跨平台稳定;
-    // GPU skinning 优化留 Phase AV.x (需要 backend 抽象扩展 + shader 支持)
-    if (sm->gpuMeshId) {
-        g_render->DeleteMesh(sm->gpuMeshId);
-        sm->gpuMeshId = 0;
+// ==================== Phase AW — Lua API: Set/GetSkinningMode ====================
+
+// Anim.SetSkinningMode("auto"|"cpu"|"gpu") -> true 或 nil + err
+//   仅修改 g_skinningMode; 实际生效与否由 GetSkinningMode 反映 (它会调 ShouldUseGPUSkinning)
+static int l_Anim_SetSkinningMode(lua_State* L) {
+    if (lua_type(L, 1) != LUA_TSTRING) {
+        return ErrorReturn(L, "mode must be a string ('auto', 'cpu', or 'gpu')");
     }
-    sm->gpuMeshId = g_render->CreateMesh(sm->skinnedVertices.data(), N,
-                                           sm->indices.data(), (int)sm->indices.size());
-    if (!sm->gpuMeshId) {
-        lua_pushboolean(L, 0);
-        lua_pushstring(L, "CreateMesh failed (GPU upload error)");
-        return 2;
+    const char* s = lua_tostring(L, 1);
+    if (!s) return ErrorReturn(L, "mode must be a non-nil string");
+    if (std::strcmp(s, "auto") == 0)      g_skinningMode = SkinningMode::AUTO;
+    else if (std::strcmp(s, "cpu") == 0)  g_skinningMode = SkinningMode::CPU;
+    else if (std::strcmp(s, "gpu") == 0)  g_skinningMode = SkinningMode::GPU;
+    else {
+        return ErrorReturn(L, "mode must be 'auto', 'cpu', or 'gpu'");
     }
-
-    // 调用 backend 渲染
-    g_render->DrawMeshMaterial(sm->gpuMeshId, matDesc);
-
     lua_pushboolean(L, 1);
+    return 1;
+}
+
+// Anim.GetSkinningMode() -> "cpu" 或 "gpu" (实际生效路径)
+//   注: 与用户设置值不同 — 例如设了 "gpu" 但 backend 不支持, 返回 "cpu"
+static int l_Anim_GetSkinningMode(lua_State* L) {
+    lua_pushstring(L, ShouldUseGPUSkinning() ? "gpu" : "cpu");
     return 1;
 }
 
@@ -2712,6 +2867,9 @@ static const luaL_Reg kAnimationModule[] = {
     // Phase AV.x: procedural
     {"NewEmptySkeleton",   l_Anim_NewEmptySkeleton},
     {"NewEmptyClip",       l_Anim_NewEmptyClip},
+    // Phase AW: GPU Skinning mode
+    {"SetSkinningMode",    l_Anim_SetSkinningMode},
+    {"GetSkinningMode",    l_Anim_GetSkinningMode},
     {nullptr, nullptr},
 };
 
