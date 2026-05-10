@@ -2745,6 +2745,114 @@ static bool ShouldUseGPUSkinning() {
     }
 }
 
+// Phase AX: 对单顶点应用所有 morph delta (在蒙皮变换之前)
+//   vBase:    原始顶点 (POSITION + NORMAL)
+//   targets:  N 个 morph target (每个含 posDelta/nrmDelta/tanDelta)
+//   weights:  N 个权重 (动画值 + 手动覆盖混合后的最终值)
+//   N:        target 数量 (上限 MORPH_TARGET_MAX)
+//   vIdx:     顶点索引 (用于在 deltaVec 中取对应 vec3)
+//   posOut/nrmOut: 输出 morph 后的位置 + 法线
+//
+// 算法: out = base + Σ (weight[i] * delta_i[vIdx])
+//   weight==0 时 short-circuit (性能优化, 典型场景 8 target 中只有 1-2 个非 0)
+//   delta 数据可空 (POSITION 必须存在, NORMAL/TANGENT 可空)
+static inline void ApplyMorphToVertex(const RenderVertex3D& vBase,
+                                        const std::vector<MorphTarget>& targets,
+                                        const float* weights, int N,
+                                        int vIdx,
+                                        float* posOut, float* nrmOut) {
+    posOut[0] = vBase.x;  posOut[1] = vBase.y;  posOut[2] = vBase.z;
+    nrmOut[0] = vBase.nx; nrmOut[1] = vBase.ny; nrmOut[2] = vBase.nz;
+    if (N <= 0 || !weights) return;
+
+    size_t base3 = (size_t)vIdx * 3;
+    for (int i = 0; i < N && i < (int)targets.size(); ++i) {
+        float w = weights[i];
+        if (w == 0.0f) continue;             // short-circuit: 跳过零权重 target
+        const MorphTarget& t = targets[i];
+        if (!t.posDelta.empty() && base3 + 2 < t.posDelta.size()) {
+            posOut[0] += w * t.posDelta[base3 + 0];
+            posOut[1] += w * t.posDelta[base3 + 1];
+            posOut[2] += w * t.posDelta[base3 + 2];
+        }
+        if (!t.nrmDelta.empty() && base3 + 2 < t.nrmDelta.size()) {
+            nrmOut[0] += w * t.nrmDelta[base3 + 0];
+            nrmOut[1] += w * t.nrmDelta[base3 + 1];
+            nrmOut[2] += w * t.nrmDelta[base3 + 2];
+        }
+        // tanDelta 暂未参与 CPU 蒙皮路径 (法线足够支撑光照; tangent 仅 normal map 强烈建议)
+    }
+}
+
+// Phase AX: CPU 蒙皮 + morph 路径
+//   语义: 每顶点先应用 morph delta -> 再蒙皮变换 -> 烘焙 modelMat -> CreateMesh -> DrawMeshMaterial
+//   与 DrawSkinnedMeshCPU 区别: 多一步 ApplyMorphToVertex (在 CpuSkinVertex 之前)
+//   morph 顺序与 GPU shader (VS3D_SKIN_MORPH) 一致, 保证 CPU/GPU 视觉一致
+static int DrawSkinnedMorphMeshCPU(lua_State* L, SkinnedMeshAsset* sm, Animator* an,
+                                      const float* modelMat, const MaterialDesc* matDesc) {
+    int N    = (int)sm->baseVertices.size();
+    int jCnt = (int)(an->jointMatrices.size() / 16);
+    if (sm->skinnedVertices.size() != (size_t)N) sm->skinnedVertices.resize(N);
+
+    int morphN = sm->morphTargetCount;
+    const float* morphW = (an->morphWeights.empty() || morphN <= 0)
+                          ? nullptr : an->morphWeights.data();
+    int effectiveMorphN = (morphW && morphN > 0)
+                          ? std::min(morphN, (int)an->morphWeights.size())
+                          : 0;
+
+    for (int i = 0; i < N; ++i) {
+        const RenderVertex3D& vBase = sm->baseVertices[i];
+        RenderVertex3D&       vOut  = sm->skinnedVertices[i];
+        // 拷贝 UV / color (不变)
+        vOut.u = vBase.u; vOut.v = vBase.v;
+        vOut.r = vBase.r; vOut.g = vBase.g; vOut.b = vBase.b; vOut.a = vBase.a;
+
+        // 1. Morph: base + Σ(weight × delta)
+        float morphedPos[3], morphedNrm[3];
+        ApplyMorphToVertex(vBase, sm->morphTargets, morphW, effectiveMorphN,
+                            i, morphedPos, morphedNrm);
+
+        // 2. Skin: 4 关节加权变换
+        uint32_t packed = sm->jointIndicesPacked[i];
+        uint8_t joints[4] = {
+            (uint8_t)(packed & 0xFF),
+            (uint8_t)((packed >> 8)  & 0xFF),
+            (uint8_t)((packed >> 16) & 0xFF),
+            (uint8_t)((packed >> 24) & 0xFF),
+        };
+        const float* w = &sm->weights[(size_t)i * 4];
+        float posOut[3], nrmOut[3];
+        CpuSkinVertex(an->jointMatrices.data(), jCnt, joints, w,
+                       morphedPos, morphedNrm, posOut, nrmOut);
+
+        // 3. 应用 modelMat (transform)
+        vOut.x  = modelMat[0] * posOut[0] + modelMat[4] * posOut[1] + modelMat[8]  * posOut[2] + modelMat[12];
+        vOut.y  = modelMat[1] * posOut[0] + modelMat[5] * posOut[1] + modelMat[9]  * posOut[2] + modelMat[13];
+        vOut.z  = modelMat[2] * posOut[0] + modelMat[6] * posOut[1] + modelMat[10] * posOut[2] + modelMat[14];
+        vOut.nx = modelMat[0] * nrmOut[0] + modelMat[4] * nrmOut[1] + modelMat[8]  * nrmOut[2];
+        vOut.ny = modelMat[1] * nrmOut[0] + modelMat[5] * nrmOut[1] + modelMat[9]  * nrmOut[2];
+        vOut.nz = modelMat[2] * nrmOut[0] + modelMat[6] * nrmOut[1] + modelMat[10] * nrmOut[2];
+    }
+
+    // 重建 GPU mesh (与 DrawSkinnedMeshCPU 同策略)
+    if (sm->gpuMeshId) {
+        g_render->DeleteMesh(sm->gpuMeshId);
+        sm->gpuMeshId = 0;
+    }
+    sm->gpuMeshId = g_render->CreateMesh(sm->skinnedVertices.data(), N,
+                                           sm->indices.data(), (int)sm->indices.size());
+    if (!sm->gpuMeshId) {
+        lua_pushboolean(L, 0);
+        lua_pushstring(L, "CreateMesh failed (GPU upload error in morph CPU path)");
+        return 2;
+    }
+
+    g_render->DrawMeshMaterial(sm->gpuMeshId, matDesc);
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
 // CPU 蒙皮主体 (Phase AV Step 3 路径; Phase AW 抽函数, 算法不变)
 //   语义: 每帧 CPU 加权变换 baseVertices 到 skinnedVertices, 烘焙 modelMat,
 //         然后 DeleteMesh + CreateMesh 全量重传 -> DrawMeshMaterial
@@ -2958,8 +3066,19 @@ static int l_Anim_DrawSkinnedMesh(lua_State* L) {
         ComputeJointMatrices(an->skeletonPtr, an->activeClip, an->currentTime, an->jointMatrices);
     }
 
-    // Phase AW: 入口分流
-    if (ShouldUseGPUSkinning()) {
+    // Phase AX: 入口分流增加 morph 判定
+    //   hasMorph = 该 mesh 有 morph target 数据
+    //   T3 (CPU 路径) 阶段: morph 路径全走 CPU; T4 实施 GPU 后扩展
+    bool hasMorph = (sm->morphTargetCount > 0 && !sm->morphTargets.empty());
+    bool useGPU   = ShouldUseGPUSkinning();
+
+    if (hasMorph) {
+        // 注: T4 完成后此处会改为 useGPU && g_render->SupportsMorphTargets()
+        //     -> DrawSkinnedMorphMeshGPU; 否则 -> DrawSkinnedMorphMeshCPU
+        //     T3 阶段 morph 路径强制走 CPU (无 GPU shader 支持)
+        return DrawSkinnedMorphMeshCPU(L, sm, an, modelMat, matDesc);
+    }
+    if (useGPU) {
         return DrawSkinnedMeshGPU(L, sm, an, modelMat, matDesc);
     }
     return DrawSkinnedMeshCPU(L, sm, an, modelMat, matDesc);
