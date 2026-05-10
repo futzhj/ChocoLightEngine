@@ -44,6 +44,7 @@ static constexpr int FLOATS_PER_MAT4    = 16;
 static constexpr int FLOATS_T           = 3;         // translation
 static constexpr int FLOATS_R           = 4;         // rotation (quat wxyz)
 static constexpr int FLOATS_S           = 3;         // scale
+static constexpr int MORPH_TARGET_MAX   = 8;         // Phase AX: morph target 上限 (与 shader uniform array 大小一致)
 
 // userdata 元表名 (与 Lua 模块名对应)
 static const char* SKELETON_MT      = "Light.Animation.Skeleton";
@@ -62,10 +63,11 @@ enum class InterpMode : uint8_t {
 };
 
 enum class ChannelTarget : uint8_t {
-    TRANSLATION = 0,
-    ROTATION    = 1,
-    SCALE       = 2,
-    UNSUPPORTED = 255,    // morph weights 等本 Phase 不支持
+    TRANSLATION   = 0,
+    ROTATION      = 1,
+    SCALE         = 2,
+    MORPH_WEIGHTS = 3,    // Phase AX: morph target 权重 (mesh-level, 非 joint)
+    UNSUPPORTED   = 255,
 };
 
 struct JointNode {
@@ -79,12 +81,13 @@ struct JointNode {
 };
 
 struct Sampler {
-    int            jointIndex = -1;       // 索引到 Skeleton::joints
-    ChannelTarget  target     = ChannelTarget::UNSUPPORTED;
-    InterpMode     mode       = InterpMode::LINEAR;
-    int            components = 3;        // 3 (T/S) 或 4 (R)
-    std::vector<float> times;             // keyframe 时间, 升序
-    std::vector<float> values;            // 对应数据, CUBICSPLINE 时每点 3*components 元素
+    int            jointIndex  = -1;       // 索引到 Skeleton::joints (TRS 路径使用)
+    int            meshNodeIdx = -1;       // Phase AX: cgltf node 索引 (MORPH_WEIGHTS 路径使用)
+    ChannelTarget  target      = ChannelTarget::UNSUPPORTED;
+    InterpMode     mode        = InterpMode::LINEAR;
+    int            components  = 3;        // 3 (T/S) / 4 (R) / N (MORPH_WEIGHTS, N <= 8)
+    std::vector<float> times;              // keyframe 时间, 升序
+    std::vector<float> values;             // 对应数据, CUBICSPLINE 时每点 3*components 元素
 };
 
 struct Skeleton {
@@ -94,6 +97,13 @@ struct Skeleton {
     int                    rootJoint = -1;
     std::unordered_map<std::string, int> nameToIndex;
     bool                   alive = true;
+};
+
+// Phase AX: morph target delta 数据 (POSITION + 可选 NORMAL/TANGENT delta)
+struct MorphTarget {
+    std::vector<float> posDelta;   // vCount × 3 floats (必须存在)
+    std::vector<float> nrmDelta;   // vCount × 3 floats (可空)
+    std::vector<float> tanDelta;   // vCount × 3 floats (可空, glTF spec 要求 vec3)
 };
 
 struct AnimationClip {
@@ -160,6 +170,12 @@ struct Animator {
     // 布局: 每关节 16 floats (列主序 mat4), 共 N×16 floats
     std::vector<float> jointMatrices;
 
+    // Phase AX: morph target 权重运行时状态
+    //   morphWeights[i]       = 当前生效权重 (动画评估值或手动覆盖值; 写到 GPU 的就是这个)
+    //   morphWeightsManual[i] = 手动覆盖值; NaN 表示"未覆盖, 用动画值"
+    std::vector<float> morphWeights;          // size = mesh.morphTargetCount
+    std::vector<float> morphWeightsManual;    // size = mesh.morphTargetCount
+
     bool alive = true;
 };
 
@@ -188,6 +204,20 @@ struct SkinnedMeshAsset {
     // Phase AW GPU 路径: 首次 Draw 时一次性上传, 永不重传
     uint32_t gpuSkinnedMeshId = 0;
     bool     gpuMeshUploaded  = false;
+
+    // Phase AX: morph target 数据
+    //   morphTargets[t]      = 第 t 个 target 的 (POSITION/NORMAL/TANGENT delta)
+    //   morphTargetCount     = 实际 target 数量, 上限 MORPH_TARGET_MAX
+    //   morphDefaultWeights  = mesh.weights[] (glTF spec); 默认初始化用
+    //   morphTargetNames     = mesh.target_names[] 或 fallback "target_<i>"
+    std::vector<MorphTarget>      morphTargets;
+    int                           morphTargetCount = 0;
+    std::vector<float>            morphDefaultWeights;
+    std::vector<std::string>      morphTargetNames;
+
+    // Phase AX GPU 路径: morph mesh ID (与 gpuSkinnedMeshId 互斥; 同时启 morph+skin 时使用)
+    uint32_t gpuSkinnedMorphMeshId       = 0;
+    bool     gpuSkinnedMorphMeshUploaded = false;
 
     bool alive = true;
 };
@@ -218,6 +248,7 @@ using LT::Anim::EventDef;          // Step 4
 using LT::Anim::InterpMode;
 using LT::Anim::ChannelTarget;
 using LT::Anim::SkinningMode;      // Phase AW
+using LT::Anim::MorphTarget;       // Phase AX
 
 // ==================== Step 2: 数学库 + sampler 评估 + 关节变换树 ====================
 // 矩阵格式: 16 floats 列主序 (column-major), 与 OpenGL/glm/cgltf 一致.
@@ -982,6 +1013,117 @@ static const cgltf_primitive* FindFirstSkinnedPrimitive(const cgltf_data* data,
     return nullptr;
 }
 
+// Phase AX: 找包含给定 primitive 的 mesh 的 mesh-level weights/target_names
+// 顺序: 在 data->meshes 中找哪个 mesh 的 primitives 数组包含 prim, 返回该 mesh
+static const cgltf_mesh* FindMeshForPrimitive(const cgltf_data* data,
+                                                const cgltf_primitive* prim) {
+    if (!data || !prim) return nullptr;
+    for (cgltf_size i = 0; i < data->meshes_count; ++i) {
+        const cgltf_mesh& m = data->meshes[i];
+        if (m.primitives_count == 0) continue;
+        // 指针落在 [&m.primitives[0], &m.primitives[count]) 区间内
+        const cgltf_primitive* pBeg = &m.primitives[0];
+        const cgltf_primitive* pEnd = pBeg + m.primitives_count;
+        if (prim >= pBeg && prim < pEnd) return &m;
+    }
+    return nullptr;
+}
+
+// Phase AX: 从 cgltf_primitive::targets[] 提取 morph delta 数据并填充 SkinnedMeshAsset
+// prim:  可能持有 morph target 的 primitive (与 ExtractSkinMesh 同源)
+// mesh:  primitive 所属 mesh (用于 mesh.weights[] / mesh.target_names[])
+// 返回 true 表示提取成功 (即使 N==0 也成功; 只在解析逻辑错时 return false)
+static bool ExtractMorphTargets(const cgltf_primitive* prim,
+                                  const cgltf_mesh* mesh,
+                                  SkinnedMeshAsset* outMesh,
+                                  std::string& errOut) {
+    if (!prim || !outMesh) {
+        errOut = "ExtractMorphTargets: null prim or mesh";
+        return false;
+    }
+    cgltf_size N = prim->targets_count;
+    if (N == 0) {
+        outMesh->morphTargetCount = 0;
+        return true;   // 不视为错误: 没有 morph 也是合法 mesh
+    }
+
+    // 截断到 MORPH_TARGET_MAX = 8
+    if (N > (cgltf_size)MORPH_TARGET_MAX) {
+        std::fprintf(stderr,
+                     "[Phase AX] glTF mesh has %zu morph targets, truncating to %d\n",
+                     (size_t)N, MORPH_TARGET_MAX);
+        N = (cgltf_size)MORPH_TARGET_MAX;
+    }
+
+    cgltf_size vCount = outMesh->baseVertices.size();
+    outMesh->morphTargets.resize(N);
+
+    for (cgltf_size t = 0; t < N; ++t) {
+        const cgltf_morph_target& mt = prim->targets[t];
+        MorphTarget& dst = outMesh->morphTargets[t];
+
+        for (cgltf_size a = 0; a < mt.attributes_count; ++a) {
+            const cgltf_attribute& attr = mt.attributes[a];
+            if (!attr.name || !attr.data) continue;
+
+            // 必须 vertex count 一致, 否则跳过该 attribute (不 fail mesh)
+            if (attr.data->count != vCount) continue;
+
+            std::vector<float>* dstVec = nullptr;
+            if      (std::strcmp(attr.name, "POSITION") == 0) dstVec = &dst.posDelta;
+            else if (std::strcmp(attr.name, "NORMAL")   == 0) dstVec = &dst.nrmDelta;
+            else if (std::strcmp(attr.name, "TANGENT")  == 0) dstVec = &dst.tanDelta;
+            else continue;   // 未知 attribute (例如 COLOR_0 / TEXCOORD_0 delta) 暂不支持
+
+            dstVec->resize(vCount * 3);
+            cgltf_accessor_unpack_floats(attr.data, dstVec->data(), dstVec->size());
+        }
+    }
+
+    outMesh->morphTargetCount = (int)N;
+
+    // 默认权重 (mesh.weights[])
+    outMesh->morphDefaultWeights.assign(N, 0.0f);
+    if (mesh && mesh->weights && mesh->weights_count > 0) {
+        cgltf_size wN = (mesh->weights_count < N) ? mesh->weights_count : N;
+        for (cgltf_size i = 0; i < wN; ++i) {
+            outMesh->morphDefaultWeights[i] = mesh->weights[i];
+        }
+    }
+
+    // 名称 (mesh.target_names[]); fallback "target_<i>"
+    outMesh->morphTargetNames.resize(N);
+    for (cgltf_size i = 0; i < N; ++i) {
+        if (mesh && mesh->target_names && i < mesh->target_names_count
+            && mesh->target_names[i]) {
+            outMesh->morphTargetNames[i] = mesh->target_names[i];
+        } else {
+            char buf[32];
+            std::snprintf(buf, sizeof(buf), "target_%zu", (size_t)i);
+            outMesh->morphTargetNames[i] = buf;
+        }
+    }
+    return true;
+}
+
+// Phase AX: 在 cgltf_data->nodes[] 中找 node 的索引 (cgltf 已 fixup, 直接用指针差)
+//   返回 -1 表示未找到 (node 不在 data 内)
+static int FindNodeIndex(const cgltf_data* data, const cgltf_node* node) {
+    if (!data || !node || data->nodes_count == 0) return -1;
+    const cgltf_node* base = &data->nodes[0];
+    if (node < base || node >= base + data->nodes_count) return -1;
+    return (int)(node - base);
+}
+
+// Phase AX: 取给定 node 关联 mesh 的 morph target count (用于 weights channel sampler.components)
+//   返回 0 表示 node 无 mesh 或 mesh 无 morph target
+static int GetNodeMorphTargetCount(const cgltf_node* node) {
+    if (!node || !node->mesh || node->mesh->primitives_count == 0) return 0;
+    cgltf_size n = node->mesh->primitives[0].targets_count;
+    if (n > (cgltf_size)MORPH_TARGET_MAX) n = (cgltf_size)MORPH_TARGET_MAX;
+    return (int)n;
+}
+
 // ==================== cgltf → AnimationClip 提取 ====================
 
 // 把 cgltf_animation_path 转为我们的 ChannelTarget
@@ -990,6 +1132,7 @@ static ChannelTarget ConvertChannelTarget(cgltf_animation_path_type p) {
         case cgltf_animation_path_type_translation: return ChannelTarget::TRANSLATION;
         case cgltf_animation_path_type_rotation:    return ChannelTarget::ROTATION;
         case cgltf_animation_path_type_scale:       return ChannelTarget::SCALE;
+        case cgltf_animation_path_type_weights:     return ChannelTarget::MORPH_WEIGHTS;   // Phase AX
         default: return ChannelTarget::UNSUPPORTED;
     }
 }
@@ -1004,8 +1147,12 @@ static InterpMode ConvertInterpolation(cgltf_interpolation_type i) {
     }
 }
 
-// 从一个 cgltf_animation 构造 AnimationClip (skin 用于映射 channel 目标 node → joint 索引)
-static AnimationClip* BuildClip(const cgltf_animation* anim, const cgltf_skin* skin) {
+// 从一个 cgltf_animation 构造 AnimationClip
+//   skin: 用于映射 TRS channel 目标 node → joint 索引
+//   data: Phase AX 新增, 用于 MORPH_WEIGHTS channel 的 nodeIdx 查找
+static AnimationClip* BuildClip(const cgltf_animation* anim,
+                                  const cgltf_skin* skin,
+                                  const cgltf_data* data) {
     AnimationClip* clip = new AnimationClip();
     clip->name = anim->name ? anim->name : "(unnamed)";
 
@@ -1013,24 +1160,33 @@ static AnimationClip* BuildClip(const cgltf_animation* anim, const cgltf_skin* s
         const cgltf_animation_channel& ch = anim->channels[c];
         if (!ch.target_node || !ch.sampler) continue;
 
-        // 找 channel.target_node 对应的关节
-        int jointIdx = FindJointInSkin(skin, ch.target_node);
-        if (jointIdx < 0) {
-            // 该 channel 作用于 skin 之外的 node, Step 1 跳过
-            continue;
-        }
-
         ChannelTarget tgt = ConvertChannelTarget(ch.target_path);
         if (tgt == ChannelTarget::UNSUPPORTED) continue;
 
         const cgltf_animation_sampler* gs = ch.sampler;
         if (!gs->input || !gs->output) continue;
 
+        // Phase AX: 按 target 类型分流 — TRS 走 jointIndex 路径, MORPH_WEIGHTS 走 meshNodeIdx 路径
         Sampler s;
-        s.jointIndex = jointIdx;
-        s.target     = tgt;
-        s.mode       = ConvertInterpolation(gs->interpolation);
-        s.components = (tgt == ChannelTarget::ROTATION) ? FLOATS_R : FLOATS_T;
+        s.target = tgt;
+        s.mode   = ConvertInterpolation(gs->interpolation);
+
+        if (tgt == ChannelTarget::MORPH_WEIGHTS) {
+            // weights channel: target_node 通常是 mesh node (非 skin 关节)
+            int nodeIdx  = FindNodeIndex(data, ch.target_node);
+            int morphCnt = GetNodeMorphTargetCount(ch.target_node);
+            if (morphCnt <= 0) continue;   // 该 node 无 morph mesh, 跳过
+            s.meshNodeIdx = nodeIdx;
+            s.jointIndex  = -1;
+            s.components  = morphCnt;       // glTF spec: 每帧 N 个 weight
+        } else {
+            // TRS channel: 找 channel.target_node 对应的关节
+            int jointIdx = FindJointInSkin(skin, ch.target_node);
+            if (jointIdx < 0) continue;     // 该 channel 作用于 skin 之外的 node
+            s.jointIndex  = jointIdx;
+            s.meshNodeIdx = -1;
+            s.components  = (tgt == ChannelTarget::ROTATION) ? FLOATS_R : FLOATS_T;
+        }
 
         // input: keyframe 时间
         size_t timeCount = gs->input->count;
@@ -1106,7 +1262,8 @@ static int l_Anim_LoadSkinnedGLTF(lua_State* L) {
     std::vector<AnimationClip*> clips;
     clips.reserve(data->animations_count);
     for (cgltf_size i = 0; i < data->animations_count; ++i) {
-        AnimationClip* c = BuildClip(&data->animations[i], skin);
+        // Phase AX: BuildClip 现在需要 data 参数 (用于 MORPH_WEIGHTS channel 的 nodeIdx 查找)
+        AnimationClip* c = BuildClip(&data->animations[i], skin, data);
         clips.push_back(c);
     }
 
@@ -1122,6 +1279,20 @@ static int l_Anim_LoadSkinnedGLTF(lua_State* L) {
             skMesh = nullptr;
         } else {
             skMesh->skeletonPtr = sk;     // 关联骨骼 (registry ref 在下面 push 后设)
+
+            // Phase AX: 提取 morph target (找 prim 所属 mesh 取 weights[]/target_names[])
+            const cgltf_mesh* gltfMesh = FindMeshForPrimitive(data, prim);
+            std::string morphErr;
+            if (!ExtractMorphTargets(prim, gltfMesh, skMesh, morphErr)) {
+                // morph 提取失败 → 视为无 morph (skMesh 已 0 初始化), 仅打印 warning
+                std::fprintf(stderr,
+                             "[Phase AX] ExtractMorphTargets failed: %s (mesh kept without morph)\n",
+                             morphErr.c_str());
+                skMesh->morphTargetCount = 0;
+                skMesh->morphTargets.clear();
+                skMesh->morphDefaultWeights.clear();
+                skMesh->morphTargetNames.clear();
+            }
         }
     }
 
