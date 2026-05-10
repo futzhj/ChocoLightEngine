@@ -32,6 +32,21 @@ struct RenderVertex3D {
     float r, g, b, a;    // color (顶点颜色, 与材质相乘)
 };
 
+/// Phase AW — GPU Skinning 顶点格式 (17 floats + 1 uint32 = 68 bytes)
+/// joints_packed: 4 个 uint8 关节索引按小端打包成 uint32
+///   byte0=joints[0], byte1=joints[1], byte2=joints[2], byte3=joints[3]
+/// 通过 glVertexAttribIPointer(loc=4, 4, GL_UNSIGNED_BYTE, ...) 暴露给 shader 为 uvec4
+struct RenderVertex3DSkin {
+    float    x, y, z;        // POSITION (location=0)
+    float    nx, ny, nz;     // NORMAL (location=1)
+    float    u, v;           // UV (location=2)
+    float    r, g, b, a;     // COLOR (location=3)
+    uint32_t joints_packed;  // JOINTS_0 (location=4, uvec4 via IPointer)
+    float    weights[4];     // WEIGHTS_0 (location=5, vec4)
+};
+static_assert(sizeof(RenderVertex3DSkin) == 68,
+              "RenderVertex3DSkin must be 68 bytes: pos(12)+normal(12)+uv(8)+color(16)+joints(4)+weights(16)");
+
 // ==================== 绘制模式 ====================
 
 enum class DrawMode {
@@ -241,6 +256,52 @@ public:
     virtual void ClearPointLights() {}
     virtual int  GetPointLightCount() const { return 0; }
     virtual int  GetMaxPointLights() const { return 0; }
+
+    // ---- Phase AW 新增 GPU Skinning 接口 (GL33 实现, Legacy 默认 no-op) ----
+    /**
+     * @brief 当前后端是否支持 GPU skinning
+     *
+     * 判定标准 (GL33Backend Init 期间检测并缓存):
+     *   GL_MAX_UNIFORM_BLOCK_SIZE   >= 4096 bytes (= 64 mat4)
+     *   GL_MAX_VERTEX_UNIFORM_BLOCKS >= 1
+     *   programUnlitSkin / programPBRSkin 至少一个 link 成功
+     *
+     * LegacyBackend 默认返回 false (不重写)。
+     */
+    virtual bool SupportsGPUSkinning() const { return false; }
+
+    /**
+     * @brief 创建 GPU skinned mesh (一次上传, 永不重传)
+     *
+     * @param verts   含 pos/normal/uv/color/joints/weights 的顶点数组
+     * @param vCount  顶点数 (> 0)
+     * @param indices uint32 三角形索引
+     * @param iCount  索引数 (必须为 3 的倍数)
+     *
+     * @return meshId (高位 0x80000000 区分普通 mesh ID); 失败返回 0
+     *
+     * 失败条件: !verts / vCount<=0 / !indices / iCount<=0 / !SupportsGPUSkinning()
+     */
+    virtual uint32_t CreateSkinnedMesh(const RenderVertex3DSkin* verts, int vCount,
+                                        const uint32_t* indices, int iCount) { return 0; }
+
+    /**
+     * @brief 用 jointMatrices 调色板渲染 GPU skinned mesh
+     *
+     * @param meshId        必须是 CreateSkinnedMesh 返回的 ID
+     * @param desc          MaterialDesc (mode = 0 unlit / 1 PBR)
+     * @param jointMatrices 16 floats × jointCount, 列主序
+     * @param jointCount    实际关节数 (≤ 64; 超过将被截断到 64)
+     *
+     * 内部行为:
+     *   1. glUseProgram(programUnlitSkin or programPBRSkin)
+     *   2. glBindBuffer + glBufferSubData 上传 jointMatrices 到 UBO
+     *   3. 上传 MVP/Model/Material/Lighting uniforms (复用 helper)
+     *   4. glBindVertexArray + glDrawElements
+     *   5. 切回默认 2D shader
+     */
+    virtual void DrawSkinnedMeshMaterial(uint32_t meshId, const MaterialDesc* desc,
+                                          const float* jointMatrices, int jointCount) {}
 };
 
 // ==================== 工厂函数 ====================
