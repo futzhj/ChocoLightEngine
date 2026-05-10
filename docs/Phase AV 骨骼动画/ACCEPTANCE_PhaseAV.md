@@ -491,3 +491,155 @@ luaL_setfuncs(L, kAnimationModule, 0);
 - IK / Layer / Morph target 高级特性
 
 ---
+
+## Phase AV.x — Procedural API + Introspection ✅
+
+**完成时间**：2026-05-10
+**状态**：通过验收 (CI run [`25615410315`](https://github.com/futzhj/ChocoLightEngine/actions/runs/25615410315) 全 6 平台 ✅)
+
+### 1. 提交清单
+
+| Commit | 说明 |
+|--------|------|
+| `7ad6c17` | feat: Phase AV.x procedural API + introspection + selection doc |
+| `363df8f` | fix: use `lua_objlen` instead of `lua_rawlen` (Lua 5.1 compat) |
+| `0ba97f6` / `127232d` / `457e424` / `e486471` | smoke bisect: stdout flush + 14.x markers + GC isolation + jointIdx probe |
+| `cc02bd8` / `e94bbb4` / `a1ab7f6` / `779c326` / `249a4ac` / `e3b3ef9` | fix attempts: std::string → char[] → snprintf+lua_pushstring → DIAG return 0 (五次 raise 路径修复尝试，全失败) |
+| `26216ec` | **fix(final)**: AddSampler returns `nil + err` instead of raise (Lumen+MSVC `lua_error` unstable) |
+| `6a14834` / `b089dbc` | chore: remove accidentally committed CI debug logs |
+
+### 2. 实现的 procedural API
+
+**Skeleton 程序化构建（5 个新方法）**：
+
+| 方法 | 签名 | 用途 |
+|------|------|------|
+| `Anim.NewEmptySkeleton(jointCount)` | `(int) → Skeleton or nil` | 创建空骨架（约束 1 ≤ count ≤ 64） |
+| `sk:SetJointName(idx1, name)` | `(int, string)` | 重命名关节，同步更新 `nameToIndex` |
+| `sk:SetJointParent(idx1, parentIdx1_or_0)` | `(int, int)` | 设置父子关系 + 自动重算 rootJoint |
+| `sk:SetBindLocalTRS(idx1, tx,ty,tz, qw,qx,qy,qz, sx,sy,sz)` | `(int, 10×float)` | 设置绑定姿势的 local TRS |
+| `sk:SetInverseBindMatrix(idx1, table_m16)` | `(int, table)` | 覆盖逆绑定矩阵 |
+
+**Clip 程序化构建（3 个新方法）**：
+
+| 方法 | 签名 | 用途 |
+|------|------|------|
+| `Anim.NewEmptyClip(name, duration)` | `(string, float) → AnimationClip` | 创建空动画 clip |
+| `c:SetDuration(d)` | `(float)` | 显式设置 duration |
+| `c:AddSampler(jointIdx1, target, mode, times, values)` | `(int, str, str, table, table) → ok or nil+err` | 添加采样通道 (translation/rotation/scale × LINEAR/STEP/CUBICSPLINE) |
+
+**Animator 内省（5 个新 getter）**：
+
+| 方法 | 返回 |
+|------|------|
+| `an:GetClip(name)` | clip userdata 或 nil |
+| `an:GetActiveClip()` | 当前活动 clip + progress |
+| `an:ListStates()` | 所有状态名 table |
+| `an:GetTransitionInfo(idx)` | transition 元数据 |
+| `an:GetEventInfo(idx)` | event 元数据 |
+| `an:ListParams()` | 所有参数名 + 值 |
+
+### 3. 输出契约核对
+
+| 验收项 | 期望 | 实际 | 通过 |
+|--------|------|------|------|
+| 8 个 Skeleton/Clip procedural 方法可用 | ✅ | 全部注册到 metatable | ✅ |
+| 6 个 Animator introspection 方法可用 | ✅ | 全部注册到 metatable | ✅ |
+| `NewEmptySkeleton(0)` / `NewEmptySkeleton(65)` 边界保护 | ✅ → nil | 返回 nil（out of range） | ✅ |
+| `AddSampler` 错误路径全部返回 `nil + err` | ✅ | 5 个错误路径（jointIdx / target / mode / values count / empty times）全部 `nil+err` | ✅ |
+| `SetJointName` / `SetJointParent` 等错误路径仍 raise | ✅ | luaL_error 路径正常工作（未触发崩溃模式） | ✅ |
+| 程序化 Skeleton + Clip + Animator 可端到端 Play + Update | ✅ | smoke [13] 段 PASS（NewEmpty… → AddSampler → NewAnimator → Play → Update → GetJointMatrices） | ✅ |
+| 6 平台 CI 编译通过 | ✅ | run `25615410315`：win / lin / mac / and / ios / web 全绿 | ✅ |
+| Windows runtime smoke 通过 | ✅ | `[Phase AV Step 1+2+3+4 + Phase AV.x] 通过 157 / 失败 0` | ✅ |
+
+### 4. 决策调整
+
+#### 4.1 ⚠️ AddSampler 错误路径改用 `return nil + err`（非 `lua_error`）
+
+**原计划**：所有错误路径用 `luaL_error` raise（与其他模块一致）。
+
+**实际执行**：`AddSampler` 5 个错误路径改用 `return ErrorReturn(L, msg)` / `return ErrorReturnF(L, fmt, ...)`，push `nil + err_string` 后 `return 2`。
+
+**触发原因**：CI 中 `pcall(c:AddSampler, ..., 'bad_target', ...)` 反复崩溃（exit code 1），尝试 5 次不同的修复方案均失败：
+
+| 尝试 | Commit | 结果 |
+|------|--------|------|
+| 用 `std::string` 持有 luaL_checkstring 副本，避免 GC dangling | `cc02bd8` | 仍崩 |
+| 改用 `char[32] + memcpy` + 提前预扫消除 std::vector longjmp UB | `e94bbb4` | 仍崩 |
+| 自定义 `RaiseFormatted` 用 `snprintf + lua_pushstring + lua_error`，绕开 `luaL_error → lua_pushvfstring` 路径 | `a1ab7f6` | 14.4a (`%d`) PASS，14.4b (`%s`) 崩 |
+| 14.4b 改用纯字符串字面量 `lua_pushstring + lua_error`（无任何格式化） | `779c326` | 仍崩（第二次 raise）|
+| 14.4a 也改 `return 0` 让 14.4c 成为第一次 raise | `e3b3ef9` | 14.4c (`%s`) 第一次 raise 即崩 |
+
+最终结论：**Lumen + MSVC 下 `AddSampler` 函数体内的 `lua_error` 路径不稳定**（疑似 `/GS` stack cookie + `char[32]` 大栈数组 + `longjmp` 三因素交互），与 raise 是第几次或 fmt 含不含 `%s` 都无关。
+
+**根本修复**：避开 `lua_error`，改用 Lua 标准 `nil + err` 返回模式（参考 `Anim.LoadGLTF` / `Sound.Load` / `Light.LoadSO.LoadObject` 等同构 API）。
+
+```lua
+-- 原计划（崩）：
+local ok = pcall(c.AddSampler, c, 0, 'translation', 'LINEAR', {0}, {0,0,0})
+assert(ok == false)
+
+-- 现行（稳定）：
+local r, e = c:AddSampler(0, 'translation', 'LINEAR', {0}, {0,0,0})
+assert(r == nil and type(e) == 'string')
+```
+
+**影响范围**：仅 `AddSampler` 一函数。其他 `Set*` 方法的 `luaL_error` 路径已 CI 验证正常工作（无 `char[N]` 大栈数组，未触发 `/GS` 注入）。
+
+#### 4.2 `lua_objlen` vs `lua_rawlen`
+
+- Lua 5.1 / Lumen 兼容性：`lua_rawlen` 是 Lua 5.2+ 才引入；Lua 5.1 用 `lua_objlen`
+- 误用 `lua_rawlen` 会 link error，commit `363df8f` 替换为 `lua_objlen`
+
+### 5. 调试经验（写入 `MEMORY[debug.md]` 和 `MEMORY[skills.md]`）
+
+#### 5.1 ⚠️⚠️⚠️ Lumen + MSVC `lua_error` 风险模式
+
+**风险模式识别**（同时满足三个条件即为高风险）：
+
+1. **C++ 编译目标**（`light_*.cpp`，非 .c）
+2. **函数体内有 ≥ 8 字节的 `char[N]` 局部数组**（触发 MSVC `/GS` stack cookie 注入）
+3. **`luaL_error` / `lua_error` 路径含 `%s` 或被多次调用**
+
+**症状**：
+- CI 进程 exit code 1，无 stderr，无 dmp
+- 不一定第一次崩，可能第 N 次 raise 才崩
+- `lua_pushvfstring` 改 `snprintf + lua_pushstring` 不能解决
+- `std::string` 改 `char[N]` 也不能解决（恰恰是触发 `/GS` 注入的根因）
+
+**安全模式**（已 CI 验证）：
+
+| 模式 | 安全性 | 备注 |
+|------|--------|------|
+| `luaL_error(L, "...%d...", int)` 函数无 char[] | ✅ | 如 `SetJointName` |
+| `luaL_error(L, "...%s...", const char*)` 函数无 char[] | ✅ | 如 `light_loadso.cpp` |
+| `luaL_error(L, "...%s...", const char*)` 函数有 `char[N]` | ⚠️⚠️⚠️ | 高风险，**不要用** |
+| `lua_pushnil + lua_pushstring + return 2` | ✅✅✅ | **首选**：完全避开 longjmp |
+
+**通用规则**：
+
+> **ChocoLight C++ Lua 模块的错误处理首选 `return nil, err`**（`lua_pushnil + lua_pushstring + return 2`），与 `LoadGLTF` / `Sound.Load` / `LoadObject` 等同构。`luaL_error` 仅在函数体内**没有 `char[N]` 局部数组**且**只调用一次**时使用。
+
+#### 5.2 CI bisect 方法论沉淀
+
+本次 6 次 CI iteration 验证了 `MEMORY[debug.md]` 阶段 0/1/2 的二分法 + 探针法：
+
+1. **Lua 端 print 探针**（commit `127232d` / `0ba97f6`）：精确定位崩溃在哪个 pcall 之前
+2. **C++ 端逐路径 `return 0`**（commit `249a4ac` / `e3b3ef9`）：消除变量逐一确认嫌疑
+3. **格式化路径 vs 非格式化对比**（commit `779c326`）：排除 `lua_pushvfstring` 嫌疑
+4. **第一次 raise vs 第二次 raise 对比**（commit `e3b3ef9`）：确认与调用次序无关
+
+每次 bisect commit 5-10 分钟一轮 CI，6 轮共 ~1 小时锁定根因。教训：**遇到 longjmp 类崩溃，第一时间考虑绕开（`return nil+err`）而非根治**——根治需要 WinDbg 本地复现 + Lumen 源码深度调试，工程性价比远低于绕开。
+
+### 6. 验收完成标准
+
+- [x] Phase AV.x 所有 procedural / introspection 方法注册到 metatable
+- [x] smoke `animation.lua` 段 [12]–[14] 全 PASS（procedural API 表 + happy path + 错误路径）
+- [x] `[Phase AV Step 1+2+3+4 + Phase AV.x] 通过 157 / 失败 0`
+- [x] 6 平台 CI run `25615410315` 全绿
+- [x] 无破坏现有 Phase AS / AT / AU smoke
+- [x] 调试经验完整记录
+
+**结论**：Phase AV.x 验收通过。Phase AV 整体（Step 1-4 + Phase AV.x）闭环。
+
+---

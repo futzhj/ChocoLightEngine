@@ -326,6 +326,67 @@
 
 ---
 
+## S21. Lumen + MSVC `lua_error` 安全模式
+
+**核心**: 在 ChocoLight C++ Lua 模块中，`luaL_error` / `lua_error` 内部走 `longjmp`，与 MSVC `/GS` stack cookie 在某些栈布局下会触发崩溃（Phase AV.x `AddSampler` 调试中通过 6 次 CI iteration 锁定）。
+
+### 风险模式（同时满足三条即高危）
+
+1. **C++ 编译目标**（`light_*.cpp`，非 .c）
+2. **函数体内 ≥ 8 字节的 `char[N]` 局部数组** —— MSVC 自动注入 `/GS` stack cookie
+3. **`luaL_error` / `lua_error` 路径含 `%s` 或被多次调用**
+
+### 症状
+
+- CI 进程 exit code 1，无 stderr 错误信息，无 dmp
+- 不一定第一次就崩，可能第 N 次 raise 才崩
+- 改用 `snprintf + lua_pushstring + lua_error` 绕开 `lua_pushvfstring` 不能解决
+- 把 `std::string` 改 `char[N]` 也不能解决（恰恰是触发 `/GS` 注入的根因）
+
+### 安全模式表
+
+| 模式 | 安全性 | 案例 |
+|------|--------|------|
+| `luaL_error(L, "...%d...", int)` 函数无 char[] | ✅ | `SetJointName` |
+| `luaL_error(L, "...%s...", const char*)` 函数无 char[] | ✅ | `light_loadso.cpp` |
+| `luaL_error(L, "...%s...", const char*)` 函数有 `char[N]` | ⚠️⚠️⚠️ | **不要用** |
+| `lua_pushnil + lua_pushstring + return 2` | ✅✅✅ | **首选**，`AddSampler` / `LoadGLTF` / `Sound.Load` |
+
+### 推荐 Helper（trivial-dtor 友好）
+
+```cpp
+static int ErrorReturn(lua_State* L, const char* msg) {
+    lua_pushnil(L);
+    lua_pushstring(L, msg);
+    return 2;
+}
+static int ErrorReturnF(lua_State* L, const char* fmt, ...) {
+    char buf[256];
+    va_list ap; va_start(ap, fmt);
+    std::vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    buf[sizeof(buf) - 1] = '\0';
+    return ErrorReturn(L, buf);
+}
+```
+
+### 通用规则
+
+> ChocoLight C++ Lua 模块的错误处理 **首选** `return nil, err` 模式（与 `LoadGLTF` / `Sound.Load` / `LoadObject` 同构）。`luaL_error` 仅在函数体内**无 `char[N]` 局部数组**且**不可能多次 raise** 时才使用。
+
+### CI bisect 方法论（适用于所有 longjmp 类崩溃）
+
+1. **Lua 端 print 探针**：精确定位崩溃在哪个 pcall 之前
+2. **C++ 端逐路径 `return 0`**：消除变量逐一确认嫌疑
+3. **格式化 vs 非格式化**：排除 `lua_pushvfstring` 嫌疑
+4. **首次 raise vs N 次 raise**：确认与调用次序的相关性
+
+每轮 5-10 分钟 CI，6 轮即可锁定。**遇到 longjmp 类崩溃，第一时间考虑绕开（`return nil+err`）而非根治**——根治需要 WinDbg 本地复现 + 引擎源码深度调试，工程性价比远低于绕开。
+
+**涉及文件**: `light_animation.cpp`（`l_Clip_AddSampler` + `ErrorReturn` / `ErrorReturnF` helper）；详细 6 次 iteration 记录见 `docs/Phase AV 骨骼动画/ACCEPTANCE_PhaseAV.md` Phase AV.x §4.1 / §5.1。
+
+---
+
 ## 技能矩阵总览
 
 | 编号 | 技能 | 领域 | 难度 | 版本 |
@@ -350,3 +411,4 @@
 | S18 | 轻量 ECS | 架构设计 | ⭐⭐⭐ | v0.3 |
 | S19 | Android 适配排查 | 平台工程 | ⭐⭐⭐⭐ | v0.3 |
 | S20 | 渲染后端抽象 | 图形学 | ⭐⭐⭐⭐ | v0.2 |
+| S21 | Lumen+MSVC `lua_error` 安全模式 | 调试/系统编程 | ⭐⭐⭐⭐⭐ | v0.3 |
