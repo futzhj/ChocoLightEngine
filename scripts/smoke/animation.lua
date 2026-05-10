@@ -485,44 +485,28 @@ if type(Anim.NewEmptySkeleton) == 'function' then
     local r2 = Anim.NewEmptySkeleton(65)
     CHECK(r2 == nil, 'NewEmptySkeleton(65) → nil (exceeds MAX_JOINTS=64)')
 
-    print('  ... 14.3 NewEmptySkeleton(2) + NewEmptyClip')
     local sk2 = Anim.NewEmptySkeleton(2)
     local c2  = Anim.NewEmptyClip('t', 0.0)
-    print(string.format('  ... 14.3 done sk2=%s c2=%s', type(sk2), type(c2)))
 
-    -- AddSampler 各种错误路径 (cpp 改用 RaiseFormatted, 应不再触发 luaL_error %s 崩溃)
-    print('  ... 14.4a pre pcall AddSampler jointIdx=0')
-    local ok14_4a = pcall(c2.AddSampler, c2, 0, 'translation', 'LINEAR', {0}, {0,0,0})
-    print('  ... 14.4a post ok=' .. tostring(ok14_4a))
-    CHECK(ok14_4a == false, 'AddSampler jointIdx=0 raises')
+    -- AddSampler 错误路径: cpp 改用 return nil, err 模式 (见 l_Clip_AddSampler 注释),
+    -- 不再 lua_error, 避免 Lumen 在 MSVC 上 longjmp 崩溃. Lua 端直接用多返回值解构.
+    local r, e
+    r, e = c2:AddSampler(0, 'translation', 'LINEAR', {0}, {0,0,0})
+    CHECK(r == nil and type(e) == 'string',   'AddSampler jointIdx=0 returns nil, err')
+    r, e = c2:AddSampler(1, 'bad_target', 'LINEAR', {0}, {0,0,0})
+    CHECK(r == nil and type(e) == 'string',   'AddSampler unknown target returns nil, err')
+    r, e = c2:AddSampler(1, 'translation', 'BAD_MODE', {0}, {0,0,0})
+    CHECK(r == nil and type(e) == 'string',   'AddSampler unknown mode returns nil, err')
+    r, e = c2:AddSampler(1, 'translation', 'LINEAR', {0}, {0,0})
+    CHECK(r == nil and type(e) == 'string',   'AddSampler values count mismatch returns nil, err')
+    r, e = c2:AddSampler(1, 'translation', 'LINEAR', {}, {})
+    CHECK(r == nil and type(e) == 'string',   'AddSampler empty times returns nil, err')
 
-    print('  ... 14.4b pre pcall AddSampler bad_target')
-    local ok14_4b = pcall(c2.AddSampler, c2, 1, 'bad_target', 'LINEAR', {0}, {0,0,0})
-    print('  ... 14.4b post ok=' .. tostring(ok14_4b))
-    CHECK(ok14_4b == false, 'AddSampler unknown target raises')
-
-    print('  ... 14.4c pre pcall AddSampler BAD_MODE')
-    local ok14_4c = pcall(c2.AddSampler, c2, 1, 'translation', 'BAD_MODE', {0}, {0,0,0})
-    print('  ... 14.4c post ok=' .. tostring(ok14_4c))
-    CHECK(ok14_4c == false, 'AddSampler unknown mode raises')
-
-    print('  ... 14.4d pre pcall AddSampler values mismatch')
-    local ok14_4d = pcall(c2.AddSampler, c2, 1, 'translation', 'LINEAR', {0}, {0,0})
-    print('  ... 14.4d post ok=' .. tostring(ok14_4d))
-    CHECK(ok14_4d == false, 'AddSampler values count mismatch raises')
-
-    print('  ... 14.4e pre pcall AddSampler empty times')
-    local ok14_4e = pcall(c2.AddSampler, c2, 1, 'translation', 'LINEAR', {}, {})
-    print('  ... 14.4e post ok=' .. tostring(ok14_4e))
-    CHECK(ok14_4e == false, 'AddSampler empty times raises')
-
-    print('  ... 14.9 pcall SetJointName out-of-range')
+    -- 以下路径暂时仍用 luaL_error (SetJointName / SetJointParent) - 观察是否也会崩, 需要再迁移
     CHECK(pcall(sk2.SetJointName, sk2, 99, 'x') == false,
           'SetJointName out-of-range raises')
-    print('  ... 14.10 pcall SetJointParent self-ref')
     CHECK(pcall(sk2.SetJointParent, sk2, 1, 1) == false,
           'SetJointParent self-reference raises')
-    print('  ... 14.11 pcall SetJointParent out-of-range')
     CHECK(pcall(sk2.SetJointParent, sk2, 1, 99) == false,
           'SetJointParent out-of-range parent raises')
     print('  ... 14.12 pcall SetBindLocalTRS out-of-range')
