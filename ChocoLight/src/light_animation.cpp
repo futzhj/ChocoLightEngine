@@ -421,7 +421,7 @@ static void EvaluateSampler(const Sampler& s, float t, float* out, int outComps)
 
     // 边界 / STEP / 单帧 → 直接取左 keyframe value
     if (idx >= lastIdx || s.mode == InterpMode::STEP || s.times[idx] >= t) {
-        float raw[4];
+        float raw[MORPH_TARGET_MAX];     // Phase AX: 扩容以支持 MORPH_WEIGHTS 路径 (components 上限 8)
         readKey(idx, 1 /*value*/, raw);
         if (s.target == ChannelTarget::ROTATION && outComps == 4 && comps == 4) {
             GltfQuatXyzwToWxyz(raw, out);
@@ -441,7 +441,7 @@ static void EvaluateSampler(const Sampler& s, float t, float* out, int outComps)
     if (u > 1) u = 1;
 
     if (s.mode == InterpMode::LINEAR) {
-        float a[4], b[4];
+        float a[MORPH_TARGET_MAX], b[MORPH_TARGET_MAX];   // Phase AX: 扩容到 8
         readKey(idx,     1, a);
         readKey(idx + 1, 1, b);
         if (s.target == ChannelTarget::ROTATION && outComps == 4 && comps == 4) {
@@ -461,7 +461,8 @@ static void EvaluateSampler(const Sampler& s, float t, float* out, int outComps)
 
     // CUBICSPLINE: p(u) = (2u³-3u²+1)*v0 + (u³-2u²+u)*dt*o0 + (-2u³+3u²)*v1 + (u³-u²)*dt*i1
     //              o0 = out_tangent_idx, i1 = in_tangent_(idx+1)
-    float v0[4], o0[4], v1[4], i1[4];
+    float v0[MORPH_TARGET_MAX], o0[MORPH_TARGET_MAX];   // Phase AX: 扩容到 8
+    float v1[MORPH_TARGET_MAX], i1[MORPH_TARGET_MAX];
     readKey(idx,     1, v0);
     readKey(idx,     2, o0);
     readKey(idx + 1, 0, i1);
@@ -474,7 +475,7 @@ static void EvaluateSampler(const Sampler& s, float t, float* out, int outComps)
     float h01 = -2 * u3 + 3 * u2;
     float h11 =      u3 -     u2;
 
-    float raw[4];
+    float raw[MORPH_TARGET_MAX];   // Phase AX: 扩容到 8
     for (int k = 0; k < comps; ++k) {
         raw[k] = h00 * v0[k] + h10 * dt * o0[k] + h01 * v1[k] + h11 * dt * i1[k];
     }
@@ -598,6 +599,69 @@ static void ComputeJointMatricesBlended(Skeleton* sk,
         TRSToMat4(trans, rot, scl, &localMats[i * 16]);
     }
     ComputeWorldAndSkinning(sk, localMats, outMatrices);
+}
+
+// ==================== Phase AX: morph weights 评估 ====================
+
+// 在 clip.samplers 中评估所有 MORPH_WEIGHTS sampler, 输出最大 components 个值
+// 返回值: 评估到的最大 components (= 该 clip 控制的 morph target 数量上限); 0 表示无 weights sampler
+//   out:   最大 MORPH_TARGET_MAX 个 float (调用方提供 stack array)
+//   注意: 同一 clip 中可能有多个 weights channel (来自不同 mesh node), 但本阶段只支持 1 个
+//         (取第一个 sampler.components > 0 的, 与 Animator/SkinnedMesh 1:1 关系一致)
+static int EvaluateClipMorphWeights(AnimationClip* clip, float t, float* out) {
+    if (!clip) return 0;
+    for (const Sampler& s : clip->samplers) {
+        if (s.target != ChannelTarget::MORPH_WEIGHTS) continue;
+        int comps = s.components;
+        if (comps <= 0) continue;
+        if (comps > MORPH_TARGET_MAX) comps = MORPH_TARGET_MAX;
+        // EvaluateSampler 已被扩容到支持 components <= 8
+        EvaluateSampler(s, t, out, comps);
+        return comps;
+    }
+    return 0;
+}
+
+// Phase AX: 评估 Animator 的当前 morph weights
+//   语义:
+//     1. 从 activeClip 评估 evalA[N]
+//     2. (crossfade 中) 从 crossfadeClip 评估 evalB[N], 按 progress 混合到 evalA
+//     3. 按手动覆盖 (NaN sentinel) 写入最终 morphWeights
+//   不需要 mesh 引用: morphTargetCount 由 sampler.components 决定
+//   morphWeights / morphWeightsManual 自动 lazy resize (跟随评估到的 N)
+static void EvaluateMorphWeights(Animator* an) {
+    if (!an) return;
+    float evalA[MORPH_TARGET_MAX] = {0};
+    int   nA = EvaluateClipMorphWeights(an->activeClip, an->currentTime, evalA);
+
+    float evalB[MORPH_TARGET_MAX] = {0};
+    int   nB = 0;
+    bool inCrossfade = (!an->crossfadeTarget.empty() && an->crossfadeClip);
+    if (inCrossfade) {
+        nB = EvaluateClipMorphWeights(an->crossfadeClip, an->crossfadeClipTime, evalB);
+    }
+
+    // 取 max(nA, nB) 作为本帧 N (容许 active/crossfade clip 控制的 morph target 数不同)
+    int N = (nA > nB) ? nA : nB;
+    if (N == 0) return;   // 两个 clip 都无 weights sampler
+
+    // lazy resize (尽可能延迟分配)
+    if ((int)an->morphWeights.size() < N)       an->morphWeights.assign(N, 0.0f);
+    if ((int)an->morphWeightsManual.size() < N) an->morphWeightsManual.assign(N, std::nanf(""));
+
+    // 混合 + 手动覆盖
+    float w = inCrossfade ? an->crossfadeProgress : 0.0f;
+    if (w < 0.0f) w = 0.0f;
+    if (w > 1.0f) w = 1.0f;
+    for (int i = 0; i < N; ++i) {
+        float a = (i < nA) ? evalA[i] : 0.0f;
+        float b = (i < nB) ? evalB[i] : 0.0f;
+        float merged = inCrossfade ? (a + (b - a) * w) : a;
+
+        float manual = an->morphWeightsManual[i];
+        // NaN: 用动画值; 否则用手动值 (用户显式 SetMorphWeight 后)
+        an->morphWeights[i] = std::isnan(manual) ? merged : manual;
+    }
 }
 
 // ==================== Step 3: CPU 蒙皮 ====================
@@ -2053,6 +2117,10 @@ static int l_Animator_Update(lua_State* L) {
                                    an->currentTime, an->jointMatrices);
         }
     }
+
+    // Phase AX: 评估 morph weights (动画通道驱动 + 手动覆盖)
+    EvaluateMorphWeights(an);
+
     return 0;
 }
 
