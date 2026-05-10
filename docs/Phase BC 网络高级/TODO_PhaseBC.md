@@ -77,23 +77,22 @@ or
 
 ## 二、增强项（中优先 — 影响生产可用性）
 
-### 2.1 Room state 增量 patch (替代全量广播)
+### 2.1 Room state 增量 patch ✅ 已完成 (commit `c35e8a6`)
 
-**当前实现**: `room:SetState(t)` 总是序列化整表 + 广播.
-**问题**: state 表 > 4KB 时, 每次更新带宽放大严重.
-**方案**: 实现 RFC 6902 JSON Patch:
-```lua
-room:PatchState({{op="replace", path="/score", value=10}})
-```
-内部计算 patch → 序列化 patch only → 广播 PKT_ROOM_STATE_PATCH.
+**实施 (Phase BC v2 简化版, 比原方案更轻量)**:
+- 新 wire 包 `PKT_ROOM_STATE_PATCH = 8`: `{rev, set:{...}, delete:[...]}`
+- Server: `room:PatchState(set_table, delete_keys?)` — 顶层 set + 顶层 delete
+- Client: `RoomClient.stateCacheRef` 维护本地 state 副本, STATE 全量替换 / PATCH 增量应用
+- OnState cb 现在每次拿到的是同一个 Lua table 引用 (in-place 更新)
 
-**预估工时**: 6h
-**优先级**: 中 (state < 4KB 时无影响)
+**简化 vs 原 RFC 6902 方案**:
+- ❌ 不支持嵌套 path (`/players/alice/x`) — 子表整个替换
+- ❌ 不支持 op 字段 (move/copy/test) — 仅 set + delete
+- ✅ Lua-friendly API, 无需用户构造 op 数组
+- ✅ JSON wire 简单, 易调试
 
-**操作指引**:
-```
-"T-PATCH 启动" (我会创建 ALIGNMENT_PhaseBC_Patch.md 走 6A)
-```
+**实际工时**: 1.5h (低于 6h 估算, 因简化了语义)
+**CI 验证**: ✅ 全平台 6/6 通过 (run 25639493380)
 
 ---
 
