@@ -696,19 +696,36 @@ static int l_RoomHost_Broadcast(lua_State* L) {
     return 1;
 }
 
-// host:Kick(peer_id, reason)
+// host:Kick(peer_id [, reason]) -> bool
+//
+// Phase BC v2: 先通过 EnetSendByPeerId 发 PKT_ROOM_KICK {reason}, 再 disconnect.
+// 客户端 OnKick(reason) 会拿到友好原因, 然后 ENet 自动推送 DISCONNECT 事件.
+//
+// 返回值: disconnect 是否成功发出 (即 peer 是否存在且未已断). KICK 包发送失败
+// 不影响 disconnect — peer 不存在时整个调用返回 false.
 static int l_RoomHost_Kick(lua_State* L) {
     auto* h = CheckHost(L, 1);
     if (!h->host) { lua_pushboolean(L, 0); return 1; }
     uint32_t peerId = (uint32_t)luaL_checkinteger(L, 2);
     const char* reason = luaL_optstring(L, 3, "kicked");
 
-    // 找 peer (内部不暴露指针, 借 PlatformNet 内查 + 用 reason 发 KICK 包)
-    // 简化: 先尝试 broadcast 不可行 (要给特定 peer), 改用 send-by-id 模式
-    // 但 PlatformNet 没暴露 by-id 的 EnetSend. v1 限制: Kick 仅 disconnect,
-    // KICK packet 由后续完整 by-id Send 暴露后补.
+    // 1. 尝试发 KICK 包 (channel 0 reliable). 失败也继续 disconnect.
+    NetProto::JsonScope body(cJSON_CreateObject());
+    cJSON_AddStringToObject(body.get(), "reason", reason);
+    char* serialized = cJSON_PrintUnformatted(body.get());
+    if (serialized) {
+        std::string pkt = NetProto::Pack(NetProto::PKT_ROOM_KICK,
+                                          serialized, std::strlen(serialized));
+        cJSON_free(serialized);
+        if (!pkt.empty()) {
+            PlatformNet::EnetSendByPeerId(h->host, peerId, /*ch=*/0,
+                                           pkt.data(), (int)pkt.size(),
+                                           /*reliable=*/true);
+        }
+    }
+
+    // 2. disconnect (即使 KICK 包发送失败也尝试)
     bool ok = PlatformNet::EnetDisconnectPeerById(h->host, peerId, 0);
-    (void)reason;   // TODO: 后续暴露 by-id send 后, 先发 PKT_ROOM_KICK 再 disconnect
     lua_pushboolean(L, ok ? 1 : 0);
     return 1;
 }

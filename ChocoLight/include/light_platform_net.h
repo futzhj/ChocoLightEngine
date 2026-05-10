@@ -208,6 +208,16 @@ int EnetBroadcast(EnetHost* host, int channel,
 ///   返回 true 表示找到并发出 disconnect 请求
 bool EnetDisconnectPeerById(EnetHost* host, uint32_t peerId, uint32_t userData);
 
+/// 按 peer ID 发送数据 (Phase BC v2 — Kick 包真实送达)
+///   - host: 服务端 host (返回的 EnetCreateHost)
+///   - peerId: 目标 peer 的 incomingPeerID (与 EnetPeerID 一致)
+///   - channel: ENet 通道
+///   - data/len: 已用 NetProto::Pack 打包的字节
+///   - reliable: true 走 reliable 通道
+/// 返回 true 表示找到 peer 且 enqueue 成功 (送达由 ENet 异步保证, 不在此 API 范畴)
+bool EnetSendByPeerId(EnetHost* host, uint32_t peerId, int channel,
+                       const char* data, int len, bool reliable);
+
 /// 注册 host 的"帧末 idle 回调" — 每次 PlatformNet::Poll 中 EnetTickAll
 /// 处理完该 host 的所有事件后, 无论是否有事件都会调用一次此 cb.
 /// 用途: 周期性扫描 (例如 RPC pending timeout 检查), 不依赖 ENet 事件触发.

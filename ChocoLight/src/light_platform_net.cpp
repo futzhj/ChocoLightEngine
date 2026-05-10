@@ -40,6 +40,7 @@ const char* EnetPeerAddress(EnetPeer*) { return ""; }
 uint32_t EnetPeerID(EnetPeer*) { return 0; }
 int EnetBroadcast(EnetHost*, int, const char*, int, bool) { return 0; }
 bool EnetDisconnectPeerById(EnetHost*, uint32_t, uint32_t) { return false; }
+bool EnetSendByPeerId(EnetHost*, uint32_t, int, const char*, int, bool) { return false; }
 void EnetSetFrameCb(EnetHost*, OnEnetFrameCb) {}
 } // namespace PlatformNet
 // Android/iOS: 由 light_platform_net_mobile.cpp 提供 POSIX socket 实现

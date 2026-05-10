@@ -295,6 +295,26 @@ int EnetBroadcast(EnetHost* host, int channel,
     return sent;
 }
 
+bool EnetSendByPeerId(EnetHost* host, uint32_t peerId, int channel,
+                       const char* data, int len, bool reliable) {
+    if (!host || !data || len <= 0 || channel < 0) return false;
+    auto* eh = (ENetHost*)host;
+    if ((size_t)peerId >= eh->peerCount) return false;
+    if ((size_t)channel >= eh->channelLimit) return false;
+    ENetPeer* p = &eh->peers[peerId];
+    if (p->state != ENET_PEER_STATE_CONNECTED) return false;
+
+    enet_uint32 flags = reliable ? ENET_PACKET_FLAG_RELIABLE : 0;
+    ENetPacket* packet = enet_packet_create(data, (size_t)len, flags);
+    if (!packet) return false;
+    if (enet_peer_send(p, (enet_uint8)channel, packet) < 0) {
+        // 入队失败 (channel 越界等) — packet 未被 ENet 托管, 手动释放
+        enet_packet_destroy(packet);
+        return false;
+    }
+    return true;
+}
+
 bool EnetDisconnectPeerById(EnetHost* host, uint32_t peerId, uint32_t userData) {
     if (!host) return false;
     auto* eh = (ENetHost*)host;
