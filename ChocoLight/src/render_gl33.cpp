@@ -131,6 +131,40 @@ void main() {
 }
 )";
 
+// ---- VS3D SKIN (GLES 3.0, Phase AW GPU Skinning) ----
+// 与 VS3D 等价但加上骨骼蒙皮: skinnedPos = sum(weight[i] * jointMats[joints[i]]) * aPos
+static const char* VS3D_SKIN_SOURCE = R"(#version 300 es
+precision highp float;
+layout(location=0) in vec3  aPos;
+layout(location=1) in vec3  aNormal;
+layout(location=2) in vec2  aUV;
+layout(location=3) in vec4  aColor;
+layout(location=4) in uvec4 aJoints;
+layout(location=5) in vec4  aWeights;
+uniform mat4 uMVP;
+uniform mat4 uModel;
+layout(std140) uniform JointBlock {
+    mat4 uJointMats[64];
+};
+out vec3 vNormalW;
+out vec3 vWorldPos;
+out vec2 vTexCoord;
+out vec4 vColor;
+void main() {
+    mat4 blend = aWeights.x * uJointMats[aJoints.x]
+               + aWeights.y * uJointMats[aJoints.y]
+               + aWeights.z * uJointMats[aJoints.z]
+               + aWeights.w * uJointMats[aJoints.w];
+    vec4 skinnedPos    = blend * vec4(aPos, 1.0);
+    vec3 skinnedNormal = mat3(blend) * aNormal;
+    gl_Position = uMVP * skinnedPos;
+    vNormalW    = mat3(uModel) * skinnedNormal;
+    vWorldPos   = (uModel * skinnedPos).xyz;
+    vTexCoord   = aUV;
+    vColor      = aColor;
+}
+)";
+
 // ---- FS Unlit (GLES 3.0) ----
 static const char* FS_UNLIT_SOURCE = R"(#version 300 es
 precision mediump float;
@@ -297,6 +331,40 @@ void main() {
     vWorldPos = (uModel * vec4(aPos, 1.0)).xyz;
     vTexCoord = aUV;
     vColor = aColor;
+}
+)";
+
+// ---- VS3D SKIN (GL 3.3, Phase AW GPU Skinning) ----
+// 与 VS3D 等价但加上骨骼蒙皮: skinnedPos = sum(weight[i] * jointMats[joints[i]]) * aPos
+static const char* VS3D_SKIN_SOURCE = R"(
+#version 330 core
+layout(location=0) in vec3  aPos;
+layout(location=1) in vec3  aNormal;
+layout(location=2) in vec2  aUV;
+layout(location=3) in vec4  aColor;
+layout(location=4) in uvec4 aJoints;
+layout(location=5) in vec4  aWeights;
+uniform mat4 uMVP;
+uniform mat4 uModel;
+layout(std140) uniform JointBlock {
+    mat4 uJointMats[64];
+};
+out vec3 vNormalW;
+out vec3 vWorldPos;
+out vec2 vTexCoord;
+out vec4 vColor;
+void main() {
+    mat4 blend = aWeights.x * uJointMats[aJoints.x]
+               + aWeights.y * uJointMats[aJoints.y]
+               + aWeights.z * uJointMats[aJoints.z]
+               + aWeights.w * uJointMats[aJoints.w];
+    vec4 skinnedPos    = blend * vec4(aPos, 1.0);
+    vec3 skinnedNormal = mat3(blend) * aNormal;
+    gl_Position = uMVP * skinnedPos;
+    vNormalW    = mat3(uModel) * skinnedNormal;
+    vWorldPos   = (uModel * skinnedPos).xyz;
+    vTexCoord   = aUV;
+    vColor      = aColor;
 }
 )";
 
@@ -505,6 +573,17 @@ class GL33Backend : public RenderBackend {
     std::unordered_map<uint32_t, MeshGPU> meshes;
     uint32_t                              nextMeshId = 1;
 
+    // ---- Phase AW — GPU Skinning 资源 ----
+    GLuint  programUnlitSkin = 0;
+    GLuint  programPBRSkin   = 0;
+    GLuint  uboJointMatrices = 0;
+    bool    gpuSkinningSupported = false;
+    static constexpr GLuint UBO_BINDING_POINT = 0;     // 固定 binding point
+    static constexpr int    SKIN_MAX_JOINTS   = 64;     // shader 内 uJointMats[64]
+    // SkinnedMesh 资源池: ID 高位 0x80000000 区分普通 mesh
+    std::unordered_map<uint32_t, MeshGPU> skinnedMeshes;
+    uint32_t                              nextSkinnedMeshId = 0x80000001u;
+
     // 编译 shader, 返回 0 表示失败
     static GLuint CompileShader(GLenum type, const char* src) {
         GLuint s = glCreateShader(type);
@@ -625,11 +704,78 @@ public:
         if (fsUnlit) glDeleteShader(fsUnlit);
         if (fsPBR)   glDeleteShader(fsPBR);
 
-        CC::Log(CC::LOG_INFO, "RenderBackend: GL33 Core initialized (GL %s)%s",
+        // ---- Phase AW — GPU Skinning: 检测 UBO 上限 + 编译 Skin shader + 创建 UBO ----
+        InitGPUSkinning();
+
+        CC::Log(CC::LOG_INFO, "RenderBackend: GL33 Core initialized (GL %s)%s%s",
                 (const char*)glGetString(GL_VERSION),
                 (programUnlit && programPBR) ? ", 3D Unlit+PBR enabled" :
-                (programUnlit || programPBR) ? ", partial 3D shader" : "");
+                (programUnlit || programPBR) ? ", partial 3D shader" : "",
+                gpuSkinningSupported ? ", GPU skinning enabled" : "");
         return true;
+    }
+
+    // Phase AW — GPU Skinning 初始化 (检测 + 编译 skin shader + 创建 UBO)
+    // 任何步骤失败 => gpuSkinningSupported = false, 不影响其他渲染功能
+    void InitGPUSkinning() {
+        // 1. 检测 UBO 上限
+        GLint maxUniformBlockSize    = 0;
+        GLint maxVertexUniformBlocks = 0;
+        glGetIntegerv(GL_MAX_UNIFORM_BLOCK_SIZE,    &maxUniformBlockSize);
+        glGetIntegerv(GL_MAX_VERTEX_UNIFORM_BLOCKS, &maxVertexUniformBlocks);
+        constexpr int kRequiredUboBytes = SKIN_MAX_JOINTS * 16 * (int)sizeof(float);  // 4096
+        if (maxUniformBlockSize < kRequiredUboBytes || maxVertexUniformBlocks < 1) {
+            CC::Log(CC::LOG_WARN, "GL33: GPU skinning unsupported (UBO size=%d, vert blocks=%d)",
+                    maxUniformBlockSize, maxVertexUniformBlocks);
+            return;
+        }
+
+        // 2. 编译 SKIN VS, link 与 FS_UNLIT / FS_PBR 共用
+        GLuint vsSkin   = CompileShader(GL_VERTEX_SHADER,   VS3D_SKIN_SOURCE);
+        GLuint fsUnlit2 = CompileShader(GL_FRAGMENT_SHADER, FS_UNLIT_SOURCE);
+        GLuint fsPBR2   = CompileShader(GL_FRAGMENT_SHADER, FS_PBR_SOURCE);
+        if (vsSkin && fsUnlit2) {
+            programUnlitSkin = LinkProgram(vsSkin, fsUnlit2);
+            if (!programUnlitSkin) CC::Log(CC::LOG_WARN, "GL33: Unlit Skin shader link failed");
+        }
+        if (vsSkin && fsPBR2) {
+            programPBRSkin = LinkProgram(vsSkin, fsPBR2);
+            if (!programPBRSkin) CC::Log(CC::LOG_WARN, "GL33: PBR Skin shader link failed");
+        }
+        if (vsSkin)   glDeleteShader(vsSkin);
+        if (fsUnlit2) glDeleteShader(fsUnlit2);
+        if (fsPBR2)   glDeleteShader(fsPBR2);
+        if (!programUnlitSkin && !programPBRSkin) {
+            CC::Log(CC::LOG_WARN, "GL33: GPU skinning shaders failed to link");
+            return;
+        }
+
+        // 3. 创建 UBO 并预分配 4096 bytes
+        glGenBuffers(1, &uboJointMatrices);
+        glBindBuffer(GL_UNIFORM_BUFFER, uboJointMatrices);
+        glBufferData(GL_UNIFORM_BUFFER, kRequiredUboBytes, nullptr, GL_DYNAMIC_DRAW);
+        glBindBuffer(GL_UNIFORM_BUFFER, 0);
+        if (!uboJointMatrices) {
+            CC::Log(CC::LOG_WARN, "GL33: UBO creation failed");
+            if (programUnlitSkin) { glDeleteProgram(programUnlitSkin); programUnlitSkin = 0; }
+            if (programPBRSkin)   { glDeleteProgram(programPBRSkin);   programPBRSkin   = 0; }
+            return;
+        }
+        // 绑定 UBO 到固定 binding point 0
+        glBindBufferBase(GL_UNIFORM_BUFFER, UBO_BINDING_POINT, uboJointMatrices);
+
+        // 4. 把 program 中的 "JointBlock" uniform block 关联到 binding point 0
+        auto bindBlock = [&](GLuint prog) {
+            if (!prog) return;
+            GLuint blockIdx = glGetUniformBlockIndex(prog, "JointBlock");
+            if (blockIdx != GL_INVALID_INDEX) {
+                glUniformBlockBinding(prog, blockIdx, UBO_BINDING_POINT);
+            }
+        };
+        bindBlock(programUnlitSkin);
+        bindBlock(programPBRSkin);
+
+        gpuSkinningSupported = true;
     }
 
     void Shutdown() override {
@@ -650,6 +796,19 @@ public:
             if (m.vao) glDeleteVertexArrays(1, &m.vao);
         }
         meshes.clear();
+
+        // Phase AW — 释放 GPU Skinning 资源
+        if (programUnlitSkin) { glDeleteProgram(programUnlitSkin); programUnlitSkin = 0; }
+        if (programPBRSkin)   { glDeleteProgram(programPBRSkin);   programPBRSkin   = 0; }
+        if (uboJointMatrices) { glDeleteBuffers(1, &uboJointMatrices); uboJointMatrices = 0; }
+        for (auto& kv : skinnedMeshes) {
+            const MeshGPU& m = kv.second;
+            if (m.ebo) glDeleteBuffers(1, &m.ebo);
+            if (m.vbo) glDeleteBuffers(1, &m.vbo);
+            if (m.vao) glDeleteVertexArrays(1, &m.vao);
+        }
+        skinnedMeshes.clear();
+        gpuSkinningSupported = false;
     }
 
     const char* GetName() const override { return "GL33Core"; }
@@ -1148,6 +1307,17 @@ public:
     }
 
     void DeleteMesh(uint32_t meshId) override {
+        // Phase AW: 高位 0x80000000 表示 skinned mesh
+        if (meshId & 0x80000000u) {
+            auto it = skinnedMeshes.find(meshId);
+            if (it == skinnedMeshes.end()) return;
+            const MeshGPU& m = it->second;
+            if (m.ebo) glDeleteBuffers(1, &m.ebo);
+            if (m.vbo) glDeleteBuffers(1, &m.vbo);
+            if (m.vao) glDeleteVertexArrays(1, &m.vao);
+            skinnedMeshes.erase(it);
+            return;
+        }
         auto it = meshes.find(meshId);
         if (it == meshes.end()) return;
         const MeshGPU& m = it->second;
@@ -1439,6 +1609,135 @@ public:
     }
 
     int GetMaxPointLights() const override { return MAX_PT_LIGHTS; }
+
+    // ==================== Phase AW — GPU Skinning 实现 ====================
+
+    bool SupportsGPUSkinning() const override { return gpuSkinningSupported; }
+
+    uint32_t CreateSkinnedMesh(const RenderVertex3DSkin* verts, int vCount,
+                                const uint32_t* indices, int iCount) override {
+        if (!verts || vCount <= 0 || !indices || iCount <= 0) return 0;
+        if (!gpuSkinningSupported) return 0;
+        if (!programUnlitSkin && !programPBRSkin) return 0;
+
+        MeshGPU m;
+        glGenVertexArrays(1, &m.vao);
+        glGenBuffers(1, &m.vbo);
+        glGenBuffers(1, &m.ebo);
+        glBindVertexArray(m.vao);
+
+        // VBO: 上传 skin 顶点
+        glBindBuffer(GL_ARRAY_BUFFER, m.vbo);
+        glBufferData(GL_ARRAY_BUFFER, vCount * sizeof(RenderVertex3DSkin), verts, GL_STATIC_DRAW);
+
+        // EBO: 上传索引
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m.ebo);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER, iCount * sizeof(uint32_t), indices, GL_STATIC_DRAW);
+
+        // 顶点属性 layout: pos(0), normal(1), uv(2), color(3), joints(4 IPointer), weights(5)
+        const GLsizei stride = sizeof(RenderVertex3DSkin);
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, stride,
+                              (void*)offsetof(RenderVertex3DSkin, x));
+        glEnableVertexAttribArray(1);
+        glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, stride,
+                              (void*)offsetof(RenderVertex3DSkin, nx));
+        glEnableVertexAttribArray(2);
+        glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, stride,
+                              (void*)offsetof(RenderVertex3DSkin, u));
+        glEnableVertexAttribArray(3);
+        glVertexAttribPointer(3, 4, GL_FLOAT, GL_FALSE, stride,
+                              (void*)offsetof(RenderVertex3DSkin, r));
+        // location=4: joints (uint8 × 4) — 用 IPointer 保持整数语义
+        glEnableVertexAttribArray(4);
+        glVertexAttribIPointer(4, 4, GL_UNSIGNED_BYTE, stride,
+                                (void*)offsetof(RenderVertex3DSkin, joints_packed));
+        // location=5: weights (vec4)
+        glEnableVertexAttribArray(5);
+        glVertexAttribPointer(5, 4, GL_FLOAT, GL_FALSE, stride,
+                              (void*)offsetof(RenderVertex3DSkin, weights));
+
+        glBindVertexArray(0);
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+
+        m.indexCount = iCount;
+        uint32_t id = nextSkinnedMeshId++;
+        skinnedMeshes[id] = m;
+        return id;
+    }
+
+    void DrawSkinnedMeshMaterial(uint32_t meshId, const MaterialDesc* desc,
+                                  const float* jointMatrices, int jointCount) override {
+        if (!desc || !jointMatrices || jointCount <= 0) return;
+        if (!gpuSkinningSupported) return;
+        auto it = skinnedMeshes.find(meshId);
+        if (it == skinnedMeshes.end()) return;
+        const MeshGPU& m = it->second;
+        if (!m.vao || m.indexCount <= 0) return;
+
+        GLuint program3D = (desc->mode == 0) ? programUnlitSkin : programPBRSkin;
+        if (!program3D) return;
+
+        glUseProgram(program3D);
+
+        // ---- 上传 jointMatrices 到 UBO (截断到 SKIN_MAX_JOINTS) ----
+        int n = (jointCount > SKIN_MAX_JOINTS) ? SKIN_MAX_JOINTS : jointCount;
+        glBindBuffer(GL_UNIFORM_BUFFER, uboJointMatrices);
+        glBufferSubData(GL_UNIFORM_BUFFER, 0, n * 16 * (GLsizeiptr)sizeof(float), jointMatrices);
+        glBindBuffer(GL_UNIFORM_BUFFER, 0);
+
+        // ---- MVP / Model uniforms (与 DrawMeshMaterial 一致) ----
+        Mat4 mvp = ComputeMVP3D();
+        GLint locMVP   = glGetUniformLocation(program3D, "uMVP");
+        GLint locModel = glGetUniformLocation(program3D, "uModel");
+        if (locMVP   >= 0) glUniformMatrix4fv(locMVP,   1, GL_FALSE, mvp.m);
+        if (locModel >= 0) glUniformMatrix4fv(locModel, 1, GL_FALSE, modelview.m);
+
+        // ---- 共用 uniforms ----
+        UploadCommonMatUniforms(program3D, desc);
+
+        // ---- 纹理 + lighting ----
+        BindMaterialTexture(program3D, "uTexBaseColor", "uHasBaseColorTex", 0, desc->texBaseColor);
+        BindMaterialTexture(program3D, "uTexEmissive",  "uHasEmissiveTex",  3, desc->texEmissive);
+        if (desc->mode == 1) {
+            BindMaterialTexture(program3D, "uTexMetallicRoughness", "uHasMetallicRoughnessTex", 1, desc->texMetallicRoughness);
+            BindMaterialTexture(program3D, "uTexNormal",            "uHasNormalTex",            2, desc->texNormal);
+            BindMaterialTexture(program3D, "uTexOcclusion",         "uHasOcclusionTex",         4, desc->texOcclusion);
+            UploadPBRLightingUniforms(program3D, desc);
+        }
+        glActiveTexture(GL_TEXTURE0);
+
+        // ---- 临时启用深度测试 ----
+        bool tempDepth = !depthTestEnabled;
+        if (tempDepth) {
+            glEnable(GL_DEPTH_TEST);
+            glDepthFunc(GL_LEQUAL);
+        }
+
+        // ---- doubleSided ----
+        bool restoreCull = false;
+        if (desc->doubleSided) {
+            GLboolean cullEnabled = GL_FALSE;
+            glGetBooleanv(GL_CULL_FACE, &cullEnabled);
+            if (cullEnabled) {
+                glDisable(GL_CULL_FACE);
+                restoreCull = true;
+            }
+        }
+
+        // ---- 绘制 ----
+        glBindVertexArray(m.vao);
+        glDrawElements(GL_TRIANGLES, m.indexCount, GL_UNSIGNED_INT, (void*)0);
+        glBindVertexArray(0);
+
+        if (restoreCull) glEnable(GL_CULL_FACE);
+        if (tempDepth)   glDisable(GL_DEPTH_TEST);
+
+        // 切回默认 2D shader (与 DrawMeshMaterial 一致)
+        glUseProgram(program);
+        glBindVertexArray(vao);
+    }
 };
 
 // ==================== GL33Backend 工厂 ====================
