@@ -927,6 +927,46 @@ static Skeleton* BuildSkeleton(const cgltf_skin* skin, std::string& errOut) {
     return sk;
 }
 
+// Phase AY T10: 构造 1 个 root joint 的 trivial Skeleton (供纯 morph 资产使用)
+//   joint[0]: name="root", parent=-1, identity bind matrix
+//   inverseBindMatrices = identity (绑定姿态即原姿态)
+//   返回值与 BuildSkeleton 兼容, 调用方负责 GC
+static Skeleton* BuildTrivialRootSkeleton() {
+    Skeleton* sk = new Skeleton();
+    sk->joints.resize(1);
+    JointNode& jn = sk->joints[0];
+    jn.name = "root";
+    jn.parent = -1;
+    // JointNode 默认成员初始化已是 identity TRS:
+    //   local_t = {0,0,0}, local_r = {0,0,0,1}, local_s = {1,1,1}
+    sk->nameToIndex["root"] = 0;
+    sk->rootJoint = 0;
+
+    // identity inverse bind matrix (列主序)
+    sk->inverseBindMatrices.assign(FLOATS_PER_MAT4, 0.0f);
+    sk->inverseBindMatrices[0]  = 1.0f;
+    sk->inverseBindMatrices[5]  = 1.0f;
+    sk->inverseBindMatrices[10] = 1.0f;
+    sk->inverseBindMatrices[15] = 1.0f;
+    return sk;
+}
+
+// Phase AY T10: 在 cgltf_data 中查找第一个含 morph target 的 primitive (无 skin 依赖)
+//   用于 LoadSkinnedGLTF 检测纯 morph 资产
+//   返回 nullptr 表示该 glTF 无 morph mesh
+static const cgltf_primitive* FindFirstMorphPrimitive(const cgltf_data* data) {
+    if (!data) return nullptr;
+    for (cgltf_size i = 0; i < data->meshes_count; ++i) {
+        const cgltf_mesh& m = data->meshes[i];
+        for (cgltf_size p = 0; p < m.primitives_count; ++p) {
+            if (m.primitives[p].targets_count > 0) {
+                return &m.primitives[p];
+            }
+        }
+    }
+    return nullptr;
+}
+
 // ==================== Step 3: cgltf → SkinnedMeshAsset 提取 ====================
 
 // 在 cgltf_primitive::attributes 中查找指定 name 的 attribute, 找不到返回 nullptr
@@ -940,10 +980,14 @@ static const cgltf_attribute* FindAttr(const cgltf_primitive* prim, const char* 
 }
 
 // 从 cgltf_primitive 提取蒙皮所需所有数据 (POSITION/NORMAL/UV/COLOR + JOINTS_0 + WEIGHTS_0 + indices)
-// 失败时填 errOut 返回 false. 若 prim 缺 JOINTS_0/WEIGHTS_0 视为非蒙皮 mesh 也返回失败.
+// 失败时填 errOut 返回 false.
+//   allowNoSkin=false (默认): 缺 JOINTS_0/WEIGHTS_0 视为错误返回 false
+//   allowNoSkin=true  (Phase AY T10): 缺 skin attrs 时填 trivial root (joint=0, weights=[1,0,0,0]),
+//                                       用于纯 morph 资产复用 GPU SkinMorph 路径
 static bool ExtractSkinMesh(const cgltf_primitive* prim,
                              SkinnedMeshAsset* outMesh,
-                             std::string& errOut) {
+                             std::string& errOut,
+                             bool allowNoSkin = false) {
     if (!prim) { errOut = "primitive is null"; return false; }
     if (prim->type != cgltf_primitive_type_triangles) {
         errOut = "primitive is not triangles";
@@ -962,14 +1006,16 @@ static bool ExtractSkinMesh(const cgltf_primitive* prim,
         return false;
     }
 
-    // JOINTS_0 + WEIGHTS_0 (蒙皮必须)
+    // JOINTS_0 + WEIGHTS_0 (skin 模式必须; allowNoSkin 模式下可缺失)
     const cgltf_attribute* joinAttr = FindAttr(prim, "JOINTS_0");
     const cgltf_attribute* wAttr    = FindAttr(prim, "WEIGHTS_0");
-    if (!joinAttr || !joinAttr->data || !wAttr || !wAttr->data) {
+    bool hasSkinAttrs = (joinAttr && joinAttr->data && wAttr && wAttr->data);
+    if (!hasSkinAttrs && !allowNoSkin) {
         errOut = "primitive missing JOINTS_0 or WEIGHTS_0 (not a skinned mesh)";
         return false;
     }
-    if (joinAttr->data->count != vCount || wAttr->data->count != vCount) {
+    if (hasSkinAttrs &&
+        (joinAttr->data->count != vCount || wAttr->data->count != vCount)) {
         errOut = "JOINTS_0 / WEIGHTS_0 count mismatches POSITION count";
         return false;
     }
@@ -1010,23 +1056,35 @@ static bool ExtractSkinMesh(const cgltf_primitive* prim,
         }
     }
 
-    // 解包 JOINTS_0: 用 cgltf_accessor_read_uint 逐顶点读 4 个 uint
-    outMesh->jointIndicesPacked.resize(vCount);
-    for (cgltf_size i = 0; i < vCount; ++i) {
-        cgltf_uint vec[4] = {0, 0, 0, 0};
-        cgltf_accessor_read_uint(joinAttr->data, i, vec, 4);
-        // 关节索引上限 64 → 单字节足够; 越界保护
-        uint8_t b0 = (uint8_t)((vec[0] < (cgltf_uint)MAX_JOINTS) ? vec[0] : 0);
-        uint8_t b1 = (uint8_t)((vec[1] < (cgltf_uint)MAX_JOINTS) ? vec[1] : 0);
-        uint8_t b2 = (uint8_t)((vec[2] < (cgltf_uint)MAX_JOINTS) ? vec[2] : 0);
-        uint8_t b3 = (uint8_t)((vec[3] < (cgltf_uint)MAX_JOINTS) ? vec[3] : 0);
-        outMesh->jointIndicesPacked[i] = (uint32_t)b0 | ((uint32_t)b1 << 8) |
-                                          ((uint32_t)b2 << 16) | ((uint32_t)b3 << 24);
-    }
+    if (hasSkinAttrs) {
+        // 解包 JOINTS_0: 用 cgltf_accessor_read_uint 逐顶点读 4 个 uint
+        outMesh->jointIndicesPacked.resize(vCount);
+        for (cgltf_size i = 0; i < vCount; ++i) {
+            cgltf_uint vec[4] = {0, 0, 0, 0};
+            cgltf_accessor_read_uint(joinAttr->data, i, vec, 4);
+            // 关节索引上限 64 → 单字节足够; 越界保护
+            uint8_t b0 = (uint8_t)((vec[0] < (cgltf_uint)MAX_JOINTS) ? vec[0] : 0);
+            uint8_t b1 = (uint8_t)((vec[1] < (cgltf_uint)MAX_JOINTS) ? vec[1] : 0);
+            uint8_t b2 = (uint8_t)((vec[2] < (cgltf_uint)MAX_JOINTS) ? vec[2] : 0);
+            uint8_t b3 = (uint8_t)((vec[3] < (cgltf_uint)MAX_JOINTS) ? vec[3] : 0);
+            outMesh->jointIndicesPacked[i] = (uint32_t)b0 | ((uint32_t)b1 << 8) |
+                                              ((uint32_t)b2 << 16) | ((uint32_t)b3 << 24);
+        }
 
-    // 解包 WEIGHTS_0: 4 floats / vertex (cgltf 自动处理 normalized uint8/uint16)
-    outMesh->weights.resize(vCount * 4);
-    cgltf_accessor_unpack_floats(wAttr->data, outMesh->weights.data(), outMesh->weights.size());
+        // 解包 WEIGHTS_0: 4 floats / vertex (cgltf 自动处理 normalized uint8/uint16)
+        outMesh->weights.resize(vCount * 4);
+        cgltf_accessor_unpack_floats(wAttr->data, outMesh->weights.data(), outMesh->weights.size());
+    } else {
+        // Phase AY T10: trivial root skin (joint=0, weights=[1,0,0,0])
+        //   所有顶点绑定到 root joint, 权重 100% root → identity transform 不变形,
+        //   纯粹用 morph shader 路径输出顶点位移. GPU SkinMorph 路径多算 1 个 4×4
+        //   矩阵×向量乘法, 性能开销极小 (远低于新增专用 morph-only program 的维护成本).
+        outMesh->jointIndicesPacked.assign(vCount, 0u);   // 全 0: 4 个槽位都指 root
+        outMesh->weights.assign((size_t)vCount * 4, 0.0f);
+        for (cgltf_size i = 0; i < vCount; ++i) {
+            outMesh->weights[i * 4] = 1.0f;               // [1,0,0,0]
+        }
+    }
 
     // 拼装 RenderVertex3D 数组 (蒙皮基础数据, 每顶点 12 floats)
     outMesh->baseVertices.resize(vCount);
@@ -1302,18 +1360,123 @@ static int l_Anim_LoadSkinnedGLTF(lua_State* L) {
     // Phase AY T05 (B.1 智能 fallback): 无 skin 不视为致命错误, 返回完整 pack 表
     //   字段保持与 has-skin 路径一致 (skeleton/clips/clipNames/mesh 全部存在), 便于
     //   Lua 代码无条件 access. 用户可通过 pack.hasSkin == false 检测此分支.
-    //   非 skinned 网格的渲染建议改用 Light.Graphics.Mesh 模块 (与 Phase AS.2 一致).
+    //
+    // Phase AY T10 (morph-only fallback): 无 skin 但有 morph target 的资产 (如
+    //   AnimatedMorphCube.glb), 改为构造 1 个 root joint 的 trivial skeleton +
+    //   提取 mesh (allowNoSkin=true) + ExtractMorphTargets, 让 GPU SkinMorph 路径
+    //   可直接复用. 用户得到完整 pack, hasSkin=false 但 mesh != nil + 有 morph weights API.
     if (data->skins_count == 0) {
+        const cgltf_primitive* morphPrim = FindFirstMorphPrimitive(data);
+        if (!morphPrim) {
+            // 既无 skin 又无 morph: 返回空 pack (与 T05 行为一致)
+            cgltf_free(data);
+            CC::Log(CC::LOG_INFO,
+                    "Light.Animation.LoadSkinnedGLTF: '%s' has no skin and no morph "
+                    "(returning empty pack); for static mesh load via Light.Graphics.Mesh", path);
+            lua_newtable(L);
+            lua_pushnil(L);                lua_setfield(L, -2, "skeleton");
+            lua_newtable(L);               lua_setfield(L, -2, "clips");
+            lua_newtable(L);               lua_setfield(L, -2, "clipNames");
+            lua_pushnil(L);                lua_setfield(L, -2, "mesh");
+            lua_newtable(L);               lua_setfield(L, -2, "meshes");
+            lua_pushboolean(L, 0);         lua_setfield(L, -2, "hasSkin");
+            return 1;
+        }
+
+        // morph-only 路径: 构造 trivial root skeleton + 提取 mesh (允许无 skin attrs)
+        Skeleton* sk = BuildTrivialRootSkeleton();
+        SkinnedMeshAsset* skMesh = new SkinnedMeshAsset();
+        std::string meshErr;
+        if (!ExtractSkinMesh(morphPrim, skMesh, meshErr, /*allowNoSkin=*/true)) {
+            CC::Log(CC::LOG_WARN,
+                    "Light.Animation.LoadSkinnedGLTF: morph-only path ExtractSkinMesh failed: %s",
+                    meshErr.c_str());
+            delete skMesh;
+            delete sk;
+            cgltf_free(data);
+            lua_pushnil(L);
+            lua_pushstring(L, meshErr.c_str());
+            return 2;
+        }
+
+        // 提取 morph target 数据 (来自 prim 所属 mesh 的 weights[]/target_names[])
+        const cgltf_mesh* gltfMesh = FindMeshForPrimitive(data, morphPrim);
+        std::string morphErr;
+        if (!ExtractMorphTargets(morphPrim, gltfMesh, skMesh, morphErr)) {
+            std::fprintf(stderr,
+                         "[Phase AY T10] morph-only ExtractMorphTargets failed: %s\n",
+                         morphErr.c_str());
+            skMesh->morphTargetCount = 0;
+            skMesh->morphTargets.clear();
+            skMesh->morphDefaultWeights.clear();
+            skMesh->morphTargetNames.clear();
+        }
+
+        // Step: 提取 animations (即使无 skin 也可能有 morph weight 动画 channel)
+        std::vector<AnimationClip*> clips_no_skin;
+        clips_no_skin.reserve(data->animations_count);
+        for (cgltf_size i = 0; i < data->animations_count; ++i) {
+            // BuildClip 第二参数是 skin (用于 joint 索引查找), 这里传 nullptr
+            // 仅 MORPH_WEIGHTS channel 会被有效解析 (其依赖 nodeIdx 而非 skin)
+            AnimationClip* c = BuildClip(&data->animations[i], nullptr, data);
+            clips_no_skin.push_back(c);
+        }
+
         cgltf_free(data);
+
         CC::Log(CC::LOG_INFO,
-                "Light.Animation.LoadSkinnedGLTF: '%s' has no skin (returning empty pack); "
-                "for non-skinned mesh load via Light.Graphics.Mesh", path);
+                "Light.Animation.LoadSkinnedGLTF: '%s' morph-only fallback "
+                "(%d morph targets, trivial root skeleton)",
+                path, skMesh->morphTargetCount);
+
+        // 组装 pack 表 (与 has-skin 路径同 schema)
+        // sk->alive 默认 true (Skeleton::alive 成员默认值)
         lua_newtable(L);
-        lua_pushnil(L);                lua_setfield(L, -2, "skeleton");
-        lua_newtable(L);               lua_setfield(L, -2, "clips");
-        lua_newtable(L);               lua_setfield(L, -2, "clipNames");    // 空数组, 与有 skin 路径一致
-        lua_pushnil(L);                lua_setfield(L, -2, "mesh");
-        lua_pushboolean(L, 0);         lua_setfield(L, -2, "hasSkin");      // 用户可检测此 fallback
+
+        PushSkeletonUserdata(L, sk);
+        int skeletonStackIdx = lua_gettop(L);
+        lua_pushvalue(L, skeletonStackIdx);
+        lua_setfield(L, -3, "skeleton");
+
+        // clips 表 + clipNames 数组 (统一构造, 用 std::string 持有 fallback name 避免悬挂)
+        lua_newtable(L);                                         // clips table
+        std::vector<std::string> clipNames_no_skin;
+        clipNames_no_skin.reserve(clips_no_skin.size());
+        for (size_t i = 0; i < clips_no_skin.size(); ++i) {
+            if (!clips_no_skin[i]) continue;
+            std::string nm = clips_no_skin[i]->name.empty() ?
+                              ("clip_" + std::to_string(i)) :
+                              clips_no_skin[i]->name;
+            PushClipUserdata(L, clips_no_skin[i]);
+            lua_setfield(L, -2, nm.c_str());
+            clipNames_no_skin.push_back(std::move(nm));
+        }
+        lua_setfield(L, -3, "clips");
+
+        lua_newtable(L);                                         // clipNames array
+        for (size_t i = 0; i < clipNames_no_skin.size(); ++i) {
+            lua_pushstring(L, clipNames_no_skin[i].c_str());
+            lua_rawseti(L, -2, (int)(i + 1));
+        }
+        lua_setfield(L, -3, "clipNames");
+
+        // mesh + meshes
+        lua_pushvalue(L, skeletonStackIdx);
+        skMesh->skeletonRef = luaL_ref(L, LUA_REGISTRYINDEX);
+        PushSkinnedMeshUserdata(L, skMesh);
+        lua_setfield(L, -3, "mesh");
+
+        lua_newtable(L);
+        PushSkinnedMeshUserdata(L, skMesh);
+        lua_rawseti(L, -2, 1);
+        lua_setfield(L, -3, "meshes");
+
+        // hasSkin = false (T05 字段, 用户区分)
+        lua_pushboolean(L, 0);
+        lua_setfield(L, -3, "hasSkin");
+
+        // 弹出 skeleton ud
+        lua_pop(L, 1);
         return 1;
     }
 
