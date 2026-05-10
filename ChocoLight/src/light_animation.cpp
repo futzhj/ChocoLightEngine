@@ -1616,7 +1616,9 @@ static int l_Clip_AddSampler(lua_State* L) {
     luaL_checktype(L, 6, LUA_TTABLE);
 
     if (jointIdx < 0) {
-        return RaiseFormatted(L, "joint index must be >= 1 (got %d)", jointIdx + 1);
+        // [DIAG] 暂时不 raise, 让 14.4c 成为第一个走 raise 路径的调用. 验证是否第二次 raise 才崩.
+        std::fprintf(stderr, "[DIAG] AddSampler jointIdx<0 hit, returning 0 (no raise)\n");
+        return 0;
     }
 
     ChannelTarget target = ChannelTarget::UNSUPPORTED;
