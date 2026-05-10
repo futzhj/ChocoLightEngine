@@ -40,6 +40,10 @@ std::vector<ENetHost*> s_hosts;
 // host -> 用户事件回调 (EnetSetEventCb 注册)
 std::unordered_map<ENetHost*, PlatformNet::OnEnetEventCb> s_cbs;
 
+// host -> 帧末 idle 回调 (EnetSetFrameCb 注册)
+// 不同于 s_cbs (仅在有 ENet 事件时触发), s_frameCbs 每帧无条件调用
+std::unordered_map<ENetHost*, PlatformNet::OnEnetFrameCb> s_frameCbs;
+
 // EnetPeerAddress 静态返回 buffer
 char s_addrBuf[64] = {0};
 
@@ -71,6 +75,7 @@ void EnetGlobalShutdown() {
     }
     s_hosts.clear();
     s_cbs.clear();
+    s_frameCbs.clear();
     enet_deinitialize();
     s_enetInitialized = false;
 }
@@ -118,6 +123,14 @@ void EnetTickAll() {
             }
             if (ev.type == ENET_EVENT_TYPE_RECEIVE && ev.packet) {
                 enet_packet_destroy(ev.packet);
+            }
+        }
+        // 帧末 idle cb (无论是否有事件都调用一次)
+        // 用 host_in_snap 校验 — 用户 cb 可能销毁 host
+        if (std::find(s_hosts.begin(), s_hosts.end(), host) != s_hosts.end()) {
+            auto fit = s_frameCbs.find(host);
+            if (fit != s_frameCbs.end() && fit->second) {
+                fit->second();
             }
         }
     }
@@ -171,6 +184,7 @@ void EnetDestroyHost(EnetHost* host) {
     auto it = std::find(s_hosts.begin(), s_hosts.end(), eh);
     if (it != s_hosts.end()) s_hosts.erase(it);
     s_cbs.erase(eh);
+    s_frameCbs.erase(eh);
     enet_host_destroy(eh);
 }
 
@@ -227,6 +241,15 @@ bool EnetSend(EnetPeer* peer, int channel,
 void EnetSetEventCb(EnetHost* host, OnEnetEventCb cb) {
     if (!host) return;
     s_cbs[(ENetHost*)host] = std::move(cb);
+}
+
+void EnetSetFrameCb(EnetHost* host, OnEnetFrameCb cb) {
+    if (!host) return;
+    if (!cb) {
+        s_frameCbs.erase((ENetHost*)host);
+    } else {
+        s_frameCbs[(ENetHost*)host] = std::move(cb);
+    }
 }
 
 const char* EnetPeerAddress(EnetPeer* peer) {

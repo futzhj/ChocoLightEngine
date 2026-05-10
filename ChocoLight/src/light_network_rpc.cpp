@@ -41,7 +41,7 @@
  *   -32603 Internal error
  *   网络层错误码 (扩展):
  *   -32000 Disconnected (call pending 时连接断开)
- *   -32001 Timeout      (预留, 当前未实现超时)
+ *   -32001 Timeout      (Phase BC v2: client:Call 第 4 参数 timeout_ms)
  */
 
 #include "light.h"
@@ -53,6 +53,7 @@ extern "C" {
 #include "lauxlib.h"
 }
 
+#include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <string>
@@ -73,6 +74,14 @@ namespace RpcErr {
     constexpr int INVALID_PARAMS   = -32602;
     constexpr int INTERNAL_ERROR   = -32603;
     constexpr int DISCONNECTED     = -32000;
+    constexpr int TIMEOUT          = -32001;
+}
+
+// 单调毫秒时钟 (timeout 计算)
+static uint64_t NowMs() {
+    using namespace std::chrono;
+    return (uint64_t)duration_cast<milliseconds>(
+        steady_clock::now().time_since_epoch()).count();
 }
 
 // ==================== userdata ====================
@@ -81,7 +90,9 @@ struct RpcClient {
     PlatformNet::EnetHost* host;
     PlatformNet::EnetPeer* peer;
     int       onEventRef;                       // OnEvent cb registry ref
-    int       pendingRef;                       // pending {id → cb_ref} table, registry ref
+    int       pendingRef;                       // pending {id → cb_func} table registry ref
+    int       deadlinesRef;                     // deadlines {id → deadline_ms_double} table registry ref
+                                                //   (cb 注册了 timeout 时才有 entry; 0 = 无超时, 不写入)
     uint32_t  nextId;                           // 单调递增 request id
     bool      connected;                        // CONNECT 事件后置 true
     lua_State* L;
@@ -281,6 +292,7 @@ static void CallLuaCb(lua_State* L, int cbRef, int nargs) {
 // 前向声明 (在第二段定义)
 static void ClientHandleEvent(RpcClient* c, const PlatformNet::EnetEvent& ev);
 static void ServerHandleEvent(RpcServer* s, const PlatformNet::EnetEvent& ev);
+static void ScanTimeouts(RpcClient* c);
 
 // ==================== Client 事件 ====================
 
@@ -329,6 +341,13 @@ static void ClientHandleReceive(RpcClient* c, const PlatformNet::EnetEvent& ev) 
     // pending[id] = nil (一次性)
     lua_pushnil(L);
     lua_rawseti(L, -3, id);
+    // 同步清理 deadlines[id] (如果存在), 避免 frame cb 重复触发 timeout
+    if (c->deadlinesRef != LUA_NOREF) {
+        lua_rawgeti(L, LUA_REGISTRYINDEX, c->deadlinesRef);
+        lua_pushnil(L);
+        lua_rawseti(L, -2, id);
+        lua_pop(L, 1);
+    }
 
     // 准备调用: cb(err, result)
     cJSON* errNode = cJSON_GetObjectItem(root.get(), "error");
@@ -392,6 +411,19 @@ static void ClientHandleEvent(RpcClient* c, const PlatformNet::EnetEvent& ev) {
                 }
                 lua_pop(L, 1);                          // pop pending_table
             }
+            // 同步清空 deadlines (避免后续 ScanTimeouts 扫到孤立项)
+            if (c->deadlinesRef != LUA_NOREF) {
+                lua_State* L = c->L;
+                lua_rawgeti(L, LUA_REGISTRYINDEX, c->deadlinesRef);
+                lua_pushnil(L);
+                while (lua_next(L, -2) != 0) {
+                    lua_pop(L, 1);
+                    lua_pushvalue(L, -1);
+                    lua_pushnil(L);
+                    lua_rawset(L, -4);
+                }
+                lua_pop(L, 1);
+            }
             FireClientEvent(c, "disconnect", nullptr);
             break;
         }
@@ -400,6 +432,80 @@ static void ClientHandleEvent(RpcClient* c, const PlatformNet::EnetEvent& ev) {
             break;
         default: break;
     }
+}
+
+// ==================== Timeout 扫描 ====================
+//
+// EnetSetFrameCb 注册的每帧回调. 扫描 deadlines 表, 找出 now >= deadline 的
+// 项, 触发对应 pending[id] 的 cb({code=-32001, message="timeout"}, nil),
+// 然后从 pending + deadlines 同时移除.
+//
+// 注意 lua_next 遍历时不能修改 key, 所以分两阶段:
+//   阶段 1: 遍历 deadlines 收集过期 id 列表 (栈上)
+//   阶段 2: 对每个过期 id, 取 pending[id] 调 cb 并清理两表
+static void ScanTimeouts(RpcClient* c) {
+    if (!c || c->deadlinesRef == LUA_NOREF || c->pendingRef == LUA_NOREF) return;
+    lua_State* L = c->L;
+    uint64_t now = NowMs();
+
+    // 阶段 1: 收集过期 id 列表 (用 std::vector 避免 Lua 栈管理麻烦)
+    std::vector<int> expired;
+    lua_rawgeti(L, LUA_REGISTRYINDEX, c->deadlinesRef);   // [..., deadlines]
+    int deadlinesIdx = lua_gettop(L);
+    lua_pushnil(L);
+    while (lua_next(L, deadlinesIdx) != 0) {
+        // [..., deadlines, key, value]
+        if (lua_type(L, -2) == LUA_TNUMBER && lua_type(L, -1) == LUA_TNUMBER) {
+            uint64_t deadline = (uint64_t)lua_tonumber(L, -1);
+            if (now >= deadline) {
+                expired.push_back((int)lua_tointeger(L, -2));
+            }
+        }
+        lua_pop(L, 1);   // pop value, keep key for next iter
+    }
+    // [..., deadlines] (lua_next 自然 pop 完)
+
+    if (expired.empty()) {
+        lua_pop(L, 1);   // pop deadlines
+        return;
+    }
+
+    // 阶段 2: 处理过期项
+    lua_rawgeti(L, LUA_REGISTRYINDEX, c->pendingRef);     // [..., deadlines, pending]
+    int pendingIdx = lua_gettop(L);
+
+    for (int id : expired) {
+        // 移除 deadlines[id]
+        lua_pushnil(L);
+        lua_rawseti(L, deadlinesIdx, id);
+
+        // 取 pending[id] -> cb, 然后置 nil
+        lua_rawgeti(L, pendingIdx, id);                    // push cb (or nil)
+        if (lua_isfunction(L, -1)) {
+            lua_pushnil(L);
+            lua_rawseti(L, pendingIdx, id);                // pending[id] = nil
+
+            // 调 cb({code=-32001, message="timeout"}, nil)
+            lua_createtable(L, 0, 2);                      // err table
+            lua_pushinteger(L, RpcErr::TIMEOUT);
+            lua_setfield(L, -2, "code");
+            lua_pushstring(L, "timeout");
+            lua_setfield(L, -2, "message");
+            lua_pushnil(L);                                // result = nil
+
+            if (lua_pcall(L, 2, 0, 0) != 0) {
+                const char* m = lua_tostring(L, -1);
+                CC::Log(CC::LOG_WARN,
+                        "Light.Network.Rpc timeout cb error: %s",
+                        m ? m : "(unknown)");
+                lua_pop(L, 1);
+            }
+        } else {
+            lua_pop(L, 1);   // pop non-function
+        }
+    }
+
+    lua_pop(L, 2);   // pop pending + deadlines
 }
 
 // ==================== Server 事件 ====================
@@ -545,15 +651,19 @@ static int l_Rpc_Connect(lua_State* L) {
     }
 
     auto* c = (RpcClient*)lua_newuserdata(L, sizeof(RpcClient));
-    c->host       = eh;
-    c->peer       = peer;
-    c->onEventRef = LUA_NOREF;
-    c->nextId     = 1;
-    c->connected  = false;
-    c->L          = L;
+    c->host         = eh;
+    c->peer         = peer;
+    c->onEventRef   = LUA_NOREF;
+    c->deadlinesRef = LUA_NOREF;
+    c->nextId       = 1;
+    c->connected    = false;
+    c->L            = L;
     // pending = {}
     lua_newtable(L);
     c->pendingRef = luaL_ref(L, LUA_REGISTRYINDEX);
+    // deadlines = {}
+    lua_newtable(L);
+    c->deadlinesRef = luaL_ref(L, LUA_REGISTRYINDEX);
 
     luaL_getmetatable(L, RPC_CLIENT_MT);
     lua_setmetatable(L, -2);
@@ -564,16 +674,22 @@ static int l_Rpc_Connect(lua_State* L) {
         [c](const PlatformNet::EnetEvent& ev) {
             ClientHandleEvent(c, ev);
         });
+    // 帧末 idle cb: 扫描 deadlines, 过期 → 触发 timeout cb
+    PlatformNet::EnetSetFrameCb(eh,
+        [c]() { ScanTimeouts(c); });
     return 1;
 }
 
-// client:Call(method, params, cb) -> bool
+// client:Call(method, params, cb [, timeout_ms]) -> bool
+// timeout_ms: 可选 number (>0). 超期未收到 response 时 cb({code=-32001,message="timeout"})
+//   被触发, 同时从 pending 表移除. 0 或未传 = 无超时.
 static int l_RpcClient_Call(lua_State* L) {
     auto* c = CheckClient(L, 1);
     if (!c->peer) return luaL_error(L, "client closed");
     const char* method = luaL_checkstring(L, 2);
     // params 在 3, cb 在 4 (cb 必须是 function)
     luaL_checktype(L, 4, LUA_TFUNCTION);
+    lua_Number timeout_ms = luaL_optnumber(L, 5, 0);
 
     uint32_t id = c->nextId++;
 
@@ -594,6 +710,15 @@ static int l_RpcClient_Call(lua_State* L) {
     lua_pushvalue(L, 4);
     lua_rawseti(L, -2, (int)id);
     lua_pop(L, 1);
+
+    // 注册 deadline (如果设了 timeout)
+    if (timeout_ms > 0 && c->deadlinesRef != LUA_NOREF) {
+        uint64_t deadline = NowMs() + (uint64_t)timeout_ms;
+        lua_rawgeti(L, LUA_REGISTRYINDEX, c->deadlinesRef);
+        lua_pushnumber(L, (lua_Number)deadline);
+        lua_rawseti(L, -2, (int)id);
+        lua_pop(L, 1);
+    }
 
     lua_pushboolean(L, 1);
     return 1;
@@ -631,6 +756,10 @@ static int l_RpcClient_OnEvent(lua_State* L) {
 // client:Close()
 static int l_RpcClient_Close(lua_State* L) {
     auto* c = CheckClient(L, 1);
+    // 先清 frame cb (避免 host 销毁后 cb 访问释放的 c)
+    if (c->host) {
+        PlatformNet::EnetSetFrameCb(c->host, nullptr);
+    }
     if (c->peer) {
         PlatformNet::EnetDisconnect(c->peer, 0);
         c->peer = nullptr;
@@ -639,14 +768,15 @@ static int l_RpcClient_Close(lua_State* L) {
         PlatformNet::EnetDestroyHost(c->host);
         c->host = nullptr;
     }
-    if (c->onEventRef != LUA_NOREF) {
-        luaL_unref(L, LUA_REGISTRYINDEX, c->onEventRef);
-        c->onEventRef = LUA_NOREF;
-    }
-    if (c->pendingRef != LUA_NOREF) {
-        luaL_unref(L, LUA_REGISTRYINDEX, c->pendingRef);
-        c->pendingRef = LUA_NOREF;
-    }
+    auto unref = [&](int& r) {
+        if (r != LUA_NOREF) {
+            luaL_unref(L, LUA_REGISTRYINDEX, r);
+            r = LUA_NOREF;
+        }
+    };
+    unref(c->onEventRef);
+    unref(c->pendingRef);
+    unref(c->deadlinesRef);
     return 0;
 }
 

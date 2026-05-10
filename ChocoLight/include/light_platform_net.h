@@ -208,6 +208,13 @@ int EnetBroadcast(EnetHost* host, int channel,
 ///   返回 true 表示找到并发出 disconnect 请求
 bool EnetDisconnectPeerById(EnetHost* host, uint32_t peerId, uint32_t userData);
 
+/// 注册 host 的"帧末 idle 回调" — 每次 PlatformNet::Poll 中 EnetTickAll
+/// 处理完该 host 的所有事件后, 无论是否有事件都会调用一次此 cb.
+/// 用途: 周期性扫描 (例如 RPC pending timeout 检查), 不依赖 ENet 事件触发.
+/// 传 nullptr 取消注册.
+typedef std::function<void()> OnEnetFrameCb;
+void EnetSetFrameCb(EnetHost* host, OnEnetFrameCb cb);
+
 // ==================== 辅助 ====================
 
 /// 获取底层 libuv 事件循环 (高级用途)

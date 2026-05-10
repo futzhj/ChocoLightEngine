@@ -84,6 +84,15 @@ pass("client:Call returned: " .. tostring(sent))
 local sent2 = client:Notify("log", "hello")
 pass("client:Notify returned: " .. tostring(sent2))
 
+-- Call with timeout_ms (Phase BC enhancement)
+-- 实际 timeout 触发需要 Poll 循环驱动 100ms+, 这里仅验证 API 接受第 4 参数不 panic
+local sent3 = client:Call("SlowMethod", {x=1}, function(err, result)
+    if err and err.code == -32001 then
+        print("[client cb] timeout (expected if no server)")
+    end
+end, 100)  -- 100ms timeout
+pass("client:Call with timeout_ms returned: " .. tostring(sent3))
+
 -- Cleanup
 client:Close()
 pass("client:Close ok")
