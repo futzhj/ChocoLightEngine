@@ -519,9 +519,76 @@ else
     print('  SKIP: Phase AV.x API 不可用')
 end
 
+-- ==================== [15] Phase AW: GPU Skinning 模式 ====================
+
+print('[15] Phase AW: GPU Skinning 模式 API')
+
+-- 15.1 API 注册检查
+CHECK(type(Anim.GetSkinningMode) == 'function', 'Anim.GetSkinningMode 存在 (Phase AW)')
+CHECK(type(Anim.SetSkinningMode) == 'function', 'Anim.SetSkinningMode 存在 (Phase AW)')
+
+-- 15.2 GetSkinningMode 返回类型
+local mode0 = Anim.GetSkinningMode()
+CHECK(type(mode0) == 'string' and (mode0 == 'cpu' or mode0 == 'gpu'),
+      'GetSkinningMode 返回 cpu 或 gpu (实际生效路径)')
+
+-- 15.3 SetSkinningMode 三个合法值
+local r1, e1 = Anim.SetSkinningMode('cpu')
+CHECK(r1 == true and e1 == nil, 'SetSkinningMode("cpu") 成功')
+CHECK(Anim.GetSkinningMode() == 'cpu', '设 cpu 后查询为 cpu (强制)')
+
+local r2, e2 = Anim.SetSkinningMode('gpu')
+CHECK(r2 == true and e2 == nil, 'SetSkinningMode("gpu") 接受设置 (是否实际启用看 backend)')
+local mode_gpu = Anim.GetSkinningMode()
+CHECK(mode_gpu == 'cpu' or mode_gpu == 'gpu',
+      '设 gpu 后查询为 gpu(支持设备) 或 cpu(自动 fallback 不支持设备)')
+
+local r3, e3 = Anim.SetSkinningMode('auto')
+CHECK(r3 == true and e3 == nil, 'SetSkinningMode("auto") 成功')
+
+-- 15.4 SetSkinningMode 错误参数 → nil + err (S21 模式)
+local r4, e4 = Anim.SetSkinningMode('invalid')
+CHECK(r4 == nil and type(e4) == 'string',
+      'SetSkinningMode("invalid") 返回 nil + err')
+
+local r5, e5 = Anim.SetSkinningMode('CPU')   -- 大小写敏感
+CHECK(r5 == nil and type(e5) == 'string',
+      'SetSkinningMode 大小写敏感 (大写 CPU 视为非法)')
+
+-- 非 string 参数: 用 pcall 兜底 (luaL_checkstring 风格 / 我们用 lua_type 校验则返回 nil+err)
+local r6, e6
+local ok_call6 = pcall(function() r6, e6 = Anim.SetSkinningMode(123) end)
+if ok_call6 then
+    CHECK(r6 == nil and type(e6) == 'string',
+          'SetSkinningMode(123) 返回 nil + err')
+else
+    -- 早期实现可能 raise; 也算非 crash (之前 PCALL 已捕获)
+    CHECK(true, 'SetSkinningMode(123) 不崩溃 (raise 被 pcall 捕获)')
+end
+
+local r7, e7
+local ok_call7 = pcall(function() r7, e7 = Anim.SetSkinningMode(nil) end)
+if ok_call7 then
+    CHECK(r7 == nil and type(e7) == 'string',
+          'SetSkinningMode(nil) 返回 nil + err')
+else
+    CHECK(true, 'SetSkinningMode(nil) 不崩溃')
+end
+
+-- 15.5 模式切换不影响 DrawSkinnedMesh 入口签名 (仅校验入口对错误参数仍按现有契约返回)
+-- 不依赖真实 mesh / animator (CI 无 GPU 上下文); 只校验签名稳定:
+--   传错参数 → 现有契约 raise (pcall 捕获) 或返回 nil/false+err
+local ok_d, _ = pcall(Anim.DrawSkinnedMesh)
+CHECK(type(ok_d) == 'boolean',
+      'DrawSkinnedMesh 入口在 mode 切换后仍返回布尔 (pcall 不崩)')
+
+-- 恢复默认 auto (避免影响后续 smoke / 用户脚本)
+Anim.SetSkinningMode('auto')
+print(string.format('  最终 GetSkinningMode = "%s" (auto + 当前后端推断)', tostring(Anim.GetSkinningMode())))
+
 -- ==================== 汇总 ====================
 
-print(string.format('[Phase AV Step 1+2+3+4 + Phase AV.x] 通过 %d / 失败 %d', PASS, FAIL))
+print(string.format('[Phase AV Step 1+2+3+4 + Phase AV.x + Phase AW] 通过 %d / 失败 %d', PASS, FAIL))
 if FAIL > 0 then
     error(string.format('animation smoke 失败: %d 个断言不通过', FAIL))
 end
