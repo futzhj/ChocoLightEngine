@@ -1,0 +1,5 @@
+# Phase AX: 不提交二进制资产到 git
+assets/
+*.glb
+*.gltf
+*.bin
