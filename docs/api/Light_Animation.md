@@ -552,8 +552,155 @@ chmod +x samples/demo_skinning_perf/setup.sh
 
 ---
 
+## Phase AX — Morph Target（表情/形状变形，CPU + GPU 双路径）
+
+完整支持 glTF 2.0 morph target（blend shapes）：
+
+- **POSITION / NORMAL / TANGENT delta**（CPU 路径用 POSITION + NORMAL；GPU shader 用 POSITION + 可选 NORMAL）
+- **数量上限 8 morph target**（`Light.Animation.MORPH_TARGET_MAX = 8`）
+- **动画通道驱动**：自动解析 glTF `animation.channels[].target_path == "weights"`，`Animator:Update(dt)` 内每帧评估
+- **手动覆盖**：`SetMorphWeight(idx, val)` 即时写入并保留，直到 `ClearMorphWeights` 清除（NaN sentinel 区分动画值与手动值）
+- **CPU + GPU 双路径**：与 Phase AW 共存（启 GPU skinning 时自动用 `VS3D_SKIN_MORPH` shader）
+
+### 模块常量
+
+| 名称 | 值 | 说明 |
+|------|----|------|
+| `Light.Animation.MORPH_TARGET_MAX` | `8` | morph target 数量上限（与 GPU shader uniform array 一致）|
+
+### Animator 实例方法
+
+| 方法 | 签名 | 说明 |
+|------|------|------|
+| `SetMorphWeight` | `animator:SetMorphWeight(idx, value) -> bool / nil + err` | `idx`：1-based [1, 8]；`value`：number。即时生效（无需等下一帧 Update）|
+| `GetMorphWeight` | `animator:GetMorphWeight(idx) -> number` | 返回当前生效权重（动画值或手动值）；越界返回 0；`idx < 1` 返回 nil + err |
+| `ClearMorphWeights` | `animator:ClearMorphWeights()` | 清除所有手动覆盖，恢复动画驱动 |
+| `GetMorphTargetCount` | `animator:GetMorphTargetCount() -> integer` | 当前 Animator 已分配的 weight 槽数（最近一次 Update 评估到的 N）|
+| `GetMorphWeights` | `animator:GetMorphWeights() -> table` | 返回 `{w1, w2, ..., wN}` 副本数组 |
+| `HasManualMorphOverride` | `animator:HasManualMorphOverride(idx) -> bool` | 该槽是否被手动覆盖过（NaN 表示未覆盖）|
+
+### SkinnedMesh 实例方法
+
+| 方法 | 签名 | 说明 |
+|------|------|------|
+| `HasMorphTargets` | `mesh:HasMorphTargets() -> bool` | 是否含 morph target |
+| `GetMorphTargetCount` | `mesh:GetMorphTargetCount() -> integer` | morph target 数量（0 = 无）|
+| `GetMorphTargetName` | `mesh:GetMorphTargetName(idx) -> string \| nil` | 1-based；越界返回 nil（不报错）|
+
+### 典型使用流程
+
+```lua
+local Anim = require('Light.Animation')
+
+-- 1. 加载含 morph 的 glTF
+local pack = Anim.LoadSkinnedGLTF('character.glb')
+local mesh, skel = pack.mesh, pack.skeleton
+
+-- 2. 检视 morph 信息
+if mesh:HasMorphTargets() then
+    print('morph targets:', mesh:GetMorphTargetCount())
+    for i = 1, mesh:GetMorphTargetCount() do
+        print(string.format('  [%d] %s', i, mesh:GetMorphTargetName(i)))
+    end
+end
+
+-- 3. 创建 animator + 启动动画 clip (动画通道自动驱动 weights)
+local an = Anim.NewAnimator(skel)
+for n, c in pairs(pack.clips) do an:AddState(n, c); break end
+an:Play(pack.clipNames[1])
+
+-- 4. 主循环
+while running do
+    an:Update(dt)                  -- 自动评估动画 + 应用手动覆盖
+
+    -- 可选: 手动覆盖某个 slot (例如 UI 滑条调整表情)
+    if userMovedSlider then
+        an:SetMorphWeight(slotIdx, sliderValue)
+    end
+    if userPressedReset then
+        an:ClearMorphWeights()     -- 恢复纯动画驱动
+    end
+
+    Anim.DrawSkinnedMesh(mesh, an, transform, material)
+end
+```
+
+### 路径分流
+
+| mesh 状态 | `useGPU` | `SupportsMorphTargets()` | 实际路径 |
+|-----------|---------|--------------------------|---------|
+| 无 morph | true | - | `DrawSkinnedMeshGPU`（Phase AW）|
+| 无 morph | false | - | `DrawSkinnedMeshCPU`（Phase AV）|
+| 有 morph | true | true | `DrawSkinnedMorphMeshGPU`（Phase AX 新增 GPU）|
+| 有 morph | true | false | `DrawSkinnedMorphMeshCPU`（fallback CPU）|
+| 有 morph | false | - | `DrawSkinnedMorphMeshCPU`（CPU 路径）|
+
+### 实现细节（`docs/Phase AX/`）
+
+- **CPU 算法**：`out = base + Σ(weight[i] · delta_i[v])` → skinning → modelMat。weight=0 时短路跳过该 target
+- **GPU shader**：`VS3D_SKIN_MORPH` 内先对 `gl_VertexID` 做 morph，再做 4-joint skin。`uniform float uMorphWeights[8]` + `sampler2D uMorphPosDelta / uMorphNrmDelta` (RGB32F texture, width=vCount, height=morphCount)
+- **数据传输**：morph delta 用 2D texture 而非 uniform array（vCount × N 通常远超 uniform 上限）
+- **顺序约定**：morph 在 skin 之前应用（与 glTF 2.0 spec §6.16 一致；CPU/GPU 路径数学等价）
+- **8 个 program**：原 4 (Unlit/PBR × Plain/Skin) + 新 2 (UnlitSkinMorph + PBRSkinMorph)；FS_UNLIT / FS_PBR 完全复用
+- **Texture unit 分配**：0=baseColor, 1=metallicRoughness, 2=normal, 3=emissive, 4=occlusion, **5=morphPosDelta, 6=morphNrmDelta**
+
+### 测试覆盖
+
+见 `scripts/smoke/animation.lua` 第 [16] 段（26 PASS）：
+
+- 模块常量 `MORPH_TARGET_MAX = 8`
+- 9 个 metatable 方法存在性
+- `SetMorphWeight` / `GetMorphWeight` round-trip
+- 多 slot + 边界 (idx=1, 8)
+- `GetMorphTargetCount` / `GetMorphWeights` 数组完整性
+- `HasManualMorphOverride` set / unset 状态
+- 越界错误处理（idx=0, idx=9, idx=100）
+- `ClearMorphWeights` 清除手动覆盖
+- `Update(dt)` 在无 morph clip 时不崩溃
+
+### 视觉演示（Phase AX sample）
+
+`samples/demo_morph_target/` 提供完整交互演示：
+
+#### Windows
+
+```powershell
+.\samples\demo_morph_target\setup.ps1                                   # 下载 AnimatedMorphCube
+.\Light-0.2.3\windows-x64\light.exe samples\demo_morph_target\main.lua  # 启动
+```
+
+#### Linux / macOS
+
+```bash
+chmod +x samples/demo_morph_target/setup.sh
+./samples/demo_morph_target/setup.sh
+./Light-0.2.3/<platform>/light samples/demo_morph_target/main.lua
+```
+
+启动后键盘控制：
+- `1-8`：选择激活 slot
+- `↑/↓`：调整当前 slot weight (±0.1, clamp [0,1])
+- `Q/W`：快捷设 0/1
+- `C`：清除所有手动覆盖
+- `G/N`：切换 GPU/CPU 路径观察视觉一致性
+- `Space`：暂停/恢复
+- `Esc`：退出
+
+详见 `samples/demo_morph_target/README.md`（含 Blender 导出 SKIN+MORPH 资产指引）。
+
+### 设计决策（参见 `docs/Phase AX/CONSENSUS_PhaseAX.md`）
+
+| # | 决策 | 选择 | 理由 |
+|---|------|------|------|
+| Q1 | 范围 | 完整（POS+NRM+TAN, CPU+GPU）| 商业级 glTF spec 对齐 |
+| Q2 | 权重来源 | 动画 + 手动覆盖 | 动画师手 K + 代码运行时调整都需要 |
+| Q3 | GPU 数据 | 限 N≤8 + uniform array (weights) + 2D texture (delta) | 平衡 GLES 3.0 / WebGL 2 兼容性 |
+| Q4 | 与 Skinning 共存 | 全 GPU 新 shader (`VS3D_SKIN_MORPH`) | 不损失 Phase AW 收益 |
+
+---
+
 ## 相关
 
-- 工作流文档：`docs/Phase AV 骨骼动画/`、`docs/Phase AW GPU Skinning/`、`docs/Phase AW.x/`
-- 示例：`samples/demo_animation/`、`samples/demo_skinning_perf/`
+- 工作流文档：`docs/Phase AV 骨骼动画/`、`docs/Phase AW GPU Skinning/`、`docs/Phase AW.x/`、`docs/Phase AX/`
+- 示例：`samples/demo_animation/`、`samples/demo_skinning_perf/`、`samples/demo_morph_target/`
 - Smoke：`scripts/smoke/animation.lua`、`scripts/smoke/graphics.lua`

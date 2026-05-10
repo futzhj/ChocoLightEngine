@@ -114,13 +114,15 @@ curl -L "https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Models/maste
 
 **问题**：哪个先做？
 
-| 选项 | 业务价值 | 实现复杂度 |
-|------|---------|---------|
-| Layer（base + override + additive） | 中 | 中 |
-| IK（two-bone / look-at） | 高（脚踩地形 / 手抓物体） | 高 |
-| Morph target（blend shapes） | 中（表情系统） | 中 |
+| 选项 | 业务价值 | 实现复杂度 | 状态 |
+|------|---------|---------|---------|
+| Layer（base + override + additive） | 中 | 中 | ⏳ 待安排 |
+| IK（two-bone / look-at） | 高（脚踩地形 / 手抓物体） | 高 | ⏳ 待安排 |
+| Morph target（blend shapes） | 中（表情系统） | 中 | ✅ **Phase AX 已完成** (CPU + GPU 双路径, 26 PASS smoke, demo_morph_target sample) |
 
-**等你确认**：业务中下一项需求是哪个？
+> **Phase AX 完成日志**（2026-05）：完整 glTF 2.0 morph target 支持，POS/NORMAL/TANGENT delta，N≤8，动画驱动 + 手动覆盖，CPU + GPU 双路径，与 Phase AW skinning 共存（`VS3D_SKIN_MORPH` shader）。详见 `docs/Phase AX/`。
+
+**剩余项等你确认**：Layer / IK 谁优先？
 
 ---
 

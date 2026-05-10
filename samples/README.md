@@ -38,6 +38,7 @@ light samples/demo_io_storage/main.lua
 | `demo_physics3d/` | `Light.Physics3D` (RigidBody / Vehicle / SoftBody / Wheel info / Wind) | AU |
 | `demo_animation/` | `Light.Animation` (glTF Skeleton / Clip / Animator / Transition / Crossfade / Event / SkinnedMesh) | AV |
 | `demo_skinning_perf/` | Phase AW GPU Skinning 真机性能验证 (frame timing + OSD + G/C/A 模式切换 + 自动 baseline) | AW.x |
+| `demo_morph_target/` | Phase AX Morph Target 表情/形状变形演示 (`SetMorphWeight` / OSD slot 1-8 / GPU+CPU 路径切换 / Khronos AnimatedMorphCube setup) | AX |
 | `perf_benchmark/` | 性能基准测试 | - |
 
 ## 设计约定
