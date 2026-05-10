@@ -586,9 +586,106 @@ CHECK(type(ok_d) == 'boolean',
 Anim.SetSkinningMode('auto')
 print(string.format('  最终 GetSkinningMode = "%s" (auto + 当前后端推断)', tostring(Anim.GetSkinningMode())))
 
+-- ==================== [16] Phase AX: morph target API ====================
+
+print('[16] Phase AX: morph target API')
+
+-- 16.1 模块常量 MORPH_TARGET_MAX
+CHECK(type(Anim.MORPH_TARGET_MAX) == 'number',
+      'Anim.MORPH_TARGET_MAX 是 number')
+CHECK(Anim.MORPH_TARGET_MAX == 8,
+      'Anim.MORPH_TARGET_MAX == 8 (与 shader uniform array 大小一致)')
+
+-- 16.2 SkinnedMesh morph 信息 API (用 procedural Skeleton + Animator, 无 mesh 也能验证 Animator API)
+-- 注: 完整 mesh-side API (mesh:HasMorphTargets/GetMorphTargetCount/GetMorphTargetName)
+--     需要从 glTF 加载 mesh; smoke 不依赖外部资产, 改为单独验证 Animator-side API.
+--     mesh-side 完整端到端验证留给 sample (T7 demo_morph_target).
+
+-- 16.3 Animator morph API 表面
+local sk16 = Anim.NewEmptySkeleton(2)
+sk16:SetJointName(1, 'root')
+sk16:SetJointName(2, 'spine')
+local an16 = Anim.NewAnimator(sk16)
+
+CHECK(type(an16.SetMorphWeight) == 'function',
+      'animator:SetMorphWeight 存在')
+CHECK(type(an16.GetMorphWeight) == 'function',
+      'animator:GetMorphWeight 存在')
+CHECK(type(an16.ClearMorphWeights) == 'function',
+      'animator:ClearMorphWeights 存在')
+CHECK(type(an16.GetMorphTargetCount) == 'function',
+      'animator:GetMorphTargetCount 存在')
+CHECK(type(an16.GetMorphWeights) == 'function',
+      'animator:GetMorphWeights 存在')
+CHECK(type(an16.HasManualMorphOverride) == 'function',
+      'animator:HasManualMorphOverride 存在')
+
+-- 16.4 SetMorphWeight + GetMorphWeight round-trip
+local r16a, e16a = an16:SetMorphWeight(1, 0.5)
+CHECK(r16a == true and e16a == nil,
+      'SetMorphWeight(1, 0.5) 成功')
+local w16a = an16:GetMorphWeight(1)
+CHECK(w16a == 0.5,
+      'GetMorphWeight(1) == 0.5 (set 后即时生效)')
+
+-- 16.5 多个槽位
+an16:SetMorphWeight(2, 0.25)
+an16:SetMorphWeight(8, 0.875)   -- 边界 (idx=MORPH_TARGET_MAX)
+CHECK(an16:GetMorphWeight(2) == 0.25, 'idx=2 weight=0.25')
+CHECK(an16:GetMorphWeight(8) == 0.875, 'idx=8 (boundary) weight=0.875')
+
+-- 16.6 GetMorphTargetCount = max idx written
+CHECK(an16:GetMorphTargetCount() == 8,
+      'GetMorphTargetCount == 8 (auto-resize 到最大写入 idx)')
+
+-- 16.7 GetMorphWeights 返回 array
+local arr16 = an16:GetMorphWeights()
+CHECK(type(arr16) == 'table',
+      'GetMorphWeights 返回 table')
+CHECK(#arr16 == 8,
+      'GetMorphWeights 数组长度 == 8')
+CHECK(arr16[1] == 0.5 and arr16[2] == 0.25 and arr16[8] == 0.875,
+      'GetMorphWeights 数组内容正确')
+
+-- 16.8 HasManualMorphOverride
+CHECK(an16:HasManualMorphOverride(1) == true,
+      'HasManualMorphOverride(1) == true (已 set)')
+CHECK(an16:HasManualMorphOverride(3) == false,
+      'HasManualMorphOverride(3) == false (未 set)')
+
+-- 16.9 越界 idx 错误处理
+local rb1, eb1 = an16:SetMorphWeight(0, 0.5)    -- idx < 1
+CHECK(rb1 == nil and type(eb1) == 'string',
+      'SetMorphWeight(0, ...) 返回 nil + err')
+local rb2, eb2 = an16:SetMorphWeight(9, 0.5)    -- idx > MORPH_TARGET_MAX
+CHECK(rb2 == nil and type(eb2) == 'string',
+      'SetMorphWeight(9, ...) 返回 nil + err (超出 MORPH_TARGET_MAX)')
+
+-- 16.10 GetMorphWeight 越界返回 0 (不报错)
+local w16b = an16:GetMorphWeight(100)
+CHECK(w16b == 0 or w16b == 0.0,
+      'GetMorphWeight(100) 返回 0 (越界默认值)')
+local rb3, eb3 = an16:GetMorphWeight(0)         -- idx < 1
+CHECK(rb3 == nil and type(eb3) == 'string',
+      'GetMorphWeight(0) 返回 nil + err')
+
+-- 16.11 ClearMorphWeights 清除所有手动覆盖
+an16:ClearMorphWeights()
+CHECK(an16:HasManualMorphOverride(1) == false,
+      'ClearMorphWeights 后 HasManualMorphOverride(1) == false')
+CHECK(an16:HasManualMorphOverride(8) == false,
+      'ClearMorphWeights 后 HasManualMorphOverride(8) == false')
+-- morphWeights 数组本身保留 (动画 Update 才会重新评估)
+CHECK(an16:GetMorphTargetCount() == 8,
+      'ClearMorphWeights 不清除 morphWeights size (保持 8)')
+
+-- 16.12 Update 不崩溃 (无 morph clip 时 EvaluateMorphWeights 应早 return)
+an16:Update(0.016)
+CHECK(true, 'Animator:Update 在无 morph clip 时不崩溃 (EvaluateMorphWeights early return)')
+
 -- ==================== 汇总 ====================
 
-print(string.format('[Phase AV Step 1+2+3+4 + Phase AV.x + Phase AW] 通过 %d / 失败 %d', PASS, FAIL))
+print(string.format('[Phase AV Step 1+2+3+4 + Phase AV.x + Phase AW + Phase AX] 通过 %d / 失败 %d', PASS, FAIL))
 if FAIL > 0 then
     error(string.format('animation smoke 失败: %d 个断言不通过', FAIL))
 end
