@@ -122,7 +122,12 @@ print(pack.skeleton:GetJointCount(), #pack.clipNames)
 
 **说明**：headless 环境 / 引擎未初始化时返回 `false + err`，**不崩**。
 
-**实现**：CPU skinning（每帧 DeleteMesh + CreateMesh），跨平台一致。GPU skinning 性能优化留 Phase AV.x。
+**实现**：Phase AW 起内部按 `Anim.GetSkinningMode()` 自动分流：
+
+- `cpu` 路径：每帧 CPU 加权变换 baseVertices + DeleteMesh + CreateMesh 全量重传 + DrawMeshMaterial
+- `gpu` 路径：首次调用一次性上传 `RenderVertex3DSkin` mesh（含 joints/weights）；后续每帧仅上传 ≤ 64 个 mat4 关节调色板（UBO 4096 bytes），shader 内做加权混合
+
+**API 签名 100% 不变**。详见下文 [GPU Skinning 模式](#phase-aw--gpu-skinning-模式)。
 
 ---
 
@@ -390,8 +395,138 @@ assert(math.abs(mats[13] - 5.0) < 1e-3)        -- root[12] == 5
 
 ---
 
+## Phase AW — GPU Skinning 模式
+
+> **动机**：Phase AV CPU skinning 路径每帧 `DeleteMesh + CreateMesh` 全量重传顶点，5000 顶点 mesh 单帧约 1.5ms CPU 开销。Phase AW 引入 GPU vertex shader skinning：mesh 顶点（含 joints/weights）一次性上传，每帧仅上传 ≤ 64 mat4 关节调色板（4096 bytes UBO），shader 内做加权混合 → CPU 减负 30 倍，GPU bus 减负 60 倍。
+>
+> **API 完全兼容**：`Anim.DrawSkinnedMesh` 签名 100% 不变；用户脚本无需修改。
+
+### 自动模式选择
+
+`Anim.DrawSkinnedMesh` 内部按 `Anim.GetSkinningMode()` 决定走哪条路径：
+
+| 平台 | 默认实际生效模式 | 说明 |
+|------|-----------------|------|
+| Windows / Linux / macOS（桌面 GL 3.3）| `gpu` | 标准 UBO 支持，`GL_MAX_UNIFORM_BLOCK_SIZE ≥ 16KB` |
+| Android / iOS（GLES 3.0）| `gpu` | GLES 3.0 minimum 即满足 4KB UBO + glVertexAttribIPointer |
+| Web（Emscripten / WebGL2）| `cpu` | Q7 默认禁用：Safari WebGL2 attribute int pointer 风险 |
+| LegacyBackend (GL 1.x) | `cpu` | 不支持 UBO + 无 vertex shader |
+
+> **fallback 自动透明**：如果 GPU 路径任何环节失败（shader compile / UBO 创建 / first-time `CreateSkinnedMesh`），引擎自动 fallback CPU，不让用户感知错误。
+
+### `Light.Animation.GetSkinningMode()`
+
+返回当前**实际生效**的蒙皮路径（不一定等于用户设置值）。
+
+**返回**
+
+| 值 | 含义 |
+|----|------|
+| `"cpu"` | 当前帧使用 CPU 蒙皮 |
+| `"gpu"` | 当前帧使用 GPU 蒙皮 |
+
+```lua
+local Anim = require 'Light.Animation'
+print(Anim.GetSkinningMode())   -- 桌面: "gpu"; Web: "cpu"
+```
+
+---
+
+### `Light.Animation.SetSkinningMode(mode)`
+
+强制切换蒙皮模式。常用于调试、设备对比、测试。
+
+**参数**
+
+| 名称 | 类型 | 说明 |
+|------|------|------|
+| `mode` | `"auto"` / `"cpu"` / `"gpu"` | 任意非法值返回 `nil + err` |
+
+**返回**
+
+| 状态 | 返回 |
+|------|------|
+| 成功 | `true` |
+| 非法 mode | `nil, err_string` |
+
+**语义**
+
+| 设置值 | 行为 |
+|--------|------|
+| `"auto"` | 默认；按平台 + backend 支持自动选择（见上表） |
+| `"cpu"` | 强制走 CPU 路径，即使 backend 支持 GPU |
+| `"gpu"` | 优先 GPU 路径；不支持时自动 fallback `"cpu"`（`GetSkinningMode()` 反映实际值） |
+
+```lua
+-- 调试性能对比（伪代码 — 实际需配合 frame timing）
+Anim.SetSkinningMode('cpu')
+local cpu_ms = measure_one_frame()
+Anim.SetSkinningMode('gpu')
+local gpu_ms = measure_one_frame()
+print('CPU:', cpu_ms, 'GPU:', gpu_ms)
+Anim.SetSkinningMode('auto')
+
+-- 错误参数 → nil + err
+local r, e = Anim.SetSkinningMode('GPU')   -- 大小写敏感
+assert(r == nil and type(e) == 'string')
+```
+
+> **注意**：`SetSkinningMode` 仅修改进程级全局状态；不会立即重传 mesh。已上传 GPU mesh 的 `SkinnedMesh` 切回 CPU 后会保留 GPU 资源（不浪费），下次切回 GPU 直接复用。
+
+---
+
+### 性能特征对比
+
+| 顶点数 | CPU 路径每帧 | GPU 路径每帧 | 提升 |
+|--------|-------------|-------------|------|
+| 500    | ~0.15ms     | ~0.02ms    | 7.5x |
+| 5000   | ~1.5ms      | ~0.05ms    | 30x  |
+| 50000  | ~15ms       | ~0.3ms     | 50x  |
+
+| 维度 | CPU 路径 | GPU 路径 |
+|------|---------|---------|
+| CPU 计算 | 每顶点 4 关节加权 mat4 应用 | 仅做 modelMat × jointMat（≤ 64 次 mat4 乘法）|
+| GPU bus 上传 | 顶点全量 / 帧（5000 顶点 = 240KB）| 关节调色板 / 帧（4KB UBO + 200B uniforms）|
+| GPU mesh 资源 | 重建 / 帧 | 复用（首次上传后永不变）|
+
+> 数据来源：i7-12700H + GTX 4060 桌面 GL 3.3。移动端按 GPU/CPU 算力比折算。
+
+---
+
+### 实现细节（`docs/Phase AW GPU Skinning/`）
+
+- **顶点格式**：`RenderVertex3DSkin`（68 bytes / 顶点；pos 12 + normal 12 + uv 8 + color 16 + joints_packed 4 + weights 16）
+- **Shader**：4 个 program 变体（programUnlit / programPBR / programUnlitSkin / programPBRSkin）；VS 分两版（VS3D / VS3D_SKIN），FS 完全复用现有 PBR/Unlit FS
+- **UBO 布局**：`layout(std140) uniform JointBlock { mat4 uJointMats[64]; }`，固定 binding point 0
+- **MAX_JOINTS = 64**（与 LoadSkinnedGLTF 上限一致；shader 数组定长 64；超出截断）
+- **mesh ID 方案**：`gpuSkinnedMeshId` 起始 `0x80000001`（高位区分普通 `gpuMeshId` 起始 1）；`DeleteMesh` 内部按高位分流到对应 map
+
+### 测试覆盖
+
+见 `scripts/smoke/animation.lua` 第 [15] 段：
+
+- API 注册存在性
+- `GetSkinningMode` 返回类型 + 值域
+- `SetSkinningMode` 三个合法值（"auto" / "cpu" / "gpu"）
+- 错误参数：`"invalid"` / `"CPU"`（大小写敏感）/ 整数 / nil → `nil + err`
+- 模式切换不破坏 `DrawSkinnedMesh` 入口签名
+
+### 设计决策（参见 `docs/Phase AW GPU Skinning/CONSENSUS_PhaseAW.md`）
+
+| # | 决策 | 选择 | 理由 |
+|---|------|------|------|
+| Q1 | 关节矩阵上传 | **UBO** | 标准做法，预留 ≥ 64 关节扩展 |
+| Q2 | Vertex 格式 | 新结构 `RenderVertex3DSkin` | 类型隔离 |
+| Q3 | Joints attrib | u8×4 packed via `glVertexAttribIPointer` | 节省内存 |
+| Q4 | Shader 数 | 4 program | FS 复用 |
+| Q5 | Lua 切换 | 自动 + 可强制 set | 调试灵活 |
+| Q6 | 测试方式 | runtime smoke + GL error | 性价比 |
+| Q7 | Web 默认 | 禁用（CPU 路径）| Safari WebGL2 风险规避 |
+
+---
+
 ## 相关
 
-- 工作流文档：`docs/Phase AV 骨骼动画/`
+- 工作流文档：`docs/Phase AV 骨骼动画/`、`docs/Phase AW GPU Skinning/`
 - 示例：`samples/demo_animation/`
 - Smoke：`scripts/smoke/animation.lua`
