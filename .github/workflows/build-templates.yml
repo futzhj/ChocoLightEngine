@@ -90,6 +90,7 @@ jobs:
           $phaseATSmoke  = Resolve-Path "scripts\smoke\audio_3d_mixer_effect.lua"
           $phaseAUSmoke  = Resolve-Path "scripts\smoke\physics_3d.lua"
           $phaseAVSmoke  = Resolve-Path "scripts\smoke\animation.lua"
+          $phaseAWxSmoke = Resolve-Path "scripts\smoke\graphics.lua"
           Copy-Item ChocoLight\build\bin\Release\Light.dll $runtimeDir -Force
           & "$runtimeDir\light.exe" $coreSmoke
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -180,6 +181,8 @@ jobs:
           & "$runtimeDir\light.exe" $phaseAUSmoke
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & "$runtimeDir\light.exe" $phaseAVSmoke
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & "$runtimeDir\light.exe" $phaseAWxSmoke
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Package Windows Template
