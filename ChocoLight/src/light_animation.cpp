@@ -2780,6 +2780,12 @@ static int l_SkinnedMesh_Delete(lua_State* L) {
             sm->gpuSkinnedMeshId = 0;
             sm->gpuMeshUploaded  = false;
         }
+        // Phase AX: 释放 GPU skin+morph 路径的 mesh (若已上传)
+        // 注: backend.DeleteMesh 默认仅 erase from meshes map; skinnedMorphMeshes
+        //     的清理在 backend.Shutdown 时统一进行 (与 skinnedMeshes 同模式).
+        //     此处仅清 ID 标记防止再次访问.
+        sm->gpuSkinnedMorphMeshId       = 0;
+        sm->gpuSkinnedMorphMeshUploaded = false;
         // 释放 Skeleton 强引用
         if (sm->skeletonRef != LUA_NOREF) {
             luaL_unref(L, LUA_REGISTRYINDEX, sm->skeletonRef);
@@ -2976,6 +2982,134 @@ static int DrawSkinnedMorphMeshCPU(lua_State* L, SkinnedMeshAsset* sm, Animator*
     }
 
     g_render->DrawMeshMaterial(sm->gpuMeshId, matDesc);
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+// Phase AX — GPU 蒙皮 + morph 主体 (Phase AW GPU skinning + Phase AX morph 共存路径)
+//   - 首次调用时构建 RenderVertex3DSkin + 拉平 morph delta 数组 + CreateSkinnedMorphMesh
+//   - 把 modelMat 前乘到每个 jointMatrix (与 DrawSkinnedMeshGPU 一致)
+//   - 上传 jointMatrices UBO + morphWeights uniform array + morph delta textures + 渲染
+//   - 失败时 fallback 到 DrawSkinnedMorphMeshCPU
+static int DrawSkinnedMorphMeshGPU(lua_State* L, SkinnedMeshAsset* sm, Animator* an,
+                                      const float* modelMat, const MaterialDesc* matDesc) {
+    int N = (int)sm->baseVertices.size();
+    if (N <= 0) {
+        lua_pushboolean(L, 0);
+        lua_pushstring(L, "empty skinned mesh");
+        return 2;
+    }
+
+    // 1. 首次调用: 构建 skin verts + 拉平 morph deltas, 一次性上传
+    if (!sm->gpuSkinnedMorphMeshUploaded) {
+        // RenderVertex3DSkin 构建 (与 DrawSkinnedMeshGPU 一致)
+        std::vector<RenderVertex3DSkin> skinVerts(N);
+        for (int i = 0; i < N; ++i) {
+            const RenderVertex3D& v = sm->baseVertices[i];
+            RenderVertex3DSkin& vs = skinVerts[i];
+            vs.x  = v.x;  vs.y  = v.y;  vs.z  = v.z;
+            vs.nx = v.nx; vs.ny = v.ny; vs.nz = v.nz;
+            vs.u  = v.u;  vs.v  = v.v;
+            vs.r  = v.r;  vs.g  = v.g;  vs.b = v.b; vs.a = v.a;
+            vs.joints_packed = sm->jointIndicesPacked[i];
+            vs.weights[0] = sm->weights[(size_t)i * 4 + 0];
+            vs.weights[1] = sm->weights[(size_t)i * 4 + 1];
+            vs.weights[2] = sm->weights[(size_t)i * 4 + 2];
+            vs.weights[3] = sm->weights[(size_t)i * 4 + 3];
+        }
+
+        // 拉平 morph deltas: [target_0_v0_xyz][target_0_v1_xyz]...[target_1_v0_xyz]...
+        // 数据布局与 GL33 UploadMorphDeltaTexture 期望 (RGB32F width=N, height=morphCount) 一致
+        int morphN = sm->morphTargetCount;
+        std::vector<float> posDeltas((size_t)morphN * N * 3, 0.0f);
+        std::vector<float> nrmDeltas;
+        bool hasNrm = false;
+        for (int t = 0; t < morphN; ++t) {
+            const MorphTarget& mt = sm->morphTargets[t];
+            // POSITION delta (必有)
+            if ((int)mt.posDelta.size() >= N * 3) {
+                std::memcpy(&posDeltas[(size_t)t * N * 3],
+                            mt.posDelta.data(),
+                            sizeof(float) * N * 3);
+            }
+            // NORMAL delta (可选)
+            if (!mt.nrmDelta.empty()) hasNrm = true;
+        }
+        if (hasNrm) {
+            nrmDeltas.assign((size_t)morphN * N * 3, 0.0f);
+            for (int t = 0; t < morphN; ++t) {
+                const MorphTarget& mt = sm->morphTargets[t];
+                if ((int)mt.nrmDelta.size() >= N * 3) {
+                    std::memcpy(&nrmDeltas[(size_t)t * N * 3],
+                                mt.nrmDelta.data(),
+                                sizeof(float) * N * 3);
+                }
+            }
+        }
+
+        sm->gpuSkinnedMorphMeshId = g_render->CreateSkinnedMorphMesh(
+            skinVerts.data(), N,
+            sm->indices.data(), (int)sm->indices.size(),
+            posDeltas.data(),
+            hasNrm ? nrmDeltas.data() : nullptr,
+            morphN);
+        if (!sm->gpuSkinnedMorphMeshId) {
+            // GPU 上传失败 -> fallback CPU
+            return DrawSkinnedMorphMeshCPU(L, sm, an, modelMat, matDesc);
+        }
+        sm->gpuSkinnedMorphMeshUploaded = true;
+    }
+
+    // 2. 准备最终的 jointMatrices (modelMat × jointMatrix[j], 同 Phase AW)
+    int jCnt = (int)(an->jointMatrices.size() / 16);
+    if (jCnt <= 0) {
+        lua_pushboolean(L, 0);
+        lua_pushstring(L, "no joint matrices");
+        return 2;
+    }
+    if (jCnt > 64) jCnt = 64;
+
+    bool isIdentity = (modelMat[0]==1 && modelMat[5]==1 && modelMat[10]==1 && modelMat[15]==1
+                      && modelMat[1]==0 && modelMat[2]==0 && modelMat[3]==0
+                      && modelMat[4]==0 && modelMat[6]==0 && modelMat[7]==0
+                      && modelMat[8]==0 && modelMat[9]==0 && modelMat[11]==0
+                      && modelMat[12]==0 && modelMat[13]==0 && modelMat[14]==0);
+
+    const float* jointPtr;
+    std::vector<float> finalJoints;
+    if (isIdentity) {
+        jointPtr = an->jointMatrices.data();
+    } else {
+        finalJoints.resize((size_t)jCnt * 16);
+        Mat4 model;
+        std::memcpy(model.m, modelMat, sizeof(model.m));
+        for (int j = 0; j < jCnt; ++j) {
+            Mat4 J;
+            std::memcpy(J.m, &an->jointMatrices[j * 16], sizeof(J.m));
+            Mat4 R = model * J;
+            std::memcpy(&finalJoints[j * 16], R.m, sizeof(R.m));
+        }
+        jointPtr = finalJoints.data();
+    }
+
+    // 3. morph weights (lazy init: 若 Update 还未填充, 用 0)
+    int morphN = sm->morphTargetCount;
+    const float* morphW = (an->morphWeights.empty()) ? nullptr : an->morphWeights.data();
+    if (!morphW) {
+        // 临时 0-weight 数组 (避免 backend 收到 nullptr)
+        static const float kZeroWeights[8] = {0,0,0,0,0,0,0,0};
+        morphW = kZeroWeights;
+    }
+    int effMorphN = morphN;
+    if (effMorphN > (int)an->morphWeights.size() && morphW != nullptr) {
+        // morphWeights 未填满到 morphN, 限制到实际可读范围
+        effMorphN = (int)an->morphWeights.size();
+        if (effMorphN <= 0) effMorphN = morphN;     // fallback (永远 ≥ 1)
+    }
+
+    g_render->DrawSkinnedMorphMeshMaterial(sm->gpuSkinnedMorphMeshId, matDesc,
+                                              jointPtr, jCnt,
+                                              morphW, effMorphN);
     lua_pushboolean(L, 1);
     return 1;
 }
@@ -3195,14 +3329,17 @@ static int l_Anim_DrawSkinnedMesh(lua_State* L) {
 
     // Phase AX: 入口分流增加 morph 判定
     //   hasMorph = 该 mesh 有 morph target 数据
-    //   T3 (CPU 路径) 阶段: morph 路径全走 CPU; T4 实施 GPU 后扩展
+    //   morph + skin 共存时:
+    //     - GPU 路径 (Phase AX T4): 用 VS3D_SKIN_MORPH shader (推荐, 桌面 GL33)
+    //     - CPU 路径: DrawSkinnedMorphMeshCPU (兼容所有 backend)
     bool hasMorph = (sm->morphTargetCount > 0 && !sm->morphTargets.empty());
     bool useGPU   = ShouldUseGPUSkinning();
 
     if (hasMorph) {
-        // 注: T4 完成后此处会改为 useGPU && g_render->SupportsMorphTargets()
-        //     -> DrawSkinnedMorphMeshGPU; 否则 -> DrawSkinnedMorphMeshCPU
-        //     T3 阶段 morph 路径强制走 CPU (无 GPU shader 支持)
+        bool useGPUMorph = useGPU && g_render->SupportsMorphTargets();
+        if (useGPUMorph) {
+            return DrawSkinnedMorphMeshGPU(L, sm, an, modelMat, matDesc);
+        }
         return DrawSkinnedMorphMeshCPU(L, sm, an, modelMat, matDesc);
     }
     if (useGPU) {

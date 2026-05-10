@@ -165,6 +165,63 @@ void main() {
 }
 )";
 
+// ---- VS3D SKIN MORPH (GLES 3.0, Phase AX) ----
+// 顺序: base + Σ(weight[i] × delta_i[gl_VertexID]) -> skinning
+// morph delta 数据存在 RGB32F 2D texture 中:
+//   width  = vCount       (顶点维度, 用 gl_VertexID 索引)
+//   height = morphCount   (target 维度, 用 i 索引)
+// 此设计避开 uniform array 大小限制 (vCount * N 通常远超 uniform 上限)
+static const char* VS3D_SKIN_MORPH_SOURCE = R"(#version 300 es
+precision highp float;
+layout(location=0) in vec3  aPos;
+layout(location=1) in vec3  aNormal;
+layout(location=2) in vec2  aUV;
+layout(location=3) in vec4  aColor;
+layout(location=4) in uvec4 aJoints;
+layout(location=5) in vec4  aWeights;
+uniform mat4 uMVP;
+uniform mat4 uModel;
+layout(std140) uniform JointBlock {
+    mat4 uJointMats[64];
+};
+const int MORPH_MAX = 8;
+uniform float     uMorphWeights[MORPH_MAX];
+uniform int       uMorphCount;
+uniform int       uHasMorphNormal;
+uniform sampler2D uMorphPosDelta;
+uniform sampler2D uMorphNrmDelta;
+out vec3 vNormalW;
+out vec3 vWorldPos;
+out vec2 vTexCoord;
+out vec4 vColor;
+void main() {
+    // 1. Morph: base + Σ (weight × delta)
+    vec3 morphedPos    = aPos;
+    vec3 morphedNormal = aNormal;
+    for (int i = 0; i < MORPH_MAX; ++i) {
+        if (i >= uMorphCount) break;
+        float w = uMorphWeights[i];
+        if (w == 0.0) continue;
+        morphedPos += w * texelFetch(uMorphPosDelta, ivec2(gl_VertexID, i), 0).xyz;
+        if (uHasMorphNormal == 1) {
+            morphedNormal += w * texelFetch(uMorphNrmDelta, ivec2(gl_VertexID, i), 0).xyz;
+        }
+    }
+    // 2. Skin: 4 joint blend
+    mat4 blend = aWeights.x * uJointMats[aJoints.x]
+               + aWeights.y * uJointMats[aJoints.y]
+               + aWeights.z * uJointMats[aJoints.z]
+               + aWeights.w * uJointMats[aJoints.w];
+    vec4 skinnedPos    = blend * vec4(morphedPos, 1.0);
+    vec3 skinnedNormal = mat3(blend) * morphedNormal;
+    gl_Position = uMVP * skinnedPos;
+    vNormalW    = mat3(uModel) * skinnedNormal;
+    vWorldPos   = (uModel * skinnedPos).xyz;
+    vTexCoord   = aUV;
+    vColor      = aColor;
+}
+)";
+
 // ---- FS Unlit (GLES 3.0) ----
 static const char* FS_UNLIT_SOURCE = R"(#version 300 es
 precision mediump float;
@@ -368,6 +425,58 @@ void main() {
 }
 )";
 
+// ---- VS3D SKIN MORPH (GL 3.3, Phase AX) ----
+// 顺序: base + Σ(weight[i] × delta_i[gl_VertexID]) -> skinning
+// morph delta 数据存在 RGB32F 2D texture 中 (width=vCount, height=morphCount)
+static const char* VS3D_SKIN_MORPH_SOURCE = R"(
+#version 330 core
+layout(location=0) in vec3  aPos;
+layout(location=1) in vec3  aNormal;
+layout(location=2) in vec2  aUV;
+layout(location=3) in vec4  aColor;
+layout(location=4) in uvec4 aJoints;
+layout(location=5) in vec4  aWeights;
+uniform mat4 uMVP;
+uniform mat4 uModel;
+layout(std140) uniform JointBlock {
+    mat4 uJointMats[64];
+};
+const int MORPH_MAX = 8;
+uniform float     uMorphWeights[MORPH_MAX];
+uniform int       uMorphCount;
+uniform int       uHasMorphNormal;
+uniform sampler2D uMorphPosDelta;
+uniform sampler2D uMorphNrmDelta;
+out vec3 vNormalW;
+out vec3 vWorldPos;
+out vec2 vTexCoord;
+out vec4 vColor;
+void main() {
+    vec3 morphedPos    = aPos;
+    vec3 morphedNormal = aNormal;
+    for (int i = 0; i < MORPH_MAX; ++i) {
+        if (i >= uMorphCount) break;
+        float w = uMorphWeights[i];
+        if (w == 0.0) continue;
+        morphedPos += w * texelFetch(uMorphPosDelta, ivec2(gl_VertexID, i), 0).xyz;
+        if (uHasMorphNormal == 1) {
+            morphedNormal += w * texelFetch(uMorphNrmDelta, ivec2(gl_VertexID, i), 0).xyz;
+        }
+    }
+    mat4 blend = aWeights.x * uJointMats[aJoints.x]
+               + aWeights.y * uJointMats[aJoints.y]
+               + aWeights.z * uJointMats[aJoints.z]
+               + aWeights.w * uJointMats[aJoints.w];
+    vec4 skinnedPos    = blend * vec4(morphedPos, 1.0);
+    vec3 skinnedNormal = mat3(blend) * morphedNormal;
+    gl_Position = uMVP * skinnedPos;
+    vNormalW    = mat3(uModel) * skinnedNormal;
+    vWorldPos   = (uModel * skinnedPos).xyz;
+    vTexCoord   = aUV;
+    vColor      = aColor;
+}
+)";
+
 // ---- FS Unlit (GL 3.3) ----
 static const char* FS_UNLIT_SOURCE = R"(
 #version 330 core
@@ -513,12 +622,17 @@ void main() {
 )";
 #endif
 
-// Phase AS.2 — Mesh GPU 资源
+// Phase AS.2 — Mesh GPU 资源 (Phase AX 扩展加 morph delta texture)
 struct MeshGPU {
     GLuint vao;
     GLuint vbo;
     GLuint ebo;
     int    indexCount;
+    // Phase AX — morph target 资源 (仅 skinnedMorphMeshes 用; 其他 mesh 默认 0)
+    GLuint morphPosTex     = 0;     // RGB32F 2D texture: width=vCount, height=morphCount
+    GLuint morphNrmTex     = 0;     // 同上 (NORMAL delta), 0 表示未提供
+    int    morphCount      = 0;     // 实际 target 数 (1..MORPH_TARGET_MAX)
+    bool   hasMorphNormal  = false;
 };
 
 // ==================== GL33Backend ====================
@@ -583,6 +697,14 @@ class GL33Backend : public RenderBackend {
     // SkinnedMesh 资源池: ID 高位 0x80000000 区分普通 mesh
     std::unordered_map<uint32_t, MeshGPU> skinnedMeshes;
     uint32_t                              nextSkinnedMeshId = 0x80000001u;
+
+    // ---- Phase AX — GPU Morph Target 资源 ----
+    GLuint  programUnlitSkinMorph = 0;
+    GLuint  programPBRSkinMorph   = 0;
+    bool    morphTargetsSupported = false;
+    // SkinnedMorphMesh 资源池: ID 高位 0xC0000000 区分纯蒙皮 mesh
+    std::unordered_map<uint32_t, MeshGPU> skinnedMorphMeshes;
+    uint32_t                              nextSkinnedMorphMeshId = 0xC0000001u;
 
     // 编译 shader, 返回 0 表示失败
     static GLuint CompileShader(GLenum type, const char* src) {
@@ -776,6 +898,32 @@ public:
         bindBlock(programPBRSkin);
 
         gpuSkinningSupported = true;
+
+        // ---- Phase AX: 编译 + 链接 SKIN_MORPH program ----
+        // 失败不影响 GPU skinning 本身, 仅 morphTargetsSupported = false (回退 CPU)
+        GLuint vsSkinMorph = CompileShader(GL_VERTEX_SHADER, VS3D_SKIN_MORPH_SOURCE);
+        GLuint fsUnlit3    = CompileShader(GL_FRAGMENT_SHADER, FS_UNLIT_SOURCE);
+        GLuint fsPBR3      = CompileShader(GL_FRAGMENT_SHADER, FS_PBR_SOURCE);
+        if (vsSkinMorph && fsUnlit3) {
+            programUnlitSkinMorph = LinkProgram(vsSkinMorph, fsUnlit3);
+            if (!programUnlitSkinMorph) CC::Log(CC::LOG_WARN, "GL33: Unlit Skin+Morph link failed");
+        }
+        if (vsSkinMorph && fsPBR3) {
+            programPBRSkinMorph = LinkProgram(vsSkinMorph, fsPBR3);
+            if (!programPBRSkinMorph) CC::Log(CC::LOG_WARN, "GL33: PBR Skin+Morph link failed");
+        }
+        if (vsSkinMorph) glDeleteShader(vsSkinMorph);
+        if (fsUnlit3)    glDeleteShader(fsUnlit3);
+        if (fsPBR3)      glDeleteShader(fsPBR3);
+        if (programUnlitSkinMorph || programPBRSkinMorph) {
+            // morph program 也要绑定 JointBlock (与 skin 共享 UBO)
+            bindBlock(programUnlitSkinMorph);
+            bindBlock(programPBRSkinMorph);
+            morphTargetsSupported = true;
+            CC::Log(CC::LOG_INFO, "GL33: Phase AX Morph Target shader compiled successfully");
+        } else {
+            CC::Log(CC::LOG_WARN, "GL33: Phase AX Morph Target unavailable (CPU fallback)");
+        }
     }
 
     void Shutdown() override {
@@ -809,6 +957,20 @@ public:
         }
         skinnedMeshes.clear();
         gpuSkinningSupported = false;
+
+        // Phase AX — 释放 Morph Target 资源
+        if (programUnlitSkinMorph) { glDeleteProgram(programUnlitSkinMorph); programUnlitSkinMorph = 0; }
+        if (programPBRSkinMorph)   { glDeleteProgram(programPBRSkinMorph);   programPBRSkinMorph   = 0; }
+        for (auto& kv : skinnedMorphMeshes) {
+            const MeshGPU& m = kv.second;
+            if (m.ebo)        glDeleteBuffers(1, &m.ebo);
+            if (m.vbo)        glDeleteBuffers(1, &m.vbo);
+            if (m.vao)        glDeleteVertexArrays(1, &m.vao);
+            if (m.morphPosTex) glDeleteTextures(1, &m.morphPosTex);
+            if (m.morphNrmTex) glDeleteTextures(1, &m.morphNrmTex);
+        }
+        skinnedMorphMeshes.clear();
+        morphTargetsSupported = false;
     }
 
     const char* GetName() const override { return "GL33Core"; }
@@ -1735,6 +1897,191 @@ public:
         if (tempDepth)   glDisable(GL_DEPTH_TEST);
 
         // 切回默认 2D shader (与 DrawMeshMaterial 一致)
+        glUseProgram(program);
+        glBindVertexArray(vao);
+    }
+
+    // ==================== Phase AX — GPU Morph Target 实现 ====================
+
+    bool SupportsMorphTargets() const override { return morphTargetsSupported; }
+
+    // 创建 morph delta 2D texture (RGB32F): width=vCount, height=morphCount
+    // data 布局: [target_0_per_vertex_xyz][target_1...]...
+    static GLuint UploadMorphDeltaTexture(const float* deltas, int vCount, int morphCount) {
+        if (!deltas || vCount <= 0 || morphCount <= 0) return 0;
+        GLuint tex = 0;
+        glGenTextures(1, &tex);
+        glBindTexture(GL_TEXTURE_2D, tex);
+        // RGB32F (与 GLES 3.0 + GL 3.3 都支持; alpha 通道留空避免 RGBA 浪费)
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB32F, vCount, morphCount,
+                      0, GL_RGB, GL_FLOAT, deltas);
+        // 不需要 mipmap; nearest filter 保证 texelFetch 精确取值
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S,     GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T,     GL_CLAMP_TO_EDGE);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        return tex;
+    }
+
+    uint32_t CreateSkinnedMorphMesh(const RenderVertex3DSkin* verts, int vCount,
+                                      const uint32_t* indices, int iCount,
+                                      const float* posDeltas,
+                                      const float* nrmDeltas,
+                                      int morphTargetCount) override {
+        if (!verts || vCount <= 0 || !indices || iCount <= 0) return 0;
+        if (!morphTargetsSupported) return 0;
+        if (morphTargetCount <= 0 || morphTargetCount > 8) return 0;
+        if (!posDeltas) return 0;     // POSITION delta 必须存在
+        if (!programUnlitSkinMorph && !programPBRSkinMorph) return 0;
+
+        MeshGPU m{};
+        glGenVertexArrays(1, &m.vao);
+        glGenBuffers(1, &m.vbo);
+        glGenBuffers(1, &m.ebo);
+        glBindVertexArray(m.vao);
+
+        // VBO + EBO (与 CreateSkinnedMesh 一致)
+        glBindBuffer(GL_ARRAY_BUFFER, m.vbo);
+        glBufferData(GL_ARRAY_BUFFER, vCount * sizeof(RenderVertex3DSkin), verts, GL_STATIC_DRAW);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m.ebo);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER, iCount * sizeof(uint32_t), indices, GL_STATIC_DRAW);
+
+        const GLsizei stride = sizeof(RenderVertex3DSkin);
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, stride, (void*)offsetof(RenderVertex3DSkin, x));
+        glEnableVertexAttribArray(1);
+        glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, stride, (void*)offsetof(RenderVertex3DSkin, nx));
+        glEnableVertexAttribArray(2);
+        glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, stride, (void*)offsetof(RenderVertex3DSkin, u));
+        glEnableVertexAttribArray(3);
+        glVertexAttribPointer(3, 4, GL_FLOAT, GL_FALSE, stride, (void*)offsetof(RenderVertex3DSkin, r));
+        glEnableVertexAttribArray(4);
+        glVertexAttribIPointer(4, 4, GL_UNSIGNED_BYTE, stride, (void*)offsetof(RenderVertex3DSkin, joints_packed));
+        glEnableVertexAttribArray(5);
+        glVertexAttribPointer(5, 4, GL_FLOAT, GL_FALSE, stride, (void*)offsetof(RenderVertex3DSkin, weights));
+
+        glBindVertexArray(0);
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+
+        // morph delta textures
+        m.morphPosTex = UploadMorphDeltaTexture(posDeltas, vCount, morphTargetCount);
+        if (!m.morphPosTex) {
+            // 创建失败 → 清理资源, 返回 0
+            glDeleteVertexArrays(1, &m.vao);
+            glDeleteBuffers(1, &m.vbo);
+            glDeleteBuffers(1, &m.ebo);
+            CC::Log(CC::LOG_WARN, "GL33: morph posDelta texture upload failed");
+            return 0;
+        }
+        if (nrmDeltas) {
+            m.morphNrmTex = UploadMorphDeltaTexture(nrmDeltas, vCount, morphTargetCount);
+            m.hasMorphNormal = (m.morphNrmTex != 0);
+        }
+
+        m.indexCount     = iCount;
+        m.morphCount     = morphTargetCount;
+        uint32_t id      = nextSkinnedMorphMeshId++;
+        skinnedMorphMeshes[id] = m;
+        return id;
+    }
+
+    void DrawSkinnedMorphMeshMaterial(uint32_t meshId, const MaterialDesc* desc,
+                                         const float* jointMatrices, int jointCount,
+                                         const float* morphWeights, int morphTargetCount) override {
+        if (!desc || !jointMatrices || jointCount <= 0) return;
+        if (!morphWeights || morphTargetCount <= 0) return;
+        if (!morphTargetsSupported) return;
+        auto it = skinnedMorphMeshes.find(meshId);
+        if (it == skinnedMorphMeshes.end()) return;
+        const MeshGPU& m = it->second;
+        if (!m.vao || m.indexCount <= 0) return;
+
+        GLuint program3D = (desc->mode == 0) ? programUnlitSkinMorph : programPBRSkinMorph;
+        if (!program3D) return;
+
+        glUseProgram(program3D);
+
+        // 上传 jointMatrices 到 UBO (与 DrawSkinnedMeshMaterial 一致)
+        int n = (jointCount > SKIN_MAX_JOINTS) ? SKIN_MAX_JOINTS : jointCount;
+        glBindBuffer(GL_UNIFORM_BUFFER, uboJointMatrices);
+        glBufferSubData(GL_UNIFORM_BUFFER, 0, n * 16 * (GLsizeiptr)sizeof(float), jointMatrices);
+        glBindBuffer(GL_UNIFORM_BUFFER, 0);
+
+        // MVP / Model uniforms
+        Mat4 mvp = ComputeMVP3D();
+        GLint locMVP   = glGetUniformLocation(program3D, "uMVP");
+        GLint locModel = glGetUniformLocation(program3D, "uModel");
+        if (locMVP   >= 0) glUniformMatrix4fv(locMVP,   1, GL_FALSE, mvp.m);
+        if (locModel >= 0) glUniformMatrix4fv(locModel, 1, GL_FALSE, modelview.m);
+
+        // ---- Phase AX: morph weights uniform array + delta textures ----
+        int mn = (morphTargetCount > 8) ? 8 : morphTargetCount;
+        if (mn > m.morphCount) mn = m.morphCount;
+        GLint locMW    = glGetUniformLocation(program3D, "uMorphWeights");
+        GLint locMC    = glGetUniformLocation(program3D, "uMorphCount");
+        GLint locHasN  = glGetUniformLocation(program3D, "uHasMorphNormal");
+        if (locMW   >= 0) glUniform1fv(locMW, mn, morphWeights);
+        if (locMC   >= 0) glUniform1i(locMC, mn);
+        if (locHasN >= 0) glUniform1i(locHasN, m.hasMorphNormal ? 1 : 0);
+
+        // 绑定 morph delta textures (slot 5/6, 与 material textures 0-4 错开)
+        GLint locPosTex = glGetUniformLocation(program3D, "uMorphPosDelta");
+        if (locPosTex >= 0 && m.morphPosTex) {
+            glActiveTexture(GL_TEXTURE5);
+            glBindTexture(GL_TEXTURE_2D, m.morphPosTex);
+            glUniform1i(locPosTex, 5);
+        }
+        GLint locNrmTex = glGetUniformLocation(program3D, "uMorphNrmDelta");
+        if (locNrmTex >= 0 && m.morphNrmTex) {
+            glActiveTexture(GL_TEXTURE6);
+            glBindTexture(GL_TEXTURE_2D, m.morphNrmTex);
+            glUniform1i(locNrmTex, 6);
+        } else if (locNrmTex >= 0) {
+            // 即使没有 normal delta 也要绑定 sampler 到一个有效 texture (避免 GL 警告)
+            // 复用 posTex 作为 placeholder, shader 由 uHasMorphNormal=0 控制不读
+            glActiveTexture(GL_TEXTURE6);
+            glBindTexture(GL_TEXTURE_2D, m.morphPosTex);
+            glUniform1i(locNrmTex, 6);
+        }
+
+        // 共用 uniforms (material / lighting)
+        UploadCommonMatUniforms(program3D, desc);
+        BindMaterialTexture(program3D, "uTexBaseColor", "uHasBaseColorTex", 0, desc->texBaseColor);
+        BindMaterialTexture(program3D, "uTexEmissive",  "uHasEmissiveTex",  3, desc->texEmissive);
+        if (desc->mode == 1) {
+            BindMaterialTexture(program3D, "uTexMetallicRoughness", "uHasMetallicRoughnessTex", 1, desc->texMetallicRoughness);
+            BindMaterialTexture(program3D, "uTexNormal",            "uHasNormalTex",            2, desc->texNormal);
+            BindMaterialTexture(program3D, "uTexOcclusion",         "uHasOcclusionTex",         4, desc->texOcclusion);
+            UploadPBRLightingUniforms(program3D, desc);
+        }
+        glActiveTexture(GL_TEXTURE0);
+
+        // 深度测试 + cull (与 DrawSkinnedMeshMaterial 一致)
+        bool tempDepth = !depthTestEnabled;
+        if (tempDepth) {
+            glEnable(GL_DEPTH_TEST);
+            glDepthFunc(GL_LEQUAL);
+        }
+        bool restoreCull = false;
+        if (desc->doubleSided) {
+            GLboolean cullEnabled = GL_FALSE;
+            glGetBooleanv(GL_CULL_FACE, &cullEnabled);
+            if (cullEnabled) {
+                glDisable(GL_CULL_FACE);
+                restoreCull = true;
+            }
+        }
+
+        glBindVertexArray(m.vao);
+        glDrawElements(GL_TRIANGLES, m.indexCount, GL_UNSIGNED_INT, (void*)0);
+        glBindVertexArray(0);
+
+        if (restoreCull) glEnable(GL_CULL_FACE);
+        if (tempDepth)   glDisable(GL_DEPTH_TEST);
+
+        // 切回默认 2D shader
         glUseProgram(program);
         glBindVertexArray(vao);
     }

@@ -302,6 +302,56 @@ public:
      */
     virtual void DrawSkinnedMeshMaterial(uint32_t meshId, const MaterialDesc* desc,
                                           const float* jointMatrices, int jointCount) {}
+
+    // ---- Phase AX 新增 GPU Morph Target 接口 (GL33 实现, Legacy 默认 no-op) ----
+    /**
+     * @brief 是否支持 GPU morph target 渲染
+     *
+     * 仅在以下条件全部满足时返回 true:
+     *   - GL 3.3+ context (texture 2D + glUniform1fv 数组支持)
+     *   - SupportsGPUSkinning() == true (morph 总是与 skin 共存)
+     *   - VS3D_SKIN_MORPH program 编译/链接成功
+     *
+     * LegacyBackend 默认返回 false (不重写).
+     * 调用方应在 false 时回退到 CPU 路径 (DrawSkinnedMorphMeshCPU).
+     */
+    virtual bool SupportsMorphTargets() const { return false; }
+
+    /**
+     * @brief 创建 GPU skinned + morph mesh (一次上传, 永不重传)
+     *
+     * @param verts             含 pos/normal/uv/color/joints/weights 的顶点数组 (与 CreateSkinnedMesh 相同)
+     * @param vCount            顶点数 (> 0)
+     * @param indices           uint32 三角形索引
+     * @param iCount            索引数 (3 的倍数)
+     * @param posDeltas         vCount × 3 × morphTargetCount floats (POSITION delta)
+     * @param nrmDeltas         vCount × 3 × morphTargetCount floats (NORMAL delta), 可 nullptr
+     * @param morphTargetCount  morph target 数量 (1..MORPH_TARGET_MAX=8)
+     *
+     * @return meshId; 失败返回 0
+     *
+     * 内部: 创建 VAO+VBO+EBO (与 skin 一致) + 创建 RGB32F 2D texture
+     *       (width=vCount, height=morphTargetCount) 上传 morph delta.
+     */
+    virtual uint32_t CreateSkinnedMorphMesh(const RenderVertex3DSkin* verts, int vCount,
+                                              const uint32_t* indices, int iCount,
+                                              const float* posDeltas,
+                                              const float* nrmDeltas,
+                                              int morphTargetCount) { return 0; }
+
+    /**
+     * @brief 用 jointMatrices + morphWeights 调色板渲染 GPU skinned+morph mesh
+     *
+     * @param meshId            CreateSkinnedMorphMesh 返回的 ID
+     * @param desc              MaterialDesc (mode = 0 unlit / 1 PBR)
+     * @param jointMatrices     16 floats × jointCount, 列主序
+     * @param jointCount        实际关节数 (≤ 64)
+     * @param morphWeights      morphTargetCount 个 float (与 CreateSkinnedMorphMesh 一致)
+     * @param morphTargetCount  morph target 数量 (≤ MORPH_TARGET_MAX = 8)
+     */
+    virtual void DrawSkinnedMorphMeshMaterial(uint32_t meshId, const MaterialDesc* desc,
+                                                 const float* jointMatrices, int jointCount,
+                                                 const float* morphWeights, int morphTargetCount) {}
 };
 
 // ==================== 工厂函数 ====================
