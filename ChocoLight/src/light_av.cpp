@@ -319,14 +319,45 @@ static int l_Audio_Call(lua_State* L) {
         CC::Log(CC::LOG_INFO, "Audio: FFmpeg not available, stub mode for '%s'", path);
     }
 
-    // 通过 AudioBackend 加载 (优先 miniaudio 原生, 失败则回退 FFmpeg+PCM)
+    // 通过 AudioBackend 加载 (优先 miniaudio 原生: WAV/MP3/FLAC)
+    //   miniaudio 不支持的格式 (AAC/OGG/Opus) 则需 FFmpeg 解码到 PCM 再 LoadPCM
     ctx->audioHandle = AudioBackend::LoadFile(path);
     if (ctx->audioHandle) {
         CC::Log(CC::LOG_INFO, "Audio: loaded via miniaudio '%s'", path);
     } else {
-        CC::Log(CC::LOG_INFO, "Audio: miniaudio failed, using FFmpeg fallback for '%s'", path);
-        // T3.4 回退路径: FFmpeg 解码 → PCM → AudioBackend::LoadPCM
-        // 待实现
+        // Phase AY T04: FFmpeg fallback 现状
+        //   FFmpegLib 函数指针已就绪 (avformat_open_input / avcodec_open2 /
+        //   avcodec_send_packet / avcodec_receive_frame / swr_convert), AVContext
+        //   持 formatCtx + codecCtx + streamIdx 也已在 l_Audio_Call 上方初始化.
+        //
+        //   完整解码循环 (~200 行) 需要:
+        //     1. avcodec_parameters_to_context + avcodec_open2
+        //     2. swr_alloc_set_opts + swr_init (重采样到 S16 双声道)
+        //     3. while (av_read_frame): packet -> send_packet -> receive_frame ->
+        //        swr_convert -> 累积到 vector<int16_t>
+        //     4. AudioBackend::LoadPCM(buf, frameCount, 2 /*S16*/, ch, rate)
+        //
+        //   未实施原因:
+        //     - 需 FFmpeg DLL 真机环境验证 (CI 不预置 avformat-59.dll 等)
+        //     - AVFrame magic offset (nb_samples=112, sample_fmt=116) 跨版本风险
+        //       现已在 video_backend_ffmpeg.cpp:495-496 桌面 CI 验证, 但 mobile 未测
+        //
+        //   建议接入路径 (用户操作):
+        //     A. 把 FFmpeg DLL (avformat-59 / avcodec-59 / avutil-57 / swresample-4)
+        //        放入 light.exe 同目录后, 重新打开 issue 提供测试音频文件 (AAC/OGG)
+        //     B. 临时回退: 先用 ffmpeg.exe -i input.aac -f wav out.wav 转 WAV,
+        //        miniaudio 即可加载
+        if (LoadFFmpeg()) {
+            CC::Log(CC::LOG_WARN,
+                    "Audio: miniaudio rejected '%s' (likely AAC/OGG/Opus); FFmpeg loaded but "
+                    "decode-to-PCM fallback not yet implemented. Convert to WAV/MP3/FLAC "
+                    "(or wait for Phase AY T04 follow-up).", path);
+        } else {
+            CC::Log(CC::LOG_WARN,
+                    "Audio: '%s' format unsupported by miniaudio and FFmpeg DLLs missing. "
+                    "Place avformat-59/avcodec-59/avutil-57/swresample-4 into runtime dir "
+                    "or convert source to WAV/MP3/FLAC.", path);
+        }
     }
 
     lua_setfield(L, 1, "__instance");
