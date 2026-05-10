@@ -2168,6 +2168,103 @@ static int l_Animator_GetJointMatrices(lua_State* L) {
     return 1;
 }
 
+// ---------- Phase AX: morph target weight API ----------
+
+// animator:SetMorphWeight(idx_1based, value)
+//   - idx 越界 [1, MORPH_TARGET_MAX] -> 返回 nil + err
+//   - value: number, 通常 [0, 1] 但允许任意 (animator + 美术决定)
+//   - 立即写入 morphWeightsManual + morphWeights (无需等下一帧 Update)
+//   - manual 覆盖优先级高于动画通道; ClearMorphWeights 可恢复动画驱动
+static int l_Animator_SetMorphWeight(lua_State* L) {
+    Animator* an    = CheckAnimator(L, 1);
+    int       idx_1based = (int)luaL_checkinteger(L, 2);
+    float     val   = (float)luaL_checknumber(L, 3);
+    if (idx_1based < 1 || idx_1based > MORPH_TARGET_MAX) {
+        return ErrorReturn(L, "morph index out of range [1, 8]");
+    }
+    int idx_0based = idx_1based - 1;
+    if ((int)an->morphWeightsManual.size() <= idx_0based) {
+        an->morphWeightsManual.resize(idx_0based + 1, std::nanf(""));
+    }
+    if ((int)an->morphWeights.size() <= idx_0based) {
+        an->morphWeights.resize(idx_0based + 1, 0.0f);
+    }
+    an->morphWeightsManual[idx_0based] = val;
+    an->morphWeights[idx_0based]       = val;     // 即时生效, 不等下一帧 Update
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+// animator:GetMorphWeight(idx_1based) -> number
+//   - 返回当前生效权重 (动画评估值或手动覆盖值)
+//   - 越界或未初始化时返回 0 (不报错; 与 GetParam 风格一致)
+static int l_Animator_GetMorphWeight(lua_State* L) {
+    Animator* an = CheckAnimator(L, 1);
+    int idx_1based = (int)luaL_checkinteger(L, 2);
+    if (idx_1based < 1) {
+        return ErrorReturn(L, "morph index must be >= 1");
+    }
+    int idx_0based = idx_1based - 1;
+    if (idx_0based >= (int)an->morphWeights.size()) {
+        lua_pushnumber(L, 0.0);
+        return 1;
+    }
+    lua_pushnumber(L, an->morphWeights[idx_0based]);
+    return 1;
+}
+
+// animator:ClearMorphWeights()
+//   - 清除所有手动覆盖 (恢复动画驱动)
+//   - morphWeights 保持当前值, 下一次 Update 后会从动画通道重新评估
+static int l_Animator_ClearMorphWeights(lua_State* L) {
+    Animator* an = CheckAnimator(L, 1);
+    for (size_t i = 0; i < an->morphWeightsManual.size(); ++i) {
+        an->morphWeightsManual[i] = std::nanf("");
+    }
+    return 0;
+}
+
+// animator:GetMorphTargetCount() -> integer
+//   - 返回当前 Animator 已分配的 morph weight 槽数 (== 最近一次 Update 评估到的 N)
+//   - 未关联含 morph 的 mesh 或未 Update 时返回 0
+//   - 注: 与 mesh:GetMorphTargetCount 不同 (mesh 是静态资产侧)
+static int l_Animator_GetMorphTargetCount(lua_State* L) {
+    Animator* an = CheckAnimator(L, 1);
+    lua_pushinteger(L, (lua_Integer)an->morphWeights.size());
+    return 1;
+}
+
+// animator:GetMorphWeights() -> array { w1, w2, ..., wN }
+//   - 返回当前生效权重的副本; 数组长度 = morphWeights.size()
+static int l_Animator_GetMorphWeights(lua_State* L) {
+    Animator* an = CheckAnimator(L, 1);
+    int N = (int)an->morphWeights.size();
+    lua_createtable(L, N, 0);
+    for (int i = 0; i < N; ++i) {
+        lua_pushnumber(L, an->morphWeights[i]);
+        lua_rawseti(L, -2, i + 1);
+    }
+    return 1;
+}
+
+// animator:HasManualMorphOverride(idx_1based) -> bool
+//   - 检查指定槽位是否被 SetMorphWeight 手动覆盖过 (NaN 表示未覆盖)
+//   - 用于 UI 显示 (区分动画驱动值 vs 手动值)
+static int l_Animator_HasManualMorphOverride(lua_State* L) {
+    Animator* an = CheckAnimator(L, 1);
+    int idx_1based = (int)luaL_checkinteger(L, 2);
+    if (idx_1based < 1) {
+        return ErrorReturn(L, "morph index must be >= 1");
+    }
+    int idx_0based = idx_1based - 1;
+    if (idx_0based >= (int)an->morphWeightsManual.size()) {
+        lua_pushboolean(L, 0);
+        return 1;
+    }
+    lua_pushboolean(L, std::isnan(an->morphWeightsManual[idx_0based]) ? 0 : 1);
+    return 1;
+}
+
 // ---------- Step 2: 状态机基础 (单状态切换) ----------
 
 // AddState(name, clip): 把 clip 加入状态表; 持有 clip 强引用
@@ -2698,6 +2795,36 @@ static int l_SkinnedMesh_GC(lua_State* L) {
     return l_SkinnedMesh_Delete(L);
 }
 
+// Phase AX: SkinnedMesh morph 信息查询 API
+
+// mesh:HasMorphTargets() -> bool
+static int l_SkinnedMesh_HasMorphTargets(lua_State* L) {
+    SkinnedMeshAsset* sm = CheckSkinnedMesh(L, 1);
+    lua_pushboolean(L, (sm->morphTargetCount > 0) ? 1 : 0);
+    return 1;
+}
+
+// mesh:GetMorphTargetCount() -> integer (0 表示无 morph)
+static int l_SkinnedMesh_GetMorphTargetCount(lua_State* L) {
+    SkinnedMeshAsset* sm = CheckSkinnedMesh(L, 1);
+    lua_pushinteger(L, (lua_Integer)sm->morphTargetCount);
+    return 1;
+}
+
+// mesh:GetMorphTargetName(idx_1based) -> string 或 nil
+//   - idx 越界返回 nil (不报错)
+static int l_SkinnedMesh_GetMorphTargetName(lua_State* L) {
+    SkinnedMeshAsset* sm = CheckSkinnedMesh(L, 1);
+    int idx_1based = (int)luaL_checkinteger(L, 2);
+    int idx_0based = idx_1based - 1;
+    if (idx_0based < 0 || idx_0based >= (int)sm->morphTargetNames.size()) {
+        lua_pushnil(L);
+        return 1;
+    }
+    lua_pushstring(L, sm->morphTargetNames[idx_0based].c_str());
+    return 1;
+}
+
 static int l_SkinnedMesh_ToString(lua_State* L) {
     SkinnedMeshAsset** pp = (SkinnedMeshAsset**)luaL_checkudata(L, 1, SKINNED_MESH_MT);
     if (!pp || !*pp) {
@@ -3168,6 +3295,13 @@ static const luaL_Reg kAnimatorMethods[] = {
     {"Resume",                l_Animator_Resume},
     {"IsPaused",              l_Animator_IsPaused},
     {"GetJointMatrices",      l_Animator_GetJointMatrices},
+    // Phase AX: morph target weight API
+    {"SetMorphWeight",         l_Animator_SetMorphWeight},
+    {"GetMorphWeight",         l_Animator_GetMorphWeight},
+    {"ClearMorphWeights",      l_Animator_ClearMorphWeights},
+    {"GetMorphTargetCount",    l_Animator_GetMorphTargetCount},
+    {"GetMorphWeights",        l_Animator_GetMorphWeights},
+    {"HasManualMorphOverride", l_Animator_HasManualMorphOverride},
     // Step 2: 状态机基础
     {"AddState",              l_Animator_AddState},
     {"Play",                  l_Animator_Play},
@@ -3208,13 +3342,17 @@ static const luaL_Reg kAnimatorMethods[] = {
 
 // Step 3: SkinnedMesh 元表方法
 static const luaL_Reg kSkinnedMeshMethods[] = {
-    {"GetVertexCount",  l_SkinnedMesh_GetVertexCount},
-    {"GetIndexCount",   l_SkinnedMesh_GetIndexCount},
-    {"GetSkeleton",     l_SkinnedMesh_GetSkeleton},
-    {"IsAlive",         l_SkinnedMesh_IsAlive},
-    {"Delete",          l_SkinnedMesh_Delete},
-    {"__gc",            l_SkinnedMesh_GC},
-    {"__tostring",      l_SkinnedMesh_ToString},
+    {"GetVertexCount",       l_SkinnedMesh_GetVertexCount},
+    {"GetIndexCount",        l_SkinnedMesh_GetIndexCount},
+    {"GetSkeleton",          l_SkinnedMesh_GetSkeleton},
+    // Phase AX: morph target 信息查询
+    {"HasMorphTargets",      l_SkinnedMesh_HasMorphTargets},
+    {"GetMorphTargetCount",  l_SkinnedMesh_GetMorphTargetCount},
+    {"GetMorphTargetName",   l_SkinnedMesh_GetMorphTargetName},
+    {"IsAlive",              l_SkinnedMesh_IsAlive},
+    {"Delete",               l_SkinnedMesh_Delete},
+    {"__gc",                 l_SkinnedMesh_GC},
+    {"__tostring",           l_SkinnedMesh_ToString},
     {nullptr, nullptr},
 };
 
@@ -3245,6 +3383,11 @@ extern "C" LIGHT_API int luaopen_Light_Animation(lua_State* L) {
     // 与 Phase AU light_physics3d.cpp 的 luaopen 保持一致: lua_newtable + luaL_setfuncs.
     lua_newtable(L);
     luaL_setfuncs(L, kAnimationModule, 0);
+
+    // Phase AX: 暴露常量 MORPH_TARGET_MAX = 8
+    lua_pushinteger(L, MORPH_TARGET_MAX);
+    lua_setfield(L, -2, "MORPH_TARGET_MAX");
+
     return 1;
 }
 
