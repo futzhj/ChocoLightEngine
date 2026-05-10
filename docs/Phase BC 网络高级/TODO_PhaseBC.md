@@ -8,25 +8,25 @@
 
 ## 一、推迟到 v2 的任务（最高优先 — 影响开发者上手）
 
-### 1.1 T10 · `demo_udp_echo` 双端样例
+### 1.1 T10 · `demo_udp_echo` 双端样例 ✅ 已完成 (commit `294f1d0`)
 
-**状态**: ⏸ 推迟
-**预估工时**: 3h
-**前置依赖**: T5 (`Light.Network.Udp`) — 已完成 ✅
+**实施 (单 main.lua + `arg[1]` 切换 mode)**:
+- `samples/demo_udp_echo/main.lua` — 210 行双模式 demo
+- `samples/demo_udp_echo/README.md` — 用法 + 预期输出 + 已知限制
 
-**需要用户决定**:
-1. 是否在 `samples/` 下新增 `demo_udp_echo/` 目录? (默认推荐 yes)
-2. 是否要双端 lua (一个 server.lua + 一个 client.lua) 还是单一 main.lua 两端共用?
-   - 默认推荐: 单 main.lua + 命令行参数 `--mode=server|client`
+**覆盖功能矩阵**:
+| 验证项 | 阶段 | 实现 |
+|--------|------|------|
+| ENet UDP 双进程 | T5 | 自动 |
+| `Rpc.Listen / Call(Echo)` | T6 | server `RegisterMethod`, client `Call` |
+| `Room.Host / Join + SetState` | T8 | 初始 state 同步 |
+| `Call(..., timeout_ms)` | v2 | `Sleep(1000)` + 100ms timeout, `-32001` |
+| `PatchState (set+delete)` | v2 | 中途 2 次 patch 触发客户端 OnState |
+| `Kick(pid, reason)` | v2 | 5s 后 kick, 客户端 OnKick 收到 reason |
 
-**操作指引** (用户决定后告诉我):
-```
-"开始 T10, 单 main.lua 模式"
-or
-"开始 T10, 双 lua 模式"
-or
-"跳过 T10, 直接 T11"
-```
+**实际工时**: 1h (低于 3h 估算)
+**CI 验证**: ✅ 全平台 6/6 通过 (run 25640474595, 语法检查通过 + 不破坏现有 build)
+**端到端 runtime 验证**: 需用户手动跑双终端 (smoke harness 单进程, 不覆盖)
 
 ---
 
