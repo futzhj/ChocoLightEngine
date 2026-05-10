@@ -109,6 +109,94 @@ void CloseUdp(uv_udp_s* sock);
 /// 查询本地实际绑定端口 (BindUdp(port=0) 后用), 失败返回 0
 uint16_t GetUdpLocalPort(uv_udp_s* sock);
 
+// ==================== Phase BC T4: ENet (reliable UDP) ====================
+//
+// 封装 ENet 1.3.18 reliable UDP library. 与 raw UDP API 并存:
+//   - Raw UDP: 用户自定协议, 无重传/排序保证
+//   - ENet:    channel-based, 可选 reliable/unreliable, 自动重传 + congestion control
+//
+// 平台覆盖: 桌面 + 移动 (Web 编译时空存根, 浏览器走 WebRTC)
+// 编译宏:   CHOCO_NET_ENET_ENABLED (CMake 设置, 与 EMSCRIPTEN 互斥)
+//
+// 典型用法:
+//   // Server (host)
+//   auto* host = EnetCreateHost("0.0.0.0", 9000, /*maxPeers=*/32, /*channels=*/2);
+//   // Client (peer to remote)
+//   auto* host = EnetCreateHost(nullptr, 0, 1, 2);
+//   auto* peer = EnetConnect(host, "127.0.0.1", 9000, 2);
+//   ...
+//   // 每帧由 PlatformNet::Poll() 自动调 EnetServiceTick
+//   EnetSend(peer, 0, payload, len, /*reliable=*/true);
+//   ...
+//   EnetDestroyHost(host);
+
+struct EnetHost;       // 不透明 (实际 = ENetHost*)
+struct EnetPeer;       // 不透明 (实际 = ENetPeer*)
+
+enum class EnetEventType : int {
+    NONE       = 0,
+    CONNECT    = 1,
+    DISCONNECT = 2,
+    RECEIVE    = 3,
+};
+
+struct EnetEvent {
+    EnetEventType type;
+    EnetPeer*     peer;        // 触发事件的 peer (CONNECT/DISCONNECT/RECEIVE 均有效)
+    int           channel;     // RECEIVE 时为收包 channel (CONNECT/DISCONNECT 为 0)
+    const char*   data;        // RECEIVE 时为包数据 (调用方在回调内拷贝, 返回后失效)
+    int           len;         // RECEIVE 时为包长度
+};
+
+using OnEnetEventCb = std::function<void(const EnetEvent&)>;
+
+/// 创建 ENet host
+///   ip       = nullptr 表示纯 client 模式 (不绑定监听); "0.0.0.0" 监听所有接口
+///   port     = 监听端口 (client 模式忽略, 通常传 0)
+///   maxPeers = 最大同时连接 peer 数 (server: 房间容量; client: 通常 1)
+///   channels = channel 数 (DESIGN §3.4: 0=reliable ordered, 1=unreliable seq)
+/// 返回 nullptr 表示创建失败 (端口占用 / Web 平台 / ENet 未初始化)
+EnetHost* EnetCreateHost(const char* ip, uint16_t port,
+                          int maxPeers, int channels);
+
+/// 销毁 host (会断开所有 peer 并释放). 调用后 host/peer 指针失效
+void EnetDestroyHost(EnetHost* host);
+
+/// 主动连接到远程 host
+///   localHost = 本机 EnetHost (client 或 server 都可发起连接)
+///   host/port = 目标地址
+///   channels  = 必须 ≤ localHost 创建时的 channels
+/// 返回 EnetPeer* 表示已加入连接队列 (实际 CONNECT 事件由 EnetServiceTick 触发);
+/// nullptr 表示参数错或资源耗尽
+EnetPeer* EnetConnect(EnetHost* localHost,
+                       const char* host, uint16_t port,
+                       int channels);
+
+/// 主动断开 peer
+///   data = 用户数据 (会传到对端 DISCONNECT 事件的 peer-data, 用于 KICK reason 等)
+void EnetDisconnect(EnetPeer* peer, uint32_t data);
+
+/// 通过 channel 发送数据
+///   channel  = 0..N-1, N = host 创建时的 channels
+///   reliable = true: 保证送达 + 顺序; false: 不保证
+/// 返回 false 表示参数错或 channel 越界
+bool EnetSend(EnetPeer* peer, int channel,
+               const char* data, int len, bool reliable);
+
+/// 注册 host 事件回调 (持续生效, 直到 host 销毁或重新注册)
+///
+/// 设计 (DESIGN §6.1): PlatformNet::Poll() 自动遍历所有活跃 host 并 service
+/// 一次, 收到的事件用此 cb 同步分发. 用户无需手动驱动.
+///
+/// cb 在主线程触发, 与 Lua VM 同帧, 适合直接调 Lua callback ref. 无需 mutex.
+void EnetSetEventCb(EnetHost* host, OnEnetEventCb cb);
+
+/// 查询 peer 远程地址 ("192.168.1.100:9000" 风格), 返回静态 buffer (下次调用覆盖)
+const char* EnetPeerAddress(EnetPeer* peer);
+
+/// 查询 peer ID (host 内部分配的小整数, 0 ~ maxPeers-1)
+uint32_t    EnetPeerID(EnetPeer* peer);
+
 // ==================== 辅助 ====================
 
 /// 获取底层 libuv 事件循环 (高级用途)

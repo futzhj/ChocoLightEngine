@@ -29,6 +29,15 @@ bool StartUdpRecv(uv_udp_s*, OnUdpRecvCb) { return false; }
 void StopUdpRecv(uv_udp_s*) {}
 void CloseUdp(uv_udp_s*) {}
 uint16_t GetUdpLocalPort(uv_udp_s*) { return 0; }
+// Phase BC T4: ENet Web 空存根 (浏览器走 WebRTC, 不走 native ENet)
+EnetHost* EnetCreateHost(const char*, uint16_t, int, int) { return nullptr; }
+void EnetDestroyHost(EnetHost*) {}
+EnetPeer* EnetConnect(EnetHost*, const char*, uint16_t, int) { return nullptr; }
+void EnetDisconnect(EnetPeer*, uint32_t) {}
+bool EnetSend(EnetPeer*, int, const char*, int, bool) { return false; }
+void EnetSetEventCb(EnetHost*, OnEnetEventCb) {}
+const char* EnetPeerAddress(EnetPeer*) { return ""; }
+uint32_t EnetPeerID(EnetPeer*) { return 0; }
 } // namespace PlatformNet
 // Android/iOS: 由 light_platform_net_mobile.cpp 提供 POSIX socket 实现
 #elif defined(__ANDROID__) || defined(CHOCO_PLATFORM_IOS)
@@ -170,6 +179,12 @@ static void resolve_cb(uv_getaddrinfo_t* req, int status, struct addrinfo* res) 
 
 namespace PlatformNet {
 
+// Phase BC T4: 跨 .cpp 链接 ENet 内部 init/tick/shutdown
+//   实现位于 light_platform_net_enet.cpp (条件编译 !EMSCRIPTEN)
+bool EnetGlobalInit();
+void EnetGlobalShutdown();
+void EnetTickAll();
+
 bool Init() {
     if (s_loop) return true;
     s_loop = (uv_loop_t*)malloc(sizeof(uv_loop_t));
@@ -180,11 +195,15 @@ bool Init() {
         return false;
     }
     CC::Log(CC::LOG_INFO, "PlatformNet: initialized (libuv %s)", uv_version_string());
+    // Phase BC T4: ENet 全局初始化 (失败不阻塞 libuv, ENet 模块降级不可用)
+    EnetGlobalInit();
     return true;
 }
 
 void Shutdown() {
     if (!s_loop) return;
+    // Phase BC T4: 先停 ENet (销毁所有 host, 防止 libuv close 与 ENet socket 抢)
+    EnetGlobalShutdown();
     // 关闭所有活跃句柄
     uv_walk(s_loop, [](uv_handle_t* h, void*) {
         if (!uv_is_closing(h)) uv_close(h, close_cb);
@@ -201,6 +220,8 @@ void Shutdown() {
 
 void Poll() {
     if (s_loop) uv_run(s_loop, UV_RUN_NOWAIT);
+    // Phase BC T4: 驱动所有活跃 ENet host 一次 service
+    EnetTickAll();
 }
 
 uv_tcp_s* CreateClient() {

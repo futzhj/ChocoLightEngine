@@ -73,13 +73,23 @@ static void SetNonBlocking(int fd) {
 
 namespace PlatformNet {
 
+// Phase BC T4: 跨 .cpp 链接 ENet 内部 init/tick/shutdown
+//   实现位于 light_platform_net_enet.cpp
+bool EnetGlobalInit();
+void EnetGlobalShutdown();
+void EnetTickAll();
+
 bool Init() {
     s_initialized = true;
     CC::Log(CC::LOG_INFO, "PlatformNet: initialized (POSIX socket, mobile)");
+    // Phase BC T4: ENet 全局初始化 (失败不阻塞 mobile TCP, ENet 模块降级不可用)
+    EnetGlobalInit();
     return true;
 }
 
 void Shutdown() {
+    // Phase BC T4: 先停 ENet (销毁所有 host)
+    EnetGlobalShutdown();
     for (auto* h : s_handles) {
         if (h->fd >= 0) { close(h->fd); h->fd = -1; }
         delete h;
@@ -97,7 +107,14 @@ void Shutdown() {
 
 void Poll() {
     if (!s_initialized) return;
-    if (s_handles.empty() && s_udpHandles.empty()) return;
+
+    // Phase BC T4: ENet host 始终需要 service, 即使 TCP/UDP 都为空
+    // (放在末尾避免与 select 时序冲突)
+
+    if (s_handles.empty() && s_udpHandles.empty()) {
+        EnetTickAll();
+        return;
+    }
 
     // 构建 fd_set
     fd_set readSet, writeSet, errSet;
@@ -231,6 +248,9 @@ void Poll() {
                 return false;
             }),
         s_udpHandles.end());
+
+    // Phase BC T4: 驱动所有活跃 ENet host 一次 service
+    EnetTickAll();
 }
 
 uv_tcp_s* CreateClient() {
