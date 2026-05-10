@@ -139,42 +139,111 @@ static void ParseAndDispatchHttp(lua_State* L, int selfIdx,
     lua_pop(L, 1);  // pop headers 表
 }
 
+// Phase AY T03: 尝试从 buffer 头部解析并分发一个完整 WS 帧
+//   返回值:
+//     > 0  : 已消费的字节数 (帧头 + payload), 调用方应从 buffer 移除
+//     == 0 : buffer 不足以构成完整帧, 等待更多数据 (保留)
+//   语义符合 RFC 6455 §5.2:
+//     byte 0: FIN(1) | RSV(3) | opcode(4)
+//     byte 1: MASK(1) | payload_len(7)
+//     扩展 length: 126 -> 接下来 2 字节; 127 -> 接下来 8 字节 (网络序)
+//     MASK=1 -> 接下来 4 字节 mask key, payload XOR mask key
+//   不支持: continuation (op=0x0) / ping (0x9) / pong (0xA) / close (0x8) 仅静默跳过
+static int TryDispatchWSFrame(lua_State* L, int selfIdx,
+                                const char* data, size_t len) {
+    if (len < 2) return 0;
+    uint8_t b0 = (uint8_t)data[0];
+    uint8_t b1 = (uint8_t)data[1];
+    uint8_t op     = b0 & 0x0F;
+    bool    masked = (b1 & 0x80) != 0;
+    uint64_t plen  = b1 & 0x7F;
+    size_t offset = 2;
+
+    // 扩展 payload length
+    if (plen == 126) {
+        if (len < offset + 2) return 0;
+        plen = ((uint64_t)(uint8_t)data[offset] << 8) | (uint8_t)data[offset + 1];
+        offset += 2;
+    } else if (plen == 127) {
+        if (len < offset + 8) return 0;
+        plen = 0;
+        for (int i = 0; i < 8; ++i)
+            plen = (plen << 8) | (uint8_t)data[offset + i];
+        offset += 8;
+    }
+
+    // mask key
+    uint8_t maskKey[4] = {0};
+    if (masked) {
+        if (len < offset + 4) return 0;
+        for (int i = 0; i < 4; ++i) maskKey[i] = (uint8_t)data[offset + i];
+        offset += 4;
+    }
+
+    // 整帧完整性检查 (溢出守卫: 用 (size_t)-1 替代 SIZE_MAX, 避免 header 依赖)
+    if (plen > (uint64_t)((size_t)-1 - offset)) return 0;
+    size_t total = offset + (size_t)plen;
+    if (len < total) return 0;     // 等待更多
+
+    // 仅文本(0x1) / 二进制(0x2) 分发 OnWS; 其他 opcode 静默跳过
+    //   continuation (0x0) 在本阶段不支持 (大多数 WS 实际不用; 后续如需可累加状态)
+    if (op == 0x1 || op == 0x2) {
+        // 解 mask 到临时 buffer
+        const char* payloadSrc = data + offset;
+        std::string payload;
+        if (masked && plen > 0) {
+            payload.resize((size_t)plen);
+            for (size_t i = 0; i < plen; ++i) {
+                payload[i] = (char)((uint8_t)payloadSrc[i] ^ maskKey[i & 3]);
+            }
+            payloadSrc = payload.data();
+        }
+        lua_getfield(L, selfIdx, "OnWS");
+        if (lua_isfunction(L, -1)) {
+            lua_pushvalue(L, selfIdx);
+            lua_pushinteger(L, op);
+            lua_pushlstring(L, payloadSrc, (size_t)plen);
+            lua_call(L, 3, 0);
+        } else {
+            lua_pop(L, 1);
+        }
+    }
+    return (int)total;
+}
+
 // 辅助: 分发接收到的数据到 Lua 回调 (在 PlatformNet::Poll 期间触发)
+//   Phase AY T03: WebSocket 路径支持多帧分片 + 64-bit length + MASK 解码 + 残留保留
+//   HTTP 路径保持原行为 (单次完整响应分发)
 static void DispatchRecvData(HttpContext* ctx) {
     if (!ctx || !ctx->L || ctx->selfRef == LUA_NOREF || ctx->recvBuf.empty()) return;
     lua_State* L = ctx->L;
 
-    // 取出 self 表
     lua_rawgeti(L, LUA_REGISTRYINDEX, ctx->selfRef);
     int selfIdx = lua_gettop(L);
 
-    const char* data = ctx->recvBuf.c_str();
-    int len = (int)ctx->recvBuf.size();
-
     if (ctx->isWebSocket) {
-        // WebSocket 帧解析
-        if (len >= 2) {
-            uint8_t opcode = (uint8_t)(data[0] & 0x0F);
-            int payloadLen = (uint8_t)data[1] & 0x7F;
-            int offset = 2;
-            if (payloadLen == 126 && len >= 4) {
-                payloadLen = ((uint8_t)data[2]<<8) | (uint8_t)data[3];
-                offset = 4;
-            }
-            lua_getfield(L, selfIdx, "OnWS");
-            if (lua_isfunction(L, -1)) {
-                lua_pushvalue(L, selfIdx);
-                lua_pushinteger(L, opcode);
-                lua_pushlstring(L, data + offset, len - offset > 0 ? len - offset : 0);
-                lua_call(L, 3, 0);
-            } else lua_pop(L, 1);
+        // 循环解析: 同一 buffer 可能含多帧, 不完整帧保留等下次 read 接续
+        size_t consumed = 0;
+        while (consumed < ctx->recvBuf.size()) {
+            int n = TryDispatchWSFrame(L, selfIdx,
+                                          ctx->recvBuf.data() + consumed,
+                                          ctx->recvBuf.size() - consumed);
+            if (n <= 0) break;     // 残帧 → 等待更多数据
+            consumed += (size_t)n;
         }
+        if (consumed > 0 && consumed <= ctx->recvBuf.size()) {
+            ctx->recvBuf.erase(0, consumed);
+        }
+        // 注: 不再 clear() 整个 buffer; 残留数据(不完整帧前缀)在下次 read 后接续解析
     } else {
-        // HTTP 响应
+        // HTTP 响应 — 与原行为一致, 一次性分发后清空
+        const char* data = ctx->recvBuf.c_str();
+        int len = (int)ctx->recvBuf.size();
         ParseAndDispatchHttp(L, selfIdx, data, len);
+        ctx->recvBuf.clear();
     }
+
     lua_pop(L, 1);  // pop self
-    ctx->recvBuf.clear();
 }
 
 // libuv 读取回调: 将数据累积到 recvBuf 并分发
