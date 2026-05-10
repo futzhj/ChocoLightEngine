@@ -108,14 +108,17 @@ room:PatchState({{op="replace", path="/score", value=10}})
 
 ---
 
-### 2.3 RPC timeout 机制
+### 2.3 RPC timeout 机制 ✅ 已完成 (commit `125f4c2`)
 
-**当前实现**: `client:Call(method, params, cb)` 无 timeout, peer 失联时 cb 永不触发 (除非 ENet 超时 disconnect 触发 -32000).
-**问题**: 应用层无法对单次 call 设置 SLA.
-**方案**: `client:Call(method, params, cb, timeout_ms)`, 内部在 ENet 主循环每帧检查 pending 表 entry 时间戳.
+**当前实现**: `client:Call(method, params, cb [, timeout_ms])`. 第 4 参数可选, > 0 时启用超时.
+**实施**:
+- 新增 PlatformNet API: `EnetSetFrameCb(host, cb)` — 每帧 idle 回调
+- RpcClient 新增 `deadlinesRef` (Lua table {id → deadline_ms})
+- `ScanTimeouts(c)` 通过 frame cb 每帧扫描, 触发 `cb({code=-32001, message="timeout"}, nil)`
+- DISCONNECT / Receive / Close 各处同步清理两表
 
-**预估工时**: 3h
-**优先级**: 中
+**实际工时**: 1h (低于估算)
+**CI 验证**: ✅ 全平台 6/6 通过 (run 25639242640)
 
 ---
 
