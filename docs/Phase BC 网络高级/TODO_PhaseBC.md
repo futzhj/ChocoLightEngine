@@ -96,14 +96,15 @@ or
 
 ---
 
-### 2.2 Kick 包真实送达 (PKT_ROOM_KICK by-peer-id)
+### 2.2 Kick 包真实送达 ✅ 已完成 (commit `f62b6e6`)
 
-**当前实现**: `room:Kick(peer_id)` 仅 disconnect, 不发 KICK 包.
-**问题**: 客户端只能从 ENet DISCONNECT 推断 (无 reason 字符串).
-**方案**: PlatformNet 增暴露 `EnetSendByPeerId(host, peer_id, ch, data, len, reliable)`, T8 Kick 在 disconnect 前先发 PKT_ROOM_KICK.
+**实施**:
+- 新 PlatformNet API: `EnetSendByPeerId(host, peer_id, ch, data, len, reliable)` (Win/Mac/Linux/Mobile 共享 ENet 实现, Web stub)
+- `room:Kick(peer_id, reason)` 先发 `PKT_ROOM_KICK {reason}` (channel 0 reliable), 再 disconnect. KICK 包发送失败不影响 disconnect (best-effort)
+- 客户端 T8 侧 PKT_ROOM_KICK → OnKick(reason) 已有, 无需改动
 
-**预估工时**: 2h
-**优先级**: 低 (功能上等价, 仅缺友好错误信息)
+**实际工时**: 0.5h (低于 2h 估算)
+**CI 验证**: ✅ 全平台 6/6 通过 (run 25639900858)
 
 ---
 
