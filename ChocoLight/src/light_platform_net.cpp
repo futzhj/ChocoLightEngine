@@ -21,6 +21,14 @@ void Close(uv_tcp_s*) {}
 uv_tcp_s* CreateServer(const char*, uint16_t) { return nullptr; }
 bool Listen(uv_tcp_s*, int, OnAcceptCb) { return false; }
 uv_loop_s* GetLoop() { return nullptr; }
+// Phase BC T2: UDP Web 空存根 (浏览器无 raw UDP)
+uv_udp_s* CreateUdpSocket() { return nullptr; }
+bool BindUdp(uv_udp_s*, const char*, uint16_t) { return false; }
+bool SendUdp(uv_udp_s*, const char*, uint16_t, const char*, size_t) { return false; }
+bool StartUdpRecv(uv_udp_s*, OnUdpRecvCb) { return false; }
+void StopUdpRecv(uv_udp_s*) {}
+void CloseUdp(uv_udp_s*) {}
+uint16_t GetUdpLocalPort(uv_udp_s*) { return 0; }
 } // namespace PlatformNet
 // Android/iOS: 由 light_platform_net_mobile.cpp 提供 POSIX socket 实现
 #elif defined(__ANDROID__) || defined(CHOCO_PLATFORM_IOS)
@@ -296,6 +304,163 @@ bool Listen(uv_tcp_s* server, int backlog, OnAcceptCb cb) {
 }
 
 uv_loop_s* GetLoop() { return s_loop; }
+
+}  // namespace PlatformNet
+
+// ==================== Phase BC T2: UDP libuv 桌面实现 ====================
+//
+// 设计要点:
+//   - UdpHandleData 与 NetHandleData 分开: UDP 没有 connect/accept 概念,
+//     只需 recv 回调 + 包级生命周期; 共用 NetHandleData 会膨胀字段
+//   - 用 uv_udp_t 而非 uv_tcp_t: libuv 强类型区分两者, recv API 也不同
+//   - alloc_cb 不能复用 (TCP 用的是 alloc_cb 接收 stream, UDP 接收 datagram),
+//     但语义一致, 用同一份 alloc_cb 即可
+
+namespace {
+
+struct UdpHandleData {
+    PlatformNet::OnUdpRecvCb recvCb;
+};
+
+UdpHandleData* GetUdpData(uv_udp_s* h) {
+    return h ? (UdpHandleData*)((uv_handle_t*)h)->data : nullptr;
+}
+
+UdpHandleData* EnsureUdpData(uv_udp_s* h) {
+    auto* hh = (uv_handle_t*)h;
+    if (!hh->data) {
+        hh->data = new UdpHandleData{};
+    }
+    return (UdpHandleData*)hh->data;
+}
+
+// UDP 句柄关闭回调: 释放 UdpHandleData + handle 内存
+void udp_close_cb(uv_handle_t* handle) {
+    if (handle->data) {
+        delete (UdpHandleData*)handle->data;
+        handle->data = nullptr;
+    }
+    free(handle);
+}
+
+// UDP 接收回调: 解析对端地址 + 触发用户 cb
+void udp_recv_cb(uv_udp_t* handle, ssize_t nread, const uv_buf_t* buf,
+                  const struct sockaddr* addr, unsigned /*flags*/) {
+    auto* nd = (UdpHandleData*)((uv_handle_t*)handle)->data;
+    if (nread > 0 && addr && nd && nd->recvCb) {
+        // 解析对端地址 → 字符串 + 端口
+        char ipBuf[64] = {0};
+        uint16_t port = 0;
+        if (addr->sa_family == AF_INET) {
+            const auto* a4 = (const struct sockaddr_in*)addr;
+            uv_ip4_name(a4, ipBuf, sizeof(ipBuf));
+            port = ntohs(a4->sin_port);
+        } else if (addr->sa_family == AF_INET6) {
+            const auto* a6 = (const struct sockaddr_in6*)addr;
+            uv_ip6_name(a6, ipBuf, sizeof(ipBuf));
+            port = ntohs(a6->sin6_port);
+        }
+        nd->recvCb(ipBuf, port, buf->base, (int)nread);
+    }
+    // libuv 文档: nread==0 是 "no data this poll", 不是错误, 也无 free 责任
+    // nread<0 是错误, buf->base 仍需 free
+    if (buf && buf->base) free(buf->base);
+}
+
+// UDP 发送完成回调: 释放 send req + 数据缓冲
+struct UdpSendReq {
+    uv_udp_send_t req;
+    uv_buf_t      buf;
+};
+
+void udp_send_cb(uv_udp_send_t* req, int /*status*/) {
+    auto* sr = (UdpSendReq*)req;
+    free(sr->buf.base);
+    free(sr);
+}
+
+}  // anonymous namespace
+
+namespace PlatformNet {
+
+uv_udp_s* CreateUdpSocket() {
+    if (!s_loop) return nullptr;
+    auto* h = (uv_udp_t*)malloc(sizeof(uv_udp_t));
+    if (uv_udp_init(s_loop, h) != 0) {
+        free(h);
+        return nullptr;
+    }
+    ((uv_handle_t*)h)->data = nullptr;
+    return h;
+}
+
+bool BindUdp(uv_udp_s* sock, const char* ip, uint16_t port) {
+    if (!sock || !ip) return false;
+    // 试 IPv4 再试 IPv6
+    struct sockaddr_in  a4;
+    struct sockaddr_in6 a6;
+    if (uv_ip4_addr(ip, port, &a4) == 0) {
+        return uv_udp_bind(sock, (const struct sockaddr*)&a4, 0) == 0;
+    }
+    if (uv_ip6_addr(ip, port, &a6) == 0) {
+        return uv_udp_bind(sock, (const struct sockaddr*)&a6, 0) == 0;
+    }
+    return false;
+}
+
+bool SendUdp(uv_udp_s* sock, const char* host, uint16_t port,
+              const char* data, size_t len) {
+    if (!sock || !host || !data || len == 0) return false;
+    struct sockaddr_storage addr;
+    if (uv_ip4_addr(host, port, (struct sockaddr_in*)&addr) != 0 &&
+        uv_ip6_addr(host, port, (struct sockaddr_in6*)&addr) != 0) {
+        return false;
+    }
+    auto* sr = (UdpSendReq*)malloc(sizeof(UdpSendReq));
+    sr->buf.base = (char*)malloc(len);
+    memcpy(sr->buf.base, data, len);
+    sr->buf.len = (unsigned long)len;
+    int r = uv_udp_send(&sr->req, sock, &sr->buf, 1,
+                         (const struct sockaddr*)&addr, udp_send_cb);
+    if (r != 0) {
+        free(sr->buf.base);
+        free(sr);
+        return false;
+    }
+    return true;
+}
+
+bool StartUdpRecv(uv_udp_s* sock, OnUdpRecvCb cb) {
+    if (!sock) return false;
+    auto* nd = EnsureUdpData(sock);
+    nd->recvCb = std::move(cb);
+    int r = uv_udp_recv_start(sock, alloc_cb, udp_recv_cb);
+    return r == 0 || r == UV_EALREADY;
+}
+
+void StopUdpRecv(uv_udp_s* sock) {
+    if (sock) uv_udp_recv_stop(sock);
+}
+
+void CloseUdp(uv_udp_s* sock) {
+    if (!sock) return;
+    if (!uv_is_closing((uv_handle_t*)sock)) {
+        uv_close((uv_handle_t*)sock, udp_close_cb);
+    }
+}
+
+uint16_t GetUdpLocalPort(uv_udp_s* sock) {
+    if (!sock) return 0;
+    struct sockaddr_storage addr;
+    int len = (int)sizeof(addr);
+    if (uv_udp_getsockname(sock, (struct sockaddr*)&addr, &len) != 0) return 0;
+    if (addr.ss_family == AF_INET) {
+        return ntohs(((struct sockaddr_in*)&addr)->sin_port);
+    } else if (addr.ss_family == AF_INET6) {
+        return ntohs(((struct sockaddr_in6*)&addr)->sin6_port);
+    }
+    return 0;
+}
 
 }  // namespace PlatformNet
 

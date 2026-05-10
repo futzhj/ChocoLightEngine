@@ -50,8 +50,17 @@ struct uv_tcp_s {
     int backlog;
 };
 
+// Phase BC T3: 模拟 uv_udp_s (POSIX SOCK_DGRAM)
+struct uv_udp_s {
+    int  fd;            // UDP socket fd, -1 = 已关闭
+    bool reading;       // StartUdpRecv 后为 true
+    bool closing;       // CloseUdp 后为 true (Poll 末段清理)
+    PlatformNet::OnUdpRecvCb recvCb;
+};
+
 // 全局句柄列表 (Poll 遍历)
 static std::vector<uv_tcp_s*> s_handles;
+static std::vector<uv_udp_s*> s_udpHandles;     // Phase BC T3
 static bool s_initialized = false;
 
 // 设置非阻塞
@@ -76,12 +85,19 @@ void Shutdown() {
         delete h;
     }
     s_handles.clear();
+    // Phase BC T3: 清理 UDP 句柄
+    for (auto* h : s_udpHandles) {
+        if (h->fd >= 0) { close(h->fd); h->fd = -1; }
+        delete h;
+    }
+    s_udpHandles.clear();
     s_initialized = false;
     CC::Log(CC::LOG_INFO, "PlatformNet: shutdown");
 }
 
 void Poll() {
-    if (!s_initialized || s_handles.empty()) return;
+    if (!s_initialized) return;
+    if (s_handles.empty() && s_udpHandles.empty()) return;
 
     // 构建 fd_set
     fd_set readSet, writeSet, errSet;
@@ -100,6 +116,15 @@ void Poll() {
             FD_SET(h->fd, &readSet);
         }
         if (h->fd > maxFd) maxFd = h->fd;
+    }
+
+    // Phase BC T3: 把 UDP socket 也加入 readSet (有 reading 时)
+    for (auto* h : s_udpHandles) {
+        if (h->fd < 0 || h->closing) continue;
+        if (h->reading) {
+            FD_SET(h->fd, &readSet);
+            if (h->fd > maxFd) maxFd = h->fd;
+        }
     }
 
     if (maxFd < 0) return;
@@ -167,6 +192,45 @@ void Poll() {
                 return false;
             }),
         s_handles.end());
+
+    // Phase BC T3: 处理 UDP socket recvfrom (datagram 边界保留)
+    auto udpHandles = s_udpHandles;
+    for (auto* h : udpHandles) {
+        if (h->fd < 0 || h->closing) continue;
+        if (!h->reading || !FD_ISSET(h->fd, &readSet)) continue;
+        // UDP 数据报最大 64KB; 一帧多个包时循环读直到 EAGAIN
+        char buf[65536];
+        struct sockaddr_storage from;
+        while (true) {
+            socklen_t fromLen = sizeof(from);
+            ssize_t n = recvfrom(h->fd, buf, sizeof(buf), 0,
+                                  (struct sockaddr*)&from, &fromLen);
+            if (n <= 0) break;
+            if (!h->recvCb) continue;
+            // 解析对端地址
+            char ipBuf[64] = {0};
+            uint16_t port = 0;
+            if (from.ss_family == AF_INET) {
+                const auto* a4 = (const struct sockaddr_in*)&from;
+                inet_ntop(AF_INET, &a4->sin_addr, ipBuf, sizeof(ipBuf));
+                port = ntohs(a4->sin_port);
+            } else if (from.ss_family == AF_INET6) {
+                const auto* a6 = (const struct sockaddr_in6*)&from;
+                inet_ntop(AF_INET6, &a6->sin6_addr, ipBuf, sizeof(ipBuf));
+                port = ntohs(a6->sin6_port);
+            }
+            h->recvCb(ipBuf, port, buf, (int)n);
+        }
+    }
+
+    // Phase BC T3: 清理已关闭的 UDP 句柄
+    s_udpHandles.erase(
+        std::remove_if(s_udpHandles.begin(), s_udpHandles.end(),
+            [](uv_udp_s* h) {
+                if (h->closing && h->fd < 0) { delete h; return true; }
+                return false;
+            }),
+        s_udpHandles.end());
 }
 
 uv_tcp_s* CreateClient() {
@@ -296,6 +360,87 @@ bool Listen(uv_tcp_s* server, int backlog, OnAcceptCb cb) {
         return false;
     }
     return true;
+}
+
+// ==================== Phase BC T3: UDP POSIX 实现 ====================
+
+uv_udp_s* CreateUdpSocket() {
+    int fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd < 0) return nullptr;
+    SetNonBlocking(fd);
+    auto* h = new uv_udp_s{};
+    h->fd = fd;
+    s_udpHandles.push_back(h);
+    return h;
+}
+
+bool BindUdp(uv_udp_s* sock, const char* ip, uint16_t port) {
+    if (!sock || sock->fd < 0 || !ip) return false;
+    int opt = 1;
+    setsockopt(sock->fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    struct sockaddr_in addr = {};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port);
+    if (inet_pton(AF_INET, ip, &addr.sin_addr) != 1) {
+        // 0.0.0.0 / "any" 通过 INADDR_ANY 处理
+        if (strcmp(ip, "0.0.0.0") == 0) {
+            addr.sin_addr.s_addr = htonl(INADDR_ANY);
+        } else {
+            return false;
+        }
+    }
+    if (bind(sock->fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+        CC::Log(CC::LOG_WARN, "PlatformNet: UDP bind %s:%u failed: %s",
+                ip, port, strerror(errno));
+        return false;
+    }
+    return true;
+}
+
+bool SendUdp(uv_udp_s* sock, const char* host, uint16_t port,
+              const char* data, size_t len) {
+    if (!sock || sock->fd < 0 || !host || !data || len == 0) return false;
+    struct sockaddr_in addr = {};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port);
+    if (inet_pton(AF_INET, host, &addr.sin_addr) != 1) return false;
+    ssize_t n = sendto(sock->fd, data, len, 0,
+                       (const struct sockaddr*)&addr, sizeof(addr));
+    return n == (ssize_t)len;
+}
+
+bool StartUdpRecv(uv_udp_s* sock, OnUdpRecvCb cb) {
+    if (!sock) return false;
+    sock->recvCb = std::move(cb);
+    sock->reading = true;
+    return true;
+}
+
+void StopUdpRecv(uv_udp_s* sock) {
+    if (sock) sock->reading = false;
+}
+
+void CloseUdp(uv_udp_s* sock) {
+    if (!sock) return;
+    if (sock->fd >= 0) {
+        close(sock->fd);
+        sock->fd = -1;
+    }
+    sock->closing = true;
+    sock->reading = false;
+}
+
+uint16_t GetUdpLocalPort(uv_udp_s* sock) {
+    if (!sock || sock->fd < 0) return 0;
+    struct sockaddr_storage addr;
+    socklen_t len = sizeof(addr);
+    if (getsockname(sock->fd, (struct sockaddr*)&addr, &len) != 0) return 0;
+    if (addr.ss_family == AF_INET) {
+        return ntohs(((struct sockaddr_in*)&addr)->sin_port);
+    } else if (addr.ss_family == AF_INET6) {
+        return ntohs(((struct sockaddr_in6*)&addr)->sin6_port);
+    }
+    return 0;
 }
 
 uv_loop_s* GetLoop() { return nullptr; }
