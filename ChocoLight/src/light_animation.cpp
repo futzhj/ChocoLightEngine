@@ -2901,6 +2901,24 @@ static int l_SkinnedMesh_GetMorphTargetName(lua_State* L) {
     return 1;
 }
 
+// Phase AY T09: mesh:GetMorphTargetIndex(name) -> 1-based idx 或 nil
+//   - 反查 morphTargetNames; 未命中返回 nil (不报错, 与 GetMorphTargetName 对称)
+//   - 用法: idx = mesh:GetMorphTargetIndex('smile'); if idx then animator:SetMorphWeight(idx, 0.7) end
+//   - 不缓存查找表 (morph 数量 ≤ MORPH_TARGET_MAX = 8, 线性扫描成本可忽略)
+//   - 大小写敏感, 与 glTF mesh.target_names 一致
+static int l_SkinnedMesh_GetMorphTargetIndex(lua_State* L) {
+    SkinnedMeshAsset* sm = CheckSkinnedMesh(L, 1);
+    const char* name = luaL_checkstring(L, 2);
+    for (size_t i = 0; i < sm->morphTargetNames.size(); ++i) {
+        if (sm->morphTargetNames[i] == name) {
+            lua_pushinteger(L, (lua_Integer)(i + 1));   // 1-based
+            return 1;
+        }
+    }
+    lua_pushnil(L);
+    return 1;
+}
+
 static int l_SkinnedMesh_ToString(lua_State* L) {
     SkinnedMeshAsset** pp = (SkinnedMeshAsset**)luaL_checkudata(L, 1, SKINNED_MESH_MT);
     if (!pp || !*pp) {
@@ -3559,6 +3577,8 @@ static const luaL_Reg kSkinnedMeshMethods[] = {
     {"HasMorphTargets",      l_SkinnedMesh_HasMorphTargets},
     {"GetMorphTargetCount",  l_SkinnedMesh_GetMorphTargetCount},
     {"GetMorphTargetName",   l_SkinnedMesh_GetMorphTargetName},
+    // Phase AY T09: name -> idx 反查 helper
+    {"GetMorphTargetIndex",  l_SkinnedMesh_GetMorphTargetIndex},
     {"IsAlive",              l_SkinnedMesh_IsAlive},
     {"Delete",               l_SkinnedMesh_Delete},
     {"__gc",                 l_SkinnedMesh_GC},

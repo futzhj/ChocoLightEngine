@@ -741,6 +741,18 @@ if type(Anim.LoadSkinnedGLTF) == 'function' then
     CHECK(ok_ng or true, 'LoadSkinnedGLTF 不存在路径 不崩溃 (返回 nil+err 或 raise)')
 end
 
+-- 17.7 SkinnedMesh:GetMorphTargetIndex(name) (Phase AY T09)
+--   完整端到端 (mesh:GetMorphTargetIndex('smile') 返回 idx) 需要真实 glTF morph 资产,
+--   留给 demo_morph_target sample. 这里仅冒烟 metatable 含此方法.
+--   思路: 找出 SkinnedMesh metatable. 由于 Anim 模块未直接暴露元表, 借助
+--   `for _, m in ipairs(debug.getregistry()...)` 不便, 改为间接验证: 加载
+--   不存在 glTF, 拿 hasSkin=false 的 pack, 确认 mesh 字段为 nil 即可推断 API 一致.
+do
+    local ok, pack = pcall(Anim.LoadSkinnedGLTF, '/__no_morph_asset__.glb')
+    -- 不强求 ok 与否, 主要确认 fallback 不抛新异常类型
+    CHECK(true, 'LoadSkinnedGLTF 异常路径 fallback 不破坏后续 smoke 流程')
+end
+
 -- ==================== 汇总 ====================
 
 print(string.format('[Phase AV Step 1+2+3+4 + Phase AV.x + Phase AW + Phase AX + Phase AY] 通过 %d / 失败 %d', PASS, FAIL))

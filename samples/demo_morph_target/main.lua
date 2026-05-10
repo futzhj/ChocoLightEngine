@@ -119,6 +119,26 @@ if mesh and mesh.HasMorphTargets then
         for i = 1, meshMorphCount do
             print(string.format('  [%d] %s', i, meshMorphNames[i]))
         end
+
+        -- Phase AY T09: GetMorphTargetIndex(name) 反查 helper 演示
+        --   常见用法: 已知 morph 语义名 (e.g. 'smile' / 'blink_L'), 直接转 idx 写权重,
+        --   避免硬编码 idx 导致美术换 mesh 时失配.
+        if mesh.GetMorphTargetIndex and #meshMorphNames > 0 then
+            local first = meshMorphNames[1]
+            local idx = mesh:GetMorphTargetIndex(first)
+            if idx == 1 then
+                print(string.format("[demo_morph_target] T09 helper OK: GetMorphTargetIndex('%s') = %d",
+                                    first, idx))
+            else
+                print(string.format("[demo_morph_target] T09 helper anomaly: '%s' -> %s (expected 1)",
+                                    first, tostring(idx)))
+            end
+            -- 不存在的名字应返回 nil
+            local none = mesh:GetMorphTargetIndex('__no_such_morph__')
+            if none == nil then
+                print('[demo_morph_target] T09 helper OK: missing name -> nil')
+            end
+        end
     else
         print('[demo_morph_target] mesh 无 morph target')
     end
