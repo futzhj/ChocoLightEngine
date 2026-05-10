@@ -1624,9 +1624,9 @@ static int l_Clip_AddSampler(lua_State* L) {
     else if (std::strcmp(tgtBuf, "rotation") == 0)    target = ChannelTarget::ROTATION;
     else if (std::strcmp(tgtBuf, "scale") == 0)       target = ChannelTarget::SCALE;
     else {
-        // 调试用: 用最简的 lua_pushstring + lua_error, 不走任何格式化路径
-        lua_pushstring(L, "unsupported target (expected translation/rotation/scale)");
-        return lua_error(L);
+        // [DIAG] 不 raise, 直接 return 0. 如 14.4b 仍崩, 证明崩点在 entry/checkudata/checkstring 阶段.
+        std::fprintf(stderr, "[DIAG] AddSampler unknown target hit, returning 0 (no raise)\n");
+        return 0;
     }
 
     InterpMode mode = InterpMode::LINEAR;
