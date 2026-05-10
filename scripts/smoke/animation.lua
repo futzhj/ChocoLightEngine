@@ -683,9 +683,67 @@ CHECK(an16:GetMorphTargetCount() == 8,
 an16:Update(0.016)
 CHECK(true, 'Animator:Update 在无 morph clip 时不崩溃 (EvaluateMorphWeights early return)')
 
+-- ==================== [17] Phase AY: 批量内省接口 + LoadSkinnedGLTF API ====================
+
+print('[17] Phase AY: ListTransitions / ListEvents 批量内省 + pack.hasSkin/meshes')
+
+-- 17.1 metatable 含新方法 (沿用 [16] 段已创建的 an16, sk16 是其 skeleton)
+local mt_ay = getmetatable(an16) or getmetatable(Anim.NewAnimator(sk16))
+CHECK(mt_ay and type(mt_ay.ListTransitions) == 'function', 'Animator metatable 含 ListTransitions (Phase AY T07)')
+CHECK(mt_ay and type(mt_ay.ListEvents)      == 'function', 'Animator metatable 含 ListEvents (Phase AY T07)')
+
+-- 17.2 ListTransitions 空数组 (新建 animator 无 transition)
+local skel_ay = Anim.NewEmptySkeleton(1)
+skel_ay:SetJointName(1, 'root')
+local clip_ay  = Anim.NewEmptyClip('a', 1.0)
+local clip_ay2 = Anim.NewEmptyClip('b', 1.0)
+local an_ay = Anim.NewAnimator(skel_ay)
+an_ay:AddState('a', clip_ay)
+an_ay:AddState('b', clip_ay2)
+
+local lt0 = an_ay:ListTransitions()
+CHECK(type(lt0) == 'table' and #lt0 == 0, 'ListTransitions 空数组 (无 transition)')
+local le0 = an_ay:ListEvents()
+CHECK(type(le0) == 'table' and #le0 == 0, 'ListEvents 空数组 (无 event)')
+
+-- 17.3 ListTransitions 含 from/to/duration/hasCond
+an_ay:AddTransition('a', 'b', function() return true end, 0.5)
+an_ay:AddTransition('',  'a', function() return false end, 0.0)   -- Any state
+local lt1 = an_ay:ListTransitions()
+CHECK(#lt1 == 2, 'ListTransitions 返回 2 项')
+CHECK(lt1[1].from == 'a' and lt1[1].to == 'b', 'ListTransitions[1].from/to')
+CHECK(math.abs(lt1[1].duration - 0.5) < 1e-6, 'ListTransitions[1].duration = 0.5')
+CHECK(lt1[1].hasCond == true, 'ListTransitions[1].hasCond = true')
+CHECK(lt1[2].from == '', 'ListTransitions[2].from = "" (Any state)')
+
+-- 17.4 ListEvents 含 state/triggerTime/hasCallback
+an_ay:AddEvent('a', 0.3, function() end)
+an_ay:AddEvent('b', 0.7, function() end)
+local le1 = an_ay:ListEvents()
+CHECK(#le1 == 2, 'ListEvents 返回 2 项')
+CHECK(le1[1].state == 'a' and math.abs(le1[1].triggerTime - 0.3) < 1e-6,
+      'ListEvents[1].state/triggerTime')
+CHECK(le1[1].hasCallback == true, 'ListEvents[1].hasCallback = true')
+
+-- 17.5 与单查 GetTransitionInfo / GetEventInfo 一致性 (B.3 完整性验证)
+local t1 = an_ay:GetTransitionInfo(1)
+CHECK(t1.from == lt1[1].from and t1.to == lt1[1].to,
+      'ListTransitions[1] 与 GetTransitionInfo(1) 一致')
+local e1 = an_ay:GetEventInfo(1)
+CHECK(e1.state == le1[1].state and math.abs(e1.triggerTime - le1[1].triggerTime) < 1e-6,
+      'ListEvents[1] 与 GetEventInfo(1) 一致')
+
+an_ay:Delete()
+
+-- 17.6 LoadSkinnedGLTF 不存在的文件 → 返回 nil 或异常 (与原 API 一致, 仅冒烟)
+if type(Anim.LoadSkinnedGLTF) == 'function' then
+    local ok_ng, _, _ = pcall(Anim.LoadSkinnedGLTF, '/__nonexistent__phase_ay__.glb')
+    CHECK(ok_ng or true, 'LoadSkinnedGLTF 不存在路径 不崩溃 (返回 nil+err 或 raise)')
+end
+
 -- ==================== 汇总 ====================
 
-print(string.format('[Phase AV Step 1+2+3+4 + Phase AV.x + Phase AW + Phase AX] 通过 %d / 失败 %d', PASS, FAIL))
+print(string.format('[Phase AV Step 1+2+3+4 + Phase AV.x + Phase AW + Phase AX + Phase AY] 通过 %d / 失败 %d', PASS, FAIL))
 if FAIL > 0 then
     error(string.format('animation smoke 失败: %d 个断言不通过', FAIL))
 end

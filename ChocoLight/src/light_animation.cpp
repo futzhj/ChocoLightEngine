@@ -2692,6 +2692,41 @@ static int l_Animator_GetEventInfo(lua_State* L) {
     return 1;
 }
 
+// Phase AY T07 (B.3): ListTransitions() → array { {from, to, duration, hasCond}, ... }
+//   等价于 GetTransitionCount + 循环 GetTransitionInfo 的批量版, 单次返回全部.
+//   Lua 5.1 兼容 (用 lua_rawseti 而非 lua_seti).
+static int l_Animator_ListTransitions(lua_State* L) {
+    Animator* an = CheckAnimator(L, 1);
+    lua_newtable(L);
+    int n = (int)an->transitions.size();
+    for (int i = 0; i < n; ++i) {
+        const TransitionDef& tr = an->transitions[i];
+        lua_newtable(L);
+        lua_pushstring(L, tr.fromState.c_str());                  lua_setfield(L, -2, "from");
+        lua_pushstring(L, tr.toState.c_str());                    lua_setfield(L, -2, "to");
+        lua_pushnumber(L, tr.duration);                           lua_setfield(L, -2, "duration");
+        lua_pushboolean(L, tr.condFnRef != LUA_NOREF ? 1 : 0);    lua_setfield(L, -2, "hasCond");
+        lua_rawseti(L, -2, i + 1);
+    }
+    return 1;
+}
+
+// Phase AY T07 (B.3): ListEvents() → array { {state, triggerTime, hasCallback}, ... }
+static int l_Animator_ListEvents(lua_State* L) {
+    Animator* an = CheckAnimator(L, 1);
+    lua_newtable(L);
+    int n = (int)an->events.size();
+    for (int i = 0; i < n; ++i) {
+        const EventDef& ev = an->events[i];
+        lua_newtable(L);
+        lua_pushstring(L, ev.state.c_str());                      lua_setfield(L, -2, "state");
+        lua_pushnumber(L, ev.triggerTime);                        lua_setfield(L, -2, "triggerTime");
+        lua_pushboolean(L, ev.callbackRef != LUA_NOREF ? 1 : 0);  lua_setfield(L, -2, "hasCallback");
+        lua_rawseti(L, -2, i + 1);
+    }
+    return 1;
+}
+
 // ListParams() → { [name] = value, ... } (键值 table)
 static int l_Animator_ListParams(lua_State* L) {
     Animator* an = CheckAnimator(L, 1);
@@ -3504,6 +3539,9 @@ static const luaL_Reg kAnimatorMethods[] = {
     {"GetTransitionInfo",     l_Animator_GetTransitionInfo},
     {"GetEventInfo",          l_Animator_GetEventInfo},
     {"ListParams",            l_Animator_ListParams},
+    // Phase AY T07 (B.3): 批量内省 helper
+    {"ListTransitions",       l_Animator_ListTransitions},
+    {"ListEvents",            l_Animator_ListEvents},
     // 生命周期
     {"IsAlive",               l_Animator_IsAlive},
     {"Delete",                l_Animator_Delete},
