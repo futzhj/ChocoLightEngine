@@ -46,6 +46,7 @@ enum PacketType : uint8_t {
     PKT_ROOM_INPUT   = 5,        // {"kind":"...", "data":...}
     PKT_ROOM_HELLO   = 6,        // {"name":"...", "meta":...}
     PKT_ROOM_KICK    = 7,        // {"reason":"..."}
+    PKT_ROOM_STATE_PATCH = 8,    // {"rev":N, "set":{key=val,...}, "delete":["k",...]}
 };
 
 // ==================== 打包 / 解包 ====================

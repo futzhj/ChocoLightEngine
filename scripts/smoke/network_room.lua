@@ -46,6 +46,18 @@ pass("host:SetState ok (rev=1, broadcast no-op no peers)")
 host:SetState({score = 10, players = {[1] = "alice"}})
 pass("host:SetState ok (rev=2)")
 
+-- PatchState (Phase BC v2 enhancement)
+-- 顶层 set + 顶层 delete
+host:PatchState({score = 20, lastWinner = "alice"})
+pass("host:PatchState set-only ok (rev=3)")
+
+host:PatchState({score = 30}, {"lastWinner"})
+pass("host:PatchState set+delete ok (rev=4)")
+
+-- 空 patch 应该是 no-op (不 bump rev)
+host:PatchState({})
+pass("host:PatchState empty no-op ok")
+
 -- Broadcast (channel 1 unreliable, no peers -> sent=0)
 local sent = host:Broadcast("hello", {text = "world"})
 if type(sent) ~= "number" then fail("Broadcast should return number, got " .. type(sent)) end

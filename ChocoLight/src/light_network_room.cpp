@@ -7,11 +7,12 @@
  *   - Client (Room.Join) 同步 state, 发送 input, 接收 event broadcast
  *
  * 包类型 (NetProto):
- *   PKT_ROOM_HELLO  6  C→S  {name, meta}            join 请求
- *   PKT_ROOM_KICK   7  S→C  {reason}                踢人 / 拒绝 join
- *   PKT_ROOM_STATE  3  S→C  {rev, data}             全量 state (rev 单调递增)
- *   PKT_ROOM_EVENT  4  S→C  {name, args}            广播事件
- *   PKT_ROOM_INPUT  5  C→S  {kind, data}            用户输入
+ *   PKT_ROOM_HELLO       6  C→S  {name, meta}            join 请求
+ *   PKT_ROOM_KICK        7  S→C  {reason}                踢人 / 拒绝 join
+ *   PKT_ROOM_STATE       3  S→C  {rev, data}             全量 state
+ *   PKT_ROOM_STATE_PATCH 8  S→C  {rev, set, delete}      增量 state (Phase BC v2)
+ *   PKT_ROOM_EVENT       4  S→C  {name, args}            广播事件
+ *   PKT_ROOM_INPUT       5  C→S  {kind, data}            用户输入
  *
  * Channel 分配 (DESIGN §3.4):
  *   0  reliable ordered   — HELLO, STATE 全量, KICK
@@ -161,6 +162,8 @@ struct RoomClient {
     int       onEventRef;      // function(name, args)
     int       onKickRef;       // function(reason)
     int       helloRef;        // 缓存的 hello table registry-ref (重连用)
+    int       stateCacheRef;   // 客户端本地 state 副本 (registry ref). 收 STATE 全量替换,
+                               // 收 STATE_PATCH 增量应用. OnState cb 拿到的是这个 cache.
     bool      ready;
     lua_State* L;
 };
@@ -392,12 +395,69 @@ static void ClientHandleEvent(RoomClient* c, const PlatformNet::EnetEvent& ev) {
                         } else { lua_pop(L, 1); }
                     }
                 }
+                // 全量 state: 替换本地 cache
+                cJSON* rev  = cJSON_GetObjectItem(body.get(), "rev");
+                cJSON* data = cJSON_GetObjectItem(body.get(), "data");
+                if (c->stateCacheRef != LUA_NOREF) {
+                    luaL_unref(L, LUA_REGISTRYINDEX, c->stateCacheRef);
+                }
+                PushCJsonAsLua(L, data);                       // [..., new_state]
+                if (!lua_istable(L, -1)) {
+                    // 服务端 data 不是 table (理论上罕见), 用空 table 代替
+                    lua_pop(L, 1);
+                    lua_newtable(L);
+                }
+                c->stateCacheRef = luaL_ref(L, LUA_REGISTRYINDEX);
+                // 调 OnState(stateCache, rev)
                 if (c->onStateRef != LUA_NOREF) {
-                    cJSON* rev = cJSON_GetObjectItem(body.get(), "rev");
-                    cJSON* data = cJSON_GetObjectItem(body.get(), "data");
                     lua_rawgeti(L, LUA_REGISTRYINDEX, c->onStateRef);
                     if (lua_isfunction(L, -1)) {
-                        PushCJsonAsLua(L, data);
+                        lua_rawgeti(L, LUA_REGISTRYINDEX, c->stateCacheRef);
+                        lua_pushnumber(L, cJSON_IsNumber(rev) ? rev->valuedouble : 0);
+                        if (lua_pcall(L, 2, 0, 0) != 0) lua_pop(L, 1);
+                    } else { lua_pop(L, 1); }
+                }
+            } else if (ptype == NetProto::PKT_ROOM_STATE_PATCH) {
+                // 增量 patch: 应用 set + delete 到 stateCacheRef
+                if (c->stateCacheRef == LUA_NOREF) {
+                    // 尚未收到全量 STATE, 不应用 patch (避免误差)
+                    break;
+                }
+                cJSON* rev    = cJSON_GetObjectItem(body.get(), "rev");
+                cJSON* setNd  = cJSON_GetObjectItem(body.get(), "set");
+                cJSON* delNd  = cJSON_GetObjectItem(body.get(), "delete");
+
+                lua_rawgeti(L, LUA_REGISTRYINDEX, c->stateCacheRef);   // [..., cache]
+                int cacheIdx = lua_gettop(L);
+
+                // apply set: cache[k] = v
+                if (cJSON_IsObject(setNd)) {
+                    for (cJSON* item = setNd->child; item; item = item->next) {
+                        if (!item->string) continue;
+                        lua_pushstring(L, item->string);
+                        PushCJsonAsLua(L, item);
+                        lua_rawset(L, cacheIdx);
+                    }
+                }
+                // apply delete: cache[k] = nil
+                if (cJSON_IsArray(delNd)) {
+                    int n = cJSON_GetArraySize(delNd);
+                    for (int i = 0; i < n; ++i) {
+                        cJSON* k = cJSON_GetArrayItem(delNd, i);
+                        if (cJSON_IsString(k) && k->valuestring) {
+                            lua_pushstring(L, k->valuestring);
+                            lua_pushnil(L);
+                            lua_rawset(L, cacheIdx);
+                        }
+                    }
+                }
+                lua_pop(L, 1);                                          // pop cache
+
+                // 调 OnState(stateCache, rev)
+                if (c->onStateRef != LUA_NOREF) {
+                    lua_rawgeti(L, LUA_REGISTRYINDEX, c->onStateRef);
+                    if (lua_isfunction(L, -1)) {
+                        lua_rawgeti(L, LUA_REGISTRYINDEX, c->stateCacheRef);
                         lua_pushnumber(L, cJSON_IsNumber(rev) ? rev->valuedouble : 0);
                         if (lua_pcall(L, 2, 0, 0) != 0) lua_pop(L, 1);
                     } else { lua_pop(L, 1); }
@@ -529,6 +589,88 @@ static int l_RoomHost_SetState(lua_State* L) {
     return 0;
 }
 
+// host:PatchState(set_table[, delete_keys_array]) — 增量更新 + 广播 patch
+//
+// 语义:
+//   set_table     {key=value, ...}    顶层 key 直接 set 到 server state (浅替换)
+//   delete_keys   {"k1", "k2", ...}   server state[ki] = nil (删除)
+//
+// 限制 (Phase BC v2 简化):
+//   - 仅支持顶层 key, 不做 deep merge. 子表整个替换.
+//   - delete_keys 必须是字符串数组. 顶层 key 是其它类型时不能删除.
+//   - 实际状态被修改后才 bump rev + broadcast (空 patch 是 no-op)
+//
+// Wire format (PKT_ROOM_STATE_PATCH):
+//   {"rev":N, "set":{...}, "delete":["k1","k2"]}
+static int l_RoomHost_PatchState(lua_State* L) {
+    auto* h = CheckHost(L, 1);
+    luaL_checktype(L, 2, LUA_TTABLE);
+    bool hasDelete = lua_istable(L, 3);
+
+    if (h->stateRef == LUA_NOREF || !h->host) {
+        return 0;
+    }
+
+    // 1. 应用 patch 到 server state
+    lua_rawgeti(L, LUA_REGISTRYINDEX, h->stateRef);     // [..., set, del?, state]
+    int stateIdx = lua_gettop(L);
+    bool changed = false;
+
+    // 1a. set: 遍历 set_table, server_state[k] = v
+    lua_pushnil(L);
+    while (lua_next(L, 2) != 0) {
+        // [..., state, key, value]
+        lua_pushvalue(L, -2);                            // dup key
+        lua_pushvalue(L, -2);                            // dup value
+        lua_rawset(L, stateIdx);                         // state[key] = value
+        lua_pop(L, 1);                                   // pop value, keep key
+        changed = true;
+    }
+
+    // 1b. delete: 遍历 delete_keys 数组, server_state[k] = nil
+    if (hasDelete) {
+        int n = (int)lua_objlen(L, 3);
+        for (int i = 1; i <= n; ++i) {
+            lua_rawgeti(L, 3, i);                        // push key string
+            if (lua_isstring(L, -1)) {
+                lua_pushvalue(L, -1);                    // dup
+                lua_pushnil(L);
+                lua_rawset(L, stateIdx);                 // state[key] = nil
+                changed = true;
+            }
+            lua_pop(L, 1);
+        }
+    }
+    lua_pop(L, 1);                                        // pop state
+
+    if (!changed) return 0;
+    h->stateRev++;
+
+    // 2. 序列化 patch 包 + 广播
+    NetProto::JsonScope obj(cJSON_CreateObject());
+    cJSON_AddNumberToObject(obj.get(), "rev", (double)h->stateRev);
+    cJSON* setNode = PushLuaAsCJson(L, 2);
+    cJSON_AddItemToObject(obj.get(), "set", setNode ? setNode : cJSON_CreateObject());
+    if (hasDelete) {
+        cJSON* delNode = PushLuaAsCJson(L, 3);
+        cJSON_AddItemToObject(obj.get(), "delete",
+                              delNode ? delNode : cJSON_CreateArray());
+    }
+
+    char* serialized = cJSON_PrintUnformatted(obj.get());
+    if (serialized) {
+        std::string pkt = NetProto::Pack(NetProto::PKT_ROOM_STATE_PATCH,
+                                          serialized, std::strlen(serialized));
+        cJSON_free(serialized);
+        if (!pkt.empty()) {
+            PlatformNet::EnetBroadcast(h->host, /*ch=*/0,
+                                        pkt.data(), (int)pkt.size(),
+                                        /*reliable=*/true);
+        }
+    }
+    return 0;
+}
+
 // host:Broadcast(name, args) — 广播事件 (channel 1 unreliable seq)
 static int l_RoomHost_Broadcast(lua_State* L) {
     auto* h = CheckHost(L, 1);
@@ -617,13 +759,14 @@ static int l_Room_Join(lua_State* L) {
     }
 
     auto* c = (RoomClient*)lua_newuserdata(L, sizeof(RoomClient));
-    c->host       = eh;
-    c->peer       = peer;
-    c->onReadyRef = LUA_NOREF;
-    c->onStateRef = LUA_NOREF;
-    c->onEventRef = LUA_NOREF;
-    c->onKickRef  = LUA_NOREF;
-    c->helloRef   = LUA_NOREF;
+    c->host          = eh;
+    c->peer          = peer;
+    c->onReadyRef    = LUA_NOREF;
+    c->onStateRef    = LUA_NOREF;
+    c->onEventRef    = LUA_NOREF;
+    c->onKickRef     = LUA_NOREF;
+    c->helloRef      = LUA_NOREF;
+    c->stateCacheRef = LUA_NOREF;       // 首次 PKT_ROOM_STATE 时实际分配
     c->ready      = false;
     c->L          = L;
 
@@ -690,7 +833,7 @@ static int l_RoomClient_Leave(lua_State* L) {
         if (r != LUA_NOREF) { luaL_unref(L, LUA_REGISTRYINDEX, r); r = LUA_NOREF; }
     };
     unref(c->onReadyRef); unref(c->onStateRef); unref(c->onEventRef);
-    unref(c->onKickRef); unref(c->helloRef);
+    unref(c->onKickRef); unref(c->helloRef); unref(c->stateCacheRef);
     return 0;
 }
 
@@ -708,13 +851,14 @@ static int l_RoomClient_Tostring(lua_State* L) {
 static void RegisterHostMt(lua_State* L) {
     luaL_newmetatable(L, ROOM_HOST_MT);
     static const luaL_Reg methods[] = {
-        { "OnJoin",    l_RoomHost_onJoin     },
-        { "OnLeave",   l_RoomHost_onLeave    },
-        { "OnInput",   l_RoomHost_onInput    },
-        { "SetState",  l_RoomHost_SetState   },
-        { "Broadcast", l_RoomHost_Broadcast  },
-        { "Kick",      l_RoomHost_Kick       },
-        { "Close",     l_RoomHost_Close      },
+        { "OnJoin",     l_RoomHost_onJoin     },
+        { "OnLeave",    l_RoomHost_onLeave    },
+        { "OnInput",    l_RoomHost_onInput    },
+        { "SetState",   l_RoomHost_SetState   },
+        { "PatchState", l_RoomHost_PatchState },
+        { "Broadcast",  l_RoomHost_Broadcast  },
+        { "Kick",       l_RoomHost_Kick       },
+        { "Close",      l_RoomHost_Close      },
         { nullptr, nullptr },
     };
     lua_pushvalue(L, -1);
