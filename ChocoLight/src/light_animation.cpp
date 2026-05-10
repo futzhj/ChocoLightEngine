@@ -1298,16 +1298,22 @@ static int l_Anim_LoadSkinnedGLTF(lua_State* L) {
     }
 
     // 取第一个 skin (典型 glTF 角色仅一个 skin, 多 skin 留 Phase AV.x)
+    //
+    // Phase AY T05 (B.1 智能 fallback): 无 skin 不视为致命错误, 返回完整 pack 表
+    //   字段保持与 has-skin 路径一致 (skeleton/clips/clipNames/mesh 全部存在), 便于
+    //   Lua 代码无条件 access. 用户可通过 pack.hasSkin == false 检测此分支.
+    //   非 skinned 网格的渲染建议改用 Light.Graphics.Mesh 模块 (与 Phase AS.2 一致).
     if (data->skins_count == 0) {
         cgltf_free(data);
-        // 不视为致命错误: 允许加载非 skinned glTF (mesh=nil)
+        CC::Log(CC::LOG_INFO,
+                "Light.Animation.LoadSkinnedGLTF: '%s' has no skin (returning empty pack); "
+                "for non-skinned mesh load via Light.Graphics.Mesh", path);
         lua_newtable(L);
-        lua_pushnil(L);
-        lua_setfield(L, -2, "skeleton");
-        lua_newtable(L);
-        lua_setfield(L, -2, "clips");
-        lua_pushnil(L);
-        lua_setfield(L, -2, "mesh");
+        lua_pushnil(L);                lua_setfield(L, -2, "skeleton");
+        lua_newtable(L);               lua_setfield(L, -2, "clips");
+        lua_newtable(L);               lua_setfield(L, -2, "clipNames");    // 空数组, 与有 skin 路径一致
+        lua_pushnil(L);                lua_setfield(L, -2, "mesh");
+        lua_pushboolean(L, 0);         lua_setfield(L, -2, "hasSkin");      // 用户可检测此 fallback
         return 1;
     }
 
@@ -1397,6 +1403,35 @@ static int l_Anim_LoadSkinnedGLTF(lua_State* L) {
         lua_pushnil(L);
     }
     lua_setfield(L, -3, "mesh");
+
+    // Phase AY T05 (B.1): has-skin 路径同步设置 hasSkin = true, 与 no-skin 路径一致
+    lua_pushboolean(L, 1);
+    lua_setfield(L, -3, "hasSkin");
+
+    // Phase AY T06 (B.2): 多 primitive 单 SkinnedMesh 包装
+    //   当前 FindFirstSkinnedPrimitive 只取第一个 primitive, 多材质模型会丢失后续.
+    //   为给 Lua 用户提供前向兼容路径, 加 pack.meshes 数组字段 (含 0 或 1 个元素).
+    //   未来扩展为真正的多 primitive 解析时, 此数组将含全部 mesh, 单值 pack.mesh
+    //   保持指向第一个以维持向后兼容.
+    //   多 primitive 检测: 给出 LOG_INFO 提示, 用户可在 Blender 中 join 或等后续扩展.
+    lua_newtable(L);                       // pack.meshes 数组
+    if (skMesh) {
+        PushSkinnedMeshUserdata(L, skMesh);
+        lua_rawseti(L, -2, 1);             // meshes[1] = skMesh ud
+    }
+    lua_setfield(L, -3, "meshes");
+
+    // 检测多 primitive 并提示 (信息性, 不影响功能)
+    if (prim) {
+        const cgltf_mesh* gltfMeshTmp = FindMeshForPrimitive(data, prim);
+        if (gltfMeshTmp && gltfMeshTmp->primitives_count > 1) {
+            CC::Log(CC::LOG_INFO,
+                    "Light.Animation.LoadSkinnedGLTF: '%s' has %zu primitives in mesh; only "
+                    "primitive[0] loaded (multi-material support is Phase AY+ extension; "
+                    "consider joining primitives in Blender for now)",
+                    path, (size_t)gltfMeshTmp->primitives_count);
+        }
+    }
 
     // 弹出栈顶的 Skeleton userdata (复制保留, 字段已 setfield)
     lua_pop(L, 1);
