@@ -898,6 +898,83 @@ void main() {
 }
 )";
 
+// ==================== Phase E.4 — Bloom shader (GLES 3.0) ====================
+
+// ---- FS_BLOOM_BRIGHT (GLES 3.0): 亮度阈值提取 + soft knee ----
+static const char* FS_BLOOM_BRIGHT_SOURCE = R"(#version 300 es
+precision highp float;
+in  vec2 vUV;
+out vec4 FragColor;
+uniform sampler2D uSrc;
+uniform float uThreshold;
+void main() {
+    vec3 c = max(texture(uSrc, vUV).rgb, vec3(0.0));
+    float L = dot(c, vec3(0.2126, 0.7152, 0.0722));
+    float knee = max(uThreshold * 0.5, 1e-5);
+    float soft = clamp(L - uThreshold + knee, 0.0, 2.0 * knee);
+    soft = soft * soft / (4.0 * knee + 1e-5);
+    float contribution = max(L - uThreshold, soft) / max(L, 1e-5);
+    FragColor = vec4(c * contribution, 1.0);
+}
+)";
+
+// ---- FS_BLOOM_DOWN (GLES 3.0): 13-tap COD AW downsample ----
+static const char* FS_BLOOM_DOWN_SOURCE = R"(#version 300 es
+precision highp float;
+in  vec2 vUV;
+out vec4 FragColor;
+uniform sampler2D uSrc;
+uniform vec2 uTexel;
+void main() {
+    // COD AW 13-tap: 4 个 ±2 偏移 + 8 个 ±1/±2 偏移 + 1 个中心
+    vec3 A = texture(uSrc, vUV + uTexel * vec2(-2.0,  2.0)).rgb;
+    vec3 B = texture(uSrc, vUV + uTexel * vec2( 0.0,  2.0)).rgb;
+    vec3 C = texture(uSrc, vUV + uTexel * vec2( 2.0,  2.0)).rgb;
+    vec3 D = texture(uSrc, vUV + uTexel * vec2(-2.0,  0.0)).rgb;
+    vec3 E = texture(uSrc, vUV                              ).rgb;
+    vec3 F = texture(uSrc, vUV + uTexel * vec2( 2.0,  0.0)).rgb;
+    vec3 G = texture(uSrc, vUV + uTexel * vec2(-2.0, -2.0)).rgb;
+    vec3 H = texture(uSrc, vUV + uTexel * vec2( 0.0, -2.0)).rgb;
+    vec3 I = texture(uSrc, vUV + uTexel * vec2( 2.0, -2.0)).rgb;
+    vec3 J = texture(uSrc, vUV + uTexel * vec2(-1.0,  1.0)).rgb;
+    vec3 K = texture(uSrc, vUV + uTexel * vec2( 1.0,  1.0)).rgb;
+    vec3 L = texture(uSrc, vUV + uTexel * vec2(-1.0, -1.0)).rgb;
+    vec3 M = texture(uSrc, vUV + uTexel * vec2( 1.0, -1.0)).rgb;
+    // COD AW 权重: 中心 4 重 (J K L M) * 0.5, 8 个外围 * 0.125
+    vec3 o = E * 0.125;
+    o += (A + C + G + I) * 0.03125;
+    o += (B + D + F + H) * 0.0625;
+    o += (J + K + L + M) * 0.125;
+    FragColor = vec4(o, 1.0);
+}
+)";
+
+// ---- FS_BLOOM_UP (GLES 3.0): tent 3x3 upsample + intensity ----
+// 用于 Upsample 和 Composite; radius=0 + intensity 相当于 composite
+static const char* FS_BLOOM_UP_SOURCE = R"(#version 300 es
+precision highp float;
+in  vec2 vUV;
+out vec4 FragColor;
+uniform sampler2D uSrc;
+uniform vec2  uTexel;
+uniform float uRadius;       // upsample 扩散半径 (0..1+)
+uniform float uIntensity;    // composite 缩放 (upsample 时为 1.0)
+void main() {
+    vec2 d = uTexel * uRadius;
+    // tent 9-tap
+    vec3 c = texture(uSrc, vUV).rgb * 4.0;
+    c += texture(uSrc, vUV + vec2(-d.x,  0.0)).rgb * 2.0;
+    c += texture(uSrc, vUV + vec2( d.x,  0.0)).rgb * 2.0;
+    c += texture(uSrc, vUV + vec2( 0.0, -d.y)).rgb * 2.0;
+    c += texture(uSrc, vUV + vec2( 0.0,  d.y)).rgb * 2.0;
+    c += texture(uSrc, vUV + vec2(-d.x, -d.y)).rgb;
+    c += texture(uSrc, vUV + vec2( d.x, -d.y)).rgb;
+    c += texture(uSrc, vUV + vec2(-d.x,  d.y)).rgb;
+    c += texture(uSrc, vUV + vec2( d.x,  d.y)).rgb;
+    FragColor = vec4((c / 16.0) * uIntensity, 1.0);
+}
+)";
+
 #else  // 桌面 GL 3.3 Core
 
 // ---- VS_TONEMAP (GL 3.3) ----
@@ -963,6 +1040,79 @@ void main() {
     else                        ldr = TonemapACES(hdr);   // 0 或其他值 → ACES
     vec3 srgb = pow(ldr, vec3(1.0 / max(uGamma, 0.0001)));
     FragColor = vec4(srgb, 1.0);
+}
+)";
+
+// ==================== Phase E.4 — Bloom shader (GL 3.3 Core) ====================
+
+// ---- FS_BLOOM_BRIGHT (GL 3.3): 亮度阈值提取 + soft knee ----
+static const char* FS_BLOOM_BRIGHT_SOURCE = R"(
+#version 330 core
+in  vec2 vUV;
+out vec4 FragColor;
+uniform sampler2D uSrc;
+uniform float uThreshold;
+void main() {
+    vec3 c = max(texture(uSrc, vUV).rgb, vec3(0.0));
+    float L = dot(c, vec3(0.2126, 0.7152, 0.0722));
+    float knee = max(uThreshold * 0.5, 1e-5);
+    float soft = clamp(L - uThreshold + knee, 0.0, 2.0 * knee);
+    soft = soft * soft / (4.0 * knee + 1e-5);
+    float contribution = max(L - uThreshold, soft) / max(L, 1e-5);
+    FragColor = vec4(c * contribution, 1.0);
+}
+)";
+
+// ---- FS_BLOOM_DOWN (GL 3.3): 13-tap COD AW downsample ----
+static const char* FS_BLOOM_DOWN_SOURCE = R"(
+#version 330 core
+in  vec2 vUV;
+out vec4 FragColor;
+uniform sampler2D uSrc;
+uniform vec2 uTexel;
+void main() {
+    vec3 A = texture(uSrc, vUV + uTexel * vec2(-2.0,  2.0)).rgb;
+    vec3 B = texture(uSrc, vUV + uTexel * vec2( 0.0,  2.0)).rgb;
+    vec3 C = texture(uSrc, vUV + uTexel * vec2( 2.0,  2.0)).rgb;
+    vec3 D = texture(uSrc, vUV + uTexel * vec2(-2.0,  0.0)).rgb;
+    vec3 E = texture(uSrc, vUV                              ).rgb;
+    vec3 F = texture(uSrc, vUV + uTexel * vec2( 2.0,  0.0)).rgb;
+    vec3 G = texture(uSrc, vUV + uTexel * vec2(-2.0, -2.0)).rgb;
+    vec3 H = texture(uSrc, vUV + uTexel * vec2( 0.0, -2.0)).rgb;
+    vec3 I = texture(uSrc, vUV + uTexel * vec2( 2.0, -2.0)).rgb;
+    vec3 J = texture(uSrc, vUV + uTexel * vec2(-1.0,  1.0)).rgb;
+    vec3 K = texture(uSrc, vUV + uTexel * vec2( 1.0,  1.0)).rgb;
+    vec3 L = texture(uSrc, vUV + uTexel * vec2(-1.0, -1.0)).rgb;
+    vec3 M = texture(uSrc, vUV + uTexel * vec2( 1.0, -1.0)).rgb;
+    vec3 o = E * 0.125;
+    o += (A + C + G + I) * 0.03125;
+    o += (B + D + F + H) * 0.0625;
+    o += (J + K + L + M) * 0.125;
+    FragColor = vec4(o, 1.0);
+}
+)";
+
+// ---- FS_BLOOM_UP (GL 3.3): tent 3x3 upsample + intensity ----
+static const char* FS_BLOOM_UP_SOURCE = R"(
+#version 330 core
+in  vec2 vUV;
+out vec4 FragColor;
+uniform sampler2D uSrc;
+uniform vec2  uTexel;
+uniform float uRadius;
+uniform float uIntensity;
+void main() {
+    vec2 d = uTexel * uRadius;
+    vec3 c = texture(uSrc, vUV).rgb * 4.0;
+    c += texture(uSrc, vUV + vec2(-d.x,  0.0)).rgb * 2.0;
+    c += texture(uSrc, vUV + vec2( d.x,  0.0)).rgb * 2.0;
+    c += texture(uSrc, vUV + vec2( 0.0, -d.y)).rgb * 2.0;
+    c += texture(uSrc, vUV + vec2( 0.0,  d.y)).rgb * 2.0;
+    c += texture(uSrc, vUV + vec2(-d.x, -d.y)).rgb;
+    c += texture(uSrc, vUV + vec2( d.x, -d.y)).rgb;
+    c += texture(uSrc, vUV + vec2(-d.x,  d.y)).rgb;
+    c += texture(uSrc, vUV + vec2( d.x,  d.y)).rgb;
+    FragColor = vec4((c / 16.0) * uIntensity, 1.0);
 }
 )";
 
@@ -1074,6 +1224,27 @@ class GL33Backend : public RenderBackend {
     GLint  locTonemap_Mode     = -1;   // Phase E.3.4 — uTonemapMode (int)
     // HDR FBO → depth RBO 关系映射 (CreateHDRFBO 写入, DeleteHDRFBO 查询并释放)
     std::unordered_map<uint32_t, uint32_t> hdrFboDepthRB;
+
+    // ---- Phase E.4 — Bloom 后处理 ----
+    // 3 个 shader program (共用 vaoTonemap/vboTonemap 全屏 quad, 无独立 VAO)
+    GLuint programBloomBright = 0;
+    GLuint programBloomDown   = 0;
+    GLuint programBloomUp     = 0;
+    bool   bloomSupported     = false;
+
+    // Bright pass uniform: uSrc(sampler) / uThreshold(float)
+    GLint  locBloomBright_Src       = -1;
+    GLint  locBloomBright_Threshold = -1;
+
+    // Downsample uniform: uSrc(sampler) / uTexel(vec2)
+    GLint  locBloomDown_Src   = -1;
+    GLint  locBloomDown_Texel = -1;
+
+    // Upsample uniform: uSrc(sampler) / uTexel(vec2) / uRadius(float) / uIntensity(float)
+    GLint  locBloomUp_Src       = -1;
+    GLint  locBloomUp_Texel     = -1;
+    GLint  locBloomUp_Radius    = -1;
+    GLint  locBloomUp_Intensity = -1;
 
     // Phase E.2.1 — Lighting2D dirty bit cache
     // 当 state->version 与此值相等时, UploadLighting2D 跳过所有 glUniform*v 调用
@@ -1241,6 +1412,9 @@ public:
 
         // ---- Phase E.3.1 — HDR + ACES Tonemap 渲染资源 + shader ----
         InitTonemap();
+
+        // ---- Phase E.4 — Bloom 后处理 shader (依赖 tonemap 的 vaoTonemap) ----
+        InitBloom();
 
         CC::Log(CC::LOG_INFO, "RenderBackend: GL33 Core initialized (GL %s)%s%s%s",
                 (const char*)glGetString(GL_VERSION),
@@ -1552,6 +1726,79 @@ public:
                 programTonemap);
     }
 
+    // ==================== Phase E.4 — Bloom 后处理 shader 初始化 ====================
+    //
+    // 流程 (与 InitTonemap 类似, 但共用 vaoTonemap/vboTonemap, 无需再建全屏 quad):
+    //   1. 依赖 tonemapSupported = true (bloom 需要 HDR RT 和全屏 quad)
+    //   2. 编译 3 个 FS shader (VS 复用 VS_TONEMAP_SOURCE)
+    //   3. link programBloomBright / programBloomDown / programBloomUp
+    //   4. 缓存 uniform location
+    //   5. 绑 sampler slot 到 texture unit 0
+    //
+    // 失败影响: bloomSupported = false; SupportsBloom() 返回 false;
+    //          BloomRenderer 应静默 fallback (HDR 管线仍可用, 无 bloom 效果).
+    void InitBloom() {
+        if (!tonemapSupported) {
+            // tonemap 初始化失败 → bloom 必然无法工作 (依赖 HDR RT + 全屏 quad)
+            bloomSupported = false;
+            return;
+        }
+
+        // --- 编译 + link 3 个 program (失败时独立记录, 不影响其它) ---
+        auto buildProgram = [this](const char* fsSrc, const char* name) -> GLuint {
+            GLuint vs = CompileShader(GL_VERTEX_SHADER,   VS_TONEMAP_SOURCE);
+            GLuint fs = CompileShader(GL_FRAGMENT_SHADER, fsSrc);
+            GLuint prog = 0;
+            if (vs && fs) prog = LinkProgram(vs, fs);
+            if (vs) glDeleteShader(vs);
+            if (fs) glDeleteShader(fs);
+            if (!prog) {
+                CC::Log(CC::LOG_WARN,
+                        "GL33: Phase E.4 Bloom shader '%s' compile/link failed", name);
+            }
+            return prog;
+        };
+
+        programBloomBright = buildProgram(FS_BLOOM_BRIGHT_SOURCE, "BrightPass");
+        programBloomDown   = buildProgram(FS_BLOOM_DOWN_SOURCE,   "Downsample");
+        programBloomUp     = buildProgram(FS_BLOOM_UP_SOURCE,     "Upsample");
+
+        if (!programBloomBright || !programBloomDown || !programBloomUp) {
+            // 部分失败: 释放已成功的, 全部禁用
+            if (programBloomBright) { glDeleteProgram(programBloomBright); programBloomBright = 0; }
+            if (programBloomDown)   { glDeleteProgram(programBloomDown);   programBloomDown   = 0; }
+            if (programBloomUp)     { glDeleteProgram(programBloomUp);     programBloomUp     = 0; }
+            bloomSupported = false;
+            CC::Log(CC::LOG_WARN, "GL33: Phase E.4 Bloom disabled (partial shader failure)");
+            return;
+        }
+
+        // --- 缓存 uniform location + 绑定 sampler slot ---
+        locBloomBright_Src       = glGetUniformLocation(programBloomBright, "uSrc");
+        locBloomBright_Threshold = glGetUniformLocation(programBloomBright, "uThreshold");
+        glUseProgram(programBloomBright);
+        if (locBloomBright_Src >= 0) glUniform1i(locBloomBright_Src, 0);
+
+        locBloomDown_Src   = glGetUniformLocation(programBloomDown, "uSrc");
+        locBloomDown_Texel = glGetUniformLocation(programBloomDown, "uTexel");
+        glUseProgram(programBloomDown);
+        if (locBloomDown_Src >= 0) glUniform1i(locBloomDown_Src, 0);
+
+        locBloomUp_Src       = glGetUniformLocation(programBloomUp, "uSrc");
+        locBloomUp_Texel     = glGetUniformLocation(programBloomUp, "uTexel");
+        locBloomUp_Radius    = glGetUniformLocation(programBloomUp, "uRadius");
+        locBloomUp_Intensity = glGetUniformLocation(programBloomUp, "uIntensity");
+        glUseProgram(programBloomUp);
+        if (locBloomUp_Src >= 0) glUniform1i(locBloomUp_Src, 0);
+
+        glUseProgram(0);
+
+        bloomSupported = true;
+        CC::Log(CC::LOG_INFO,
+                "GL33: Phase E.4 Bloom ready (bright=%u, down=%u, up=%u)",
+                programBloomBright, programBloomDown, programBloomUp);
+    }
+
     void Shutdown() override {
         if (program) glDeleteProgram(program);
         if (vbo) glDeleteBuffers(1, &vbo);
@@ -1629,6 +1876,15 @@ public:
         }
         hdrFboDepthRB.clear();
         tonemapSupported = false;
+
+        // Phase E.4 — 释放 Bloom shader (pyramid 资源由 BloomRenderer::Shutdown 配对释放)
+        if (programBloomBright) { glDeleteProgram(programBloomBright); programBloomBright = 0; }
+        if (programBloomDown)   { glDeleteProgram(programBloomDown);   programBloomDown   = 0; }
+        if (programBloomUp)     { glDeleteProgram(programBloomUp);     programBloomUp     = 0; }
+        locBloomBright_Src = locBloomBright_Threshold = -1;
+        locBloomDown_Src = locBloomDown_Texel = -1;
+        locBloomUp_Src = locBloomUp_Texel = locBloomUp_Radius = locBloomUp_Intensity = -1;
+        bloomSupported = false;
     }
 
     bool SupportsLit2D() const override { return lit2DSupported; }
@@ -1738,6 +1994,199 @@ public:
         glBindVertexArray(0);
         glBindTexture(GL_TEXTURE_2D, 0);
         glUseProgram(0);
+    }
+
+    // ==================== Phase E.4 — Bloom 虚接口实现 ====================
+
+    bool SupportsBloom() const override { return bloomSupported; }
+
+    /// 创建 Bloom pyramid: 每级 RGBA16F 纹理 + FBO, 无 depth (bloom 不需要深度)
+    int CreateBloomPyramid(int w, int h, int levels,
+                            uint32_t* outFbos, uint32_t* outTexs) override {
+        if (!bloomSupported || w <= 0 || h <= 0 || levels <= 0 || !outFbos || !outTexs) {
+            return 0;
+        }
+
+        int created = 0;
+        int curW = w, curH = h;
+        for (int i = 0; i < levels; ++i) {
+            // 1. 创建 RGBA16F 颜色纹理 (GL_LINEAR + GL_CLAMP_TO_EDGE, 与 HDR RT 一致)
+            GLuint tex = 0;
+            glGenTextures(1, &tex);
+            if (!tex) break;
+            glBindTexture(GL_TEXTURE_2D, tex);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, curW, curH, 0, GL_RGBA, GL_FLOAT, nullptr);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+            glBindTexture(GL_TEXTURE_2D, 0);
+
+            // 2. 创建 FBO 并附加 color (无 depth)
+            GLuint fbo = 0;
+            glGenFramebuffers(1, &fbo);
+            if (!fbo) { glDeleteTextures(1, &tex); break; }
+            glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
+            GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+            glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+            if (status != GL_FRAMEBUFFER_COMPLETE) {
+                CC::Log(CC::LOG_ERROR,
+                        "GL33: Bloom pyramid[%d] FBO incomplete (status=0x%X, %dx%d)",
+                        i, status, curW, curH);
+                glDeleteFramebuffers(1, &fbo);
+                glDeleteTextures(1, &tex);
+                break;
+            }
+
+            outFbos[i] = fbo;
+            outTexs[i] = tex;
+            ++created;
+
+            // 下一级尺寸减半 (最小 1x1)
+            curW = (curW > 1) ? curW / 2 : 1;
+            curH = (curH > 1) ? curH / 2 : 1;
+            // 若已到 1x1, 继续 level 无意义; 但 created 仍按请求返回
+            if (curW == 1 && curH == 1 && i < levels - 1) {
+                // 允许继续创建剩余 1x1 级 (不做硬截断, 保证 levels 严格)
+            }
+        }
+
+        return created;
+    }
+
+    void DeleteBloomPyramid(uint32_t* fbos, uint32_t* texs, int levels) override {
+        if (!fbos || !texs || levels <= 0) return;
+        for (int i = 0; i < levels; ++i) {
+            if (fbos[i]) { GLuint f = fbos[i]; glDeleteFramebuffers(1, &f); fbos[i] = 0; }
+            if (texs[i]) { GLuint t = texs[i]; glDeleteTextures(1, &t);     texs[i] = 0; }
+        }
+    }
+
+    /// Bright Pass: HDR sceneTex → outFbo (pyramid[0]), 亮度阈值提取 + soft knee
+    void DrawBloomBrightPass(uint32_t sceneTex, uint32_t outFbo,
+                              int w, int h, float threshold) override {
+        if (!bloomSupported || !sceneTex || !outFbo) return;
+
+        glBindFramebuffer(GL_FRAMEBUFFER, (GLuint)outFbo);
+        glViewport(0, 0, w, h);
+        glDisable(GL_DEPTH_TEST);
+        glDisable(GL_BLEND);
+        glDisable(GL_SCISSOR_TEST);
+
+        glUseProgram(programBloomBright);
+        if (locBloomBright_Threshold >= 0) glUniform1f(locBloomBright_Threshold, threshold);
+
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, (GLuint)sceneTex);
+
+        glBindVertexArray(vaoTonemap);
+        glDrawArrays(GL_TRIANGLES, 0, 6);
+
+        glBindVertexArray(0);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        glUseProgram(0);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    }
+
+    /// Downsample: srcTex → dstFbo (13-tap COD AW)
+    void DrawBloomDownsample(uint32_t srcTex, uint32_t dstFbo,
+                              int dstW, int dstH) override {
+        if (!bloomSupported || !srcTex || !dstFbo || dstW <= 0 || dstH <= 0) return;
+
+        // uTexel = 1.0 / srcSize. 注: downsample 的 src 是上一级, 大小 = dst * 2
+        float texelX = 1.0f / (float)(dstW * 2);
+        float texelY = 1.0f / (float)(dstH * 2);
+
+        glBindFramebuffer(GL_FRAMEBUFFER, (GLuint)dstFbo);
+        glViewport(0, 0, dstW, dstH);
+        glDisable(GL_DEPTH_TEST);
+        glDisable(GL_BLEND);
+        glDisable(GL_SCISSOR_TEST);
+
+        glUseProgram(programBloomDown);
+        if (locBloomDown_Texel >= 0) glUniform2f(locBloomDown_Texel, texelX, texelY);
+
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, (GLuint)srcTex);
+
+        glBindVertexArray(vaoTonemap);
+        glDrawArrays(GL_TRIANGLES, 0, 6);
+
+        glBindVertexArray(0);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        glUseProgram(0);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    }
+
+    /// Upsample + additive blend: srcTex → dstFbo (tent 3x3, hardware blend)
+    void DrawBloomUpsample(uint32_t srcTex, uint32_t dstFbo,
+                            int dstW, int dstH, float radius) override {
+        if (!bloomSupported || !srcTex || !dstFbo || dstW <= 0 || dstH <= 0) return;
+
+        // uTexel = 1.0 / dstSize (tent 采样在 dst 空间进行, 扩散半径相对 dst 像素)
+        float texelX = 1.0f / (float)dstW;
+        float texelY = 1.0f / (float)dstH;
+
+        glBindFramebuffer(GL_FRAMEBUFFER, (GLuint)dstFbo);
+        glViewport(0, 0, dstW, dstH);
+        glDisable(GL_DEPTH_TEST);
+        glDisable(GL_SCISSOR_TEST);
+        // additive blend: dst = dst + src (hardware blend 加速)
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_ONE, GL_ONE);
+
+        glUseProgram(programBloomUp);
+        if (locBloomUp_Texel     >= 0) glUniform2f(locBloomUp_Texel, texelX, texelY);
+        if (locBloomUp_Radius    >= 0) glUniform1f(locBloomUp_Radius, radius);
+        if (locBloomUp_Intensity >= 0) glUniform1f(locBloomUp_Intensity, 1.0f);  // upsample 不缩放
+
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, (GLuint)srcTex);
+
+        glBindVertexArray(vaoTonemap);
+        glDrawArrays(GL_TRIANGLES, 0, 6);
+
+        glBindVertexArray(0);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        glUseProgram(0);
+        glDisable(GL_BLEND);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    }
+
+    /// Final composite: bloomTex additive blend → hdrFbo (intensity 缩放)
+    /// 复用 upsample shader, radius=0 相当于零偏移采样 (tent 中心权重 16/16 = 全权)
+    void DrawBloomComposite(uint32_t bloomTex, uint32_t hdrFbo,
+                             int w, int h, float intensity) override {
+        if (!bloomSupported || !bloomTex || !hdrFbo || w <= 0 || h <= 0) return;
+
+        float texelX = 1.0f / (float)w;
+        float texelY = 1.0f / (float)h;
+
+        glBindFramebuffer(GL_FRAMEBUFFER, (GLuint)hdrFbo);
+        glViewport(0, 0, w, h);
+        glDisable(GL_DEPTH_TEST);
+        glDisable(GL_SCISSOR_TEST);
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_ONE, GL_ONE);
+
+        glUseProgram(programBloomUp);
+        if (locBloomUp_Texel     >= 0) glUniform2f(locBloomUp_Texel, texelX, texelY);
+        if (locBloomUp_Radius    >= 0) glUniform1f(locBloomUp_Radius, 0.0f);       // 0 偏移 = 零扩散
+        if (locBloomUp_Intensity >= 0) glUniform1f(locBloomUp_Intensity, intensity);
+
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, (GLuint)bloomTex);
+
+        glBindVertexArray(vaoTonemap);
+        glDrawArrays(GL_TRIANGLES, 0, 6);
+
+        glBindVertexArray(0);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        glUseProgram(0);
+        glDisable(GL_BLEND);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
     }
 
     // ==================== Phase E.1.5 — Lit2D 绘制实现 ====================

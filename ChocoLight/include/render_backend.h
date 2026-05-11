@@ -553,6 +553,75 @@ public:
                                         float /*exposure*/,
                                         float /*gamma*/,
                                         int   /*tonemapMode*/ = 0) {}
+
+    // ==================== Phase E.4 — Bloom 后处理 ====================
+
+    /**
+     * @brief 是否支持 Bloom 后处理 (要求: HDR RGBA16F + 多 FBO pyramid)
+     *
+     * 默认实现 (Legacy): 返回 false, 所有 Bloom API no-op.
+     */
+    virtual bool SupportsBloom() const { return false; }
+
+    /**
+     * @brief 创建 Bloom RT pyramid (各级 RGBA16F, 无 depth)
+     *
+     * pyramid[0] 与 HDR RT 同大小; 每级 /2 直到 levels-1 或 1x1.
+     * 失败时 outFbos/outTexs 未写入的位置保持为 0.
+     *
+     * @param w        顶级 (level 0) 宽, 通常 = HDR RT 宽
+     * @param h        顶级 (level 0) 高
+     * @param levels   期望层数 (2..8)
+     * @param outFbos  [out] FBO id 数组, 容量 >= levels
+     * @param outTexs  [out] texture id 数组, 容量 >= levels
+     * @return         实际成功创建的层数; 0 = 失败 (outFbos/outTexs 未动)
+     */
+    virtual int CreateBloomPyramid(int /*w*/, int /*h*/, int /*levels*/,
+                                    uint32_t* /*outFbos*/, uint32_t* /*outTexs*/) { return 0; }
+
+    /**
+     * @brief 释放 Bloom RT pyramid 资源
+     */
+    virtual void DeleteBloomPyramid(uint32_t* /*fbos*/, uint32_t* /*texs*/, int /*levels*/) {}
+
+    /**
+     * @brief Bright Pass: HDR RT → Bloom pyramid[0]
+     *
+     * shader 内: luminance = dot(c, rec709), soft knee 过渡, 输出 c * contribution.
+     *
+     * @param sceneTex  HDR RT 纹理 id (输入)
+     * @param outFbo    Bloom pyramid[0] 的 FBO id (目标)
+     * @param w, h      目标 RT 大小
+     * @param threshold 亮度阈值 (L > threshold 时保留)
+     */
+    virtual void DrawBloomBrightPass(uint32_t /*sceneTex*/, uint32_t /*outFbo*/,
+                                      int /*w*/, int /*h*/, float /*threshold*/) {}
+
+    /**
+     * @brief Downsample: srcTex → dstFbo (13-tap COD AW filter)
+     *
+     * 典型: pyramid[i-1].tex → pyramid[i].fbo, dst 大小 /2.
+     */
+    virtual void DrawBloomDownsample(uint32_t /*srcTex*/, uint32_t /*dstFbo*/,
+                                      int /*dstW*/, int /*dstH*/) {}
+
+    /**
+     * @brief Upsample + additive blend: srcTex → dstFbo (tent 3x3 filter)
+     *
+     * 调用方应事先启用 GL blend (ONE, ONE) 让结果累加到 dstFbo 已有内容.
+     * radius 控制 UV 偏移 (越大 glow 越宽, 过大会失真).
+     */
+    virtual void DrawBloomUpsample(uint32_t /*srcTex*/, uint32_t /*dstFbo*/,
+                                    int /*dstW*/, int /*dstH*/, float /*radius*/) {}
+
+    /**
+     * @brief Final composite: bloomTex additive blend → hdrFbo (intensity scaled)
+     *
+     * 复用 DrawBloomUpsample 的 shader, 以 radius=0 退化为 0-offset 采样,
+     * intensity 通过 uniform 传入. 调用方应启用 GL blend (ONE, ONE).
+     */
+    virtual void DrawBloomComposite(uint32_t /*bloomTex*/, uint32_t /*hdrFbo*/,
+                                     int /*w*/, int /*h*/, float /*intensity*/) {}
 };
 
 // ==================== 工厂函数 ====================
