@@ -72,16 +72,15 @@ if mode == 'server' then
     room:OnJoin(function(pid, hello)
         print(string.format('[server room] join pid=%d name=%s',
                             pid, (hello and hello.name) or '?'))
+        -- Phase C.x.1: 新 peer 进来, 标记下一帧全量重发, 让新人拿完整快照
+        world:MarkFullResync()
         return true
     end)
     room:OnLeave(function(pid)
         print('[server room] leave pid='..pid)
     end)
 
-    -- 初始 state: 让 client OnReady 后立刻收到一个空 entities (PatchState 后才填充)
-    room:SetState({entities = {}})
-
-    -- 5) 绑定 ECS → Room. 之后 world:Update 会自动 PatchState
+    -- 5) 绑定 ECS → Room. 之后 world:Update 会自动 Broadcast('ecs_delta', ...)
     world:NetworkSync(room)
 
     print('[server] ready, running ~10s with 3 networked entities...')

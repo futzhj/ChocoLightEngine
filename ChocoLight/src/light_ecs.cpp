@@ -44,6 +44,10 @@ function ECSWorld.new()
     w._destroyed_ids = {}    -- {[id] = true} 待广播销毁
     w._sync_room = nil       -- 绑定的 Room.Host (Phase C NetworkSync)
     w._has_changes = false   -- 任何 networked 字段变化的总开关
+    -- Phase C.x.1: per-component dirty 跟踪 + full-resync 标志
+    w._dirty_comps = {}      -- {[id] = {[comp_name] = true}} 细粒度 dirty (新/改)
+    w._removed_comps = {}    -- {[id] = {[comp_name] = true}} Remove 触发的删除
+    w._needs_full_resync = false  -- OnJoin 触发, 下次 sync 把所有 entity 所有 networked comp 标 dirty
     return w
 end
 
@@ -71,6 +75,35 @@ local function deepcopy(orig)
     return copy
 end
 
+-- Phase C.x.1: 标记 component dirty (新/改)
+local function _markDirtyComp(world, id, compName)
+    local set = world._dirty_comps[id]
+    if not set then
+        set = {}
+        world._dirty_comps[id] = set
+    end
+    set[compName] = true
+    world._dirty_entities[id] = true    -- 保留旧字段兼容
+    world._has_changes = true
+    -- 取消 removed 标记 (Remove 后又 Add 的场景)
+    local rmSet = world._removed_comps[id]
+    if rmSet then rmSet[compName] = nil end
+end
+
+-- Phase C.x.1: 标记 component 被 Remove
+local function _markRemovedComp(world, id, compName)
+    local set = world._removed_comps[id]
+    if not set then
+        set = {}
+        world._removed_comps[id] = set
+    end
+    set[compName] = true
+    -- 同时清 dirty (避免既 dirty 又 removed)
+    local dirtySet = world._dirty_comps[id]
+    if dirtySet then dirtySet[compName] = nil end
+    world._has_changes = true
+end
+
 -- 创建实体
 function ECSWorld:CreateEntity()
     local e = { _id = self._nextId, _comps = {} }
@@ -86,20 +119,18 @@ function ECSWorld:CreateEntity()
         self._comps[compName] = comp
         -- 创建便捷访问: entity.Position 等
         self[compName] = comp
-        -- Phase C: 若 networked, 标记 dirty
+        -- Phase C.x.1: 若 networked, 标记细粒度 dirty
         if world._networked_comps[compName] then
-            world._dirty_entities[self._id] = true
-            world._has_changes = true
+            _markDirtyComp(world, self._id, compName)
         end
         return self
     end
 
     function e:Remove(compName)
         local world = self._world
-        -- Phase C: 在清空之前先标记 dirty (确保下次 sync 知道这个 entity 状态变了)
-        if world._networked_comps[compName] then
-            world._dirty_entities[self._id] = true
-            world._has_changes = true
+        -- Phase C.x.1: 若 networked 且存在, 标记为被移除 (wire 中会发 "__removed__")
+        if world._networked_comps[compName] and self._comps[compName] then
+            _markRemovedComp(world, self._id, compName)
         end
         self._comps[compName] = nil
         self[compName] = nil
@@ -117,8 +148,7 @@ function ECSWorld:CreateEntity()
             for k, v in pairs(data) do existing[k] = v end
         end
         if self._world._networked_comps[compName] then
-            self._world._dirty_entities[self._id] = true
-            self._world._has_changes = true
+            _markDirtyComp(self._world, self._id, compName)
         end
         return self
     end
@@ -213,26 +243,162 @@ function ECSWorld:_BuildEntityState(entity)
     return row
 end
 
--- 私有: 把当前 networked entity 全量打包通过 PatchState 广播
--- MVP 简化: 整个 state.entities 整体替换 (顶层 set), 不区分增量/销毁
--- 后续优化方向 (Phase C v2): 根据 _dirty_entities 增量发送
-function ECSWorld:_SyncToRoom()
-    local entitiesTable = {}
+-- Phase C.x.1: 按 id 查找 entity (O(n), MVP 够用)
+function ECSWorld:_FindById(id)
     for _, e in ipairs(self._entities) do
-        local row = self:_BuildEntityState(e)
-        if row then
-            entitiesTable[tostring(e._id)] = row
+        if e._id == id then return e end
+    end
+    return nil
+end
+
+-- Phase C.x.1: 用户在 room:OnJoin 回调里调用,
+-- 下帧 _SyncToRoom 会把所有 networked entity 的所有 networked comp 标 dirty 广播,
+-- 让新 peer 能拿到完整快照.
+function ECSWorld:MarkFullResync()
+    self._needs_full_resync = true
+    self._has_changes = true
+end
+
+-- Phase C.x.1: 增量同步 — 走 room:Broadcast('ecs_delta', {set, del}) 而非 PatchState.
+-- wire 格式: {set = {[id] = {[comp] = data 或 "__removed__"}}, del = [id1, id2]}
+-- set 中不出现的 component 表示"未变化", mirror 不删除.
+function ECSWorld:_SyncToRoom()
+    -- 0) full resync: 把全量 entity 的全量 networked comp 标 dirty (OnJoin 时触发)
+    if self._needs_full_resync then
+        for _, e in ipairs(self._entities) do
+            for compName, _ in pairs(self._networked_comps) do
+                if e._comps[compName] then
+                    _markDirtyComp(self, e._id, compName)
+                end
+            end
+        end
+        self._needs_full_resync = false
+    end
+
+    -- 1) 构造 set (dirty 新/改 + removed 标记"__removed__")
+    local set_patch = nil
+    for id, dirtySet in pairs(self._dirty_comps) do
+        local entity = self:_FindById(id)
+        if entity then
+            local row = {}
+            for compName, _ in pairs(dirtySet) do
+                local comp = entity._comps[compName]
+                if comp then
+                    local copy = {}
+                    for k, v in pairs(comp) do copy[k] = v end
+                    row[compName] = copy
+                end
+            end
+            -- 合并 removed (同一 entity 可能既改了 A 又 Remove 了 B)
+            local rmSet = self._removed_comps[id]
+            if rmSet then
+                for compName, _ in pairs(rmSet) do
+                    row[compName] = "__removed__"
+                end
+            end
+            if next(row) then
+                set_patch = set_patch or {}
+                set_patch[tostring(id)] = row
+            end
         end
     end
-    -- 调 Phase BC v2 PatchState. set 顶层 entities key wholesale 替换.
-    self._sync_room:PatchState({entities = entitiesTable})
-    -- 清空跟踪
-    self._dirty_entities = {}
+    -- 补上 removed 但 没走过 dirty_comps 的 id (仅 Remove 的场景)
+    for id, rmSet in pairs(self._removed_comps) do
+        if not self._dirty_comps[id] then
+            local row = {}
+            for compName, _ in pairs(rmSet) do
+                row[compName] = "__removed__"
+            end
+            if next(row) then
+                set_patch = set_patch or {}
+                set_patch[tostring(id)] = row
+            end
+        end
+    end
+
+    -- 2) 构造 del (销毁的 entity id)
+    local del_patch = nil
+    for id, _ in pairs(self._destroyed_ids) do
+        del_patch = del_patch or {}
+        table.insert(del_patch, tostring(id))
+    end
+
+    -- 3) 广播 (仅当有变化)
+    if set_patch or del_patch then
+        self._sync_room:Broadcast('ecs_delta', {
+            set = set_patch,
+            del = del_patch,
+        })
+    end
+
+    -- 4) 清空跟踪
+    self._dirty_comps = {}
+    self._removed_comps = {}
     self._destroyed_ids = {}
+    self._dirty_entities = {}
     self._has_changes = false
 end
 
 -- ==================== Phase C: Client Mirror ====================
+
+-- Phase C.x.1: 应用一次 server 推来的 delta (Broadcast('ecs_delta') 的 payload)
+-- wire: {set = {[id] = {[comp] = data 或 "__removed__"}}, del = [id1, id2]}
+function ECSWorld:_ApplyDelta(delta)
+    if not self._is_mirror then
+        error("_ApplyDelta only valid on mirror world")
+    end
+    local set = delta and delta.set or {}
+    local del = delta and delta.del or {}
+
+    -- 1) 应用 set (新增/更新/component 删除)
+    for keyStr, row in pairs(set) do
+        local id = tonumber(keyStr) or keyStr   -- JSON key 是 string, 转回 number
+        local e = self._mirror_by_id[id]
+        if not e then
+            e = self:_CreateMirrorEntity(id)
+            self._mirror_by_id[id] = e
+        end
+
+        for compName, compData in pairs(row) do
+            if compData == "__removed__" then
+                -- 显式删除该 component
+                e._comps[compName] = nil
+                e[compName] = nil
+            else
+                local target = e._comps[compName]
+                if target then
+                    -- 浅 merge 保持引用稳定 (R5); delta 语义: compData 是该 comp 完整新值
+                    for k, v in pairs(compData) do target[k] = v end
+                    -- 删除 incoming 没有的字段 (跟 v1 _ApplyState 一致)
+                    for k, _ in pairs(target) do
+                        if compData[k] == nil then target[k] = nil end
+                    end
+                else
+                    -- 新增 component (浅拷贝)
+                    local copy = {}
+                    for k, v in pairs(compData) do copy[k] = v end
+                    e._comps[compName] = copy
+                    e[compName] = copy
+                end
+            end
+        end
+    end
+
+    -- 2) 应用 del (销毁 entity)
+    for _, keyStr in ipairs(del) do
+        local id = tonumber(keyStr) or keyStr
+        local e = self._mirror_by_id[id]
+        if e then
+            self._mirror_by_id[id] = nil
+            for i, ent in ipairs(self._entities) do
+                if ent._id == e._id then
+                    table.remove(self._entities, i)
+                    break
+                end
+            end
+        end
+    end
+end
 
 -- 私有: 用指定 ID 创建 mirror entity (复用 CreateEntity 但绕过 _nextId 自增)
 -- 临时改 _nextId 让 CreateEntity 用我们的 ID, 之后还原
@@ -317,8 +483,9 @@ end
 
 -- ==================== Module: Light.ECS ====================
 
--- 创建 client mirror world: 自动 hook room.OnState, 把 server state 应用到 mirror
--- @param room Room.Client (必须有 :OnState 方法)
+-- Phase C.x.1: 创建 client mirror world, 自动 hook room.OnEvent('ecs_delta', ...)
+-- 不再依赖 OnState; server 应用 world:NetworkSync(room) + world:MarkFullResync()
+-- @param room Room.Client (必须有 :OnEvent 方法)
 -- @return mirror ECSWorld 实例 (可调 :Query, 但不应调 :CreateEntity / Set 等)
 local function MirrorFromRoom(room)
     local mirror = ECSWorld.new()
@@ -326,9 +493,12 @@ local function MirrorFromRoom(room)
     mirror._mirror_by_id = {}    -- {[id] = entity}, O(1) 查找
     mirror._source_room = room
 
-    if room and type(room.OnState) == 'function' then
-        room:OnState(function(state, rev)
-            mirror:_ApplyState(state)
+    -- Phase C.x.1: hook OnEvent('ecs_delta') 替代 Phase C v1 的 OnState
+    if room and type(room.OnEvent) == 'function' then
+        room:OnEvent(function(name, args)
+            if name == 'ecs_delta' and type(args) == 'table' then
+                mirror:_ApplyDelta(args)
+            end
         end)
     end
 
