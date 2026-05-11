@@ -758,23 +758,38 @@ function ECSWorld:Render()
         end
 
         -- Phase D.x.4: 蒙皮 mesh 渲染 (在普通 mesh 之后, 仍在 depth test 内)
+        -- Phase D.x.1.1: 传 entity 触发 parent chain matrix multiply
         for _, e in ipairs(self._entities) do
             local tf  = e._comps.Transform3D
             local smr = e._comps.SkinnedMeshRenderer
             if tf and smr and smr.visible ~= false and smr.mesh and smr.animator then
-                self:_DrawSkinnedMesh(tf, smr)
+                self:_DrawSkinnedMesh(e, smr)
             end
         end
 
         if type(gfx.SetDepthTest) == 'function' then gfx.SetDepthTest(false) end
     end
 end
-
+)LUA" R"LUA(
 -- ==================== Phase D.x.4: 骨骼动画 ECS 集成 ====================
 
--- 构造 列主序 4x4 model matrix from Transform3D
--- Phase D.x.4.1: 完整 ZYX Euler 旋转 (M = T * Rz * Ry * Rx * S), 角度单位度
-function ECSWorld:_BuildModelMatrix3D(tf)
+-- 4x4 列主序矩阵乘法 r = a * b
+local function _Mat4Multiply(a, b)
+    local r = {}
+    for col = 0, 3 do
+        for row = 0, 3 do
+            local s = 0
+            for k = 0, 3 do
+                s = s + a[k*4 + row + 1] * b[col*4 + k + 1]
+            end
+            r[col*4 + row + 1] = s
+        end
+    end
+    return r
+end
+
+-- 仅 local TRS, 不考虑 parent (Phase D.x.4.1: 完整 ZYX Euler)
+function ECSWorld:_LocalMatrix3D(tf)
     local rx = (tf.rx or 0) * math.pi / 180
     local ry = (tf.ry or 0) * math.pi / 180
     local rz = (tf.rz or 0) * math.pi / 180
@@ -784,11 +799,6 @@ function ECSWorld:_BuildModelMatrix3D(tf)
     local scx = tf.sx or 1
     local scy = tf.sy or 1
     local scz = tf.sz or 1
-    -- R = Rz * Ry * Rx 展开 (列主序约定)
-    --   [cy*cz, -cx*sz+sx*sy*cz, sx*sz+cx*sy*cz, 0]
-    --   [cy*sz, cx*cz+sx*sy*sz,  -sx*cz+cx*sy*sz, 0]
-    --   [-sy,   sx*cy,           cx*cy,           0]
-    --   [tx,    ty,              tz,              1]
     local m00 = cy*cz
     local m10 = cy*sz
     local m20 = -sy
@@ -804,6 +814,39 @@ function ECSWorld:_BuildModelMatrix3D(tf)
         m02*scz, m12*scz, m22*scz, 0,
         tf.x or 0, tf.y or 0, tf.z or 0, 1,
     }
+end
+
+-- 构造 world matrix.
+-- Phase D.x.1.1: 接受 entity (递归 parent chain) 或 tf table (向后兼容)
+-- 检测方式: 若 arg 含 _comps.Transform3D, 视为 entity; 否则视为 tf table 直接
+function ECSWorld:_BuildModelMatrix3D(arg)
+    -- 兼容旧 tf-table 调用 (smoke ecs_skinned Dx4.1-AC3)
+    if type(arg) ~= 'table' or arg._comps == nil then
+        return self:_LocalMatrix3D(arg)
+    end
+    local entity = arg
+    local tf = entity._comps.Transform3D
+    if not tf then return self:_LocalMatrix3D({}) end  -- 单位矩阵
+    local local_mat = self:_LocalMatrix3D(tf)
+    if not tf.parent then return local_mat end
+    -- 递归累乘 parent world matrix (含循环保护)
+    local pworld = self:_GetWorldMatrix3D(tf.parent, {}, 0)
+    if not pworld then return local_mat end
+    return _Mat4Multiply(pworld, local_mat)
+end
+
+-- 递归取 entity 的 world matrix (含 parent chain)
+-- 安全: visited 表 + 32 深度限制
+function ECSWorld:_GetWorldMatrix3D(entity, visited, depth)
+    if depth >= 32 or visited[entity] then return nil end
+    visited[entity] = true
+    local tf = entity._comps and entity._comps.Transform3D
+    if not tf then return nil end
+    local local_mat = self:_LocalMatrix3D(tf)
+    if not tf.parent then return local_mat end
+    local pworld = self:_GetWorldMatrix3D(tf.parent, visited, depth + 1)
+    if not pworld then return local_mat end
+    return _Mat4Multiply(pworld, local_mat)
 end
 
 -- Phase D.x.4.1: LookAt helper (列主序 view matrix), 用于 Camera 或角色朝向计算
@@ -838,10 +881,11 @@ local function _LookAtMatrix(eyeX, eyeY, eyeZ, tgtX, tgtY, tgtZ, upX, upY, upZ)
 end
 
 -- 绘制蒙皮 mesh 单次. 内部调 Light.Animation.DrawSkinnedMesh (CPU/GPU 分流由后端决定)
-function ECSWorld:_DrawSkinnedMesh(tf, smr)
+-- Phase D.x.1.1: 接 entity (而非仅 tf), 触发 parent chain matrix multiply
+function ECSWorld:_DrawSkinnedMesh(entity, smr)
     local Anim = Light and Light.Animation
     if not (Anim and type(Anim.DrawSkinnedMesh) == 'function') then return end
-    local model = self:_BuildModelMatrix3D(tf)
+    local model = self:_BuildModelMatrix3D(entity)
     pcall(Anim.DrawSkinnedMesh, smr.mesh, smr.animator, model, smr.material)
 end
 

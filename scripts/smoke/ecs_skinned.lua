@@ -372,6 +372,52 @@ do
 end
 
 -- ============================================================
+-- Dx1.1-AC1: 3D Transform parent matrix multiply
+-- ============================================================
+do
+    local w = World.new()
+    -- root: Transform3D 平移 (10, 0, 0), 无 parent
+    local root = w:CreateEntity():Add('Transform3D', {x=10, y=0, z=0})
+    -- child: Transform3D 平移 (5, 0, 0), parent=root
+    -- 期望 child world position = root.x + child.x = 15
+    local child = w:CreateEntity():Add('Transform3D', {x=5, y=0, z=0, parent=root})
+
+    local mChild = w:_BuildModelMatrix3D(child)
+    -- child world translation 在 mChild[13..15] (列主序 4x4 第 4 列前 3 行)
+    eq(mChild[13], 15, "Dx1.1-AC1: child world.x = root.x + child.x = 15")
+    eq(mChild[14], 0,  "Dx1.1-AC1: child world.y = 0")
+    eq(mChild[15], 0,  "Dx1.1-AC1: child world.z = 0")
+    pass("Dx1.1-AC1: 3D parent translation accumulated correctly")
+end
+
+-- ============================================================
+-- Dx1.1-AC2: 旧 tf-table 调用仍兼容 (Dx4.1-AC3 用例不破坏)
+-- ============================================================
+do
+    local w = World.new()
+    -- 直接传 tf table (无 _comps 字段)
+    local m = w:_BuildModelMatrix3D({x=100, y=200, z=300})
+    eq(m[13], 100, "Dx1.1-AC2: tf-table call backward-compat tx=100")
+    eq(m[14], 200, "Dx1.1-AC2: ty=200")
+    eq(m[15], 300, "Dx1.1-AC2: tz=300")
+    pass("Dx1.1-AC2: tf-table backward-compat ok")
+end
+
+-- ============================================================
+-- Dx1.1-AC3: 3D parent 循环引用保护
+-- ============================================================
+do
+    local w = World.new()
+    local a = w:CreateEntity():Add('Transform3D', {})
+    local b = w:CreateEntity():Add('Transform3D', {})
+    a._comps.Transform3D.parent = b
+    b._comps.Transform3D.parent = a
+    local ok = pcall(function() return w:_BuildModelMatrix3D(a) end)
+    if not ok then fail("Dx1.1-AC3: cycle should not crash _BuildModelMatrix3D") end
+    pass("Dx1.1-AC3: 3D parent cycle protection ok")
+end
+
+-- ============================================================
 -- 兼容性: Phase C/C.x.1/D 现有 API 不破坏
 -- ============================================================
 do
