@@ -738,6 +738,122 @@ static int l_DrawQuad(lua_State* L) {
     return 0;
 }
 
+// ============================================================================
+// Phase E.1.5 — Light.Graphics.DrawLit / DrawLitQuad (2D Lit forward 多灯)
+// ============================================================================
+//
+// 路径与 l_Draw / l_DrawQuad 完全平行, 唯一不同:
+//   - 构造 RenderVertex2DLit (带 normal/tangent) 而非 RenderVertex
+//   - 在 backend->DrawLit2DQuad 前 Flush BatchRenderer (避免顶点顺序答错)
+//   - 走 g_render->DrawLit2DQuad 而非 SubmitOrDraw, 不参与 batch
+//
+// 默认 normal = (0, 0, 1) 与 tangent = (1, 0, 0, 1) — 平面 sprite
+// (调用方可未来通过 vertex stream 接口覆写 — 本 API 仅提供 sprite 便捷接口)
+
+/// @lua_api Light.Graphics.DrawLit(image, normalMap, x, y, [z, rot, sx, sy, ox, oy, skewX, skewY])
+/// @brief 绘制受光照的 2D sprite (走 sprite_lit_2d shader + Lighting2D state)
+/// @param image      Image|Canvas baseColor; nil 时使用纯顶点色 (默认纹理 = 0)
+/// @param normalMap  Image normal map (optional); nil/missing 时 shader 用默认 N=(0,0,1)
+/// @param x, y, z    屏幕位置 + 深度
+/// @param ...        rot/sx/sy/ox/oy/skewX/skewY (与 l_Draw 一致)
+/// @example
+///   local hero  = Light(Light.Graphics.Image):New("hero.png")
+///   local hero_n = Light(Light.Graphics.Image):New("hero_normal.png")
+///   Light.Lighting2D.SetAmbient(0.2, 0.2, 0.2)
+///   Light.Lighting2D.AddPointLight({x=200, y=100, color={r=1,g=0.8,b=0.5}, range=400})
+///   Light.Graphics.DrawLit(hero, hero_n, 150, 200)
+static int l_DrawLit(lua_State* L) {
+    if (!g_render || !g_render->SupportsLit2D()) {
+        // 后端不支持 → 默默作废, 避免调用方崩 (完整行为可通过 SupportsLit2D 检查)
+        return 0;
+    }
+
+    unsigned int baseTex = 0, normTex = 0;
+    int imgW = 64, imgH = 64;
+    bool hasBase = GetDrawableTexture(L, 1, &baseTex, &imgW, &imgH);
+    int nW = 0, nH = 0;
+    GetDrawableTexture(L, 2, &normTex, &nW, &nH);  // nil/非表 → normTex 保持 0
+
+    float x = (float)luaL_optnumber(L, 3, 0.0);
+    float y = (float)luaL_optnumber(L, 4, 0.0);
+    float z = (float)luaL_optnumber(L, 5, 0.0);
+
+    float rx, ry, rz, sx, sy, sz, ox, oy, oz;
+    ReadTransform(L, 6, &rx, &ry, &rz, &sx, &sy, &sz, &ox, &oy, &oz);
+
+    // Lit 不走 BatchRenderer; 主动 flush 之前累积的普通 sprite 保证顺序正确
+    if (BatchRenderer::IsInited()) BatchRenderer::Flush();
+
+    g_render->PushMatrix();
+    g_render->Translate(x, y, z);
+    ApplyTransform(rx, ry, rz, sx, sy, sz, ox, oy, oz);
+    ApplyDrawColor();
+
+    const float fw = (float)imgW, fh = (float)imgH;
+    const float cr = g_ctx.drawColor[0], cg = g_ctx.drawColor[1];
+    const float cb = g_ctx.drawColor[2], ca = g_ctx.drawColor[3];
+    // 顶点顺序: 0=左上, 1=右上, 2=右下, 3=左下 (与静态 EBO [0,1,2,0,2,3] 一致)
+    // normal = (0,0,1) 默认面向镜头; tangent = (1,0,0,1) (bitangent sign = +1)
+    const float u0 = hasBase ? 0.0f : 0.0f;
+    const float u1 = hasBase ? 1.0f : 0.0f;
+    const float v0 = hasBase ? 0.0f : 0.0f;
+    const float v1 = hasBase ? 1.0f : 0.0f;
+    RenderVertex2DLit verts[4] = {
+        { 0,  0,  0,   u0, v0,   cr, cg, cb, ca,   0,0,1,   1,0,0,1 },
+        { fw, 0,  0,   u1, v0,   cr, cg, cb, ca,   0,0,1,   1,0,0,1 },
+        { fw, fh, 0,   u1, v1,   cr, cg, cb, ca,   0,0,1,   1,0,0,1 },
+        { 0,  fh, 0,   u0, v1,   cr, cg, cb, ca,   0,0,1,   1,0,0,1 },
+    };
+    g_render->DrawLit2DQuad(verts, baseTex, normTex);
+
+    g_render->PopMatrix();
+    return 0;
+}
+
+/// @lua_api Light.Graphics.DrawLitQuad(image, normalMap, x, y, z, qx, qy, qw, qh)
+/// @brief 绘制受光照的 sprite 子区域 (sprite sheet 裁切, 类似 DrawQuad)
+static int l_DrawLitQuad(lua_State* L) {
+    if (!g_render || !g_render->SupportsLit2D()) return 0;
+
+    unsigned int baseTex = 0, normTex = 0;
+    int imgW = 64, imgH = 64;
+    bool hasBase = GetDrawableTexture(L, 1, &baseTex, &imgW, &imgH);
+    int nW = 0, nH = 0;
+    GetDrawableTexture(L, 2, &normTex, &nW, &nH);
+
+    float x  = (float)luaL_optnumber(L, 3, 0.0);
+    float y  = (float)luaL_optnumber(L, 4, 0.0);
+    float z  = (float)luaL_optnumber(L, 5, 0.0);
+    float qx = (float)luaL_optnumber(L, 6, 0.0);
+    float qy = (float)luaL_optnumber(L, 7, 0.0);
+    float qw = (float)luaL_optnumber(L, 8, 64.0);
+    float qh = (float)luaL_optnumber(L, 9, 64.0);
+
+    if (BatchRenderer::IsInited()) BatchRenderer::Flush();
+
+    g_render->PushMatrix();
+    g_render->Translate(x, y, z);
+    ApplyDrawColor();
+
+    const float cr = g_ctx.drawColor[0], cg = g_ctx.drawColor[1];
+    const float cb = g_ctx.drawColor[2], ca = g_ctx.drawColor[3];
+    float u0 = 0.0f, v0 = 0.0f, u1 = 0.0f, v1 = 0.0f;
+    if (hasBase && imgW > 0 && imgH > 0) {
+        u0 = qx / (float)imgW;          v0 = qy / (float)imgH;
+        u1 = (qx + qw) / (float)imgW;   v1 = (qy + qh) / (float)imgH;
+    }
+    RenderVertex2DLit verts[4] = {
+        { 0,  0,  0,   u0, v0,   cr, cg, cb, ca,   0,0,1,   1,0,0,1 },
+        { qw, 0,  0,   u1, v0,   cr, cg, cb, ca,   0,0,1,   1,0,0,1 },
+        { qw, qh, 0,   u1, v1,   cr, cg, cb, ca,   0,0,1,   1,0,0,1 },
+        { 0,  qh, 0,   u0, v1,   cr, cg, cb, ca,   0,0,1,   1,0,0,1 },
+    };
+    g_render->DrawLit2DQuad(verts, baseTex, normTex);
+
+    g_render->PopMatrix();
+    return 0;
+}
+
 /// UTF-8 解码: 从字节流中读取一个 Unicode 码点
 /// 返回码点, 并更新指针 p 到下一个字符位置
 static int DecodeUTF8(const char** p) {
@@ -1294,6 +1410,9 @@ static const luaL_Reg graphics_funcs[] = {
     {"Draw",              l_Draw},
     {"DrawQuad",          l_DrawQuad},
     {"DrawSprite",        l_DrawSprite},
+    // Phase E.1.5 — 2D Lit forward (配合 Light.Lighting2D + 可选 normal map)
+    {"DrawLit",           l_DrawLit},
+    {"DrawLitQuad",       l_DrawLitQuad},
     {"Print",             l_Print},
     {"Line",              l_Line},
     {"Triangle",          l_Triangle},

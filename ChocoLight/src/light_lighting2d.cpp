@@ -17,6 +17,7 @@
 
 #include "light_lighting2d.h"
 #include "light.h"             // LIGHT_API, CC::Log
+#include "render_backend.h"    // RenderBackend::UploadLighting2D (E.1.5)
 
 #include <cmath>                // cosf, sqrtf
 
@@ -120,18 +121,18 @@ int GetMax() {
     return MAX_LIGHTS;
 }
 
-// ==================== 后端上传 (E.1.3 占位) ====================
+// ==================== 后端上传 (E.1.5 真实实现) ====================
 //
-// E.1.5 实施时替换为:
-//   if (!backend || !programId) return;
-//   backend->UploadLighting2D(g_state.active_count, types, pos, dir, color,
-//                              ranges, intensities, innerCoss, outerCoss,
-//                              g_state.ambient);
-// 具体 RenderBackend::UploadLighting2D 虚接口签名由 E.1.5 联合敲定.
+// 之前 (E.1.3): no-op 占位.
+// 现在 (E.1.5): 转发到 RenderBackend::UploadLighting2D(state*) 虚接口,
+//               GL33Backend 在内部 build SOA 临时数组 + glUniform*v 一次上传.
+//
+// programId 仍保留在签名里, 但当前未使用 — GL33Backend 持有 programLit2D 句柄,
+// 不依赖外部传入. 留作未来 multi-program (e.g. 不同变体 shader) 的拓展接口.
 void UploadToShader(RenderBackend* backend, uint32_t programId) {
-    (void)backend;
     (void)programId;
-    // 占位: 保持符号存在, 链接期 E.1.5 之前的代码不会 crash
+    if (!backend) return;
+    backend->UploadLighting2D(&g_state);
 }
 
 }  // namespace Lighting2D

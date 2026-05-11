@@ -211,6 +211,27 @@ assert(type(idZeroDir) == "number", "AddSpotLight zero-dir should still succeed 
 pass("AddSpotLight zero-direction handled (fallback to unit vector)")
 
 -- ============================================================
+-- 14) Phase E.1.5 — Light.Graphics.DrawLit / DrawLitQuad API surface
+-- ============================================================
+-- 仅检查函数存在; 真正的 GL 渲染验证留到 E.1.7 demo (需要 Window + GL context)
+
+local ok_gfx, gfx = pcall(require, "Light.Graphics")
+if ok_gfx and type(gfx) == "table" then
+    assert(type(gfx.DrawLit)     == "function", "Light.Graphics.DrawLit must be a function")
+    assert(type(gfx.DrawLitQuad) == "function", "Light.Graphics.DrawLitQuad must be a function")
+    pass("Light.Graphics.DrawLit / DrawLitQuad function surface ok")
+
+    -- 无 Window 时 g_render == nil 或 SupportsLit2D == false, 调用应直接返回 0 不崩
+    local ok_call = pcall(gfx.DrawLit, nil, nil, 0, 0)
+    assert(ok_call, "DrawLit(no-window) should not raise")
+    local ok_call2 = pcall(gfx.DrawLitQuad, nil, nil, 0, 0, 0, 0, 0, 16, 16)
+    assert(ok_call2, "DrawLitQuad(no-window) should not raise")
+    pass("DrawLit / DrawLitQuad no-window guard ok (no crash)")
+else
+    print("SKIP: Light.Graphics not loadable (likely lightc -p syntax check)")
+end
+
+-- ============================================================
 -- Final cleanup
 -- ============================================================
 

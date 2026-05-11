@@ -15,6 +15,9 @@
 #include <cstdint>
 #include <vector>
 
+// Phase E.1.5 — 前向声明 Lighting2D::State, 避免把 light_lighting2d.h 拉进所有使用 backend 的翻译单元
+namespace Lighting2D { struct State; }
+
 // ==================== 顶点结构 ====================
 
 struct RenderVertex {
@@ -436,6 +439,19 @@ public:
     virtual void DrawLit2DTriangles(const RenderVertex2DLit* verts, int count,
                                       uint32_t baseColorTex,
                                       uint32_t normalMapTex) {}
+
+    /**
+     * @brief 上传 Lighting2D 状态到 programLit2D 的 uniform 数组
+     *
+     * 调用点: 由 Lighting2D::UploadToShader 转发; 也可被 DrawLit2DQuad 内部复用.
+     *
+     * 为什么不拆 SOA: state 中 Light 是 POD且包成 16-slot 密集数组，后端可在
+     * 本调用内一次性 build 起 SOA 临时数组 (高逻辑性能趋同接口可读性).
+     *
+     * 默认实现: no-op (Legacy / 不支持 Lit2D 的后端会被 Lit2DSupported() 干掉调用路径).
+     * GL33Backend 在 E.1.5 里拆出 SOA + glUniform*v 一次上传全部 16 位灯.
+     */
+    virtual void UploadLighting2D(const Lighting2D::State* state) {}
 };
 
 // ==================== 工厂函数 ====================

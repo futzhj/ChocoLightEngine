@@ -6,6 +6,7 @@
 
 #include "render_backend.h"
 #include "light.h"
+#include "light_lighting2d.h"  // Phase E.1.5 — Lighting2D::State / UploadToShader
 
 // GL 头文件: GLES3 (Web/移动) vs glad (桌面)
 #if defined(__EMSCRIPTEN__)
@@ -926,6 +927,13 @@ class GL33Backend : public RenderBackend {
     GLint locLit2D_LightInnerCos  = -1;  // float[16]
     GLint locLit2D_LightOuterCos  = -1;  // float[16]
 
+    // Phase E.1.5 — 动态 vboLit2D 容量跟踪 (DrawLit2DTriangles 任意三角形流需要扩容)
+    int    vboLit2DCapacity = 0;  // InitLit2D 设为 LIT2D_VBO_INITIAL_VERTS
+
+    // Phase E.1.5 — Lit2D 永久 mesh 资源池 (与 meshes / skinnedMeshes 平行, 高位 0xA0000000)
+    std::unordered_map<uint32_t, MeshGPU> litMeshes;
+    uint32_t                              nextLitMeshId = 0xA0000001u;
+
     // 编译 shader, 返回 0 表示失败
     static GLuint CompileShader(GLenum type, const char* src) {
         GLuint s = glCreateShader(type);
@@ -1183,6 +1191,7 @@ public:
         glBufferData(GL_ARRAY_BUFFER,
                      LIT2D_VBO_INITIAL_VERTS * (GLsizeiptr)sizeof(RenderVertex2DLit),
                      nullptr, GL_DYNAMIC_DRAW);
+        vboLit2DCapacity = LIT2D_VBO_INITIAL_VERTS;  // E.1.5 跟踪初始容量
 
         // 顶点属性 layout (与 VS_LIT2D in 声明保持一致, 静态 location):
         //   location 0: aPos      vec3 (x,y,z)
@@ -1312,10 +1321,217 @@ public:
         if (eboLit2D)     { glDeleteBuffers(1, &eboLit2D); eboLit2D = 0; }
         if (vboLit2D)     { glDeleteBuffers(1, &vboLit2D); vboLit2D = 0; }
         if (vaoLit2D)     { glDeleteVertexArrays(1, &vaoLit2D); vaoLit2D = 0; }
+        vboLit2DCapacity = 0;
+
+        // Phase E.1.5 — 释放 Lit2D mesh 池
+        for (auto& kv : litMeshes) {
+            const MeshGPU& m = kv.second;
+            if (m.ebo) glDeleteBuffers(1, &m.ebo);
+            if (m.vbo) glDeleteBuffers(1, &m.vbo);
+            if (m.vao) glDeleteVertexArrays(1, &m.vao);
+        }
+        litMeshes.clear();
         lit2DSupported = false;
     }
 
     bool SupportsLit2D() const override { return lit2DSupported; }
+
+    // ==================== Phase E.1.5 — Lit2D 绘制实现 ====================
+    //
+    // 结构:
+    //   - EnsureLit2DVBOCapacity: 动态扩容 vboLit2D (为 DrawLit2DTriangles 任意 count 准备)
+    //   - BeginLit2DDraw / EndLit2DDraw: prologue + epilogue (被 Quad / Triangles / Mesh draw 复用)
+    //   - UploadLighting2D: 按 active state SOA 上传 8 个 uniform 数组 + ambient + count
+    //   - DrawLit2DQuad: 4 verts 动态 VBO + 静态 EBO + glDrawElements
+    //   - DrawLit2DTriangles: 任意 count verts + glDrawArrays
+    //   - CreateLit2DMesh / DeleteLit2DMesh: 独立 VAO+VBO+EBO 永久 mesh, 与 CreateMesh 平行
+
+    /// 保证 vboLit2D 能容纳 vertexCount 个顶点; 不够则 ×2 增长
+    /// VBO 重分配不影响 vaoLit2D 内存储的 vertex attribute 指针 (VAO 绑定 vbo handle 不变)
+    void EnsureLit2DVBOCapacity(int vertexCount) {
+        if (vertexCount <= vboLit2DCapacity) return;
+        int newCap = vboLit2DCapacity ? vboLit2DCapacity : LIT2D_VBO_INITIAL_VERTS;
+        while (newCap < vertexCount) newCap *= 2;
+        glBindBuffer(GL_ARRAY_BUFFER, vboLit2D);
+        glBufferData(GL_ARRAY_BUFFER,
+                     newCap * (GLsizeiptr)sizeof(RenderVertex2DLit),
+                     nullptr, GL_DYNAMIC_DRAW);
+        vboLit2DCapacity = newCap;
+    }
+
+    /// Lit2D draw prologue: 切 program + MVP/Model + 绑 baseColor/normalMap + 上传 lighting state
+    /// 不绑 VAO (由 caller 选用 vaoLit2D / mesh.vao)
+    void BeginLit2DDraw(uint32_t baseColorTex, uint32_t normalMapTex) {
+        glUseProgram(programLit2D);
+
+        // MVP 与默认 2D 一致 (projection * modelview); Model = modelview 供 shader 变换法线到世界
+        Mat4 mvp = projection * modelview;
+        if (locLit2D_MVP   >= 0) glUniformMatrix4fv(locLit2D_MVP,   1, GL_FALSE, mvp.m);
+        if (locLit2D_Model >= 0) glUniformMatrix4fv(locLit2D_Model, 1, GL_FALSE, modelview.m);
+
+        // baseColor 绑 slot 0
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, baseColorTex);
+        // normalMap 绑 slot 1 (为 0 时 GL 会绑到"默认纹理", uHasNormalMap=0 后 shader 不采样)
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, normalMapTex);
+        if (locLit2D_HasNormalMap >= 0) {
+            glUniform1i(locLit2D_HasNormalMap, normalMapTex ? 1 : 0);
+        }
+
+        // 上传 Lighting2D 状态 (转发到 backend->UploadLighting2D)
+        Lighting2D::UploadToShader(this, programLit2D);
+    }
+
+    /// Lit2D draw epilogue: 解绑 VAO + 切回默认 2D shader + active texture 复位到 slot 0
+    void EndLit2DDraw() {
+        glBindVertexArray(0);
+        glUseProgram(program);
+        glBindVertexArray(vao);
+        glActiveTexture(GL_TEXTURE0);
+    }
+
+    void UploadLighting2D(const Lighting2D::State* state) override {
+        if (!state || !lit2DSupported) return;
+
+        // 独立调用时 caller 可能未 glUseProgram(programLit2D), 主动切过去保证 glUniform 生效
+        glUseProgram(programLit2D);
+
+        // build SOA 临时数组 (栈分配, 16 light 总共 ~600 bytes, 远低于线程栈默认 1MB)
+        constexpr int M = Lighting2D::MAX_LIGHTS;  // 16
+        int   types[M];
+        float poss[M * 3];   // shader 侧 vec3, z 强制 0 (2D 场景)
+        float dirs[M * 3];
+        float cols[M * 3];
+        float rngs[M];
+        float intens[M];
+        float ics[M];
+        float ocs[M];
+        int cnt = 0;
+        for (int i = 0; i < M; ++i) {
+            const auto& l = state->lights[i];
+            if (l.type == Lighting2D::TYPE_INACTIVE) continue;
+            types[cnt]      = l.type;
+            poss[cnt*3+0]   = l.pos[0];   poss[cnt*3+1] = l.pos[1];   poss[cnt*3+2] = 0.0f;
+            dirs[cnt*3+0]   = l.dir[0];   dirs[cnt*3+1] = l.dir[1];   dirs[cnt*3+2] = 0.0f;
+            cols[cnt*3+0]   = l.color[0]; cols[cnt*3+1] = l.color[1]; cols[cnt*3+2] = l.color[2];
+            rngs[cnt]       = l.range;
+            intens[cnt]     = l.intensity;
+            ics[cnt]        = l.innerCos;
+            ocs[cnt]        = l.outerCos;
+            ++cnt;
+        }
+
+        if (locLit2D_Ambient    >= 0) glUniform3fv(locLit2D_Ambient, 1, state->ambient);
+        if (locLit2D_LightCount >= 0) glUniform1i (locLit2D_LightCount, cnt);
+        if (cnt > 0) {
+            if (locLit2D_LightType      >= 0) glUniform1iv(locLit2D_LightType,      cnt, types);
+            if (locLit2D_LightPos       >= 0) glUniform3fv(locLit2D_LightPos,       cnt, poss);
+            if (locLit2D_LightDir       >= 0) glUniform3fv(locLit2D_LightDir,       cnt, dirs);
+            if (locLit2D_LightColor     >= 0) glUniform3fv(locLit2D_LightColor,     cnt, cols);
+            if (locLit2D_LightRange     >= 0) glUniform1fv(locLit2D_LightRange,     cnt, rngs);
+            if (locLit2D_LightIntensity >= 0) glUniform1fv(locLit2D_LightIntensity, cnt, intens);
+            if (locLit2D_LightInnerCos  >= 0) glUniform1fv(locLit2D_LightInnerCos,  cnt, ics);
+            if (locLit2D_LightOuterCos  >= 0) glUniform1fv(locLit2D_LightOuterCos,  cnt, ocs);
+        }
+    }
+
+    void DrawLit2DQuad(const RenderVertex2DLit verts[4],
+                       uint32_t baseColorTex,
+                       uint32_t normalMapTex) override {
+        if (!lit2DSupported || !verts) return;
+        BeginLit2DDraw(baseColorTex, normalMapTex);
+
+        glBindVertexArray(vaoLit2D);
+        glBindBuffer(GL_ARRAY_BUFFER, vboLit2D);
+        EnsureLit2DVBOCapacity(4);  // 初始容量已 = 4, 默认 no-op
+        glBufferSubData(GL_ARRAY_BUFFER, 0,
+                        4 * (GLsizeiptr)sizeof(RenderVertex2DLit), verts);
+        // 静态 EBO [0,1,2, 0,2,3] 在 InitLit2D 中上传
+        glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, nullptr);
+
+        EndLit2DDraw();
+    }
+
+    void DrawLit2DTriangles(const RenderVertex2DLit* verts, int count,
+                            uint32_t baseColorTex,
+                            uint32_t normalMapTex) override {
+        if (!lit2DSupported || !verts || count <= 0 || (count % 3) != 0) return;
+        BeginLit2DDraw(baseColorTex, normalMapTex);
+
+        glBindVertexArray(vaoLit2D);
+        glBindBuffer(GL_ARRAY_BUFFER, vboLit2D);
+        EnsureLit2DVBOCapacity(count);
+        glBufferSubData(GL_ARRAY_BUFFER, 0,
+                        count * (GLsizeiptr)sizeof(RenderVertex2DLit), verts);
+        // 任意三角形流 → 不用 EBO (顺序读顶点)
+        glDrawArrays(GL_TRIANGLES, 0, count);
+
+        EndLit2DDraw();
+    }
+
+    uint32_t CreateLit2DMesh(const RenderVertex2DLit* verts, int vCount,
+                              const uint32_t* indices, int iCount) override {
+        if (!lit2DSupported || !verts || vCount <= 0 || !indices || iCount <= 0 || (iCount % 3) != 0) {
+            return 0;
+        }
+
+        MeshGPU m;
+        glGenVertexArrays(1, &m.vao);
+        glGenBuffers(1, &m.vbo);
+        glGenBuffers(1, &m.ebo);
+        if (!m.vao || !m.vbo || !m.ebo) {
+            if (m.ebo) glDeleteBuffers(1, &m.ebo);
+            if (m.vbo) glDeleteBuffers(1, &m.vbo);
+            if (m.vao) glDeleteVertexArrays(1, &m.vao);
+            return 0;
+        }
+        glBindVertexArray(m.vao);
+
+        glBindBuffer(GL_ARRAY_BUFFER, m.vbo);
+        glBufferData(GL_ARRAY_BUFFER, vCount * (GLsizeiptr)sizeof(RenderVertex2DLit),
+                     verts, GL_STATIC_DRAW);
+
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m.ebo);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER, iCount * (GLsizeiptr)sizeof(uint32_t),
+                     indices, GL_STATIC_DRAW);
+
+        // 顶点属性 (与 InitLit2D / VS_LIT2D 严格一致)
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(RenderVertex2DLit),
+                              (void*)offsetof(RenderVertex2DLit, x));
+        glEnableVertexAttribArray(1);
+        glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, sizeof(RenderVertex2DLit),
+                              (void*)offsetof(RenderVertex2DLit, u));
+        glEnableVertexAttribArray(2);
+        glVertexAttribPointer(2, 4, GL_FLOAT, GL_FALSE, sizeof(RenderVertex2DLit),
+                              (void*)offsetof(RenderVertex2DLit, r));
+        glEnableVertexAttribArray(3);
+        glVertexAttribPointer(3, 3, GL_FLOAT, GL_FALSE, sizeof(RenderVertex2DLit),
+                              (void*)offsetof(RenderVertex2DLit, nx));
+        glEnableVertexAttribArray(4);
+        glVertexAttribPointer(4, 4, GL_FLOAT, GL_FALSE, sizeof(RenderVertex2DLit),
+                              (void*)offsetof(RenderVertex2DLit, tx));
+
+        glBindVertexArray(0);
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+
+        m.indexCount = iCount;
+        uint32_t id = nextLitMeshId++;
+        litMeshes[id] = m;
+        return id;
+    }
+
+    void DeleteLit2DMesh(uint32_t meshId) override {
+        auto it = litMeshes.find(meshId);
+        if (it == litMeshes.end()) return;
+        const MeshGPU& m = it->second;
+        if (m.ebo) glDeleteBuffers(1, &m.ebo);
+        if (m.vbo) glDeleteBuffers(1, &m.vbo);
+        if (m.vao) glDeleteVertexArrays(1, &m.vao);
+        litMeshes.erase(it);
+    }
 
     const char* GetName() const override { return "GL33Core"; }
 
