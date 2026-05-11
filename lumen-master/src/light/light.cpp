@@ -506,6 +506,8 @@ static const struct { const char *modName; const char *procName; } g_lightModule
     {"Light.Animation.Clip",       "luaopen_Light_Animation_Clip"},
     {"Light.Animation.Animator",   "luaopen_Light_Animation_Animator"},
     {"Light.Animation.SkinnedMesh","luaopen_Light_Animation_SkinnedMesh"},
+    // Phase E.1.4 — 2D Lighting (16 forward lights + ambient + normal map)
+    {"Light.Lighting2D",           "luaopen_Light_Lighting2D"},
     {nullptr, nullptr}
 };
 
