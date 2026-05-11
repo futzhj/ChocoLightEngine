@@ -49,8 +49,9 @@ ChocoLight Lua 引擎已演进至 **80+ 个 `Light.*` 模块**（核心 + Phase 
 | `Light.Graphics.Tilemap` | 瓦片地图 |
 | `Light.Graphics.Mesh` | 3D 静态 mesh + glTF 加载 (Phase AS) |
 | `Light.Graphics.Material` | PBR 材质 (baseColor / metallic / roughness / emissive / textures, Phase AS) |
+| `Light.Lighting2D` | 2D forward 多光照状态管理 (16 lights + ambient + Point/Spot, Phase E.1) |
 
-详见 `docs/api/Light_Graphics*.md`。
+详见 `docs/api/Light_Graphics*.md`、`docs/api/Light_Lighting2D.md`。
 
 ---
 

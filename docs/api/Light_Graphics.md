@@ -209,6 +209,63 @@ Light.Graphics.Draw(img, 100, 200)
 
 ---
 
+## `Light.Graphics.DrawLit`
+
+Phase E.1.5 — 绘制受 2D forward 多光照影响的 sprite（走 `sprite_lit_2d` shader + `Light.Lighting2D` state）
+
+### 参数
+
+| 名称 | 类型 | 说明 |
+|------|------|------|
+| `image` | `Image|Canvas\|nil` | baseColor 纹理；`nil` 时仅顶点色 |
+| `normalMap` | `Image\|nil` | 法线贴图；`nil` 时 shader 用默认 `N=(0,0,1)` 平面光照 |
+| `x` | `number?` | 水平位置 (默认 0) |
+| `y` | `number?` | 垂直位置 (默认 0) |
+| `z` | `number?` | 深度 (默认 0) |
+| `rx, ry, rz, sx, sy, sz, ox, oy, oz` | `number?` | 与 `Draw` 一致的 9 个 transform 参数 |
+
+### 返回值
+
+`void`
+
+### 行为
+
+1. `g_render->SupportsLit2D() == false` 时直接 return（Legacy / 无 Lit2D 后端）
+2. 主动 `BatchRenderer::Flush()`，保证累积的普通 sprite 先出再画 lit sprite
+3. 构造 4 个 `RenderVertex2DLit`（默认 `normal=(0,0,1)`, `tangent=(1,0,0,1)`）
+4. 内部调 `RenderBackend::DrawLit2DQuad`：切 program → 绑 texture → 上传 MVP/Model/HasNormalMap → `Lighting2D::UploadToShader` → glDrawElements → 切回默认 2D shader
+
+### 示例
+
+```lua
+local hero    = Light(Light.Graphics.Image):New("hero.png")
+local hero_n  = Light(Light.Graphics.Image):New("hero_normal.png")
+Light.Lighting2D.SetAmbient(0.2, 0.2, 0.2)
+Light.Lighting2D.AddPointLight{x=200, y=100, color={r=1,g=0.8,b=0.5}, range=400}
+Light.Graphics.DrawLit(hero, hero_n, 150, 200)
+```
+
+---
+
+## `Light.Graphics.DrawLitQuad`
+
+Phase E.1.5 — 绘制受光照的 sprite 子区域（sprite sheet 裁切，对应 `DrawQuad` 的 Lit 版本）
+
+### 参数
+
+| 名称 | 类型 | 说明 |
+|------|------|------|
+| `image` | `Image|Canvas\|nil` | baseColor 纹理 |
+| `normalMap` | `Image\|nil` | 法线贴图（可选） |
+| `x, y, z` | `number?` | 屏幕位置 + 深度 |
+| `qx, qy, qw, qh` | `number?` | 子区域 (默认 0/0/64/64) |
+
+### 返回值
+
+`void`
+
+---
+
 ## `Light.Graphics.Print`
 
 文字渲染 (支持 Unicode/CJK)
