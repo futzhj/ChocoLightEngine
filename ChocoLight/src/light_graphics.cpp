@@ -29,6 +29,8 @@
 #include "hdr_renderer.h"          // Phase E.3.2 — HDR 离屏管线
 #include "bloom_renderer.h"          // Phase E.4.2 — Bloom 后处理
 #include "auto_exposure_renderer.h"  // Phase E.5.2 — Auto Exposure (Eye Adaptation)
+#include "lens_dirt_renderer.h"      // Phase E.6.2 — Lens Dirt
+#include "streak_renderer.h"         // Phase E.6.2 — Streak (Anamorphic Flare)
 #include <cmath>
 #include <cstring>
 
@@ -1954,6 +1956,235 @@ static const luaL_Reg ae_funcs[] = {
     {NULL, NULL}
 };
 
+// ==================== Phase E.6.3 — Light.Graphics.LensDirt Lua API ====================
+//
+// 子表 Light.Graphics.LensDirt 挂在 luaopen_Light_Graphics 注册时附加 (AE 子表之后).
+//
+// API 设计 (10 函数):
+//   生命周期 4: Enable / Disable / IsEnabled / IsSupported
+//   联动 2:    SetAutoEnable / GetAutoEnable            (默认 false)
+//   参数 4:    SetDirtTexture / GetDirtTextureId / SetIntensity / GetIntensity
+
+static int l_LD_Enable(lua_State* L) {
+    (void)L;
+    lua_pushboolean(L, LensDirtRenderer::Enable() ? 1 : 0);
+    return 1;
+}
+
+static int l_LD_Disable(lua_State* L) {
+    (void)L;
+    LensDirtRenderer::Disable();
+    return 0;
+}
+
+static int l_LD_IsEnabled(lua_State* L) {
+    lua_pushboolean(L, LensDirtRenderer::IsEnabled() ? 1 : 0);
+    return 1;
+}
+
+static int l_LD_IsSupported(lua_State* L) {
+    lua_pushboolean(L, LensDirtRenderer::IsSupported() ? 1 : 0);
+    return 1;
+}
+
+static int l_LD_SetAutoEnable(lua_State* L) {
+    luaL_checkany(L, 1);
+    LensDirtRenderer::SetAutoEnable(lua_toboolean(L, 1) != 0);
+    return 0;
+}
+
+static int l_LD_GetAutoEnable(lua_State* L) {
+    lua_pushboolean(L, LensDirtRenderer::GetAutoEnable() ? 1 : 0);
+    return 1;
+}
+
+/// @lua_api Light.Graphics.LensDirt.SetDirtTexture
+/// @param arg Image table / number (tex id) / nil (reset to fallback)
+/// @brief 接受 Image userdata (table with :GetTextureId()) / number / nil
+static int l_LD_SetDirtTexture(lua_State* L) {
+    if (lua_gettop(L) < 1 || lua_isnil(L, 1)) {
+        LensDirtRenderer::SetDirtTextureId(0);    // fallback to backend 1x1 white
+        return 0;
+    }
+    int t = lua_type(L, 1);
+    if (t == LUA_TNUMBER) {
+        // 直接是 GL tex id
+        LensDirtRenderer::SetDirtTextureId((uint32_t)lua_tointeger(L, 1));
+        return 0;
+    }
+    if (t == LUA_TTABLE) {
+        // Image table: 调用 :GetTextureId() 取 id
+        lua_getfield(L, 1, "GetTextureId");
+        if (!lua_isfunction(L, -1)) {
+            lua_pop(L, 1);
+            return luaL_error(L, "LensDirt.SetDirtTexture: table missing GetTextureId() method");
+        }
+        lua_pushvalue(L, 1);   // self
+        lua_call(L, 1, 1);
+        uint32_t tid = (uint32_t)lua_tointeger(L, -1);
+        lua_pop(L, 1);
+        LensDirtRenderer::SetDirtTextureId(tid);
+        return 0;
+    }
+    return luaL_error(L, "LensDirt.SetDirtTexture: expected Image table, number, or nil (got %s)",
+                     lua_typename(L, t));
+}
+
+static int l_LD_GetDirtTextureId(lua_State* L) {
+    lua_pushinteger(L, (lua_Integer)LensDirtRenderer::GetDirtTextureId());
+    return 1;
+}
+
+static int l_LD_SetIntensity(lua_State* L) {
+    LensDirtRenderer::SetIntensity((float)luaL_checknumber(L, 1));
+    return 0;
+}
+
+static int l_LD_GetIntensity(lua_State* L) {
+    lua_pushnumber(L, (lua_Number)LensDirtRenderer::GetIntensity());
+    return 1;
+}
+
+static const luaL_Reg lens_dirt_funcs[] = {
+    {"Enable",            l_LD_Enable},
+    {"Disable",           l_LD_Disable},
+    {"IsEnabled",         l_LD_IsEnabled},
+    {"IsSupported",       l_LD_IsSupported},
+    {"SetAutoEnable",     l_LD_SetAutoEnable},
+    {"GetAutoEnable",     l_LD_GetAutoEnable},
+    {"SetDirtTexture",    l_LD_SetDirtTexture},
+    {"GetDirtTextureId",  l_LD_GetDirtTextureId},
+    {"SetIntensity",      l_LD_SetIntensity},
+    {"GetIntensity",      l_LD_GetIntensity},
+    {NULL, NULL}
+};
+
+// ==================== Phase E.6.3 — Light.Graphics.Streak Lua API ====================
+//
+// API 设计 (13 函数):
+//   生命周期 5: Enable(w,h) / Disable / IsEnabled / IsSupported / Resize(w,h)
+//   联动 2:    SetAutoEnable / GetAutoEnable           (默认 false)
+//   参数 6:    Set+Get Threshold / Intensity / Length / Iterations (+ Direction 2返)
+
+static int l_ST_Enable(lua_State* L) {
+    int w = (int)luaL_checkinteger(L, 1);
+    int h = (int)luaL_checkinteger(L, 2);
+    lua_pushboolean(L, StreakRenderer::Enable(w, h) ? 1 : 0);
+    return 1;
+}
+
+static int l_ST_Disable(lua_State* L) {
+    (void)L;
+    StreakRenderer::Disable();
+    return 0;
+}
+
+static int l_ST_IsEnabled(lua_State* L) {
+    lua_pushboolean(L, StreakRenderer::IsEnabled() ? 1 : 0);
+    return 1;
+}
+
+static int l_ST_IsSupported(lua_State* L) {
+    lua_pushboolean(L, StreakRenderer::IsSupported() ? 1 : 0);
+    return 1;
+}
+
+static int l_ST_Resize(lua_State* L) {
+    int w = (int)luaL_checkinteger(L, 1);
+    int h = (int)luaL_checkinteger(L, 2);
+    lua_pushboolean(L, StreakRenderer::Resize(w, h) ? 1 : 0);
+    return 1;
+}
+
+static int l_ST_SetAutoEnable(lua_State* L) {
+    luaL_checkany(L, 1);
+    StreakRenderer::SetAutoEnable(lua_toboolean(L, 1) != 0);
+    return 0;
+}
+
+static int l_ST_GetAutoEnable(lua_State* L) {
+    lua_pushboolean(L, StreakRenderer::GetAutoEnable() ? 1 : 0);
+    return 1;
+}
+
+static int l_ST_SetThreshold(lua_State* L) {
+    StreakRenderer::SetThreshold((float)luaL_checknumber(L, 1));
+    return 0;
+}
+
+static int l_ST_GetThreshold(lua_State* L) {
+    lua_pushnumber(L, (lua_Number)StreakRenderer::GetThreshold());
+    return 1;
+}
+
+static int l_ST_SetIntensity(lua_State* L) {
+    StreakRenderer::SetIntensity((float)luaL_checknumber(L, 1));
+    return 0;
+}
+
+static int l_ST_GetIntensity(lua_State* L) {
+    lua_pushnumber(L, (lua_Number)StreakRenderer::GetIntensity());
+    return 1;
+}
+
+static int l_ST_SetLength(lua_State* L) {
+    StreakRenderer::SetLength((float)luaL_checknumber(L, 1));
+    return 0;
+}
+
+static int l_ST_GetLength(lua_State* L) {
+    lua_pushnumber(L, (lua_Number)StreakRenderer::GetLength());
+    return 1;
+}
+
+/// @param x number; @param y number
+static int l_ST_SetDirection(lua_State* L) {
+    float x = (float)luaL_checknumber(L, 1);
+    float y = (float)luaL_checknumber(L, 2);
+    StreakRenderer::SetDirection(x, y);
+    return 0;
+}
+
+/// @return x, y (2 returns)
+static int l_ST_GetDirection(lua_State* L) {
+    float x = 0.0f, y = 0.0f;
+    StreakRenderer::GetDirection(x, y);
+    lua_pushnumber(L, (lua_Number)x);
+    lua_pushnumber(L, (lua_Number)y);
+    return 2;
+}
+
+static int l_ST_SetIterations(lua_State* L) {
+    StreakRenderer::SetIterations((int)luaL_checkinteger(L, 1));
+    return 0;
+}
+
+static int l_ST_GetIterations(lua_State* L) {
+    lua_pushinteger(L, (lua_Integer)StreakRenderer::GetIterations());
+    return 1;
+}
+
+static const luaL_Reg streak_funcs[] = {
+    {"Enable",          l_ST_Enable},
+    {"Disable",         l_ST_Disable},
+    {"IsEnabled",       l_ST_IsEnabled},
+    {"IsSupported",     l_ST_IsSupported},
+    {"Resize",          l_ST_Resize},
+    {"SetAutoEnable",   l_ST_SetAutoEnable},
+    {"GetAutoEnable",   l_ST_GetAutoEnable},
+    {"SetThreshold",    l_ST_SetThreshold},
+    {"GetThreshold",    l_ST_GetThreshold},
+    {"SetIntensity",    l_ST_SetIntensity},
+    {"GetIntensity",    l_ST_GetIntensity},
+    {"SetLength",       l_ST_SetLength},
+    {"GetLength",       l_ST_GetLength},
+    {"SetDirection",    l_ST_SetDirection},
+    {"GetDirection",    l_ST_GetDirection},
+    {"SetIterations",   l_ST_SetIterations},
+    {"GetIterations",   l_ST_GetIterations},
+    {NULL, NULL}
+};
+
 static const luaL_Reg graphics_funcs[] = {
     // --- 绘图基元 ---
     {"Draw",              l_Draw},
@@ -2050,6 +2281,16 @@ int luaopen_Light_Graphics(lua_State* L) {
         lua_createtable(L, 0, 0);
         luaL_setfuncs(L, ae_funcs, 0);
         lua_setfield(L, -2, "AutoExposure");
+
+        // Phase E.6.3 — LensDirt 子表 (Light.Graphics.LensDirt.*)
+        lua_createtable(L, 0, 0);
+        luaL_setfuncs(L, lens_dirt_funcs, 0);
+        lua_setfield(L, -2, "LensDirt");
+
+        // Phase E.6.3 — Streak 子表 (Light.Graphics.Streak.*)
+        lua_createtable(L, 0, 0);
+        luaL_setfuncs(L, streak_funcs, 0);
+        lua_setfield(L, -2, "Streak");
 
         lua_rawset(L, -3);
         lua_pushstring(L, "Graphics");
