@@ -161,7 +161,9 @@ if mode == 'client' then
 
     local host = arg2 or '127.0.0.1'
     local port = tonumber(arg3) or 9111
-    print(string.format("[client] connecting %s:%d", host, port))
+    local cli_dur = tonumber(arg and arg[4]) or 0   -- 0=无限, >0=自动退出秒数
+    print(string.format("[client] connecting %s:%d  duration=%s", host, port,
+                         cli_dur > 0 and (cli_dur..'s') or 'inf'))
 
     local room = Room.Join(host, port, {name='ecs_render_observer'})
     if not room then error('Room.Join failed') end
@@ -176,11 +178,14 @@ if mode == 'client' then
     for i = 1, 20 do Net.Resume(); Time.Delay(10) end
 
     local Game = Light(Light.UI.Window):New()
+    local cli_elapsed = 0
     function Game:OnOpen()
         print('[client] window opened, rendering mirror world')
     end
     function Game:Update(dt)
         Net.Resume()
+        cli_elapsed = cli_elapsed + dt
+        if cli_dur > 0 and cli_elapsed >= cli_dur then self:Close() end
         -- 注意: mirror world 不调 Update (没有 Move system, 全靠 server 推 ecs_delta)
     end
     function Game:Draw()
@@ -193,7 +198,7 @@ if mode == 'client' then
 
     Game:Open(800, 600, 'ChocoLight Phase D — ECS Render Client')
     while Light.UI.Loop() do Light.UI.Resume() end
-    room:Close()
+    room:Leave()   -- Client 端用 Leave (Host 才有 Close)
     print('demo_ecs_render client ok')
     return
 end

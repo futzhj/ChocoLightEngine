@@ -434,6 +434,10 @@ static const struct { const char *modName; const char *procName; } g_lightModule
     {"Light.Network.Http",        "luaopen_Light_Network_Http"},
     {"Light.Network.HttpServer",  "luaopen_Light_Network_HttpServer"},
     {"Light.Network.Web",         "luaopen_Light_Network_Web"},
+    // Phase BC — Udp/Rpc/Room (cpp 实现存在, 此前 entry 漏注册导致 demo 不可用)
+    {"Light.Network.Udp",         "luaopen_Light_Network_Udp"},
+    {"Light.Network.Rpc",         "luaopen_Light_Network_Rpc"},
+    {"Light.Network.Room",        "luaopen_Light_Network_Room"},
     {"Light.Input",               "luaopen_Light_Input"},
     {"Light.Physics",             "luaopen_Light_Physics"},
     {"Light.Physics.World",       "luaopen_Light_Physics_World"},

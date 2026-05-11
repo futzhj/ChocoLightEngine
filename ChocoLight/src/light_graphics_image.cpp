@@ -109,18 +109,26 @@ static int l_Image_GetTextureId(lua_State* L) {
 }
 
 /// @lua_api Light.Graphics.Image.__call
-/// @brief 构造函数, 从文件加载图像
+/// @brief 构造函数, 支持两种创建方式
 /// @param path string 图像文件路径 (PNG/JPG/BMP/TGA)
 /// @return void
+/// @overload (w, h, rgba_bytes) 从 RGBA 字节直接构造 (Phase D.x.7)
+///   w: number 宽度像素
+///   h: number 高度像素
+///   rgba_bytes: string 长度必须 = w*h*4 的 RGBA8 字节序列
 /// @example
 /// local img = Light(Light.Graphics.Image):New("hero.png")
+/// local rgba = string.rep(string.char(255, 0, 0, 255), 32*32)  -- 32x32 纯红
+/// local img2 = Light(Light.Graphics.Image):New(32, 32, rgba)
 static int l_Image_Call(lua_State* L) {
     luaL_checktype(L, 1, LUA_TTABLE);
+    int argc = lua_gettop(L);
 
     ImageContext* ctx = (ImageContext*)lua_newuserdata(L, sizeof(ImageContext));
     memset(ctx, 0, sizeof(ImageContext));
 
-    if (lua_isstring(L, 2)) {
+    // 分支 1: argc==2 + string => 从文件加载 (现有行为)
+    if (argc == 2 && lua_isstring(L, 2)) {
         const char* path = lua_tostring(L, 2);
 
         // stb_image 解码 (强制 RGBA 4 通道)
@@ -133,14 +141,33 @@ static int l_Image_Call(lua_State* L) {
             ctx->height   = h;
             ctx->channels = 4;
 
-            // 创建纹理 (通过渲染后端)
-            ctx->texId = g_render->CreateTexture(w, h, 4, pixels);
+            // 创建纹理 (通过渲染后端) - 防御 headless/no-GL 环境 g_render==nullptr
+            ctx->texId = g_render ? g_render->CreateTexture(w, h, 4, pixels) : 0;
 
             CC::Log(CC::LOG_INFO, "Image loaded: %s (%dx%d, texId=%u)", path, w, h, ctx->texId);
             stbi_image_free(pixels);
         } else {
             CC::Log(CC::LOG_ERROR, "Failed to load image: %s (%s)", path,
                      stbi_failure_reason() ? stbi_failure_reason() : "unknown");
+        }
+    }
+    // 分支 2: argc==4 + (number, number, string) => 从 RGBA 字节直接构造
+    else if (argc == 4 && lua_isnumber(L, 2) && lua_isnumber(L, 3) && lua_isstring(L, 4)) {
+        int w = (int)lua_tointeger(L, 2);
+        int h = (int)lua_tointeger(L, 3);
+        size_t len = 0;
+        const char* bytes = lua_tolstring(L, 4, &len);
+
+        if (w > 0 && h > 0 && bytes && len == (size_t)(w * h * 4)) {
+            ctx->width    = w;
+            ctx->height   = h;
+            ctx->channels = 4;
+            // 防御 headless/no-GL 环境 g_render==nullptr (smoke 环境常见)
+            ctx->texId    = g_render ? g_render->CreateTexture(w, h, 4, (const unsigned char*)bytes) : 0;
+            CC::Log(CC::LOG_INFO, "Image from bytes (%dx%d, texId=%u)", w, h, ctx->texId);
+        } else {
+            CC::Log(CC::LOG_ERROR, "Image from bytes: invalid w=%d h=%d byte_len=%zu (expected %d)",
+                     w, h, len, w * h * 4);
         }
     }
 
