@@ -1044,6 +1044,63 @@ void main() {
 }
 )";
 
+// ---- FS_LENS_FLARE_GHOST (GLES 3.0): ghost + halo + chromatic aberration ----
+// 单 pass 输出: ghost 朝中心反投采样 + halo 环形偏移采样 + RGB 径向色差
+// GLES 兼容: 静态 for 上限 8, 内部 `if (i >= count) break;`
+static const char* FS_LENS_FLARE_GHOST_SOURCE = R"(#version 300 es
+precision highp float;
+in  vec2 vUV;
+out vec4 FragColor;
+uniform sampler2D uBrightTex;
+uniform int   uGhostCount;          // [0, 8]
+uniform float uGhostDispersal;      // [0, 2]
+uniform float uHaloWidth;           // [0, 1]
+uniform float uChromaticAberration; // [0, 0.02]
+uniform int   uDistortionEnabled;   // 0/1
+
+vec3 sampleChroma(sampler2D tex, vec2 uv, vec2 caOffset) {
+    if (uDistortionEnabled == 0) {
+        return texture(tex, clamp(uv, vec2(0.001), vec2(0.999))).rgb;
+    }
+    float r = texture(tex, clamp(uv + caOffset, vec2(0.001), vec2(0.999))).r;
+    float g = texture(tex, clamp(uv,            vec2(0.001), vec2(0.999))).g;
+    float b = texture(tex, clamp(uv - caOffset, vec2(0.001), vec2(0.999))).b;
+    return vec3(r, g, b);
+}
+
+void main() {
+    // 反向采样模拟相机镜组内反射
+    vec2 flippedUV = vec2(1.0) - vUV;
+    vec2 centerVec = vec2(0.5) - vUV;
+    vec3 result = vec3(0.0);
+
+    // Ghost
+    if (uGhostCount > 0) {
+        vec2 ghostVec = (vec2(0.5) - flippedUV) * uGhostDispersal;
+        vec2 caDir = normalize(ghostVec + vec2(1e-6)) * uChromaticAberration;
+        for (int i = 0; i < 8; ++i) {
+            if (i >= uGhostCount) break;
+            vec2 sampleUV = flippedUV + ghostVec * float(i);
+            float distFromCenter = length(vec2(0.5) - sampleUV);
+            float weight = pow(max(0.0, 1.0 - distFromCenter * 2.0), 4.0);
+            result += sampleChroma(uBrightTex, sampleUV, caDir) * weight;
+        }
+    }
+
+    // Halo
+    if (uHaloWidth > 0.0) {
+        vec2 haloVec = normalize(centerVec + vec2(1e-6)) * uHaloWidth;
+        vec2 haloUV  = vUV + haloVec;
+        vec2 caDir   = normalize(haloVec + vec2(1e-6)) * uChromaticAberration;
+        float distFromRing = abs(length(centerVec) - uHaloWidth);
+        float haloWeight   = smoothstep(0.5, 0.0, distFromRing);
+        result += sampleChroma(uBrightTex, haloUV, caDir) * haloWeight;
+    }
+
+    FragColor = vec4(result, 1.0);
+}
+)";
+
 #else  // 桌面 GL 3.3 Core
 
 // ---- VS_TONEMAP (GL 3.3) ----
@@ -1254,6 +1311,59 @@ void main() {
 }
 )";
 
+// ---- FS_LENS_FLARE_GHOST (GL 3.3): ghost + halo + chromatic aberration ----
+// 同 GLES3 版本算法; 详见 GLES3 块的注释.
+static const char* FS_LENS_FLARE_GHOST_SOURCE = R"(
+#version 330 core
+in  vec2 vUV;
+out vec4 FragColor;
+uniform sampler2D uBrightTex;
+uniform int   uGhostCount;          // [0, 8]
+uniform float uGhostDispersal;      // [0, 2]
+uniform float uHaloWidth;           // [0, 1]
+uniform float uChromaticAberration; // [0, 0.02]
+uniform int   uDistortionEnabled;   // 0/1
+
+vec3 sampleChroma(sampler2D tex, vec2 uv, vec2 caOffset) {
+    if (uDistortionEnabled == 0) {
+        return texture(tex, clamp(uv, vec2(0.001), vec2(0.999))).rgb;
+    }
+    float r = texture(tex, clamp(uv + caOffset, vec2(0.001), vec2(0.999))).r;
+    float g = texture(tex, clamp(uv,            vec2(0.001), vec2(0.999))).g;
+    float b = texture(tex, clamp(uv - caOffset, vec2(0.001), vec2(0.999))).b;
+    return vec3(r, g, b);
+}
+
+void main() {
+    vec2 flippedUV = vec2(1.0) - vUV;
+    vec2 centerVec = vec2(0.5) - vUV;
+    vec3 result = vec3(0.0);
+
+    if (uGhostCount > 0) {
+        vec2 ghostVec = (vec2(0.5) - flippedUV) * uGhostDispersal;
+        vec2 caDir = normalize(ghostVec + vec2(1e-6)) * uChromaticAberration;
+        for (int i = 0; i < 8; ++i) {
+            if (i >= uGhostCount) break;
+            vec2 sampleUV = flippedUV + ghostVec * float(i);
+            float distFromCenter = length(vec2(0.5) - sampleUV);
+            float weight = pow(max(0.0, 1.0 - distFromCenter * 2.0), 4.0);
+            result += sampleChroma(uBrightTex, sampleUV, caDir) * weight;
+        }
+    }
+
+    if (uHaloWidth > 0.0) {
+        vec2 haloVec = normalize(centerVec + vec2(1e-6)) * uHaloWidth;
+        vec2 haloUV  = vUV + haloVec;
+        vec2 caDir   = normalize(haloVec + vec2(1e-6)) * uChromaticAberration;
+        float distFromRing = abs(length(centerVec) - uHaloWidth);
+        float haloWeight   = smoothstep(0.5, 0.0, distFromRing);
+        result += sampleChroma(uBrightTex, haloUV, caDir) * haloWeight;
+    }
+
+    FragColor = vec4(result, 1.0);
+}
+)";
+
 #endif
 
 // Phase AS.2 — Mesh GPU 资源 (Phase AX 扩展加 morph delta texture)
@@ -1408,6 +1518,16 @@ class GL33Backend : public RenderBackend {
     GLint  locStreakBlur_Direction   = -1;
     GLint  locStreakComposite_Src    = -1;
     GLint  locStreakComposite_Intensity = -1;
+
+    // Phase E.7 — Lens Flare: 1 shader (ghost) + 复用 Bloom bright/composite
+    GLuint programLensFlareGhost       = 0;
+    bool   lensFlareSupported          = false;
+    GLint  locLensFlare_BrightTex      = -1;
+    GLint  locLensFlare_GhostCount     = -1;
+    GLint  locLensFlare_GhostDispersal = -1;
+    GLint  locLensFlare_HaloWidth      = -1;
+    GLint  locLensFlare_Aberration     = -1;
+    GLint  locLensFlare_DistortionEn   = -1;
 
     // Phase E.2.1 — Lighting2D dirty bit cache
     // 当 state->version 与此值相等时, UploadLighting2D 跳过所有 glUniform*v 调用
@@ -2098,11 +2218,31 @@ public:
             streakSupported = false;
         }
 
+        // --- Phase E.7 — Lens Flare Ghost shader (bright/composite 复用 Bloom) ---
+        programLensFlareGhost = buildProgram(FS_LENS_FLARE_GHOST_SOURCE, "LensFlareGhost");
+        if (programLensFlareGhost) {
+            locLensFlare_BrightTex      = glGetUniformLocation(programLensFlareGhost, "uBrightTex");
+            locLensFlare_GhostCount     = glGetUniformLocation(programLensFlareGhost, "uGhostCount");
+            locLensFlare_GhostDispersal = glGetUniformLocation(programLensFlareGhost, "uGhostDispersal");
+            locLensFlare_HaloWidth      = glGetUniformLocation(programLensFlareGhost, "uHaloWidth");
+            locLensFlare_Aberration     = glGetUniformLocation(programLensFlareGhost, "uChromaticAberration");
+            locLensFlare_DistortionEn   = glGetUniformLocation(programLensFlareGhost, "uDistortionEnabled");
+            glUseProgram(programLensFlareGhost);
+            if (locLensFlare_BrightTex >= 0) glUniform1i(locLensFlare_BrightTex, 0);
+            glUseProgram(0);
+            // Lens Flare 需要 Bloom bright/composite 都可用 (复用)
+            lensFlareSupported = bloomSupported;
+        } else {
+            lensFlareSupported = false;
+        }
+
         CC::Log(CC::LOG_INFO,
-                "GL33: Phase E.6 LensFx ready (lensDirt=%s, streak=%s; whiteTex=%u, lensDirt=%u, streakBlur=%u, streakComposite=%u)",
+                "GL33: Phase E.6+E.7 LensFx ready (lensDirt=%s, streak=%s, lensFlare=%s; whiteTex=%u, programs=[LD=%u, SB=%u, SC=%u, LFG=%u])",
                 lensDirtSupported ? "yes" : "no",
                 streakSupported   ? "yes" : "no",
-                whiteTex1x1, programLensDirt, programStreakBlur, programStreakComposite);
+                lensFlareSupported? "yes" : "no",
+                whiteTex1x1, programLensDirt, programStreakBlur, programStreakComposite,
+                programLensFlareGhost);
     }
 
     void Shutdown() override {
@@ -2207,6 +2347,12 @@ public:
         locStreakComposite_Src = locStreakComposite_Intensity = -1;
         lensDirtSupported = false;
         streakSupported = false;
+
+        // Phase E.7 — 释放 Lens Flare ghost shader (RT 由 LensFlareRenderer::Shutdown 配对释放)
+        if (programLensFlareGhost) { glDeleteProgram(programLensFlareGhost); programLensFlareGhost = 0; }
+        locLensFlare_BrightTex = locLensFlare_GhostCount = locLensFlare_GhostDispersal = -1;
+        locLensFlare_HaloWidth = locLensFlare_Aberration = locLensFlare_DistortionEn = -1;
+        lensFlareSupported = false;
     }
 
     bool SupportsLit2D() const override { return lit2DSupported; }
@@ -2846,6 +2992,109 @@ public:
         glBindTexture(GL_TEXTURE_2D, 0);
         glUseProgram(0);
         glDisable(GL_BLEND);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    }
+
+    // ==================== Phase E.7 — Lens Flare 虚接口实现 ====================
+
+    bool SupportsLensFlare() const override { return lensFlareSupported; }
+
+    /// 创建 lens flare ping-pong RT 对 (2 个 RGBA16F + FBO, 半分辨率) — 同 Streak 实现
+    bool CreateLensFlareTargets(int srcW, int srcH,
+                                 uint32_t* outFbos, uint32_t* outTexs,
+                                 int* outW, int* outH) override {
+        if (!lensFlareSupported || srcW <= 0 || srcH <= 0
+            || !outFbos || !outTexs || !outW || !outH) return false;
+
+        int w = srcW / 2; if (w < 32) w = 32;
+        int h = srcH / 2; if (h < 32) h = 32;
+
+        GLuint texs[2] = {0, 0};
+        GLuint fbos[2] = {0, 0};
+        bool ok = true;
+
+        for (int i = 0; i < 2 && ok; ++i) {
+            glGenTextures(1, &texs[i]);
+            glBindTexture(GL_TEXTURE_2D, texs[i]);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, w, h, 0,
+                         GL_RGBA, GL_HALF_FLOAT, nullptr);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+            glBindTexture(GL_TEXTURE_2D, 0);
+
+            glGenFramebuffers(1, &fbos[i]);
+            glBindFramebuffer(GL_FRAMEBUFFER, fbos[i]);
+            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                                    GL_TEXTURE_2D, texs[i], 0);
+            GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+            glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+            if (status != GL_FRAMEBUFFER_COMPLETE) {
+                CC::Log(CC::LOG_WARN,
+                        "GL33: Phase E.7 CreateLensFlareTargets slot %d incomplete (0x%X)",
+                        i, (unsigned)status);
+                ok = false;
+                break;
+            }
+        }
+
+        if (!ok) {
+            for (int i = 0; i < 2; ++i) {
+                if (fbos[i]) glDeleteFramebuffers(1, &fbos[i]);
+                if (texs[i]) glDeleteTextures(1, &texs[i]);
+            }
+            return false;
+        }
+
+        outFbos[0] = (uint32_t)fbos[0];
+        outFbos[1] = (uint32_t)fbos[1];
+        outTexs[0] = (uint32_t)texs[0];
+        outTexs[1] = (uint32_t)texs[1];
+        *outW = w;
+        *outH = h;
+        return true;
+    }
+
+    void DeleteLensFlareTargets(uint32_t* fbos, uint32_t* texs) override {
+        if (!fbos || !texs) return;
+        for (int i = 0; i < 2; ++i) {
+            if (fbos[i]) { GLuint f = (GLuint)fbos[i]; glDeleteFramebuffers(1, &f); fbos[i] = 0; }
+            if (texs[i]) { GLuint t = (GLuint)texs[i]; glDeleteTextures(1, &t);     texs[i] = 0; }
+        }
+    }
+
+    /// Ghost + Halo + Chromatic Aberration: brightTex → dstFbo (覆盖写, 不开 blend)
+    void DrawLensFlareGhost(uint32_t brightTex, uint32_t dstFbo,
+                             int w, int h,
+                             int ghostCount, float ghostDispersal,
+                             float haloWidth, float chromaticAberration,
+                             bool distortionEnabled) override {
+        if (!lensFlareSupported || !brightTex || !dstFbo || w <= 0 || h <= 0) return;
+
+        glBindFramebuffer(GL_FRAMEBUFFER, (GLuint)dstFbo);
+        glViewport(0, 0, w, h);
+        glDisable(GL_DEPTH_TEST);
+        glDisable(GL_SCISSOR_TEST);
+        glDisable(GL_BLEND);
+
+        glUseProgram(programLensFlareGhost);
+        if (locLensFlare_GhostCount     >= 0) glUniform1i(locLensFlare_GhostCount, ghostCount);
+        if (locLensFlare_GhostDispersal >= 0) glUniform1f(locLensFlare_GhostDispersal, ghostDispersal);
+        if (locLensFlare_HaloWidth      >= 0) glUniform1f(locLensFlare_HaloWidth, haloWidth);
+        if (locLensFlare_Aberration     >= 0) glUniform1f(locLensFlare_Aberration, chromaticAberration);
+        if (locLensFlare_DistortionEn   >= 0) glUniform1i(locLensFlare_DistortionEn, distortionEnabled ? 1 : 0);
+
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, (GLuint)brightTex);
+
+        glBindVertexArray(vaoTonemap);
+        glDrawArrays(GL_TRIANGLES, 0, 6);
+
+        glBindVertexArray(0);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        glUseProgram(0);
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
     }
 

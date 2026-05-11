@@ -772,6 +772,72 @@ public:
      */
     virtual void DrawStreakComposite(uint32_t /*streakTex*/, uint32_t /*hdrFbo*/,
                                       int /*w*/, int /*h*/, float /*intensity*/) {}
+
+    // ==================== Phase E.7 — Lens Flare (Ghost + Halo + Chromatic Aberration) ====================
+    //
+    // 算法: 屏幕空间 ghost-halo 镜头光晕模拟
+    //   1. Bright pass  : 复用 DrawBloomBrightPass (相同 threshold + soft knee)
+    //   2. Ghost + Halo : 新 shader 单次 fragment (lens flare ghost)
+    //                    - Ghost: 朝画面中心反投 N 个不同尺寸的光圈 (uGhostCount, uGhostDispersal)
+    //                    - Halo : 沿径向方向偏移采样形成环状光晕 (uHaloWidth)
+    //                    - Chromatic Aberration: RGB 分量分别径向偏移采样 (uChromaticAberration)
+    //   3. Composite    : 复用 DrawBloomComposite (additive)
+    //
+    // RT: ping-pong 对 (RGBA16F, srcW/2 x srcH/2, min 32x32)
+    //   - tex[0]: bright pass 输出 (filtered)
+    //   - tex[1]: ghost+halo 输出 (送 composite)
+    //
+    // Legacy 后端: 全部 no-op (SupportsLensFlare = false)
+
+    /**
+     * @brief 是否支持 Lens Flare
+     *   要求: tonemap 可用 + Bloom bright/composite 可用 + lens flare ghost shader 编译成功
+     *   默认实现 (Legacy): false
+     */
+    virtual bool SupportsLensFlare() const { return false; }
+
+    /**
+     * @brief 创建 lens flare ping-pong RT 对 (2 x RGBA16F + FBO, 同尺寸)
+     *
+     * 内部按 srcW/2, srcH/2 创建 (节省 fragment); 下限 32x32.
+     *
+     * @param srcW, srcH   HDR RT 输入尺寸
+     * @param outFbos      [out] uint32_t[2] FBO id (2 ping-pong)
+     * @param outTexs      [out] uint32_t[2] 颜色 tex id
+     * @param outW, outH   [out] 实际创建尺寸
+     * @return             true 成功; false 失败 (会清理已分配资源)
+     */
+    virtual bool CreateLensFlareTargets(int /*srcW*/, int /*srcH*/,
+                                         uint32_t* /*outFbos*/,   // [2]
+                                         uint32_t* /*outTexs*/,   // [2]
+                                         int* /*outW*/, int* /*outH*/) { return false; }
+
+    virtual void DeleteLensFlareTargets(uint32_t* /*fbos*/, uint32_t* /*texs*/) {}
+
+    /**
+     * @brief Ghost + Halo + Chromatic Aberration: brightTex -> dstFbo (覆盖写, 不开 blend)
+     *
+     * 算法详见类内注释; shader 静态循环 8 上限 + 早退 (GLES3 兼容).
+     *
+     * @param brightTex            输入 (bright pass 输出)
+     * @param dstFbo               输出 FBO (lens flare ping-pong 第 2 张)
+     * @param w, h                 dst RT 尺寸
+     * @param ghostCount           [0, 8] 整数; 0 = 不生成 ghost
+     * @param ghostDispersal       [0, 2.0] 径向缩放
+     * @param haloWidth            [0, 1.0] halo 环形半径 (UV 空间)
+     * @param chromaticAberration  [0, 0.02] RGB 分量径向偏移
+     * @param distortionEnabled    bool 是否启用色差 (false = RGB 同采)
+     */
+    virtual void DrawLensFlareGhost(uint32_t /*brightTex*/, uint32_t /*dstFbo*/,
+                                     int /*w*/, int /*h*/,
+                                     int /*ghostCount*/,
+                                     float /*ghostDispersal*/,
+                                     float /*haloWidth*/,
+                                     float /*chromaticAberration*/,
+                                     bool  /*distortionEnabled*/) {}
+
+    // 注: bright pass 直接调用 DrawBloomBrightPass(...) 复用 Bloom 算法
+    // 注: 最终 composite 直接调用 DrawBloomComposite(...) 复用 Bloom 加性合成
 };
 
 // ==================== 工厂函数 ====================
