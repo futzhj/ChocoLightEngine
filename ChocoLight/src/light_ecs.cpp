@@ -22,6 +22,12 @@
  *
  * 客户端 mirror (Phase C, 由 C-T4 提供):
  *   mirror = Light.ECS.MirrorFromRoom(room)   -- 自动 OnState reconcile
+ *
+ * 内置渲染 component + 渲染 system (Phase D):
+ *   world.new() 自动注册 6 个内置渲染 component:
+ *     Transform2D / Sprite / Camera2D / Transform3D / MeshRenderer / Camera3D
+ *   world:Render()             -- 跑 2D camera setup → sprite (z-sort) → 3D camera → mesh
+ *   world:MarkRenderNetworked() -- 把内置渲染 component 重标为 networked=true (需 NetworkSync 前调)
  */
 
 #include "light.h"
@@ -48,6 +54,11 @@ function ECSWorld.new()
     w._dirty_comps = {}      -- {[id] = {[comp_name] = true}} 细粒度 dirty (新/改)
     w._removed_comps = {}    -- {[id] = {[comp_name] = true}} Remove 触发的删除
     w._needs_full_resync = false  -- OnJoin 触发, 下次 sync 把所有 entity 所有 networked comp 标 dirty
+    -- Phase D: 内置渲染 component 自动注册 (具体定义在 Phase 2 raw string)
+    w._builtin_render_comps = {}
+    if w._RegisterBuiltinRenderComponents then
+        w:_RegisterBuiltinRenderComponents()
+    end
     return w
 end
 
@@ -503,6 +514,186 @@ local function MirrorFromRoom(room)
     end
 
     return mirror
+end
+)LUA" R"LUA(
+-- ==================== Phase D: 内置渲染 component + 渲染调度 ====================
+
+-- 内置 6 个渲染 component 的默认值表
+-- 用户若已注册同名 component, 引擎跳过该项以尊重用户优先
+function ECSWorld:_RegisterBuiltinRenderComponents()
+    local builtins = {
+        {name='Transform2D',  defaults={x=0, y=0, z=0, rot=0, sx=1, sy=1, ox=0, oy=0}},
+        {name='Sprite',       defaults={color={r=1,g=1,b=1,a=1}, visible=true,
+                                         anchor={ax=0, ay=0}, flipX=false, flipY=false}},
+        {name='Camera2D',     defaults={active=true, zoom=1.0, viewportW=0, viewportH=0}},
+        {name='Transform3D',  defaults={x=0, y=0, z=0, rx=0, ry=0, rz=0, sx=1, sy=1, sz=1}},
+        {name='MeshRenderer', defaults={visible=true}},
+        {name='Camera3D',     defaults={active=true, fovY=60, aspect=1.333, nearZ=0.1, farZ=1000,
+                                         targetX=0, targetY=0, targetZ=0,
+                                         upX=0, upY=1, upZ=0}},
+    }
+    for _, c in ipairs(builtins) do
+        if not self._components[c.name] then
+            self:RegisterComponent(c.name, c.defaults, {networked = false})
+            self._builtin_render_comps[c.name] = true
+        end
+    end
+end
+
+-- 把内置渲染 component 重标 networked=true. 必须在 NetworkSync 前调用.
+function ECSWorld:MarkRenderNetworked()
+    for name, _ in pairs(self._builtin_render_comps) do
+        if self._components[name] then
+            self._networked_comps[name] = true
+        end
+    end
+end
+
+-- 找首个 active=true 的相机 entity (同时拥有指定 cam comp 和 tf comp)
+function ECSWorld:_FindActiveCamera(camComp, tfComp)
+    for _, e in ipairs(self._entities) do
+        local c = e._comps[camComp]
+        local t = e._comps[tfComp]
+        if c and t and c.active then return e end
+    end
+    return nil
+end
+
+-- 收集所有可见 sprite, 按 Transform2D.z 升序 (画家算法)
+function ECSWorld:_CollectSprites()
+    local list = {}
+    for _, e in ipairs(self._entities) do
+        local tf = e._comps.Transform2D
+        local sp = e._comps.Sprite
+        if tf and sp and sp.visible ~= false and sp.image then
+            list[#list + 1] = {entity=e, tf=tf, sprite=sp, _z=tf.z or 0}
+        end
+    end
+    -- 稳定排序 (Lua table.sort 非稳定, 但 z 不同时无歧义)
+    table.sort(list, function(a, b) return a._z < b._z end)
+    return list
+end
+
+-- 绘制单个 sprite (在 Render() 中循环调用)
+function ECSWorld:_DrawSprite(tf, s, gfx)
+    gfx.Push()
+    gfx.Translate(tf.x or 0, tf.y or 0, 0)
+    if (tf.rot or 0) ~= 0 then gfx.Rotate(tf.rot, 0, 0, 1) end
+    local sx = tf.sx or 1
+    local sy = tf.sy or 1
+    -- 翻转通过负 scale 实现 (anchor 已固定为图片左上偏移, 翻转后需补偿)
+    if s.flipX then sx = -sx end
+    if s.flipY then sy = -sy end
+    if sx ~= 1 or sy ~= 1 then gfx.Scale(sx, sy, 1) end
+
+    local col = s.color or {}
+    gfx.SetColor(col.r or 1, col.g or 1, col.b or 1, col.a or 1)
+
+    -- 取图像尺寸 (defensive: image 可能是 mock table 或 真实 userdata)
+    local img = s.image
+    local iw, ih = 64, 64
+    if type(img) == 'table' then
+        if type(img.GetWidth) == 'function' then iw = img:GetWidth() end
+        if type(img.GetHeight) == 'function' then ih = img:GetHeight() end
+    end
+
+    -- anchor 偏移: anchor (0,0)=左上, (0.5,0.5)=中心, (1,1)=右下
+    local anc = s.anchor or {}
+    local ax = anc.ax or 0
+    local ay = anc.ay or 0
+    local drawX = -ax * iw
+    local drawY = -ay * ih
+
+    local q = s.quad
+    if q and (q.qw and q.qw > 0) then
+        gfx.DrawQuad(img, drawX, drawY, 0,
+                     q.qx or 0, q.qy or 0, q.qw, q.qh or q.qw)
+    else
+        gfx.Draw(img, drawX, drawY, 0)
+    end
+    gfx.Pop()
+end
+
+-- 绘制单个 mesh (3D)
+function ECSWorld:_DrawMesh(tf, mr, gfx)
+    gfx.Push()
+    gfx.Translate(tf.x or 0, tf.y or 0, tf.z or 0)
+    if (tf.rx or 0) ~= 0 then gfx.Rotate(tf.rx, 1, 0, 0) end
+    if (tf.ry or 0) ~= 0 then gfx.Rotate(tf.ry, 0, 1, 0) end
+    if (tf.rz or 0) ~= 0 then gfx.Rotate(tf.rz, 0, 0, 1) end
+    local sx = tf.sx or 1
+    local sy = tf.sy or 1
+    local sz = tf.sz or 1
+    if sx ~= 1 or sy ~= 1 or sz ~= 1 then gfx.Scale(sx, sy, sz) end
+
+    local mesh = mr.mesh
+    if mesh and type(mesh.Draw) == 'function' then
+        if mr.material then
+            mesh:Draw(mr.material)
+        else
+            mesh:Draw(0)
+        end
+    end
+    gfx.Pop()
+end
+
+-- 渲染入口: 用户在 window.Draw 中调一次
+-- 自动跑 2D camera → sprite (z-sort) → 3D camera → mesh 四阶段
+function ECSWorld:Render()
+    -- 取 Light.Graphics 模块 (server-only 进程无, 静默跳过)
+    local gfx = Light and Light.Graphics
+    if not gfx or type(gfx.Push) ~= 'function' then
+        if not self._render_warned then
+            self._render_warned = true
+            print('[ECS] Light.Graphics not available, world:Render() is a no-op')
+        end
+        return
+    end
+
+    -- ============ 2D 阶段 ============
+    local cam2d = self:_FindActiveCamera('Camera2D', 'Transform2D')
+    if cam2d then
+        local ctf = cam2d._comps.Transform2D
+        local cc  = cam2d._comps.Camera2D
+        local zoom = cc.zoom or 1.0
+        gfx.Push()
+        if zoom ~= 1.0 then gfx.Scale(zoom, zoom, 1) end
+        gfx.Translate(-(ctf.x or 0), -(ctf.y or 0), 0)
+    end
+
+    local sprites = self:_CollectSprites()
+    for i = 1, #sprites do
+        self:_DrawSprite(sprites[i].tf, sprites[i].sprite, gfx)
+    end
+
+    if cam2d then gfx.Pop() end
+
+    -- ============ 3D 阶段 (仅在有 active Camera3D 时启用) ============
+    local cam3d = self:_FindActiveCamera('Camera3D', 'Transform3D')
+    if cam3d then
+        local ctf = cam3d._comps.Transform3D
+        local cc  = cam3d._comps.Camera3D
+        if type(gfx.SetPerspective) == 'function' then
+            gfx.SetPerspective(cc.fovY or 60, cc.aspect or 1.333,
+                               cc.nearZ or 0.1, cc.farZ or 1000)
+        end
+        if type(gfx.SetCamera) == 'function' then
+            gfx.SetCamera(ctf.x or 0, ctf.y or 0, ctf.z or 0,
+                          cc.targetX or 0, cc.targetY or 0, cc.targetZ or 0,
+                          cc.upX or 0, cc.upY or 1, cc.upZ or 0)
+        end
+        if type(gfx.SetDepthTest) == 'function' then gfx.SetDepthTest(true) end
+
+        for _, e in ipairs(self._entities) do
+            local tf = e._comps.Transform3D
+            local mr = e._comps.MeshRenderer
+            if tf and mr and mr.visible ~= false and mr.mesh then
+                self:_DrawMesh(tf, mr, gfx)
+            end
+        end
+
+        if type(gfx.SetDepthTest) == 'function' then gfx.SetDepthTest(false) end
+    end
 end
 
 -- 返回模块表 (luaopen_Light_ECS 把它设为 Light.ECS)
