@@ -6,6 +6,7 @@
  */
 
 #include "hdr_renderer.h"
+#include "bloom_renderer.h"   // Phase E.4.2 — HDR Enable/Disable/Resize 联动回调
 #include "render_backend.h"
 #include "light.h"         // CC::Log
 
@@ -138,11 +139,16 @@ bool Enable(int w, int h) {
     g.paused  = false;
     CC::Log(CC::LOG_INFO, "HDRRenderer::Enable: HDR RT created (%dx%d, fbo=%u, tex=%u)",
             w, h, g.fbo, g.sceneTex);
+
+    // Phase E.4.2 — HDR 已启用, 通知 Bloom 模块 (autoEnable=true 时自动拉起)
+    BloomRenderer::OnHDREnabled(w, h);
     return true;
 }
 
 void Disable() {
     if (!g.enabled) return;
+    // Phase E.4.2 — 先通知 Bloom 模块 (Bloom 依赖 HDR RT, 先关 Bloom 再关 HDR)
+    BloomRenderer::OnHDRDisabled();
     ReleaseRT();
     g.enabled = false;
     g.paused  = false;
@@ -166,7 +172,11 @@ bool Resize(int w, int h) {
     if (g.width == w && g.height == h) {
         return true;  // 尺寸相同, no-op
     }
-    return Enable(w, h);  // Enable 内部会 ReleaseRT + CreateRT
+    bool ok = Enable(w, h);  // Enable 内部会 ReleaseRT + CreateRT + OnHDREnabled
+    // 注: Enable 已调过 OnHDREnabled, 该回调等价于 Bloom Resize; 以下 OnHDRResized 重复调
+    //     有 no-op 保护 (Resize 内部对于已同尺寸直接 return true)
+    if (ok) BloomRenderer::OnHDRResized(w, h);
+    return ok;
 }
 
 // ==================== 主循环 hook ====================
@@ -191,7 +201,14 @@ void EndScene() {
     // 一般在 SwapBuffers 前不再绘制, 下帧 BeginFrame 也不依赖 viewport. 若未来
     // tonemap 结果要与 LDR 其他内容合成, Lua 层可显式调 SetViewport.
 
-    // Tonemap + sRGB encode → default fb (E.3.4 多 operator)
+    // Phase E.4.2 — Bloom 管线 (内部自检 IsEnabled; 未启用 no-op)
+    // Process 将 bloom 结果 additive blend 到 g.fbo (HDR RT) 原地累加
+    BloomRenderer::Process(g.fbo, g.sceneTex);
+
+    // Bloom Process 内部结束时已 BindFramebuffer(0), 但为安全起见再 unbind 一次
+    g.backend->UnbindFBO();
+
+    // Tonemap + sRGB encode → default fb (E.3.4 多 operator; 输入已含 bloom 的 HDR RT)
     g.backend->DrawTonemapFullscreen(g.sceneTex, g.exposure, g.gamma, g.tonemap);
 }
 
