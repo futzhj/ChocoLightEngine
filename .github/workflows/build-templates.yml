@@ -96,6 +96,7 @@ jobs:
           $phaseE14Smoke = Resolve-Path "scripts\smoke\lighting2d.lua"
           $phaseE3Smoke  = Resolve-Path "scripts\smoke\hdr.lua"
           $phaseE4Smoke  = Resolve-Path "scripts\smoke\bloom.lua"
+          $phaseE5Smoke  = Resolve-Path "scripts\smoke\auto_exposure.lua"
           Copy-Item ChocoLight\build\bin\Release\Light.dll $runtimeDir -Force
           & "$runtimeDir\light.exe" $coreSmoke
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -198,6 +199,8 @@ jobs:
           & "$runtimeDir\light.exe" $phaseE3Smoke
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & "$runtimeDir\light.exe" $phaseE4Smoke
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & "$runtimeDir\light.exe" $phaseE5Smoke
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Package Windows Template

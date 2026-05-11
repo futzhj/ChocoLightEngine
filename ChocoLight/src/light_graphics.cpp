@@ -27,7 +27,8 @@
 #include "batch_renderer.h"
 #include "lit_batch_renderer.h"   // Phase E.2.3 — Lit2D 批渲染
 #include "hdr_renderer.h"          // Phase E.3.2 — HDR 离屏管线
-#include "bloom_renderer.h"        // Phase E.4.2 — Bloom 后处理
+#include "bloom_renderer.h"          // Phase E.4.2 — Bloom 后处理
+#include "auto_exposure_renderer.h"  // Phase E.5.2 — Auto Exposure (Eye Adaptation)
 #include <cmath>
 #include <cstring>
 
@@ -1795,6 +1796,164 @@ static const luaL_Reg bloom_funcs[] = {
     {NULL, NULL}
 };
 
+// ==================== Phase E.5.3 — Light.Graphics.AutoExposure Lua API ====================
+//
+// 子表 Light.Graphics.AutoExposure 挂在 luaopen_Light_Graphics 注册时附加 (在 Bloom 子表之后).
+//
+// API 设计 (18 函数):
+//   生命周期 5: Enable(w,h)/Disable/IsEnabled/IsSupported/Resize(w,h)
+//   联动 2:    SetAutoEnable(flag)/GetAutoEnable     (默认 false; 与 Bloom 默认 true 区别)
+//   参数 10:   Set+Get TargetEV/SpeedUp/SpeedDown/MinEV/MaxEV
+//   debug 3:   GetCurrentEV/GetCurrentExposure/GetMeasuredLuminance
+
+/// @lua_api Light.Graphics.AutoExposure.Enable
+/// @param w integer; @param h integer; @return boolean
+static int l_AE_Enable(lua_State* L) {
+    int w = (int)luaL_checkinteger(L, 1);
+    int h = (int)luaL_checkinteger(L, 2);
+    lua_pushboolean(L, AutoExposureRenderer::Enable(w, h) ? 1 : 0);
+    return 1;
+}
+
+static int l_AE_Disable(lua_State* L) {
+    (void)L;
+    AutoExposureRenderer::Disable();
+    return 0;
+}
+
+static int l_AE_IsEnabled(lua_State* L) {
+    lua_pushboolean(L, AutoExposureRenderer::IsEnabled() ? 1 : 0);
+    return 1;
+}
+
+static int l_AE_IsSupported(lua_State* L) {
+    lua_pushboolean(L, AutoExposureRenderer::IsSupported() ? 1 : 0);
+    return 1;
+}
+
+static int l_AE_Resize(lua_State* L) {
+    int w = (int)luaL_checkinteger(L, 1);
+    int h = (int)luaL_checkinteger(L, 2);
+    lua_pushboolean(L, AutoExposureRenderer::Resize(w, h) ? 1 : 0);
+    return 1;
+}
+
+static int l_AE_SetAutoEnable(lua_State* L) {
+    luaL_checkany(L, 1);
+    AutoExposureRenderer::SetAutoEnable(lua_toboolean(L, 1) != 0);
+    return 0;
+}
+
+static int l_AE_GetAutoEnable(lua_State* L) {
+    lua_pushboolean(L, AutoExposureRenderer::GetAutoEnable() ? 1 : 0);
+    return 1;
+}
+
+/// @lua_api Light.Graphics.AutoExposure.SetTargetEV
+/// @param v number 中灰偏移 EV (默认 0.0)
+static int l_AE_SetTargetEV(lua_State* L) {
+    AutoExposureRenderer::SetTargetEV((float)luaL_checknumber(L, 1));
+    return 0;
+}
+
+static int l_AE_GetTargetEV(lua_State* L) {
+    lua_pushnumber(L, (lua_Number)AutoExposureRenderer::GetTargetEV());
+    return 1;
+}
+
+/// @lua_api Light.Graphics.AutoExposure.SetSpeedUp
+/// @param v number 暗→亮 适应速度 EV/sec (clamp [0.1, 20])
+static int l_AE_SetSpeedUp(lua_State* L) {
+    AutoExposureRenderer::SetSpeedUp((float)luaL_checknumber(L, 1));
+    return 0;
+}
+
+static int l_AE_GetSpeedUp(lua_State* L) {
+    lua_pushnumber(L, (lua_Number)AutoExposureRenderer::GetSpeedUp());
+    return 1;
+}
+
+/// @lua_api Light.Graphics.AutoExposure.SetSpeedDown
+/// @param v number 亮→暗 适应速度 EV/sec (clamp [0.1, 20])
+static int l_AE_SetSpeedDown(lua_State* L) {
+    AutoExposureRenderer::SetSpeedDown((float)luaL_checknumber(L, 1));
+    return 0;
+}
+
+static int l_AE_GetSpeedDown(lua_State* L) {
+    lua_pushnumber(L, (lua_Number)AutoExposureRenderer::GetSpeedDown());
+    return 1;
+}
+
+/// @lua_api Light.Graphics.AutoExposure.SetMinEV
+/// @param v number 当前 EV 下限 (默认 -8.0)
+static int l_AE_SetMinEV(lua_State* L) {
+    AutoExposureRenderer::SetMinEV((float)luaL_checknumber(L, 1));
+    return 0;
+}
+
+static int l_AE_GetMinEV(lua_State* L) {
+    lua_pushnumber(L, (lua_Number)AutoExposureRenderer::GetMinEV());
+    return 1;
+}
+
+/// @lua_api Light.Graphics.AutoExposure.SetMaxEV
+/// @param v number 当前 EV 上限 (默认 +8.0)
+static int l_AE_SetMaxEV(lua_State* L) {
+    AutoExposureRenderer::SetMaxEV((float)luaL_checknumber(L, 1));
+    return 0;
+}
+
+static int l_AE_GetMaxEV(lua_State* L) {
+    lua_pushnumber(L, (lua_Number)AutoExposureRenderer::GetMaxEV());
+    return 1;
+}
+
+/// @lua_api Light.Graphics.AutoExposure.GetCurrentEV
+/// @return number 平滑后当前 EV
+static int l_AE_GetCurrentEV(lua_State* L) {
+    lua_pushnumber(L, (lua_Number)AutoExposureRenderer::GetCurrentEV());
+    return 1;
+}
+
+/// @lua_api Light.Graphics.AutoExposure.GetCurrentExposure
+/// @return number 当前 EV 转 exposure 倍率 (= 2^GetCurrentEV)
+static int l_AE_GetCurrentExposure(lua_State* L) {
+    lua_pushnumber(L, (lua_Number)AutoExposureRenderer::GetCurrentExposure());
+    return 1;
+}
+
+/// @lua_api Light.Graphics.AutoExposure.GetMeasuredLuminance
+/// @return number 上一帧测得的 log luma (debug)
+static int l_AE_GetMeasuredLuminance(lua_State* L) {
+    lua_pushnumber(L, (lua_Number)AutoExposureRenderer::GetMeasuredLuminance());
+    return 1;
+}
+
+static const luaL_Reg ae_funcs[] = {
+    {"Enable",                l_AE_Enable},
+    {"Disable",               l_AE_Disable},
+    {"IsEnabled",             l_AE_IsEnabled},
+    {"IsSupported",           l_AE_IsSupported},
+    {"Resize",                l_AE_Resize},
+    {"SetAutoEnable",         l_AE_SetAutoEnable},
+    {"GetAutoEnable",         l_AE_GetAutoEnable},
+    {"SetTargetEV",           l_AE_SetTargetEV},
+    {"GetTargetEV",           l_AE_GetTargetEV},
+    {"SetSpeedUp",            l_AE_SetSpeedUp},
+    {"GetSpeedUp",            l_AE_GetSpeedUp},
+    {"SetSpeedDown",          l_AE_SetSpeedDown},
+    {"GetSpeedDown",          l_AE_GetSpeedDown},
+    {"SetMinEV",              l_AE_SetMinEV},
+    {"GetMinEV",              l_AE_GetMinEV},
+    {"SetMaxEV",              l_AE_SetMaxEV},
+    {"GetMaxEV",              l_AE_GetMaxEV},
+    {"GetCurrentEV",          l_AE_GetCurrentEV},
+    {"GetCurrentExposure",    l_AE_GetCurrentExposure},
+    {"GetMeasuredLuminance",  l_AE_GetMeasuredLuminance},
+    {NULL, NULL}
+};
+
 static const luaL_Reg graphics_funcs[] = {
     // --- 绘图基元 ---
     {"Draw",              l_Draw},
@@ -1886,6 +2045,11 @@ int luaopen_Light_Graphics(lua_State* L) {
         lua_createtable(L, 0, 0);
         luaL_setfuncs(L, bloom_funcs, 0);
         lua_setfield(L, -2, "Bloom");
+
+        // Phase E.5.3 — AutoExposure 子表 (Light.Graphics.AutoExposure.*)
+        lua_createtable(L, 0, 0);
+        luaL_setfuncs(L, ae_funcs, 0);
+        lua_setfield(L, -2, "AutoExposure");
 
         lua_rawset(L, -3);
         lua_pushstring(L, "Graphics");
