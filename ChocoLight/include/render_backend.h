@@ -622,6 +622,71 @@ public:
      */
     virtual void DrawBloomComposite(uint32_t /*bloomTex*/, uint32_t /*hdrFbo*/,
                                      int /*w*/, int /*h*/, float /*intensity*/) {}
+
+    // ==================== Phase E.5 — Auto Exposure (Eye Adaptation) ====================
+
+    /**
+     * @brief 是否支持 Auto Exposure (要求: R16F mipmap-able RT + glReadPixels)
+     *
+     * 默认实现 (Legacy): 返回 false, 所有 AE API no-op.
+     */
+    virtual bool SupportsAutoExposure() const { return false; }
+
+    /**
+     * @brief 创建 luminance RT (单色 R16F, mipmap-able)
+     *
+     * 内部按 srcW/4, srcH/4 创建 (减少 fragment 工作量); 如果太小则向上 clamp 到 8x8.
+     * texture min filter 设为 LINEAR_MIPMAP_LINEAR, 以让 GenerateLuminanceMipmap 自动 reduce.
+     *
+     * @param srcW, srcH    源 HDR RT 尺寸 (如 1920x1080)
+     * @param outFbo, outTex  [out] FBO 与单色 R16F tex id
+     * @param outW, outH    [out] 实际创建尺寸
+     * @return true = 成功; false = 不支持 / 资源失败
+     */
+    virtual bool CreateLuminanceTarget(int /*srcW*/, int /*srcH*/,
+                                        uint32_t* /*outFbo*/, uint32_t* /*outTex*/,
+                                        int* /*outW*/, int* /*outH*/) { return false; }
+
+    /**
+     * @brief 释放 luminance RT 资源
+     */
+    virtual void DeleteLuminanceTarget(uint32_t /*fbo*/, uint32_t /*tex*/) {}
+
+    /**
+     * @brief Pass 1: hdrTex 全屏 quad → lumFbo (log luminance, R16F)
+     *
+     * shader 内:
+     *   luma     = dot(rgb, vec3(0.2126, 0.7152, 0.0722))   // Rec.709
+     *   logLuma  = log(max(luma, 0.0001))                    // 防 underflow
+     *   fragColor.r = clamp(logLuma, -12.0, 12.0)            // R16F precision guard
+     *
+     * @param hdrTex  源 HDR RT 颜色 tex
+     * @param lumFbo  目标 luminance RT FBO
+     * @param w, h    lumFbo 尺寸 (设 viewport 用)
+     */
+    virtual void DrawLuminanceExtract(uint32_t /*hdrTex*/,
+                                       uint32_t /*lumFbo*/,
+                                       int /*w*/, int /*h*/) {}
+
+    /**
+     * @brief 调用 glGenerateMipmap 让 GPU 自动算 luminance tex 的 mipmap 链
+     *
+     * 最后一层 (1x1) 即为全图平均 log luminance.
+     * 调用前 lumTex 必须 R16F 且 GL_TEXTURE_MIN_FILTER 设为 LINEAR_MIPMAP_LINEAR.
+     */
+    virtual void GenerateLuminanceMipmap(uint32_t /*lumTex*/) {}
+
+    /**
+     * @brief 同步读 luminance RT 最后一层 mip (1x1 R16F) 到 CPU
+     *
+     * v1 实现: glReadPixels (吃 1 frame stall, ~10us, 2 bytes/frame).
+     * v2 优化: PBO double-buffer 异步 readback (TODO).
+     *
+     * @param lumFbo        luminance RT FBO
+     * @param lastMipLevel  最后一层 mip 等级 (log2(maxDim))
+     * @return float        log luminance 值; 失败 / 不支持时返 0.0
+     */
+    virtual float ReadbackLuminance1x1(uint32_t /*lumFbo*/, int /*lastMipLevel*/) { return 0.0f; }
 };
 
 // ==================== 工厂函数 ====================

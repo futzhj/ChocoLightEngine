@@ -975,6 +975,23 @@ void main() {
 }
 )";
 
+// ==================== Phase E.5 — Auto Exposure shader (GLES 3.0) ====================
+
+// ---- FS_LUMINANCE_EXTRACT (GLES 3.0): hdrTex -> R16F log-luminance ----
+// 输出仅 R 通道用 (R16F target); 数值范围 clamp [-12, 12] 防 R16F 半精度 underflow
+static const char* FS_LUMINANCE_EXTRACT_SOURCE = R"(#version 300 es
+precision highp float;
+in  vec2 vUV;
+out vec4 FragColor;
+uniform sampler2D uHDRTex;
+void main() {
+    vec3 rgb = texture(uHDRTex, vUV).rgb;
+    float luma = dot(rgb, vec3(0.2126, 0.7152, 0.0722));   // Rec.709
+    float logLuma = log(max(luma, 0.0001));
+    FragColor = vec4(clamp(logLuma, -12.0, 12.0), 0.0, 0.0, 0.0);
+}
+)";
+
 #else  // 桌面 GL 3.3 Core
 
 // ---- VS_TONEMAP (GL 3.3) ----
@@ -1116,6 +1133,23 @@ void main() {
 }
 )";
 
+// ==================== Phase E.5 — Auto Exposure shader (GL 3.3 Core) ====================
+
+// ---- FS_LUMINANCE_EXTRACT (GL 3.3): hdrTex -> R16F log-luminance ----
+// 输出仅 R 通道用 (R16F target); 数值范围 clamp [-12, 12] 防 R16F 半精度 underflow
+static const char* FS_LUMINANCE_EXTRACT_SOURCE = R"(
+#version 330 core
+in  vec2 vUV;
+out vec4 FragColor;
+uniform sampler2D uHDRTex;
+void main() {
+    vec3 rgb = texture(uHDRTex, vUV).rgb;
+    float luma = dot(rgb, vec3(0.2126, 0.7152, 0.0722));   // Rec.709
+    float logLuma = log(max(luma, 0.0001));
+    FragColor = vec4(clamp(logLuma, -12.0, 12.0), 0.0, 0.0, 0.0);
+}
+)";
+
 #endif
 
 // Phase AS.2 — Mesh GPU 资源 (Phase AX 扩展加 morph delta texture)
@@ -1245,6 +1279,12 @@ class GL33Backend : public RenderBackend {
     GLint  locBloomUp_Texel     = -1;
     GLint  locBloomUp_Radius    = -1;
     GLint  locBloomUp_Intensity = -1;
+
+    // ---- Phase E.5 — Auto Exposure (Eye Adaptation) ----
+    // 1 个 shader program (luma extract; 共用 vaoTonemap 全屏 quad)
+    GLuint programLumaExtract        = 0;
+    bool   autoExposureSupported     = false;
+    GLint  locLumaExtract_HDRTex     = -1;
 
     // Phase E.2.1 — Lighting2D dirty bit cache
     // 当 state->version 与此值相等时, UploadLighting2D 跳过所有 glUniform*v 调用
@@ -1415,6 +1455,9 @@ public:
 
         // ---- Phase E.4 — Bloom 后处理 shader (依赖 tonemap 的 vaoTonemap) ----
         InitBloom();
+
+        // ---- Phase E.5 — Auto Exposure shader (依赖 tonemap 的 vaoTonemap) ----
+        InitAutoExposure();
 
         CC::Log(CC::LOG_INFO, "RenderBackend: GL33 Core initialized (GL %s)%s%s%s",
                 (const char*)glGetString(GL_VERSION),
@@ -1799,6 +1842,48 @@ public:
                 programBloomBright, programBloomDown, programBloomUp);
     }
 
+    // ==================== Phase E.5 — Auto Exposure shader 初始化 ====================
+    //
+    // 流程 (与 InitBloom 类似, 共用 vaoTonemap 全屏 quad):
+    //   1. 依赖 tonemapSupported = true (luma extract 需要 HDR RT 输入)
+    //   2. 编译 1 个 FS shader (VS 复用 VS_TONEMAP_SOURCE)
+    //   3. link programLumaExtract + 缓存 uniform location + 绑 sampler slot
+    //
+    // 失败影响: autoExposureSupported = false, SupportsAutoExposure() 返回 false,
+    //          AutoExposureRenderer 应静默 fallback (HDR 管线仍可用, 无 AE 效果).
+    void InitAutoExposure() {
+        if (!tonemapSupported) {
+            // tonemap 初始化失败 → AE 必然无法工作 (依赖 HDR RT + 全屏 quad)
+            autoExposureSupported = false;
+            return;
+        }
+
+        // --- 编译 + link 1 个 program ---
+        GLuint vs = CompileShader(GL_VERTEX_SHADER,   VS_TONEMAP_SOURCE);
+        GLuint fs = CompileShader(GL_FRAGMENT_SHADER, FS_LUMINANCE_EXTRACT_SOURCE);
+        if (vs && fs) programLumaExtract = LinkProgram(vs, fs);
+        if (vs) glDeleteShader(vs);
+        if (fs) glDeleteShader(fs);
+
+        if (!programLumaExtract) {
+            autoExposureSupported = false;
+            CC::Log(CC::LOG_WARN,
+                    "GL33: Phase E.5 Auto Exposure disabled (luma extract shader failed)");
+            return;
+        }
+
+        // --- 缓存 uniform location + 绑定 sampler slot ---
+        locLumaExtract_HDRTex = glGetUniformLocation(programLumaExtract, "uHDRTex");
+        glUseProgram(programLumaExtract);
+        if (locLumaExtract_HDRTex >= 0) glUniform1i(locLumaExtract_HDRTex, 0);
+        glUseProgram(0);
+
+        autoExposureSupported = true;
+        CC::Log(CC::LOG_INFO,
+                "GL33: Phase E.5 Auto Exposure ready (lumaExtract=%u)",
+                programLumaExtract);
+    }
+
     void Shutdown() override {
         if (program) glDeleteProgram(program);
         if (vbo) glDeleteBuffers(1, &vbo);
@@ -1885,6 +1970,11 @@ public:
         locBloomDown_Src = locBloomDown_Texel = -1;
         locBloomUp_Src = locBloomUp_Texel = locBloomUp_Radius = locBloomUp_Intensity = -1;
         bloomSupported = false;
+
+        // Phase E.5 — 释放 Auto Exposure shader (luma RT 由 AutoExposureRenderer::Shutdown 配对释放)
+        if (programLumaExtract) { glDeleteProgram(programLumaExtract); programLumaExtract = 0; }
+        locLumaExtract_HDRTex = -1;
+        autoExposureSupported = false;
     }
 
     bool SupportsLit2D() const override { return lit2DSupported; }
@@ -2187,6 +2277,144 @@ public:
         glUseProgram(0);
         glDisable(GL_BLEND);
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    }
+
+    // ==================== Phase E.5 — Auto Exposure 虚接口实现 ====================
+
+    bool SupportsAutoExposure() const override { return autoExposureSupported; }
+
+    /// 创建 luminance RT: 单色 R16F mipmap-able tex + FBO, 无 depth (luma 不需要)
+    /// 内部尺寸 = max(srcW/4, 8) × max(srcH/4, 8); mipmap 链由 GenerateLuminanceMipmap 生成
+    bool CreateLuminanceTarget(int srcW, int srcH,
+                                uint32_t* outFbo, uint32_t* outTex,
+                                int* outW, int* outH) override {
+        if (!autoExposureSupported || srcW <= 0 || srcH <= 0
+            || !outFbo || !outTex || !outW || !outH) return false;
+
+        // 下采到 1/4 (~480x270 for 1080p), 但下限 8x8 防极小窗口
+        int w = srcW / 4; if (w < 8) w = 8;
+        int h = srcH / 4; if (h < 8) h = 8;
+
+        GLuint tex = 0;
+        glGenTextures(1, &tex);
+        glBindTexture(GL_TEXTURE_2D, tex);
+        // 计算 mipmap 等级数 = floor(log2(max(w, h))) + 1
+        int maxDim = (w > h) ? w : h;
+        int mipLevels = 1;
+        while ((1 << mipLevels) <= maxDim) ++mipLevels;
+        // GL 3.3+ / GLES 3.0 都支持 glTexStorage2D + R16F
+        glTexStorage2D(GL_TEXTURE_2D, mipLevels, GL_R16F, w, h);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glBindTexture(GL_TEXTURE_2D, 0);
+
+        GLuint fbo = 0;
+        glGenFramebuffers(1, &fbo);
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                                GL_TEXTURE_2D, tex, 0);
+        GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+        if (status != GL_FRAMEBUFFER_COMPLETE) {
+            glDeleteFramebuffers(1, &fbo);
+            glDeleteTextures(1, &tex);
+            CC::Log(CC::LOG_WARN,
+                    "GL33: Phase E.5 CreateLuminanceTarget failed (FBO incomplete: 0x%X)",
+                    (unsigned)status);
+            return false;
+        }
+
+        *outFbo = (uint32_t)fbo;
+        *outTex = (uint32_t)tex;
+        *outW   = w;
+        *outH   = h;
+        return true;
+    }
+
+    void DeleteLuminanceTarget(uint32_t fbo, uint32_t tex) override {
+        if (fbo) { GLuint f = (GLuint)fbo; glDeleteFramebuffers(1, &f); }
+        if (tex) { GLuint t = (GLuint)tex; glDeleteTextures(1, &t); }
+    }
+
+    /// Pass 1: hdrTex 全屏 quad → lumFbo (log luminance 写入 R16F)
+    void DrawLuminanceExtract(uint32_t hdrTex, uint32_t lumFbo,
+                               int w, int h) override {
+        if (!autoExposureSupported || !hdrTex || !lumFbo || w <= 0 || h <= 0) return;
+
+        glBindFramebuffer(GL_FRAMEBUFFER, (GLuint)lumFbo);
+        glViewport(0, 0, w, h);
+        glDisable(GL_DEPTH_TEST);
+        glDisable(GL_SCISSOR_TEST);
+        glDisable(GL_BLEND);
+
+        glUseProgram(programLumaExtract);
+
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, (GLuint)hdrTex);
+
+        glBindVertexArray(vaoTonemap);
+        glDrawArrays(GL_TRIANGLES, 0, 6);
+
+        glBindVertexArray(0);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        glUseProgram(0);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    }
+
+    /// Pass 2: GPU 自动算 mipmap 链 (最后一层 1×1 = 全图平均 log luminance)
+    void GenerateLuminanceMipmap(uint32_t lumTex) override {
+        if (!autoExposureSupported || !lumTex) return;
+        glBindTexture(GL_TEXTURE_2D, (GLuint)lumTex);
+        glGenerateMipmap(GL_TEXTURE_2D);
+        glBindTexture(GL_TEXTURE_2D, 0);
+    }
+
+    /// Pass 3: 同步读 1×1 R16F 到 CPU (v1 stall 可接受, 仅 2 字节)
+    /// 部分驱动不支持 GL_HALF_FLOAT 直接读出, fallback GL_FLOAT (4 字节但兼容性更好)
+    float ReadbackLuminance1x1(uint32_t lumFbo, int lastMipLevel) override {
+        if (!autoExposureSupported || !lumFbo || lastMipLevel < 0) return 0.0f;
+
+        // 把目标 FBO 重新 attach 到最后一层 mip (保留原 attachment 不破坏)
+        // 注: GL/GLES3 都支持 glFramebufferTexture2D 重 attach; 但简单做法是
+        //     直接 glBindFramebuffer + glReadPixels 读 attachment 0 的 mip0
+        //     若需读 mipN, 必须先 attach mipN 或用 PBO.
+        // 简化方案: 不读 mip; 读取最后调用 GenerateLuminanceMipmap 后再绑 attach 0 mip = 0,
+        //           然后用 glGetTexImage / 替代方案。但 GLES3 不支持 glGetTexImage,
+        //           故必须 re-attach mipN 才能 readPixels(0,0,1,1).
+        GLint  prevFbo = 0;
+        glGetIntegerv(GL_FRAMEBUFFER_BINDING, &prevFbo);
+
+        glBindFramebuffer(GL_FRAMEBUFFER, (GLuint)lumFbo);
+
+        // 取 attachment 0 的 tex id (从 glGetFramebufferAttachmentParameteriv 查询)
+        GLint texId = 0;
+        glGetFramebufferAttachmentParameteriv(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+            GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME, &texId);
+
+        // 重新 attach 到最后一层 mip
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                                GL_TEXTURE_2D, (GLuint)texId, lastMipLevel);
+
+        float pixel = 0.0f;
+        // 用 GL_FLOAT 读 (兼容性最好); 1×1 = 4 字节
+        glReadPixels(0, 0, 1, 1, GL_RED, GL_FLOAT, &pixel);
+        // 检测 GL error (某些驱动若不支持 GL_FLOAT/GL_RED 组合会报错)
+        GLenum err = glGetError();
+        if (err != GL_NO_ERROR) {
+            // 静默 fallback: 重置错误流, 返回 0 (调用方将 luma 视为 1.0)
+            while (glGetError() != GL_NO_ERROR) {}
+            pixel = 0.0f;
+        }
+
+        // 复位 attachment 到 mip 0 (保持后续帧可重新 mipmap reduce)
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                                GL_TEXTURE_2D, (GLuint)texId, 0);
+
+        glBindFramebuffer(GL_FRAMEBUFFER, (GLuint)prevFbo);
+        return pixel;
     }
 
     // ==================== Phase E.1.5 — Lit2D 绘制实现 ====================
