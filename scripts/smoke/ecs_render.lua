@@ -484,6 +484,69 @@ do
 end
 
 -- ============================================================
+-- Phase D.x.5.2: Camera frustum cull (2D viewport AABB)
+-- ============================================================
+do
+    local gfx, calls = makeMockGraphics()
+    installMockLight(gfx)
+    local w = World.new()
+    -- 创建 64x64 image (使 sprite size = 64x64)
+    local img = makeMockImage(64, 64)
+
+    -- camera 在 (0,0), viewport 800x600, zoom 1
+    -- world 视口 AABB: (-400, -300) ~ (400, 300)
+    w:CreateEntity():Add('Transform2D', {x=0, y=0})
+                    :Add('Camera2D',    {active=true, viewportW=800, viewportH=600, zoom=1.0})
+
+    -- sprite 1: 在视口中心, 应渲染
+    w:CreateEntity():Add('Transform2D', {x=0, y=0}):Add('Sprite', {image=img})
+    -- sprite 2: x=1000, 视口右 400 之外, 应 cull
+    w:CreateEntity():Add('Transform2D', {x=1000, y=0}):Add('Sprite', {image=img})
+    -- sprite 3: x=-2000, 视口左之外, 应 cull
+    w:CreateEntity():Add('Transform2D', {x=-2000, y=0}):Add('Sprite', {image=img})
+    -- sprite 4: y=500, 视口下 300 之外, 应 cull
+    w:CreateEntity():Add('Transform2D', {x=0, y=500}):Add('Sprite', {image=img})
+
+    w:Render()
+
+    -- cull stats
+    if not w._cull_stats_2d then fail("Dx5.2: _cull_stats_2d should be populated") end
+    eq(w._cull_stats_2d.total,  4, "Dx5.2: total = 4 sprites collected")
+    eq(w._cull_stats_2d.culled, 3, "Dx5.2: 3 sprites culled (out of viewport)")
+    eq(w._cull_stats_2d.drawn,  1, "Dx5.2: 1 sprite drawn (in viewport)")
+    -- 仅 1 个 sprite 走 _DrawSprite (camera Push/Translate + sprite Push/Pop)
+    -- camera: 1 Push + 1 Translate
+    -- sprite 1: 1 Push + 1 Translate + 1 SetColor + 1 Draw + 1 Pop
+    -- camera: 1 Pop (final)
+    eq(countFn(calls, "Draw"), 1, "Dx5.2: only 1 Draw call (3 culled)")
+    pass("Dx5.2: frustum cull works")
+end
+
+-- ============================================================
+-- Phase D.x.5.2: viewport=0 时不 cull (fallback 全部渲染)
+-- ============================================================
+do
+    local gfx, calls = makeMockGraphics()
+    installMockLight(gfx)
+    local w = World.new()
+    local img = makeMockImage(64, 64)
+
+    -- camera viewport 未设 (默认 0)
+    w:CreateEntity():Add('Transform2D', {x=0, y=0})
+                    :Add('Camera2D',    {active=true})
+
+    w:CreateEntity():Add('Transform2D', {x=0, y=0}):Add('Sprite', {image=img})
+    w:CreateEntity():Add('Transform2D', {x=1000, y=0}):Add('Sprite', {image=img})
+
+    w:Render()
+
+    eq(w._cull_stats_2d.total,  2, "Dx5.2-AC2: total = 2")
+    eq(w._cull_stats_2d.culled, 0, "Dx5.2-AC2: viewport=0 disables cull")
+    eq(w._cull_stats_2d.drawn,  2, "Dx5.2-AC2: all 2 sprites drawn")
+    pass("Dx5.2-AC2: viewport=0 fallback works (no cull)")
+end
+
+-- ============================================================
 -- Phase D.x.6: SpriteBatch 渲染 (共享 Push/Pop/SetColor)
 -- ============================================================
 do

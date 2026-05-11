@@ -642,6 +642,67 @@ function ECSWorld:MarkSpriteListDirty()
     self._sprite_list_dirty = true
 end
 
+-- Phase D.x.5.2: 计算 active Camera2D 视口在 world 坐标的 AABB
+-- 返回 nil 表示不 cull (viewport 未设, fallback 全部渲染)
+function ECSWorld:_FrustumCull2D(cam2d_entity)
+    if not cam2d_entity then return nil end
+    local ctf = cam2d_entity._comps.Transform2D
+    local cc  = cam2d_entity._comps.Camera2D
+    if not ctf or not cc then return nil end
+    local vw = cc.viewportW or 0
+    local vh = cc.viewportH or 0
+    if vw <= 0 or vh <= 0 then return nil end
+    local zoom = cc.zoom or 1
+    if zoom == 0 then zoom = 1 end
+    -- camera 视口在 world 的半宽/半高
+    local hw = vw / 2 / zoom
+    local hh = vh / 2 / zoom
+    local cx = ctf.x or 0
+    local cy = ctf.y or 0
+    return {
+        minX = cx - hw, maxX = cx + hw,
+        minY = cy - hh, maxY = cy + hh,
+    }
+end
+
+-- Phase D.x.5.2: 检查 sprite world AABB 是否与 bounds 相交
+-- 安全策略: 难计算的情况 (parent / rotation) 都返回 true (不 cull)
+function ECSWorld:_SpriteInBounds(tf, s, bounds)
+    -- 含 parent: world 位置依赖 parent chain, 难直接算
+    if tf.parent then return true end
+    -- 有旋转: rotated AABB 比静态 AABB 大, 简化跳过 cull
+    if (tf.rot or 0) ~= 0 then return true end
+    -- 估算 sprite 大小 (优先 quad, 否则 image GetWidth/Height, 默认 64)
+    local iw, ih = 64, 64
+    local img = s.image
+    if type(img) == 'table' then
+        if type(img.GetWidth) == 'function' then iw = img:GetWidth() end
+        if type(img.GetHeight) == 'function' then ih = img:GetHeight() end
+    end
+    local q = s.quad
+    if q and (q.qw and q.qw > 0) then
+        iw = q.qw
+        ih = q.qh or q.qw
+    end
+    local sx = math.abs(tf.sx or 1)
+    local sy = math.abs(tf.sy or 1)
+    local pw = iw * sx
+    local ph = ih * sy
+    local anc = s.anchor or {}
+    local ax = anc.ax or 0
+    local ay = anc.ay or 0
+    local x = tf.x or 0
+    local y = tf.y or 0
+    local sxmin = x - ax * pw
+    local symin = y - ay * ph
+    local sxmax = sxmin + pw
+    local symax = symin + ph
+    -- AABB 不相交即 cull
+    return not (sxmax < bounds.minX or sxmin > bounds.maxX or
+                symax < bounds.minY or symin > bounds.maxY)
+end
+
+)LUA" R"LUA(
 -- Phase D.x.1: Push parent transform chain (不含 self), 返回 push 次数
 -- 调用方在 self draw 之后, 必须 Pop 返回的次数才能平衡 stack
 -- 循环引用保护: visited 表 + 32 层 max depth
@@ -810,13 +871,21 @@ function ECSWorld:Render()
     end
 
     local sprites = self:_CollectSprites()
+    -- Phase D.x.5.2: 计算 camera frustum, 跳过出场 sprite
+    local bounds = self:_FrustumCull2D(cam2d)
+    local culled = 0
     for i = 1, #sprites do
         local item = sprites[i]
-        -- Phase D.x.1: parent chain push (root → leaf 外侧), pop 平衡
-        local pushCount = self:_PushParentChain2D(item.entity, gfx)
-        self:_DrawSprite(item.tf, item.sprite, gfx)
-        for k = 1, pushCount do gfx.Pop() end
+        if bounds and not self:_SpriteInBounds(item.tf, item.sprite, bounds) then
+            culled = culled + 1
+        else
+            -- Phase D.x.1: parent chain push (root → leaf 外侧), pop 平衡
+            local pushCount = self:_PushParentChain2D(item.entity, gfx)
+            self:_DrawSprite(item.tf, item.sprite, gfx)
+            for k = 1, pushCount do gfx.Pop() end
+        end
     end
+    self._cull_stats_2d = {total = #sprites, culled = culled, drawn = #sprites - culled}
 
     -- Phase D.x.6: SpriteBatch 渲染 (在 sprite 之后, 共享 camera transform)
     for _, e in ipairs(self._entities) do
