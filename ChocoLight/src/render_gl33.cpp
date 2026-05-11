@@ -706,6 +706,15 @@ class GL33Backend : public RenderBackend {
     std::unordered_map<uint32_t, MeshGPU> skinnedMorphMeshes;
     uint32_t                              nextSkinnedMorphMeshId = 0xC0000001u;
 
+    // ---- Phase E.1 — 2D Lit (forward 多光 + Normal Map) ----
+    // E.1.1 (本任务): 仅创建 VAO/VBO/EBO + 配置顶点属性 layout, shader 留给 E.1.2
+    GLuint vaoLit2D     = 0;
+    GLuint vboLit2D     = 0;
+    GLuint eboLit2D     = 0;
+    GLuint programLit2D = 0;       // E.1.2 接入, 本任务中始终 0
+    bool   lit2DSupported = false; // E.1.1 资源就绪后置 true
+    static constexpr int LIT2D_VBO_INITIAL_VERTS = 4;  // 单 quad; E.1.5 可按需扩容
+
     // 编译 shader, 返回 0 表示失败
     static GLuint CompileShader(GLenum type, const char* src) {
         GLuint s = glCreateShader(type);
@@ -829,11 +838,15 @@ public:
         // ---- Phase AW — GPU Skinning: 检测 UBO 上限 + 编译 Skin shader + 创建 UBO ----
         InitGPUSkinning();
 
-        CC::Log(CC::LOG_INFO, "RenderBackend: GL33 Core initialized (GL %s)%s%s",
+        // ---- Phase E.1.1 — 2D Lit 渲染资源 (VAO/VBO/EBO) ----
+        InitLit2D();
+
+        CC::Log(CC::LOG_INFO, "RenderBackend: GL33 Core initialized (GL %s)%s%s%s",
                 (const char*)glGetString(GL_VERSION),
                 (programUnlit && programPBR) ? ", 3D Unlit+PBR enabled" :
                 (programUnlit || programPBR) ? ", partial 3D shader" : "",
-                gpuSkinningSupported ? ", GPU skinning enabled" : "");
+                gpuSkinningSupported ? ", GPU skinning enabled" : "",
+                lit2DSupported       ? ", Lit2D resources ready" : "");
         return true;
     }
 
@@ -926,6 +939,73 @@ public:
         }
     }
 
+    // Phase E.1.1 — 2D Lit 渲染管线初始化 (仅 GL 对象, shader 在 E.1.2 接入)
+    //
+    // 本任务范围:
+    //   1. glGenVertexArrays / glGenBuffers 创建 VAO + 动态 VBO + 静态 EBO
+    //   2. 配置顶点属性 layout (location 0..4, 与 VS_LIT2D 静态 layout 一致)
+    //   3. 上传单 quad 静态索引 [0,1,2, 0,2,3]
+    //   4. 不编译 shader; programLit2D 留空, 由 E.1.2 实现
+    //
+    // 失败影响: lit2DSupported = false, DrawLit2DQuad 等接口仍是默认 no-op,
+    //          调用方应通过 SupportsLit2D() 检查后回退到普通 Draw 路径.
+    void InitLit2D() {
+        glGenVertexArrays(1, &vaoLit2D);
+        glGenBuffers(1, &vboLit2D);
+        glGenBuffers(1, &eboLit2D);
+        if (!vaoLit2D || !vboLit2D || !eboLit2D) {
+            CC::Log(CC::LOG_WARN, "GL33: Phase E.1 Lit2D resource allocation failed");
+            // 部分失败时清理已创建的对象, 避免泄漏
+            if (eboLit2D) { glDeleteBuffers(1, &eboLit2D); eboLit2D = 0; }
+            if (vboLit2D) { glDeleteBuffers(1, &vboLit2D); vboLit2D = 0; }
+            if (vaoLit2D) { glDeleteVertexArrays(1, &vaoLit2D); vaoLit2D = 0; }
+            return;
+        }
+
+        glBindVertexArray(vaoLit2D);
+        glBindBuffer(GL_ARRAY_BUFFER, vboLit2D);
+        // 预分配单 quad 容量 (E.1.5 时可按 vertexCount 动态扩容; 当前足够)
+        glBufferData(GL_ARRAY_BUFFER,
+                     LIT2D_VBO_INITIAL_VERTS * (GLsizeiptr)sizeof(RenderVertex2DLit),
+                     nullptr, GL_DYNAMIC_DRAW);
+
+        // 顶点属性 layout (与 VS_LIT2D in 声明保持一致, 静态 location):
+        //   location 0: aPos      vec3 (x,y,z)
+        //   location 1: aUV       vec2 (u,v)
+        //   location 2: aColor    vec4 (r,g,b,a)
+        //   location 3: aNormal   vec3 (nx,ny,nz)
+        //   location 4: aTangent  vec4 (tx,ty,tz,tw)
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(RenderVertex2DLit),
+                              (void*)offsetof(RenderVertex2DLit, x));
+        glEnableVertexAttribArray(1);
+        glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, sizeof(RenderVertex2DLit),
+                              (void*)offsetof(RenderVertex2DLit, u));
+        glEnableVertexAttribArray(2);
+        glVertexAttribPointer(2, 4, GL_FLOAT, GL_FALSE, sizeof(RenderVertex2DLit),
+                              (void*)offsetof(RenderVertex2DLit, r));
+        glEnableVertexAttribArray(3);
+        glVertexAttribPointer(3, 3, GL_FLOAT, GL_FALSE, sizeof(RenderVertex2DLit),
+                              (void*)offsetof(RenderVertex2DLit, nx));
+        glEnableVertexAttribArray(4);
+        glVertexAttribPointer(4, 4, GL_FLOAT, GL_FALSE, sizeof(RenderVertex2DLit),
+                              (void*)offsetof(RenderVertex2DLit, tx));
+
+        // 静态单 quad 索引: 顶点 0,1,2,3 对应左下,右下,右上,左上 → 两个三角形
+        const uint32_t kQuadIndices[6] = { 0u, 1u, 2u, 0u, 2u, 3u };
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, eboLit2D);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(kQuadIndices),
+                     kQuadIndices, GL_STATIC_DRAW);
+
+        glBindVertexArray(0);
+
+        // GL 对象就绪 (shader 留 E.1.2): 后续 SupportsLit2D() 返回 true
+        // E.1.2 完成 program link 后, 可在该处加严判定 (lit2DSupported &= programLit2D != 0)
+        lit2DSupported = true;
+        CC::Log(CC::LOG_INFO,
+                "GL33: Phase E.1.1 Lit2D VAO/VBO/EBO ready (shader pending E.1.2)");
+    }
+
     void Shutdown() override {
         if (program) glDeleteProgram(program);
         if (vbo) glDeleteBuffers(1, &vbo);
@@ -971,7 +1051,16 @@ public:
         }
         skinnedMorphMeshes.clear();
         morphTargetsSupported = false;
+
+        // Phase E.1.1 — 释放 Lit2D 资源 (VAO/VBO/EBO + program)
+        if (programLit2D) { glDeleteProgram(programLit2D); programLit2D = 0; }
+        if (eboLit2D)     { glDeleteBuffers(1, &eboLit2D); eboLit2D = 0; }
+        if (vboLit2D)     { glDeleteBuffers(1, &vboLit2D); vboLit2D = 0; }
+        if (vaoLit2D)     { glDeleteVertexArrays(1, &vaoLit2D); vaoLit2D = 0; }
+        lit2DSupported = false;
     }
+
+    bool SupportsLit2D() const override { return lit2DSupported; }
 
     const char* GetName() const override { return "GL33Core"; }
 

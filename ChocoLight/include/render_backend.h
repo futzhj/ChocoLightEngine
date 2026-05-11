@@ -47,6 +47,27 @@ struct RenderVertex3DSkin {
 static_assert(sizeof(RenderVertex3DSkin) == 68,
               "RenderVertex3DSkin must be 68 bytes: pos(12)+normal(12)+uv(8)+color(16)+joints(4)+weights(16)");
 
+/// Phase E.1 — 2D Lit 顶点格式 (16 floats = 64 bytes)
+/// 用于 BatchRenderer 之外的 forward multi-light 路径 (含可选 normal map)
+/// 与 RenderVertex 平行: 默认 sprite 仍走 RenderVertex (9 floats), 仅启用 Light.Graphics.DrawLit
+/// 或 ECS LitSprite component 的 sprite 走本格式
+///
+/// 顶点属性 layout (与 VS_LIT2D 一致):
+///   location 0: aPos     vec3 (x,y,z)        -- 世界坐标 (z 通常为 0 / depth)
+///   location 1: aUV      vec2 (u,v)
+///   location 2: aColor   vec4 (r,g,b,a)
+///   location 3: aNormal  vec3 (nx,ny,nz)     -- 默认 (0,0,1) 平面 sprite
+///   location 4: aTangent vec4 (tx,ty,tz,tw)  -- xyz=tangent, w=bitangent sign (默认 1,0,0,1)
+struct RenderVertex2DLit {
+    float x, y, z;            // 位置 (12)
+    float u, v;               // UV  (8)
+    float r, g, b, a;         // 顶点色 (16)
+    float nx, ny, nz;         // 法线 (12) — normal map 启用时 shader 内会用 TBN 重算
+    float tx, ty, tz, tw;     // 切线 + bitangent sign (16)
+};
+static_assert(sizeof(RenderVertex2DLit) == 64,
+              "RenderVertex2DLit must be 64 bytes: pos(12)+uv(8)+color(16)+normal(12)+tangent(16)");
+
 // ==================== 绘制模式 ====================
 
 enum class DrawMode {
@@ -352,6 +373,69 @@ public:
     virtual void DrawSkinnedMorphMeshMaterial(uint32_t meshId, const MaterialDesc* desc,
                                                  const float* jointMatrices, int jointCount,
                                                  const float* morphWeights, int morphTargetCount) {}
+
+    // ---- Phase E.1 — 2D Lit (forward 多光 + Normal Map) ----
+    /**
+     * @brief 是否支持 2D Lit 渲染路径
+     *
+     * 判定标准 (GL33Backend Init 期间检测并缓存):
+     *   - VAO/VBO/EBO 创建成功 (E.1.1)
+     *   - programLit2D link 成功 (E.1.2 接入)
+     *
+     * Legacy / GL ES 2.0 等不支持 forward multi-light 的后端默认返回 false,
+     * 调用方应在 false 时回退到非 Lit 路径 (普通 Draw / DrawQuad).
+     */
+    virtual bool SupportsLit2D() const { return false; }
+
+    /**
+     * @brief 创建 2D Lit mesh (一次上传, 永不重传; 与 CreateMesh 平行)
+     *
+     * @param verts        含 pos/uv/color/normal/tangent 的顶点数组
+     * @param vCount       顶点数 (> 0)
+     * @param indices      uint32 三角形索引
+     * @param iCount       索引数 (必须为 3 的倍数)
+     *
+     * @return meshId; 失败返回 0
+     *
+     * 默认实现返回 0 (Legacy 后端无 Lit2D 支持)。
+     * GL33Backend 在 E.1.5 后实现真实上传逻辑。
+     */
+    virtual uint32_t CreateLit2DMesh(const RenderVertex2DLit* verts, int vCount,
+                                       const uint32_t* indices, int iCount) { return 0; }
+
+    /// 释放 Lit2D mesh GPU 资源
+    virtual void DeleteLit2DMesh(uint32_t meshId) {}
+
+    /**
+     * @brief 用单个 quad 顶点 + 可选 normal map 绘制 Lit2D sprite
+     *
+     * @param verts          4 个顶点 (顺序: 左下, 右下, 右上, 左上)
+     * @param baseColorTex   baseColor 纹理 (0 = 纯色 sprite, 仅顶点色)
+     * @param normalMapTex   法线贴图 (0 = 用默认 N=(0,0,1) 平面光照)
+     *
+     * 内部行为 (GL33, E.1.5 实现):
+     *   1. glUseProgram(programLit2D)
+     *   2. 绑定 texture (slot 0=base, slot 1=normal)
+     *   3. 上传 MVP/Model/HasNormalMap uniforms
+     *   4. 上传 Lighting2D state uniforms (调用 Lighting2D::UploadToShader)
+     *   5. glBindVertexArray(vaoLit2D) + glBufferSubData(4 verts) + glDrawElements
+     *   6. 切回默认 2D shader (与 DrawMeshMaterial 一致)
+     */
+    virtual void DrawLit2DQuad(const RenderVertex2DLit verts[4],
+                                uint32_t baseColorTex,
+                                uint32_t normalMapTex) {}
+
+    /**
+     * @brief 用任意三角形顶点流 + 可选 normal map 绘制 Lit2D 几何
+     *
+     * @param verts          顶点数组 (count 必须为 3 的倍数)
+     * @param count          顶点数
+     * @param baseColorTex   baseColor 纹理 (0 = 纯色)
+     * @param normalMapTex   法线贴图 (0 = 平面法线)
+     */
+    virtual void DrawLit2DTriangles(const RenderVertex2DLit* verts, int count,
+                                      uint32_t baseColorTex,
+                                      uint32_t normalMapTex) {}
 };
 
 // ==================== 工厂函数 ====================
