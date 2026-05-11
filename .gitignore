@@ -70,6 +70,8 @@ _and*.txt
 _ios*.txt
 _web*.txt
 _*.log
+ci.txt
+ci_*.txt
 
 # Godot experiment (not part of main project)
 cpp_godot/
