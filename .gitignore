@@ -39,12 +39,15 @@ cmake_install.cmake
 # Generated (keep embedded_scripts.h for CI)
 # lumen-master/src/light/embedded_scripts.h
 
-# Pack outputs and binaries (user-generated)
-Light-0.2.3/**/*.exe
-Light-0.2.3/**/*.dll
-Light-0.2.3/**/*.luac
-Light-0.2.3/demo_*/lib/
+# Local runtime / packaging directory (binaries + large assets, not versioned)
+# Contains Light.dll, light*.exe, lua51.dll, FFmpeg libs, sample mp4/ttf — pack outputs.
+Light/
 test_embedded/
+
+# Build / packaging logs
+build_log.txt
+lumenc.out
+*.luac
 
 # Python cache
 __pycache__/
