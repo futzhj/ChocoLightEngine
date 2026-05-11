@@ -26,6 +26,7 @@
 #include "render_backend.h"
 #include "batch_renderer.h"
 #include "lit_batch_renderer.h"  // Phase E.2.3 — 2D Lit 批渲染器
+#include "hdr_renderer.h"         // Phase E.3.2 — HDR 离屏管线
 #include "light_audio_backend.h"
 #include "light_platform_net.h"
 #include "platform_window.h"
@@ -492,6 +493,8 @@ static int l_Window_Open(lua_State* L) {
     if (!LitBatchRenderer::Init(g_render)) {
         CC::Log(CC::LOG_WARN, "LitBatchRenderer init failed, lit sprites fall back to per-call rendering");
     }
+    // Phase E.3.2: 初始化 HDRRenderer (不自动 Enable, 等 Lua 显式 Light.Graphics.HDR.Enable)
+    HDRRenderer::Init(g_render);
 
     // 初始化音频后端
     if (!AudioBackend::Init()) {
@@ -637,6 +640,8 @@ static int l_Window_Call(lua_State* L) {
     }
     if (BatchRenderer::IsInited())    BatchRenderer::BeginFrame();
     if (LitBatchRenderer::IsInited()) LitBatchRenderer::BeginFrame();
+    // Phase E.3.2: HDR 启用时切到 HDR RT (所有 Draw 绘到 RGBA16F 离屏)
+    if (HDRRenderer::IsEnabled())     HDRRenderer::BeginScene();
 
     // Draw 回调
     lua_getfield(L, 1, "Draw");
@@ -668,6 +673,10 @@ static int l_Window_Call(lua_State* L) {
     //       详见 light_graphics.cpp::l_DrawLit 中的双向 Flush 需求.
     if (LitBatchRenderer::IsInited()) LitBatchRenderer::EndFrame();
     if (BatchRenderer::IsInited())    BatchRenderer::EndFrame();
+    // Phase E.3.2: HDR EndScene — 解绑 HDR RT + ACES tonemap 到 default fb.
+    // 必须在两个 BatchRenderer::EndFrame 之后 (保证 HDR RT 内容已全部 flush),
+    // 在 g_render->EndFrame() 和 SwapBuffers 之前 (tonemap 结果就在 default fb 上).
+    if (HDRRenderer::IsEnabled())     HDRRenderer::EndScene();
     if (g_render) g_render->EndFrame();
     PlatformWindow::SwapBuffers(g_mainWindow);
 
@@ -710,6 +719,7 @@ static int l_UI_Resume(lua_State* L) {
             }
             PlatformNet::Shutdown();
             AudioBackend::Shutdown();
+            HDRRenderer::Shutdown();
             LitBatchRenderer::Shutdown();
             BatchRenderer::Shutdown();
             if (g_render) {

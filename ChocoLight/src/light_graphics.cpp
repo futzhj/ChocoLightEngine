@@ -26,6 +26,7 @@
 #include "render_backend.h"
 #include "batch_renderer.h"
 #include "lit_batch_renderer.h"   // Phase E.2.3 — Lit2D 批渲染
+#include "hdr_renderer.h"          // Phase E.3.2 — HDR 离屏管线
 #include <cmath>
 #include <cstring>
 
@@ -228,10 +229,22 @@ static int l_GetColor(lua_State* L) {
 static int l_SetCanvas(lua_State* L) {
     static int savedViewport[4] = {0, 0, 800, 600};
 
+    // Phase E.3.2: 切换渲染目标前必须 Flush 所有 batch
+    // (否则当前 batch 会绘到新 FBO 上, 破坏画家顺序)
+    if (BatchRenderer::IsInited())    BatchRenderer::Flush();
+    if (LitBatchRenderer::IsInited()) LitBatchRenderer::Flush();
+
     if (lua_isnoneornil(L, 1)) {
-        g_render->UnbindFBO();
-        g_render->SetViewport(savedViewport[0], savedViewport[1],
-                              savedViewport[2], savedViewport[3]);
+        // Phase E.3.2: SetCanvas(nil) 分两种情形
+        //   (1) HDR 启用 + 之前被 Pause → Resume (重新绑 HDR RT, 场景累积继续)
+        //   (2) HDR 未启用 → 组照原逻辑 (恢复 default fb)
+        if (HDRRenderer::IsEnabled() && HDRRenderer::IsPaused()) {
+            HDRRenderer::Resume();  // 内部 BindFBO(HDR_RT) + SetViewport
+        } else {
+            g_render->UnbindFBO();
+            g_render->SetViewport(savedViewport[0], savedViewport[1],
+                                  savedViewport[2], savedViewport[3]);
+        }
         g_ctx.currentCanvas = nullptr;
     } else if (lua_istable(L, 1)) {
         // 保存当前 viewport
@@ -241,6 +254,10 @@ static int l_SetCanvas(lua_State* L) {
             struct CanvasCtx { unsigned int fbo, texture, depthRB; int w, h; };
             CanvasCtx* cc = (CanvasCtx*)lua_touserdata(L, -1);
             if (cc && cc->fbo) {
+                // Phase E.3.2: HDR 启用时标记 Pause (切到 user RT, HDR 暂停累积)
+                if (HDRRenderer::IsEnabled() && !HDRRenderer::IsPaused()) {
+                    HDRRenderer::Pause();
+                }
                 g_render->BindFBO(cc->fbo);
                 g_render->SetViewport(0, 0, cc->w, cc->h);
                 g_ctx.currentCanvas = cc;
