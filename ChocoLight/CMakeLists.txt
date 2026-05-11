@@ -291,6 +291,8 @@ set(LIGHT_SOURCES
     ${CHOCO_SRC}/hdr_renderer.cpp
     ${CHOCO_SRC}/bloom_renderer.cpp
     ${CHOCO_SRC}/auto_exposure_renderer.cpp
+    ${CHOCO_SRC}/lens_dirt_renderer.cpp
+    ${CHOCO_SRC}/streak_renderer.cpp
     ${CHOCO_SRC}/render_gl33.cpp
     ${CHOCO_SRC}/light_audio_backend.cpp
     # Phase AT — Audio 3D 空间化 + Mixer + Effects

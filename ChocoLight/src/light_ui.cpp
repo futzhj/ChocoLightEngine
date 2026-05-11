@@ -29,6 +29,8 @@
 #include "hdr_renderer.h"             // Phase E.3.2 — HDR 离屏管线
 #include "bloom_renderer.h"           // Phase E.4.2 — Bloom 后处理
 #include "auto_exposure_renderer.h"   // Phase E.5.2 — Auto Exposure (Eye Adaptation)
+#include "lens_dirt_renderer.h"       // Phase E.6.2 — Lens Dirt
+#include "streak_renderer.h"          // Phase E.6.2 — Streak (Anamorphic Flare)
 #include "light_audio_backend.h"
 #include "light_platform_net.h"
 #include "platform_window.h"
@@ -501,6 +503,9 @@ static int l_Window_Open(lua_State* L) {
     BloomRenderer::Init(g_render);
     // Phase E.5.2: 初始化 AutoExposureRenderer (不自动 Enable; autoEnable=false 默认 manual exposure)
     AutoExposureRenderer::Init(g_render);
+    // Phase E.6.2: 初始化 LensDirt + Streak (默认 autoEnable=false, 手动启用)
+    LensDirtRenderer::Init(g_render);
+    StreakRenderer::Init(g_render);
 
     // 初始化音频后端
     if (!AudioBackend::Init()) {
@@ -725,6 +730,9 @@ static int l_UI_Resume(lua_State* L) {
             }
             PlatformNet::Shutdown();
             AudioBackend::Shutdown();
+            // Phase E.6.2: LensFx 依赖 backend + Bloom; 最先关闭 (反初始化顺序)
+            StreakRenderer::Shutdown();
+            LensDirtRenderer::Shutdown();
             // Phase E.5.2: AutoExposureRenderer 依赖 backend、先于 Bloom/HDR 关闭 (luminance RT 独立)
             AutoExposureRenderer::Shutdown();
             // Phase E.4.2: BloomRenderer 依赖 backend、先于 HDR 关闭 (pyramid 拍拭不注册 depth RBO map)

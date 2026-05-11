@@ -8,6 +8,8 @@
 #include "hdr_renderer.h"
 #include "bloom_renderer.h"             // Phase E.4.2 — HDR Enable/Disable/Resize 联动回调
 #include "auto_exposure_renderer.h"     // Phase E.5.2 — HDR Enable/Disable/Resize 联动回调 + EndScene exposure 覆盖
+#include "lens_dirt_renderer.h"         // Phase E.6.2 — Lens Dirt 后处理联动
+#include "streak_renderer.h"            // Phase E.6.2 — Streak anamorphic flare 联动
 #include "render_backend.h"
 #include "light.h"         // CC::Log
 
@@ -147,11 +149,17 @@ bool Enable(int w, int h) {
     BloomRenderer::OnHDREnabled(w, h);
     // Phase E.5.2 — 同时通知 AE 模块 (autoEnable=false 时 no-op; 默认 manual exposure)
     AutoExposureRenderer::OnHDREnabled(w, h);
+    // Phase E.6.2 — 通知 LensDirt + Streak (autoEnable=false 时 no-op)
+    LensDirtRenderer::OnHDREnabled(w, h);
+    StreakRenderer::OnHDREnabled(w, h);
     return true;
 }
 
 void Disable() {
     if (!g.enabled) return;
+    // Phase E.6.2 — 先关 LensFx 模块 (依赖 HDR RT + Bloom 的上层; 安全先关)
+    StreakRenderer::OnHDRDisabled();
+    LensDirtRenderer::OnHDRDisabled();
     // Phase E.5.2 — 先关 AE (AE 依赖 HDR RT 与 Bloom 同, 顺序任意, 安全先关)
     AutoExposureRenderer::OnHDRDisabled();
     // Phase E.4.2 — 先通知 Bloom 模块 (Bloom 依赖 HDR RT, 先关 Bloom 再关 HDR)
@@ -180,11 +188,13 @@ bool Resize(int w, int h) {
         return true;  // 尺寸相同, no-op
     }
     bool ok = Enable(w, h);  // Enable 内部会 ReleaseRT + CreateRT + OnHDREnabled
-    // 注: Enable 已调过 OnHDREnabled, 该回调等价于 Bloom/AE Resize; 以下 OnHDRResized 重复调
+    // 注: Enable 已调过 OnHDREnabled, 该回调等价于 Bloom/AE/LensFx Resize; 以下 OnHDRResized 重复调
     //     有 no-op 保护 (Resize 内部对于已同尺寸直接 return true)
     if (ok) {
         BloomRenderer::OnHDRResized(w, h);
         AutoExposureRenderer::OnHDRResized(w, h);   // Phase E.5.2
+        LensDirtRenderer::OnHDRResized(w, h);       // Phase E.6.2 (no-op, 无 RT)
+        StreakRenderer::OnHDRResized(w, h);         // Phase E.6.2
     }
     return ok;
 }
@@ -230,12 +240,21 @@ void EndScene() {
         AutoExposureRenderer::Process(g.sceneTex, dt);
     }
 
+    // Phase E.6.2 — Lens Dirt (内部自检 IsEnabled; 未启用 no-op)
+    // 需 Bloom 启用 (GetPyramidTopTex 返 0 时 no-op, LensDirt 本身再防御)
+    LensDirtRenderer::Process(g.fbo,
+                               BloomRenderer::GetPyramidTopTex(),
+                               g.width, g.height);
+
+    // Phase E.6.2 — Streak (内部自检 IsEnabled; 未启用 no-op)
+    StreakRenderer::Process(g.fbo, g.sceneTex);
+
     // Tonemap exposure: AE 开时覆盖 manual; AE 关时回归 manual SetExposure
     float exposure = AutoExposureRenderer::IsEnabled()
                         ? AutoExposureRenderer::GetCurrentExposure()
                         : g.exposure;
 
-    // Tonemap + sRGB encode → default fb (E.3.4 多 operator; 输入已含 bloom 的 HDR RT)
+    // Tonemap + sRGB encode → default fb (E.3.4 多 operator; 输入已含 bloom + lensDirt + streak 的 HDR RT)
     g.backend->DrawTonemapFullscreen(g.sceneTex, exposure, g.gamma, g.tonemap);
 }
 

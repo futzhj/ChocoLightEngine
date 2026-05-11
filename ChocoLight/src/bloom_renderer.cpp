@@ -239,4 +239,12 @@ void Process(uint32_t hdrFbo, uint32_t hdrTex) {
                                    g.width, g.height, g.intensity);
 }
 
+// ==================== Phase E.6 — 高级查询 ====================
+
+uint32_t GetPyramidTopTex() {
+    // 未启用 / pyramid 未建 / 资源失效: 返回 0 (调用方视作 "no bloom")
+    if (!g.enabled || g.actualLevels < 1) return 0;
+    return g.texs[0];
+}
+
 } // namespace BloomRenderer

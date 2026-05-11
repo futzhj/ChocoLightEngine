@@ -133,4 +133,14 @@ int  GetLevels();
  */
 void Process(uint32_t hdrFbo, uint32_t hdrTex);
 
+// ==================== 高级查询 (Phase E.6 — Lens Dirt 输入源) ====================
+
+/**
+ * @brief 取 pyramid 顶层 (level 0) 颜色 tex id
+ *
+ * 供 LensDirtRenderer 读取 bloom 输出 (高斯柔化后的亮像素) 作为 dirt 乘数.
+ * Bloom 未启用 / pyramid 未建时返回 0.
+ */
+uint32_t GetPyramidTopTex();
+
 } // namespace BloomRenderer
