@@ -635,6 +635,34 @@ function ECSWorld:_PushParentChain2D(entity, gfx)
     return #chain
 end
 
+-- Phase D.x.1.2: 3D 版本 parent chain (gfx stack 模式, 用于 _DrawMesh)
+-- 与 2D 版本对称, 但用 Translate(x,y,z) + Rotate*3 + Scale(x,y,z) 三轴
+function ECSWorld:_PushParentChain3D(entity, gfx)
+    local tf = entity and entity._comps and entity._comps.Transform3D
+    if not tf or not tf.parent then return 0 end
+    local chain = {}
+    local visited = {}
+    local cur = tf.parent
+    while cur and not visited[cur] and #chain < 32 do
+        visited[cur] = true
+        local ptf = cur._comps and cur._comps.Transform3D
+        if not ptf then break end
+        chain[#chain + 1] = ptf
+        cur = ptf.parent
+    end
+    for i = #chain, 1, -1 do
+        local ptf = chain[i]
+        gfx.Push()
+        gfx.Translate(ptf.x or 0, ptf.y or 0, ptf.z or 0)
+        if (ptf.rx or 0) ~= 0 then gfx.Rotate(ptf.rx, 1, 0, 0) end
+        if (ptf.ry or 0) ~= 0 then gfx.Rotate(ptf.ry, 0, 1, 0) end
+        if (ptf.rz or 0) ~= 0 then gfx.Rotate(ptf.rz, 0, 0, 1) end
+        local sx, sy, sz = ptf.sx or 1, ptf.sy or 1, ptf.sz or 1
+        if sx ~= 1 or sy ~= 1 or sz ~= 1 then gfx.Scale(sx, sy, sz) end
+    end
+    return #chain
+end
+
 -- 绘制单个 sprite (在 Render() 中循环调用)
 function ECSWorld:_DrawSprite(tf, s, gfx)
     gfx.Push()
@@ -753,12 +781,15 @@ function ECSWorld:Render()
             local tf = e._comps.Transform3D
             local mr = e._comps.MeshRenderer
             if tf and mr and mr.visible ~= false and mr.mesh then
+                -- Phase D.x.1.2: parent chain push (gfx stack 模式)
+                local pushCount = self:_PushParentChain3D(e, gfx)
                 self:_DrawMesh(tf, mr, gfx)
+                for k = 1, pushCount do gfx.Pop() end
             end
         end
 
         -- Phase D.x.4: 蒙皮 mesh 渲染 (在普通 mesh 之后, 仍在 depth test 内)
-        -- Phase D.x.1.1: 传 entity 触发 parent chain matrix multiply
+        -- Phase D.x.1.1: 传 entity 触发 parent chain matrix multiply (matrix 模式)
         for _, e in ipairs(self._entities) do
             local tf  = e._comps.Transform3D
             local smr = e._comps.SkinnedMeshRenderer

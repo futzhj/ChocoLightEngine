@@ -447,6 +447,43 @@ do
 end
 
 -- ============================================================
+-- Phase D.x.1.2: 3D MeshRenderer parent chain (gfx stack 模式)
+-- ============================================================
+do
+    local gfx, calls = makeMockGraphics()
+    installMockLight(gfx)
+
+    local w = World.new()
+    local mockMesh = {}
+    function mockMesh:Draw(m) calls[#calls+1] = {fn='mesh:Draw'} end
+
+    -- root 3D entity at (10, 0, 0)
+    local root = w:CreateEntity():Add('Transform3D', {x=10, y=0, z=0})
+    -- child 3D entity 平移 (5, 0, 0), parent=root, 带 MeshRenderer
+    local child = w:CreateEntity():Add('Transform3D', {x=5, y=0, z=0, parent=root})
+                                   :Add('MeshRenderer', {mesh=mockMesh})
+
+    -- Camera3D
+    w:CreateEntity():Add('Transform3D', {})
+                    :Add('Camera3D',    {active=true})
+
+    w:Render()
+
+    -- Push 次数: child 有 1 个 parent (root), 加上 _DrawMesh self push = 2
+    eq(countFn(calls, "Push"), 2, "Dx1.2: total Push = 2 (parent + self)")
+    eq(countFn(calls, "Pop"),  2, "Dx1.2: Pop balances Push")
+
+    -- 第 1 个 Translate 是 parent (root, x=10)
+    local t1 = nthCall(calls, "Translate", 1)
+    eq(t1.args[1], 10, "Dx1.2: first Translate is parent x=10")
+
+    -- 第 2 个 Translate 是 self (child, x=5)
+    local t2 = nthCall(calls, "Translate", 2)
+    eq(t2.args[1], 5, "Dx1.2: second Translate is self x=5")
+    pass("Dx1.2: 3D MeshRenderer parent chain ok")
+end
+
+-- ============================================================
 -- Phase D.x.1: 循环引用保护 (max 32 depth)
 -- ============================================================
 do
