@@ -540,13 +540,19 @@ public:
      *
      * 默认实现 (Legacy): no-op.
      *
-     * @param hdrTex   HDR 颜色纹理 (来自 CreateHDRFBO 返回的 *outTex)
-     * @param exposure HDR 输入预乘的曝光值 (默认 1.0)
-     * @param gamma    sRGB encode 的 gamma 值 (默认 2.2)
+     * @param hdrTex     HDR 颜色纹理 (来自 CreateHDRFBO 返回的 *outTex)
+     * @param exposure   HDR 输入预乘的曝光值 (默认 1.0)
+     * @param gamma      sRGB encode 的 gamma 值 (默认 2.2)
+     * @param tonemapMode Phase E.3.4 — tonemap operator 选择
+     *                   0=ACES (Narkowicz fitted, 默认)
+     *                   1=Reinhard (x/(1+x), 简单基线)
+     *                   2=Uncharted2 (Hable filmic, 含 white scale)
+     *                   3=Linear (clamp 0..1, 无 tonemap, 调试用)
      */
     virtual void DrawTonemapFullscreen(uint32_t /*hdrTex*/,
                                         float /*exposure*/,
-                                        float /*gamma*/) {}
+                                        float /*gamma*/,
+                                        int   /*tonemapMode*/ = 0) {}
 };
 
 // ==================== 工厂函数 ====================

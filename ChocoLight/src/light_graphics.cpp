@@ -1584,6 +1584,56 @@ static int l_HDR_GetSceneTexture(lua_State* L) {
     return 1;
 }
 
+// ==================== Phase E.3.4 — Tonemap operator (按字符串名) ====================
+
+/// 字符串 → tonemap mode int (无效名回退 ACES)
+/// 支持大小写无关: "aces" / "ACES" / "Reinhard" 等
+static int hdr_tonemap_name_to_mode(const char* s) {
+    if (!s) return HDRRenderer::TONEMAP_ACES;
+    // 简易大小写无关比较 (4 个常量, 不引外部库)
+    auto eq_ci = [](const char* a, const char* b) {
+        while (*a && *b) {
+            char ca = (*a >= 'A' && *a <= 'Z') ? (char)(*a + 32) : *a;
+            char cb = (*b >= 'A' && *b <= 'Z') ? (char)(*b + 32) : *b;
+            if (ca != cb) return false;
+            ++a; ++b;
+        }
+        return *a == 0 && *b == 0;
+    };
+    if (eq_ci(s, "aces"))       return HDRRenderer::TONEMAP_ACES;
+    if (eq_ci(s, "reinhard"))   return HDRRenderer::TONEMAP_REINHARD;
+    if (eq_ci(s, "uncharted2")) return HDRRenderer::TONEMAP_UNCHARTED2;
+    if (eq_ci(s, "linear"))     return HDRRenderer::TONEMAP_LINEAR;
+    return HDRRenderer::TONEMAP_ACES;   // 未知名 → ACES
+}
+
+/// int → 字符串名 (规范小写)
+static const char* hdr_tonemap_mode_to_name(int mode) {
+    switch (mode) {
+        case HDRRenderer::TONEMAP_REINHARD:   return "reinhard";
+        case HDRRenderer::TONEMAP_UNCHARTED2: return "uncharted2";
+        case HDRRenderer::TONEMAP_LINEAR:     return "linear";
+        case HDRRenderer::TONEMAP_ACES:
+        default:                              return "aces";
+    }
+}
+
+/// @lua_api Light.Graphics.HDR.SetTonemapper
+/// @brief 选择 tonemap 曲线 (Phase E.3.4)
+/// @param name string "aces" | "reinhard" | "uncharted2" | "linear" (大小写无关; 未知名回退 "aces")
+static int l_HDR_SetTonemapper(lua_State* L) {
+    const char* name = luaL_checkstring(L, 1);
+    HDRRenderer::SetTonemapper(hdr_tonemap_name_to_mode(name));
+    return 0;
+}
+
+/// @lua_api Light.Graphics.HDR.GetTonemapper
+/// @return string 当前 tonemap operator 名 (规范小写: "aces" | "reinhard" | "uncharted2" | "linear")
+static int l_HDR_GetTonemapper(lua_State* L) {
+    lua_pushstring(L, hdr_tonemap_mode_to_name(HDRRenderer::GetTonemapper()));
+    return 1;
+}
+
 static const luaL_Reg hdr_funcs[] = {
     {"Enable",          l_HDR_Enable},
     {"Disable",         l_HDR_Disable},
@@ -1595,6 +1645,9 @@ static const luaL_Reg hdr_funcs[] = {
     {"SetGamma",        l_HDR_SetGamma},
     {"GetGamma",        l_HDR_GetGamma},
     {"GetSceneTexture", l_HDR_GetSceneTexture},
+    // Phase E.3.4
+    {"SetTonemapper",   l_HDR_SetTonemapper},
+    {"GetTonemapper",   l_HDR_GetTonemapper},
     {NULL, NULL}
 };
 

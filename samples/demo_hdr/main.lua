@@ -18,7 +18,8 @@
 --   H       : 切换 HDR 启用 / 禁用
 --   Z / X   : 减小 / 增大 Exposure (步长 0.1, [0.1, 5.0])
 --   C / V   : 减小 / 增大 Gamma    (步长 0.1, [1.0, 3.0])
---   R       : 重置 Exposure=1.0, Gamma=2.2
+--   T       : 循环切换 Tonemap operator (aces → reinhard → uncharted2 → linear)  (Phase E.3.4)
+--   R       : 重置 Exposure=1.0, Gamma=2.2, Tonemapper=aces
 --   ESC     : 退出
 --
 -- 兼容: Lua 5.1 + ChocoLight Light.Graphics.HDR / UI.Window / Time
@@ -104,6 +105,8 @@ hdrEnabled = tryEnableHDR()
 
 local exposure = 1.0
 local gamma    = 2.2
+local TONEMAPS = { "aces", "reinhard", "uncharted2", "linear" }   -- Phase E.3.4
+local tmIndex  = 1   -- 1-based
 local lastTime = (Time and Time.GetSeconds and Time.GetSeconds()) or 0
 
 -- 输入消抖 (防按键长按连触发)
@@ -182,12 +185,21 @@ while win:IsOpen() do
         HDR.SetGamma(gamma)
     end
 
+    -- T: 循环 tonemapper (Phase E.3.4)
+    if keyTap('t') then
+        tmIndex = (tmIndex % #TONEMAPS) + 1
+        HDR.SetTonemapper(TONEMAPS[tmIndex])
+        print('[demo_hdr] Tonemapper -> ' .. TONEMAPS[tmIndex])
+    end
+
     -- R: reset
     if keyTap('r') then
         exposure = 1.0
         gamma    = 2.2
+        tmIndex  = 1
         HDR.SetExposure(exposure)
         HDR.SetGamma(gamma)
+        HDR.SetTonemapper(TONEMAPS[tmIndex])
     end
 
     -- 渲染
@@ -234,10 +246,10 @@ while win:IsOpen() do
             hdrEnabled and 'ON' or 'OFF',
             tostring(HDR.IsSupported()),
             tostring(Gfx.GetBackendName and Gfx.GetBackendName() or '?')))
-        line(string.format('Exposure: %.2f   Gamma: %.2f   SceneTex: %d',
-            HDR.GetExposure(), HDR.GetGamma(), HDR.GetSceneTexture()))
+        line(string.format('Exposure: %.2f   Gamma: %.2f   Tonemap: %-10s  SceneTex: %d',
+            HDR.GetExposure(), HDR.GetGamma(), HDR.GetTonemapper(), HDR.GetSceneTexture()))
         line('Brightness scale: 0.2 ... 3.8 (values > 1.0 need HDR to resolve)')
-        line('Keys: H=toggle HDR  Z/X=exposure -/+  C/V=gamma -/+  R=reset  ESC=quit')
+        line('Keys: H=toggle HDR  Z/X=exposure -/+  C/V=gamma -/+  T=cycle tonemap  R=reset  ESC=quit')
     end
 
     win:EndFrame()

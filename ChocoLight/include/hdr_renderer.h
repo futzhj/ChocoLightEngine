@@ -111,6 +111,22 @@ float GetExposure();
 void  SetGamma(float v);
 float GetGamma();
 
+// ==================== Phase E.3.4 — Tonemap Operator ====================
+
+/// Tonemap operator 常量 (与 shader uTonemapMode int 值对齐)
+enum Tonemapper {
+    TONEMAP_ACES       = 0,   ///< Narkowicz 2016 fitted (默认, 电影感)
+    TONEMAP_REINHARD   = 1,   ///< x/(1+x) (简单基线)
+    TONEMAP_UNCHARTED2 = 2,   ///< Hable filmic (含 white scale)
+    TONEMAP_LINEAR     = 3,   ///< clamp(x, 0, 1) (调试用, 等同 LDR clip)
+};
+
+/// 设置 tonemap operator (无效 mode 静默回退 ACES)
+void SetTonemapper(int mode);
+
+/// 当前 operator (0..3)
+int  GetTonemapper();
+
 // ==================== 高级查询 ====================
 
 /// 当前 HDR RT 的颜色纹理 id (Enable 未调时 = 0)

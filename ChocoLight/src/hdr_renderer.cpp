@@ -28,9 +28,10 @@ struct State {
     int            width     = 0;
     int            height    = 0;
 
-    // ACES tonemap 参数
+    // Tonemap 参数 (Phase E.3.1 + E.3.4)
     float          exposure  = 1.0f;
     float          gamma     = 2.2f;
+    int            tonemap   = 0;       // Phase E.3.4 — 0=ACES default
 };
 
 static State g;
@@ -190,8 +191,8 @@ void EndScene() {
     // 一般在 SwapBuffers 前不再绘制, 下帧 BeginFrame 也不依赖 viewport. 若未来
     // tonemap 结果要与 LDR 其他内容合成, Lua 层可显式调 SetViewport.
 
-    // ACES tonemap + sRGB encode → default fb
-    g.backend->DrawTonemapFullscreen(g.sceneTex, g.exposure, g.gamma);
+    // Tonemap + sRGB encode → default fb (E.3.4 多 operator)
+    g.backend->DrawTonemapFullscreen(g.sceneTex, g.exposure, g.gamma, g.tonemap);
 }
 
 // ==================== 曝光 / Gamma ====================
@@ -201,6 +202,19 @@ float GetExposure()        { return g.exposure; }
 
 void  SetGamma(float v)    { g.gamma = (v > 0.0001f) ? v : 0.0001f; }
 float GetGamma()           { return g.gamma; }
+
+// ==================== Phase E.3.4 — Tonemap Operator ====================
+
+void SetTonemapper(int mode) {
+    // 无效 mode 静默回退 ACES (0); 仅受理 0..3
+    if (mode < TONEMAP_ACES || mode > TONEMAP_LINEAR) {
+        g.tonemap = TONEMAP_ACES;
+    } else {
+        g.tonemap = mode;
+    }
+}
+
+int GetTonemapper() { return g.tonemap; }
 
 // ==================== 高级查询 ====================
 

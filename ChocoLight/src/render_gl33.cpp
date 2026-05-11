@@ -844,7 +844,7 @@ void main() {
 }
 )";
 
-// ---- FS_TONEMAP (GLES 3.0) ----
+// ---- FS_TONEMAP (GLES 3.0) Phase E.3.4 — 多 tonemap operator ----
 static const char* FS_TONEMAP_SOURCE = R"(#version 300 es
 precision highp float;
 in  vec2 vUV;
@@ -853,8 +853,10 @@ out vec4 FragColor;
 uniform sampler2D uHDRTex;
 uniform float uExposure;
 uniform float uGamma;
+uniform int   uTonemapMode;   // 0=ACES 1=Reinhard 2=Uncharted2 3=Linear
 
-vec3 ACESFilm(vec3 x) {
+// ACES filmic (Krzysztof Narkowicz 2016 fit)
+vec3 TonemapACES(vec3 x) {
     const float a = 2.51;
     const float b = 0.03;
     const float c = 2.43;
@@ -863,9 +865,34 @@ vec3 ACESFilm(vec3 x) {
     return clamp((x * (a*x + b)) / (x * (c*x + d) + e), 0.0, 1.0);
 }
 
+// Reinhard (简单基线, x/(1+x))
+vec3 TonemapReinhard(vec3 x) {
+    return x / (vec3(1.0) + x);
+}
+
+// Uncharted 2 (Hable filmic, 含 white scale)
+vec3 U2Func(vec3 x) {
+    const float A = 0.15, B = 0.50, C = 0.10, D = 0.20, E = 0.02, F = 0.30;
+    return ((x * (A*x + C*B) + D*E) / (x * (A*x + B) + D*F)) - E/F;
+}
+vec3 TonemapUncharted2(vec3 x) {
+    const float W = 11.2;
+    vec3 whiteScale = vec3(1.0) / U2Func(vec3(W));
+    return clamp(U2Func(x * 2.0) * whiteScale, 0.0, 1.0);
+}
+
+// Linear (纯 clamp, 调试用)
+vec3 TonemapLinear(vec3 x) {
+    return clamp(x, 0.0, 1.0);
+}
+
 void main() {
-    vec3 hdr  = max(texture(uHDRTex, vUV).rgb, vec3(0.0)) * uExposure;
-    vec3 ldr  = ACESFilm(hdr);
+    vec3 hdr = max(texture(uHDRTex, vUV).rgb, vec3(0.0)) * uExposure;
+    vec3 ldr;
+    if      (uTonemapMode == 1) ldr = TonemapReinhard(hdr);
+    else if (uTonemapMode == 2) ldr = TonemapUncharted2(hdr);
+    else if (uTonemapMode == 3) ldr = TonemapLinear(hdr);
+    else                        ldr = TonemapACES(hdr);   // 0 或其他值 → ACES
     vec3 srgb = pow(ldr, vec3(1.0 / max(uGamma, 0.0001)));
     FragColor = vec4(srgb, 1.0);
 }
@@ -885,7 +912,7 @@ void main() {
 }
 )";
 
-// ---- FS_TONEMAP (GL 3.3) ----
+// ---- FS_TONEMAP (GL 3.3) Phase E.3.4 — 多 tonemap operator ----
 static const char* FS_TONEMAP_SOURCE = R"(
 #version 330 core
 in  vec2 vUV;
@@ -894,8 +921,10 @@ out vec4 FragColor;
 uniform sampler2D uHDRTex;
 uniform float uExposure;
 uniform float uGamma;
+uniform int   uTonemapMode;   // 0=ACES 1=Reinhard 2=Uncharted2 3=Linear
 
-vec3 ACESFilm(vec3 x) {
+// ACES filmic (Krzysztof Narkowicz 2016 fit)
+vec3 TonemapACES(vec3 x) {
     const float a = 2.51;
     const float b = 0.03;
     const float c = 2.43;
@@ -904,9 +933,34 @@ vec3 ACESFilm(vec3 x) {
     return clamp((x * (a*x + b)) / (x * (c*x + d) + e), 0.0, 1.0);
 }
 
+// Reinhard (简单基线, x/(1+x))
+vec3 TonemapReinhard(vec3 x) {
+    return x / (vec3(1.0) + x);
+}
+
+// Uncharted 2 (Hable filmic, 含 white scale)
+vec3 U2Func(vec3 x) {
+    const float A = 0.15, B = 0.50, C = 0.10, D = 0.20, E = 0.02, F = 0.30;
+    return ((x * (A*x + C*B) + D*E) / (x * (A*x + B) + D*F)) - E/F;
+}
+vec3 TonemapUncharted2(vec3 x) {
+    const float W = 11.2;
+    vec3 whiteScale = vec3(1.0) / U2Func(vec3(W));
+    return clamp(U2Func(x * 2.0) * whiteScale, 0.0, 1.0);
+}
+
+// Linear (纯 clamp, 调试用)
+vec3 TonemapLinear(vec3 x) {
+    return clamp(x, 0.0, 1.0);
+}
+
 void main() {
-    vec3 hdr  = max(texture(uHDRTex, vUV).rgb, vec3(0.0)) * uExposure;
-    vec3 ldr  = ACESFilm(hdr);
+    vec3 hdr = max(texture(uHDRTex, vUV).rgb, vec3(0.0)) * uExposure;
+    vec3 ldr;
+    if      (uTonemapMode == 1) ldr = TonemapReinhard(hdr);
+    else if (uTonemapMode == 2) ldr = TonemapUncharted2(hdr);
+    else if (uTonemapMode == 3) ldr = TonemapLinear(hdr);
+    else                        ldr = TonemapACES(hdr);   // 0 或其他值 → ACES
     vec3 srgb = pow(ldr, vec3(1.0 / max(uGamma, 0.0001)));
     FragColor = vec4(srgb, 1.0);
 }
@@ -1017,6 +1071,7 @@ class GL33Backend : public RenderBackend {
     GLint  locTonemap_HDRTex   = -1;
     GLint  locTonemap_Exposure = -1;
     GLint  locTonemap_Gamma    = -1;
+    GLint  locTonemap_Mode     = -1;   // Phase E.3.4 — uTonemapMode (int)
     // HDR FBO → depth RBO 关系映射 (CreateHDRFBO 写入, DeleteHDRFBO 查询并释放)
     std::unordered_map<uint32_t, uint32_t> hdrFboDepthRB;
 
@@ -1484,6 +1539,7 @@ public:
         locTonemap_HDRTex   = glGetUniformLocation(programTonemap, "uHDRTex");
         locTonemap_Exposure = glGetUniformLocation(programTonemap, "uExposure");
         locTonemap_Gamma    = glGetUniformLocation(programTonemap, "uGamma");
+        locTonemap_Mode     = glGetUniformLocation(programTonemap, "uTonemapMode");
 
         // 一次性绑 sampler 到 texture unit 0
         glUseProgram(programTonemap);
@@ -1566,7 +1622,7 @@ public:
         if (programTonemap) { glDeleteProgram(programTonemap); programTonemap = 0; }
         if (vboTonemap)     { glDeleteBuffers(1, &vboTonemap); vboTonemap = 0; }
         if (vaoTonemap)     { glDeleteVertexArrays(1, &vaoTonemap); vaoTonemap = 0; }
-        locTonemap_HDRTex = locTonemap_Exposure = locTonemap_Gamma = -1;
+        locTonemap_HDRTex = locTonemap_Exposure = locTonemap_Gamma = locTonemap_Mode = -1;
         // 清理 CreateHDRFBO 遗留的 depth RBO (HDRRenderer::Shutdown 未配对 DeleteHDRFBO 时的兜底)
         for (auto& kv : hdrFboDepthRB) {
             if (kv.second) { GLuint rb = kv.second; glDeleteRenderbuffers(1, &rb); }
@@ -1653,8 +1709,10 @@ public:
     }
 
     /// ACES tonemap 全屏 pass: HDR 纹理 → 当前绑定 framebuffer
-    /// 调用方负责: 先 UnbindFBO() 切到 default fb, 调用后不需恢复 depth/blend state.
-    void DrawTonemapFullscreen(uint32_t hdrTex, float exposure, float gamma) override {
+    /// Phase E.3.4: 支持 4 个 operator (ACES / Reinhard / Uncharted2 / Linear)
+    /// 调用方负责: 先 UnbindFBO() 切到 default fb, 调用后不需要恢复 depth/blend state.
+    void DrawTonemapFullscreen(uint32_t hdrTex, float exposure, float gamma,
+                                int tonemapMode = 0) override {
         if (!tonemapSupported || !hdrTex) return;
 
         // 1. 关 depth / blend (tonemap 是 destructive full-screen write)
@@ -1666,6 +1724,7 @@ public:
         glUseProgram(programTonemap);
         if (locTonemap_Exposure >= 0) glUniform1f(locTonemap_Exposure, exposure);
         if (locTonemap_Gamma    >= 0) glUniform1f(locTonemap_Gamma,    gamma);
+        if (locTonemap_Mode     >= 0) glUniform1i(locTonemap_Mode,     tonemapMode);
 
         // 3. 绑 HDR 纹理到 texture unit 0
         glActiveTexture(GL_TEXTURE0);

@@ -23,8 +23,18 @@ light.exe samples/demo_hdr/main.lua
 | `H` | 切换 HDR 启用 / 禁用 |
 | `Z` / `X` | Exposure -/+ 0.1（范围 0.1 ~ 5.0） |
 | `C` / `V` | Gamma -/+ 0.1（范围 1.0 ~ 3.0） |
-| `R` | 重置 Exposure=1.0, Gamma=2.2 |
+| `T` | 循环切换 Tonemap operator（aces → reinhard → uncharted2 → linear）**Phase E.3.4** |
+| `R` | 重置 Exposure=1.0, Gamma=2.2, Tonemapper=aces |
 | `ESC` | 退出 |
+
+### Tonemap operator 对比
+
+| Operator | 公式 | 视觉特点 |
+|----------|------|----------|
+| `aces` | Narkowicz 2016 filmic fit | 电影感，高亮饱和柔和；默认 |
+| `reinhard` | `x / (1 + x)` | 简单基线，对比度低，整体偏灰 |
+| `uncharted2` | Hable filmic（含 white scale = 11.2） | 顽皮狗 U2 经典；中间调亮、高光柔和 |
+| `linear` | `clamp(x, 0, 1)` | 无 tonemap，等同 LDR clip；调试参考 |
 
 ## 预期视觉
 

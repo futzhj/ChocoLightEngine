@@ -32,6 +32,8 @@ local fn_names = {
     "Enable", "Disable", "IsEnabled", "IsSupported", "Resize",
     "SetExposure", "GetExposure", "SetGamma", "GetGamma",
     "GetSceneTexture",
+    -- Phase E.3.4
+    "SetTonemapper", "GetTonemapper",
 }
 for _, k in ipairs(fn_names) do
     if type(HDR[k]) ~= "function" then
@@ -185,7 +187,68 @@ end
 pass("GetSceneTexture() stays 0 after failed Enable")
 
 -- ============================================================
+-- 7) Phase E.3.4 — Tonemapper operator (按字符串名)
+-- ============================================================
+
+-- 7.1 默认 operator = "aces"
+local tm0 = HDR.GetTonemapper()
+if type(tm0) ~= "string" then
+    fail("GetTonemapper should return string, got " .. type(tm0))
+end
+if tm0 ~= "aces" then
+    fail("Default tonemapper must be 'aces', got '" .. tostring(tm0) .. "'")
+end
+pass("GetTonemapper() default = 'aces'")
+
+-- 7.2 4 个合法 operator 往返
+local valid = { "aces", "reinhard", "uncharted2", "linear" }
+for _, name in ipairs(valid) do
+    HDR.SetTonemapper(name)
+    local got = HDR.GetTonemapper()
+    if got ~= name then
+        fail("SetTonemapper('" .. name .. "') did not stick: got '" .. tostring(got) .. "'")
+    end
+end
+pass("SetTonemapper / GetTonemapper round-trip ok (4 operators)")
+
+-- 7.3 大小写无关
+HDR.SetTonemapper("ACES")
+if HDR.GetTonemapper() ~= "aces" then
+    fail("Case-insensitive 'ACES' failed: got '" .. tostring(HDR.GetTonemapper()) .. "'")
+end
+HDR.SetTonemapper("Reinhard")
+if HDR.GetTonemapper() ~= "reinhard" then
+    fail("Case-insensitive 'Reinhard' failed: got '" .. tostring(HDR.GetTonemapper()) .. "'")
+end
+HDR.SetTonemapper("UnCharTeD2")
+if HDR.GetTonemapper() ~= "uncharted2" then
+    fail("Case-insensitive 'UnCharTeD2' failed: got '" .. tostring(HDR.GetTonemapper()) .. "'")
+end
+pass("Case-insensitive SetTonemapper ok (ACES / Reinhard / UnCharTeD2)")
+
+-- 7.4 无效名回退 ACES
+HDR.SetTonemapper("not_a_real_operator")
+if HDR.GetTonemapper() ~= "aces" then
+    fail("Unknown name should fallback to 'aces', got '" .. tostring(HDR.GetTonemapper()) .. "'")
+end
+HDR.SetTonemapper("")
+if HDR.GetTonemapper() ~= "aces" then
+    fail("Empty name should fallback to 'aces', got '" .. tostring(HDR.GetTonemapper()) .. "'")
+end
+pass("Unknown / empty tonemapper name falls back to 'aces'")
+
+-- 7.5 SetTonemapper 不抛 (bad-type arg 由 luaL_checkstring 处理, 抛 lua error)
+local ok_bad = pcall(HDR.SetTonemapper)   -- 缺参数
+if ok_bad then fail("SetTonemapper() with no arg must error") end
+local ok_bad2 = pcall(HDR.SetTonemapper, 123)  -- 数字 (lua 自动转字符串 -> 未知 -> aces)
+if not ok_bad2 then fail("SetTonemapper(123) lua-auto-stringified should not error") end
+pass("SetTonemapper arg validation ok (nil arg errors; number stringified)")
+
+-- 恢复默认
+HDR.SetTonemapper("aces")
+
+-- ============================================================
 -- Done
 -- ============================================================
 
-print("[Phase E.3] Light.Graphics.HDR smoke PASS (10 functions)")
+print("[Phase E.3] Light.Graphics.HDR smoke PASS (12 functions)")
