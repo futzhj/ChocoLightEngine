@@ -31,6 +31,7 @@
 #include "auto_exposure_renderer.h"  // Phase E.5.2 — Auto Exposure (Eye Adaptation)
 #include "lens_dirt_renderer.h"      // Phase E.6.2 — Lens Dirt
 #include "streak_renderer.h"         // Phase E.6.2 — Streak (Anamorphic Flare)
+#include "lens_flare_renderer.h"     // Phase E.7.2 — Lens Flare (Ghost + Halo + Chromatic)
 #include <cmath>
 #include <cstring>
 
@@ -2185,6 +2186,135 @@ static const luaL_Reg streak_funcs[] = {
     {NULL, NULL}
 };
 
+// ==================== Phase E.7.3 — Light.Graphics.LensFlare Lua API ====================
+//
+// API (21 fn): lifecycle 5 + autoEnable 2 + params 14 (7 Set+Get pairs)
+
+static int l_LF_Enable(lua_State* L) {
+    int w = (int)luaL_checkinteger(L, 1);
+    int h = (int)luaL_checkinteger(L, 2);
+    lua_pushboolean(L, LensFlareRenderer::Enable(w, h) ? 1 : 0);
+    return 1;
+}
+
+static int l_LF_Disable(lua_State* L)     { (void)L; LensFlareRenderer::Disable(); return 0; }
+static int l_LF_IsEnabled(lua_State* L)   { lua_pushboolean(L, LensFlareRenderer::IsEnabled()   ? 1 : 0); return 1; }
+static int l_LF_IsSupported(lua_State* L) { lua_pushboolean(L, LensFlareRenderer::IsSupported() ? 1 : 0); return 1; }
+
+static int l_LF_Resize(lua_State* L) {
+    int w = (int)luaL_checkinteger(L, 1);
+    int h = (int)luaL_checkinteger(L, 2);
+    lua_pushboolean(L, LensFlareRenderer::Resize(w, h) ? 1 : 0);
+    return 1;
+}
+
+static int l_LF_SetAutoEnable(lua_State* L) {
+    luaL_checkany(L, 1);
+    LensFlareRenderer::SetAutoEnable(lua_toboolean(L, 1) != 0);
+    return 0;
+}
+
+static int l_LF_GetAutoEnable(lua_State* L) {
+    lua_pushboolean(L, LensFlareRenderer::GetAutoEnable() ? 1 : 0);
+    return 1;
+}
+
+static int l_LF_SetThreshold(lua_State* L) {
+    LensFlareRenderer::SetThreshold((float)luaL_checknumber(L, 1));
+    return 0;
+}
+
+static int l_LF_GetThreshold(lua_State* L) {
+    lua_pushnumber(L, (lua_Number)LensFlareRenderer::GetThreshold());
+    return 1;
+}
+
+static int l_LF_SetIntensity(lua_State* L) {
+    LensFlareRenderer::SetIntensity((float)luaL_checknumber(L, 1));
+    return 0;
+}
+
+static int l_LF_GetIntensity(lua_State* L) {
+    lua_pushnumber(L, (lua_Number)LensFlareRenderer::GetIntensity());
+    return 1;
+}
+
+static int l_LF_SetGhostCount(lua_State* L) {
+    LensFlareRenderer::SetGhostCount((int)luaL_checkinteger(L, 1));
+    return 0;
+}
+
+static int l_LF_GetGhostCount(lua_State* L) {
+    lua_pushinteger(L, (lua_Integer)LensFlareRenderer::GetGhostCount());
+    return 1;
+}
+
+static int l_LF_SetGhostDispersal(lua_State* L) {
+    LensFlareRenderer::SetGhostDispersal((float)luaL_checknumber(L, 1));
+    return 0;
+}
+
+static int l_LF_GetGhostDispersal(lua_State* L) {
+    lua_pushnumber(L, (lua_Number)LensFlareRenderer::GetGhostDispersal());
+    return 1;
+}
+
+static int l_LF_SetHaloWidth(lua_State* L) {
+    LensFlareRenderer::SetHaloWidth((float)luaL_checknumber(L, 1));
+    return 0;
+}
+
+static int l_LF_GetHaloWidth(lua_State* L) {
+    lua_pushnumber(L, (lua_Number)LensFlareRenderer::GetHaloWidth());
+    return 1;
+}
+
+static int l_LF_SetChromaticAberration(lua_State* L) {
+    LensFlareRenderer::SetChromaticAberration((float)luaL_checknumber(L, 1));
+    return 0;
+}
+
+static int l_LF_GetChromaticAberration(lua_State* L) {
+    lua_pushnumber(L, (lua_Number)LensFlareRenderer::GetChromaticAberration());
+    return 1;
+}
+
+static int l_LF_SetDistortionEnabled(lua_State* L) {
+    luaL_checkany(L, 1);
+    LensFlareRenderer::SetDistortionEnabled(lua_toboolean(L, 1) != 0);
+    return 0;
+}
+
+static int l_LF_GetDistortionEnabled(lua_State* L) {
+    lua_pushboolean(L, LensFlareRenderer::GetDistortionEnabled() ? 1 : 0);
+    return 1;
+}
+
+static const luaL_Reg lens_flare_funcs[] = {
+    {"Enable",                  l_LF_Enable},
+    {"Disable",                 l_LF_Disable},
+    {"IsEnabled",               l_LF_IsEnabled},
+    {"IsSupported",             l_LF_IsSupported},
+    {"Resize",                  l_LF_Resize},
+    {"SetAutoEnable",           l_LF_SetAutoEnable},
+    {"GetAutoEnable",           l_LF_GetAutoEnable},
+    {"SetThreshold",            l_LF_SetThreshold},
+    {"GetThreshold",            l_LF_GetThreshold},
+    {"SetIntensity",            l_LF_SetIntensity},
+    {"GetIntensity",            l_LF_GetIntensity},
+    {"SetGhostCount",           l_LF_SetGhostCount},
+    {"GetGhostCount",           l_LF_GetGhostCount},
+    {"SetGhostDispersal",       l_LF_SetGhostDispersal},
+    {"GetGhostDispersal",       l_LF_GetGhostDispersal},
+    {"SetHaloWidth",            l_LF_SetHaloWidth},
+    {"GetHaloWidth",            l_LF_GetHaloWidth},
+    {"SetChromaticAberration",  l_LF_SetChromaticAberration},
+    {"GetChromaticAberration",  l_LF_GetChromaticAberration},
+    {"SetDistortionEnabled",    l_LF_SetDistortionEnabled},
+    {"GetDistortionEnabled",    l_LF_GetDistortionEnabled},
+    {NULL, NULL}
+};
+
 static const luaL_Reg graphics_funcs[] = {
     // --- 绘图基元 ---
     {"Draw",              l_Draw},
@@ -2291,6 +2421,11 @@ int luaopen_Light_Graphics(lua_State* L) {
         lua_createtable(L, 0, 0);
         luaL_setfuncs(L, streak_funcs, 0);
         lua_setfield(L, -2, "Streak");
+
+        // Phase E.7.3 — LensFlare 子表 (Light.Graphics.LensFlare.*)
+        lua_createtable(L, 0, 0);
+        luaL_setfuncs(L, lens_flare_funcs, 0);
+        lua_setfield(L, -2, "LensFlare");
 
         lua_rawset(L, -3);
         lua_pushstring(L, "Graphics");
