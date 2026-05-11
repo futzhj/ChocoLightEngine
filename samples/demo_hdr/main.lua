@@ -19,7 +19,8 @@
 --   Z / X   : 减小 / 增大 Exposure (步长 0.1, [0.1, 5.0])
 --   C / V   : 减小 / 增大 Gamma    (步长 0.1, [1.0, 3.0])
 --   T       : 循环切换 Tonemap operator (aces → reinhard → uncharted2 → linear)  (Phase E.3.4)
---   R       : 重置 Exposure=1.0, Gamma=2.2, Tonemapper=aces
+--   B       : 切换 Bloom 启用 / 禁用  (Phase E.4.3; 需 HDR ON)
+--   R       : 重置 Exposure=1.0, Gamma=2.2, Tonemapper=aces, Bloom=ON
 --   ESC     : 退出
 --
 -- 兼容: Lua 5.1 + ChocoLight Light.Graphics.HDR / UI.Window / Time
@@ -53,10 +54,15 @@ if type(HDR) ~= 'table' then
     return
 end
 
+local Bloom = Gfx.Bloom   -- Phase E.4.3 (可选; 后续带 nil 检查)
+
 print('==== ChocoLight Phase E.3 HDR demo ====')
 print('[demo_hdr] Backend: ' ..
     tostring(Gfx.GetBackendName and Gfx.GetBackendName() or '?'))
-print('[demo_hdr] HDR.IsSupported = ' .. tostring(HDR.IsSupported()))
+print('[demo_hdr] HDR.IsSupported   = ' .. tostring(HDR.IsSupported()))
+if Bloom then
+    print('[demo_hdr] Bloom.IsSupported = ' .. tostring(Bloom.IsSupported()))
+end
 
 -- ==================== 2. Headless 探测 ====================
 
@@ -192,6 +198,21 @@ while win:IsOpen() do
         print('[demo_hdr] Tonemapper -> ' .. TONEMAPS[tmIndex])
     end
 
+    -- B: 切换 Bloom (Phase E.4.3; 需 HDR ON)
+    if Bloom and keyTap('b') then
+        if Bloom.IsEnabled() then
+            Bloom.Disable()
+            print('[demo_hdr] Bloom OFF')
+        else
+            if hdrEnabled then
+                local ok = Bloom.Enable(WIN_W, WIN_H)
+                print('[demo_hdr] Bloom ' .. (ok and 'ON' or 'OFF (enable failed)'))
+            else
+                print('[demo_hdr] 需先启用 HDR 才能启 Bloom (按 H)')
+            end
+        end
+    end
+
     -- R: reset
     if keyTap('r') then
         exposure = 1.0
@@ -200,6 +221,10 @@ while win:IsOpen() do
         HDR.SetExposure(exposure)
         HDR.SetGamma(gamma)
         HDR.SetTonemapper(TONEMAPS[tmIndex])
+        -- Bloom 默认随 HDR 自动启动 (autoEnable=true); 手动关过后 R 重新拉起
+        if Bloom and hdrEnabled and not Bloom.IsEnabled() then
+            Bloom.Enable(WIN_W, WIN_H)
+        end
     end
 
     -- 渲染
@@ -248,8 +273,15 @@ while win:IsOpen() do
             tostring(Gfx.GetBackendName and Gfx.GetBackendName() or '?')))
         line(string.format('Exposure: %.2f   Gamma: %.2f   Tonemap: %-10s  SceneTex: %d',
             HDR.GetExposure(), HDR.GetGamma(), HDR.GetTonemapper(), HDR.GetSceneTexture()))
+        if Bloom then
+            line(string.format('Bloom: %s | Supported: %s | Thr: %.2f  Int: %.2f  Rad: %.2f  Lv: %d',
+                Bloom.IsEnabled() and 'ON' or 'OFF',
+                tostring(Bloom.IsSupported()),
+                Bloom.GetThreshold(), Bloom.GetIntensity(),
+                Bloom.GetRadius(), Bloom.GetLevels()))
+        end
         line('Brightness scale: 0.2 ... 3.8 (values > 1.0 need HDR to resolve)')
-        line('Keys: H=toggle HDR  Z/X=exposure -/+  C/V=gamma -/+  T=cycle tonemap  R=reset  ESC=quit')
+        line('Keys: H=HDR  Z/X=exp  C/V=gamma  T=tonemap  B=Bloom  R=reset  ESC=quit')
     end
 
     win:EndFrame()
@@ -257,6 +289,10 @@ end
 
 -- ==================== 6. 清理 ====================
 
+if Bloom and Bloom.IsEnabled() then
+    Bloom.Disable()
+    print('[demo_hdr] Bloom.Disable (cleanup)')
+end
 if hdrEnabled then
     HDR.Disable()
     print('[demo_hdr] HDR.Disable (cleanup)')

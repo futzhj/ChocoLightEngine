@@ -27,6 +27,7 @@
 #include "batch_renderer.h"
 #include "lit_batch_renderer.h"   // Phase E.2.3 — Lit2D 批渲染
 #include "hdr_renderer.h"          // Phase E.3.2 — HDR 离屏管线
+#include "bloom_renderer.h"        // Phase E.4.2 — Bloom 后处理
 #include <cmath>
 #include <cstring>
 
@@ -1651,6 +1652,149 @@ static const luaL_Reg hdr_funcs[] = {
     {NULL, NULL}
 };
 
+// ==================== Phase E.4.3 — Light.Graphics.Bloom Lua API ====================
+//
+// 子表 Light.Graphics.Bloom 挂在 luaopen_Light_Graphics 注册时附加 (在 HDR 子表之后).
+//
+// API 设计 (13 函数):
+//   Enable(w, h) -> bool           显式启用 (通常不用; HDR.Enable 默认自动联动)
+//   Disable()                       关闭 Bloom (HDR 可保留)
+//   IsEnabled() -> bool
+//   IsSupported() -> bool          后端是否支持 (GL33 = true)
+//   Resize(w, h) -> bool
+//   SetAutoEnable(flag)             HDR.Enable 时是否自动拉起 Bloom (默认 true)
+//   GetAutoEnable() -> bool
+//   SetThreshold(v)                亮度阈值 (默认 1.0; clamp [0, +inf))
+//   GetThreshold() -> number
+//   SetIntensity(v)                合成强度 (默认 0.8; clamp [0, +inf))
+//   GetIntensity() -> number
+//   SetRadius(v)                   扩散半径 (默认 0.7; clamp [0, 1])
+//   GetRadius() -> number
+//   SetLevels(n)                   pyramid 层数 (默认 5; clamp [2, 8]; 下次 Enable/Resize 生效)
+//   GetLevels() -> integer
+
+/// @lua_api Light.Graphics.Bloom.Enable
+/// @brief 启用 Bloom 管线 (通常不用; 默认 autoEnable=true, HDR.Enable 会自动拉起)
+/// @param w number pyramid[0] 宽
+/// @param h number pyramid[0] 高
+/// @return boolean true 成功; false = 后端不支持 / 参数非法 / 资源分配失败
+static int l_Bloom_Enable(lua_State* L) {
+    int w = (int)luaL_checkinteger(L, 1);
+    int h = (int)luaL_checkinteger(L, 2);
+    lua_pushboolean(L, BloomRenderer::Enable(w, h) ? 1 : 0);
+    return 1;
+}
+
+/// @lua_api Light.Graphics.Bloom.Disable
+static int l_Bloom_Disable(lua_State* L) {
+    (void)L;
+    BloomRenderer::Disable();
+    return 0;
+}
+
+/// @lua_api Light.Graphics.Bloom.IsEnabled
+static int l_Bloom_IsEnabled(lua_State* L) {
+    lua_pushboolean(L, BloomRenderer::IsEnabled() ? 1 : 0);
+    return 1;
+}
+
+/// @lua_api Light.Graphics.Bloom.IsSupported
+static int l_Bloom_IsSupported(lua_State* L) {
+    lua_pushboolean(L, BloomRenderer::IsSupported() ? 1 : 0);
+    return 1;
+}
+
+/// @lua_api Light.Graphics.Bloom.Resize
+static int l_Bloom_Resize(lua_State* L) {
+    int w = (int)luaL_checkinteger(L, 1);
+    int h = (int)luaL_checkinteger(L, 2);
+    lua_pushboolean(L, BloomRenderer::Resize(w, h) ? 1 : 0);
+    return 1;
+}
+
+/// @lua_api Light.Graphics.Bloom.SetAutoEnable
+/// @brief 设置 HDR.Enable 时是否自动拉起 Bloom (默认 true)
+/// @param flag boolean
+static int l_Bloom_SetAutoEnable(lua_State* L) {
+    luaL_checkany(L, 1);
+    BloomRenderer::SetAutoEnable(lua_toboolean(L, 1) != 0);
+    return 0;
+}
+
+/// @lua_api Light.Graphics.Bloom.GetAutoEnable
+/// @return boolean
+static int l_Bloom_GetAutoEnable(lua_State* L) {
+    lua_pushboolean(L, BloomRenderer::GetAutoEnable() ? 1 : 0);
+    return 1;
+}
+
+/// @lua_api Light.Graphics.Bloom.SetThreshold
+/// @param v number 亮度阈值 (clamp [0, +inf))
+static int l_Bloom_SetThreshold(lua_State* L) {
+    BloomRenderer::SetThreshold((float)luaL_checknumber(L, 1));
+    return 0;
+}
+
+static int l_Bloom_GetThreshold(lua_State* L) {
+    lua_pushnumber(L, (lua_Number)BloomRenderer::GetThreshold());
+    return 1;
+}
+
+/// @lua_api Light.Graphics.Bloom.SetIntensity
+/// @param v number 合成强度 (clamp [0, +inf))
+static int l_Bloom_SetIntensity(lua_State* L) {
+    BloomRenderer::SetIntensity((float)luaL_checknumber(L, 1));
+    return 0;
+}
+
+static int l_Bloom_GetIntensity(lua_State* L) {
+    lua_pushnumber(L, (lua_Number)BloomRenderer::GetIntensity());
+    return 1;
+}
+
+/// @lua_api Light.Graphics.Bloom.SetRadius
+/// @param v number 扩散半径 (clamp [0, 1])
+static int l_Bloom_SetRadius(lua_State* L) {
+    BloomRenderer::SetRadius((float)luaL_checknumber(L, 1));
+    return 0;
+}
+
+static int l_Bloom_GetRadius(lua_State* L) {
+    lua_pushnumber(L, (lua_Number)BloomRenderer::GetRadius());
+    return 1;
+}
+
+/// @lua_api Light.Graphics.Bloom.SetLevels
+/// @param n integer pyramid 层数 (clamp [2, 8]; 下次 Enable/Resize 生效)
+static int l_Bloom_SetLevels(lua_State* L) {
+    BloomRenderer::SetLevels((int)luaL_checkinteger(L, 1));
+    return 0;
+}
+
+static int l_Bloom_GetLevels(lua_State* L) {
+    lua_pushinteger(L, (lua_Integer)BloomRenderer::GetLevels());
+    return 1;
+}
+
+static const luaL_Reg bloom_funcs[] = {
+    {"Enable",          l_Bloom_Enable},
+    {"Disable",         l_Bloom_Disable},
+    {"IsEnabled",       l_Bloom_IsEnabled},
+    {"IsSupported",     l_Bloom_IsSupported},
+    {"Resize",          l_Bloom_Resize},
+    {"SetAutoEnable",   l_Bloom_SetAutoEnable},
+    {"GetAutoEnable",   l_Bloom_GetAutoEnable},
+    {"SetThreshold",    l_Bloom_SetThreshold},
+    {"GetThreshold",    l_Bloom_GetThreshold},
+    {"SetIntensity",    l_Bloom_SetIntensity},
+    {"GetIntensity",    l_Bloom_GetIntensity},
+    {"SetRadius",       l_Bloom_SetRadius},
+    {"GetRadius",       l_Bloom_GetRadius},
+    {"SetLevels",       l_Bloom_SetLevels},
+    {"GetLevels",       l_Bloom_GetLevels},
+    {NULL, NULL}
+};
+
 static const luaL_Reg graphics_funcs[] = {
     // --- 绘图基元 ---
     {"Draw",              l_Draw},
@@ -1737,6 +1881,11 @@ int luaopen_Light_Graphics(lua_State* L) {
         lua_createtable(L, 0, 0);
         luaL_setfuncs(L, hdr_funcs, 0);
         lua_setfield(L, -2, "HDR");
+
+        // Phase E.4.3 — Bloom 子表 (Light.Graphics.Bloom.*)
+        lua_createtable(L, 0, 0);
+        luaL_setfuncs(L, bloom_funcs, 0);
+        lua_setfield(L, -2, "Bloom");
 
         lua_rawset(L, -3);
         lua_pushstring(L, "Graphics");
