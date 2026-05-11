@@ -563,12 +563,30 @@ function ECSWorld:MarkRenderNetworked()
 end
 
 -- 找首个 active=true 的相机 entity (同时拥有指定 cam comp 和 tf comp)
+-- Phase D.x.5: self-validating cache - 缓存命中 O(1), 失效时重扫 O(n) + 更新缓存
+-- 缓存失效条件 (自动检测, 无需手动调用):
+--   1. 缓存的 entity 已销毁 (_comps 字段被清空)
+--   2. 缓存的 entity active 字段变 false
 function ECSWorld:_FindActiveCamera(camComp, tfComp)
+    self._cam_cache = self._cam_cache or {}
+    local cacheKey = camComp .. '|' .. tfComp
+    local cached = self._cam_cache[cacheKey]
+    if cached then
+        local c = cached._comps[camComp]
+        local t = cached._comps[tfComp]
+        if c and t and c.active then return cached end
+        -- 缓存失效, fall through 重扫
+    end
+    -- 全表扫描 (amortized O(1) — 仅在相机切换 active 时触发)
     for _, e in ipairs(self._entities) do
         local c = e._comps[camComp]
         local t = e._comps[tfComp]
-        if c and t and c.active then return e end
+        if c and t and c.active then
+            self._cam_cache[cacheKey] = e
+            return e
+        end
     end
+    self._cam_cache[cacheKey] = nil
     return nil
 end
 
