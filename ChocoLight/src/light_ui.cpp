@@ -31,6 +31,7 @@
 #include "auto_exposure_renderer.h"   // Phase E.5.2 — Auto Exposure (Eye Adaptation)
 #include "lens_dirt_renderer.h"       // Phase E.6.2 — Lens Dirt
 #include "streak_renderer.h"          // Phase E.6.2 — Streak (Anamorphic Flare)
+#include "lens_flare_renderer.h"      // Phase E.7.2 — Lens Flare (Ghost + Halo + Chromatic)
 #include "light_audio_backend.h"
 #include "light_platform_net.h"
 #include "platform_window.h"
@@ -506,6 +507,8 @@ static int l_Window_Open(lua_State* L) {
     // Phase E.6.2: 初始化 LensDirt + Streak (默认 autoEnable=false, 手动启用)
     LensDirtRenderer::Init(g_render);
     StreakRenderer::Init(g_render);
+    // Phase E.7.2: 初始化 LensFlare (默认 autoEnable=false)
+    LensFlareRenderer::Init(g_render);
 
     // 初始化音频后端
     if (!AudioBackend::Init()) {
@@ -730,6 +733,8 @@ static int l_UI_Resume(lua_State* L) {
             }
             PlatformNet::Shutdown();
             AudioBackend::Shutdown();
+            // Phase E.7.2: LensFlare 依赖 Bloom + HDR; 最先关闭 (管线末端)
+            LensFlareRenderer::Shutdown();
             // Phase E.6.2: LensFx 依赖 backend + Bloom; 最先关闭 (反初始化顺序)
             StreakRenderer::Shutdown();
             LensDirtRenderer::Shutdown();

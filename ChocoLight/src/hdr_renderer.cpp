@@ -10,6 +10,7 @@
 #include "auto_exposure_renderer.h"     // Phase E.5.2 — HDR Enable/Disable/Resize 联动回调 + EndScene exposure 覆盖
 #include "lens_dirt_renderer.h"         // Phase E.6.2 — Lens Dirt 后处理联动
 #include "streak_renderer.h"            // Phase E.6.2 — Streak anamorphic flare 联动
+#include "lens_flare_renderer.h"        // Phase E.7.2 — Lens Flare (ghost + halo + chromatic) 联动
 #include "render_backend.h"
 #include "light.h"         // CC::Log
 
@@ -152,11 +153,15 @@ bool Enable(int w, int h) {
     // Phase E.6.2 — 通知 LensDirt + Streak (autoEnable=false 时 no-op)
     LensDirtRenderer::OnHDREnabled(w, h);
     StreakRenderer::OnHDREnabled(w, h);
+    // Phase E.7.2 — 通知 LensFlare (autoEnable=false 时 no-op)
+    LensFlareRenderer::OnHDREnabled(w, h);
     return true;
 }
 
 void Disable() {
     if (!g.enabled) return;
+    // Phase E.7.2 — 管线末端模块最先关 (LensFlare 依赖 Bloom + HDR RT)
+    LensFlareRenderer::OnHDRDisabled();
     // Phase E.6.2 — 先关 LensFx 模块 (依赖 HDR RT + Bloom 的上层; 安全先关)
     StreakRenderer::OnHDRDisabled();
     LensDirtRenderer::OnHDRDisabled();
@@ -195,6 +200,7 @@ bool Resize(int w, int h) {
         AutoExposureRenderer::OnHDRResized(w, h);   // Phase E.5.2
         LensDirtRenderer::OnHDRResized(w, h);       // Phase E.6.2 (no-op, 无 RT)
         StreakRenderer::OnHDRResized(w, h);         // Phase E.6.2
+        LensFlareRenderer::OnHDRResized(w, h);      // Phase E.7.2
     }
     return ok;
 }
@@ -249,12 +255,16 @@ void EndScene() {
     // Phase E.6.2 — Streak (内部自检 IsEnabled; 未启用 no-op)
     StreakRenderer::Process(g.fbo, g.sceneTex);
 
+    // Phase E.7.2 — Lens Flare (内部自检 IsEnabled; 未启用 no-op)
+    // 复用 Bloom bright/composite shader, 独立 ping-pong RT
+    LensFlareRenderer::Process(g.fbo, g.sceneTex);
+
     // Tonemap exposure: AE 开时覆盖 manual; AE 关时回归 manual SetExposure
     float exposure = AutoExposureRenderer::IsEnabled()
                         ? AutoExposureRenderer::GetCurrentExposure()
                         : g.exposure;
 
-    // Tonemap + sRGB encode → default fb (E.3.4 多 operator; 输入已含 bloom + lensDirt + streak 的 HDR RT)
+    // Tonemap + sRGB encode → default fb (E.3.4 多 operator; 输入已含 bloom + lensDirt + streak + lensFlare 的 HDR RT)
     g.backend->DrawTonemapFullscreen(g.sceneTex, exposure, g.gamma, g.tonemap);
 }
 
