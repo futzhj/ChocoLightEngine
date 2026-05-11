@@ -477,6 +477,76 @@ public:
      * GL33Backend 在 E.1.5 里拆出 SOA + glUniform*v 一次上传全部 16 位灯.
      */
     virtual void UploadLighting2D(const Lighting2D::State* state) {}
+
+    // ==================== Phase E.3: HDR + Tonemapping ====================
+
+    /**
+     * @brief HDR 渲染能力检测
+     *
+     * GL33Core (RGBA16F + Depth24 + fragment shader) → true
+     * Legacy GL / 不支持浮点 RT 的后端 → false
+     *
+     * 调用方 (HDRRenderer::Init) 应在 false 时返回 false 让 LDR 路径继续使用.
+     */
+    virtual bool SupportsHDR() const { return false; }
+
+    /**
+     * @brief 创建 HDR FBO (RGBA16F 颜色附件 + Depth24 RBO)
+     *
+     * 与现有 CreateFBO (RGBA8 + Depth16) 不同:
+     *  - 颜色: GL_RGBA16F 内部格式, GL_FLOAT 元素 (可存 HDR 值 > 1.0)
+     *  - 深度: GL_DEPTH_COMPONENT24 (替代 16, 给 3D 留精度)
+     *  - filter: GL_LINEAR (HDR RT 必须可线性采样, tonemap pass 需要)
+     *  - wrap: GL_CLAMP_TO_EDGE
+     *
+     * @param[in]  w        RT 宽度 (像素)
+     * @param[in]  h        RT 高度 (像素)
+     * @param[out] outTex   返回创建的 RGBA16F 颜色纹理 id
+     * @return     fbo id (0 = 失败, 通常是后端不支持或 OOM)
+     *
+     * Depth RBO 内部由后端管理 (与 DeleteHDRFBO 配对释放).
+     * 默认实现 (Legacy): return 0.
+     */
+    virtual uint32_t CreateHDRFBO(int /*w*/, int /*h*/, uint32_t* /*outTex*/) { return 0; }
+
+    /**
+     * @brief 释放 HDR FBO 资源
+     *
+     * 释放 fbo + 颜色纹理 + 内部管理的 depth RBO.
+     * 与 CreateHDRFBO 配对调用.
+     *
+     * 默认实现 (Legacy): no-op.
+     */
+    virtual void DeleteHDRFBO(uint32_t /*fbo*/, uint32_t /*tex*/) {}
+
+    /**
+     * @brief 用 ACES tonemap shader 把 HDR 纹理全屏 blit 到当前绑定的 framebuffer
+     *
+     * 典型用法 (主循环 EndScene):
+     *   1. backend->UnbindFBO()            (切到 default framebuffer)
+     *   2. backend->DrawTonemapFullscreen(hdrTex, exposure, gamma)
+     *   3. 接着 SwapBuffers
+     *
+     * shader 内部完成:
+     *   1. hdr = texture(uHDRTex, vUV).rgb * uExposure
+     *   2. ldr = ACESFilm(hdr)   (Narkowicz 2-pass fitted)
+     *   3. srgb = pow(ldr, 1/uGamma)
+     *   4. fragColor = vec4(srgb, 1.0)
+     *
+     * 实现细节:
+     *   - glDisable(GL_DEPTH_TEST) / GL_BLEND  (tonemap 是 destructive write)
+     *   - 6 顶点全屏 quad (无 EBO, GL_TRIANGLES)
+     *   - 调用结束前不恢复 depth/blend state (下次 BeginFrame 重置)
+     *
+     * 默认实现 (Legacy): no-op.
+     *
+     * @param hdrTex   HDR 颜色纹理 (来自 CreateHDRFBO 返回的 *outTex)
+     * @param exposure HDR 输入预乘的曝光值 (默认 1.0)
+     * @param gamma    sRGB encode 的 gamma 值 (默认 2.2)
+     */
+    virtual void DrawTonemapFullscreen(uint32_t /*hdrTex*/,
+                                        float /*exposure*/,
+                                        float /*gamma*/) {}
 };
 
 // ==================== 工厂函数 ====================

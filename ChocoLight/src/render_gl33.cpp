@@ -814,6 +814,106 @@ void main() {
 
 #endif
 
+// ==================== Phase E.3.1 — ACES Tonemap shader ====================
+//
+// 全屏 quad 后处理 pass: HDR RT (RGBA16F) → ACES tonemap + sRGB encode → default fb
+//
+// 顶点格式 (与 fullscreen quad VBO 一致):
+//   layout(0) vec2 aPos    [-1..1] (NDC, 跳过 MVP)
+//   layout(1) vec2 aUV     [0..1]  (采样 HDR RT)
+//
+// uniform:
+//   sampler2D uHDRTex     HDR 颜色纹理 (texture unit 0)
+//   float     uExposure   线性曝光预乘 (默认 1.0)
+//   float     uGamma      sRGB encode gamma (默认 2.2)
+//
+// ACES fitted by Krzysztof Narkowicz (2016):
+//   https://knarkowicz.wordpress.com/2016/01/06/aces-filmic-tone-mapping-curve/
+
+#if defined(__EMSCRIPTEN__) || defined(__ANDROID__) || defined(CHOCO_PLATFORM_IOS)
+
+// ---- VS_TONEMAP (GLES 3.0) ----
+static const char* VS_TONEMAP_SOURCE = R"(#version 300 es
+precision highp float;
+layout(location=0) in vec2 aPos;
+layout(location=1) in vec2 aUV;
+out vec2 vUV;
+void main() {
+    vUV = aUV;
+    gl_Position = vec4(aPos, 0.0, 1.0);
+}
+)";
+
+// ---- FS_TONEMAP (GLES 3.0) ----
+static const char* FS_TONEMAP_SOURCE = R"(#version 300 es
+precision highp float;
+in  vec2 vUV;
+out vec4 FragColor;
+
+uniform sampler2D uHDRTex;
+uniform float uExposure;
+uniform float uGamma;
+
+vec3 ACESFilm(vec3 x) {
+    const float a = 2.51;
+    const float b = 0.03;
+    const float c = 2.43;
+    const float d = 0.59;
+    const float e = 0.14;
+    return clamp((x * (a*x + b)) / (x * (c*x + d) + e), 0.0, 1.0);
+}
+
+void main() {
+    vec3 hdr  = max(texture(uHDRTex, vUV).rgb, vec3(0.0)) * uExposure;
+    vec3 ldr  = ACESFilm(hdr);
+    vec3 srgb = pow(ldr, vec3(1.0 / max(uGamma, 0.0001)));
+    FragColor = vec4(srgb, 1.0);
+}
+)";
+
+#else  // 桌面 GL 3.3 Core
+
+// ---- VS_TONEMAP (GL 3.3) ----
+static const char* VS_TONEMAP_SOURCE = R"(
+#version 330 core
+layout(location=0) in vec2 aPos;
+layout(location=1) in vec2 aUV;
+out vec2 vUV;
+void main() {
+    vUV = aUV;
+    gl_Position = vec4(aPos, 0.0, 1.0);
+}
+)";
+
+// ---- FS_TONEMAP (GL 3.3) ----
+static const char* FS_TONEMAP_SOURCE = R"(
+#version 330 core
+in  vec2 vUV;
+out vec4 FragColor;
+
+uniform sampler2D uHDRTex;
+uniform float uExposure;
+uniform float uGamma;
+
+vec3 ACESFilm(vec3 x) {
+    const float a = 2.51;
+    const float b = 0.03;
+    const float c = 2.43;
+    const float d = 0.59;
+    const float e = 0.14;
+    return clamp((x * (a*x + b)) / (x * (c*x + d) + e), 0.0, 1.0);
+}
+
+void main() {
+    vec3 hdr  = max(texture(uHDRTex, vUV).rgb, vec3(0.0)) * uExposure;
+    vec3 ldr  = ACESFilm(hdr);
+    vec3 srgb = pow(ldr, vec3(1.0 / max(uGamma, 0.0001)));
+    FragColor = vec4(srgb, 1.0);
+}
+)";
+
+#endif
+
 // Phase AS.2 — Mesh GPU 资源 (Phase AX 扩展加 morph delta texture)
 struct MeshGPU {
     GLuint vao;
@@ -907,6 +1007,18 @@ class GL33Backend : public RenderBackend {
     GLuint programLit2D = 0;        // E.1.2 编译 + link 成功后非 0
     bool   lit2DSupported = false;  // VAO/VBO/EBO + program 全部就绪后置 true
     static constexpr int LIT2D_VBO_INITIAL_VERTS = 4;  // 单 quad; E.1.5 可按需扩容
+
+    // ---- Phase E.3.1 — HDR + ACES Tonemap ----
+    // 全屏 quad VBO/VAO (6 顶点 = 2 三角形; pos.xy + uv.xy, 无 EBO)
+    GLuint vaoTonemap     = 0;
+    GLuint vboTonemap     = 0;
+    GLuint programTonemap = 0;        // 编译 + link 成功后非 0
+    bool   tonemapSupported = false;  // VBO/VAO + program 全部就绪后置 true
+    GLint  locTonemap_HDRTex   = -1;
+    GLint  locTonemap_Exposure = -1;
+    GLint  locTonemap_Gamma    = -1;
+    // HDR FBO → depth RBO 关系映射 (CreateHDRFBO 写入, DeleteHDRFBO 查询并释放)
+    std::unordered_map<uint32_t, uint32_t> hdrFboDepthRB;
 
     // Phase E.2.1 — Lighting2D dirty bit cache
     // 当 state->version 与此值相等时, UploadLighting2D 跳过所有 glUniform*v 调用
@@ -1071,6 +1183,9 @@ public:
 
         // ---- Phase E.1.1 + E.1.2 — 2D Lit 渲染资源 + shader ----
         InitLit2D();
+
+        // ---- Phase E.3.1 — HDR + ACES Tonemap 渲染资源 + shader ----
+        InitTonemap();
 
         CC::Log(CC::LOG_INFO, "RenderBackend: GL33 Core initialized (GL %s)%s%s%s",
                 (const char*)glGetString(GL_VERSION),
@@ -1296,6 +1411,91 @@ public:
                 programLit2D, LIT2D_MAX_LIGHTS);
     }
 
+    // ==================== Phase E.3.1 — Tonemap 初始化 ====================
+    //
+    // 步骤:
+    //   1. 创建全屏 quad VAO + VBO (6 顶点 = 2 三角形; pos.xy + uv.xy, 无 EBO)
+    //   2. 上传静态顶点数据 ([-1..1] NDC + [0..1] UV)
+    //   3. 配置顶点属性 layout (location 0 = pos, location 1 = uv)
+    //   4. 编译 VS_TONEMAP + FS_TONEMAP, link programTonemap
+    //   5. 缓存 uniform location (uHDRTex / uExposure / uGamma)
+    //   6. 绑定 sampler uniform 到 texture unit 0
+    //
+    // 失败影响: tonemapSupported = false, SupportsHDR() 返回 false,
+    //          HDR 管线整体不可用, 调用方 (HDRRenderer) 应回退 LDR 路径.
+    void InitTonemap() {
+        glGenVertexArrays(1, &vaoTonemap);
+        glGenBuffers(1, &vboTonemap);
+
+        if (!vaoTonemap || !vboTonemap) {
+            CC::Log(CC::LOG_WARN, "GL33: Phase E.3.1 Tonemap VAO/VBO allocation failed");
+            if (vboTonemap) { glDeleteBuffers(1, &vboTonemap); vboTonemap = 0; }
+            if (vaoTonemap) { glDeleteVertexArrays(1, &vaoTonemap); vaoTonemap = 0; }
+            return;
+        }
+
+        // 全屏 quad: 2 三角形, 6 顶点. 每顶点 4 float (pos.xy + uv.xy).
+        // UV.y 翻转: OpenGL 纹理坐标原点在左下, 我们的 HDR RT 内容也是 bottom-up,
+        // 所以 UV 直接用 [0..1] 不翻转 (与 Canvas 采样一致).
+        static const float kFullscreenQuad[] = {
+            // pos.xy       uv.xy
+            -1.0f, -1.0f,   0.0f, 0.0f,
+             1.0f, -1.0f,   1.0f, 0.0f,
+            -1.0f,  1.0f,   0.0f, 1.0f,
+            -1.0f,  1.0f,   0.0f, 1.0f,
+             1.0f, -1.0f,   1.0f, 0.0f,
+             1.0f,  1.0f,   1.0f, 1.0f,
+        };
+
+        glBindVertexArray(vaoTonemap);
+        glBindBuffer(GL_ARRAY_BUFFER, vboTonemap);
+        glBufferData(GL_ARRAY_BUFFER, sizeof(kFullscreenQuad), kFullscreenQuad, GL_STATIC_DRAW);
+
+        // layout(location=0) vec2 aPos
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float),
+                              (const void*)0);
+        // layout(location=1) vec2 aUV
+        glEnableVertexAttribArray(1);
+        glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float),
+                              (const void*)(2 * sizeof(float)));
+
+        glBindVertexArray(0);
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
+
+        // 编译 + link shader
+        GLuint vsTm = CompileShader(GL_VERTEX_SHADER,   VS_TONEMAP_SOURCE);
+        GLuint fsTm = CompileShader(GL_FRAGMENT_SHADER, FS_TONEMAP_SOURCE);
+        if (vsTm && fsTm) {
+            programTonemap = LinkProgram(vsTm, fsTm);
+        }
+        if (vsTm) glDeleteShader(vsTm);
+        if (fsTm) glDeleteShader(fsTm);
+
+        if (!programTonemap) {
+            CC::Log(CC::LOG_WARN,
+                    "GL33: Phase E.3.1 Tonemap shader compile/link failed, SupportsHDR=false");
+            // VAO/VBO 保留, 由 Shutdown 释放
+            tonemapSupported = false;
+            return;
+        }
+
+        // 缓存 uniform location
+        locTonemap_HDRTex   = glGetUniformLocation(programTonemap, "uHDRTex");
+        locTonemap_Exposure = glGetUniformLocation(programTonemap, "uExposure");
+        locTonemap_Gamma    = glGetUniformLocation(programTonemap, "uGamma");
+
+        // 一次性绑 sampler 到 texture unit 0
+        glUseProgram(programTonemap);
+        if (locTonemap_HDRTex >= 0) glUniform1i(locTonemap_HDRTex, 0);
+        glUseProgram(0);
+
+        tonemapSupported = true;
+        CC::Log(CC::LOG_INFO,
+                "GL33: Phase E.3.1 Tonemap ready (program=%u, ACES fitted)",
+                programTonemap);
+    }
+
     void Shutdown() override {
         if (program) glDeleteProgram(program);
         if (vbo) glDeleteBuffers(1, &vbo);
@@ -1361,9 +1561,125 @@ public:
         }
         litMeshes.clear();
         lit2DSupported = false;
+
+        // Phase E.3.1 — 释放 HDR + Tonemap 资源 (VAO/VBO + program + FBO depth RBO 残留)
+        if (programTonemap) { glDeleteProgram(programTonemap); programTonemap = 0; }
+        if (vboTonemap)     { glDeleteBuffers(1, &vboTonemap); vboTonemap = 0; }
+        if (vaoTonemap)     { glDeleteVertexArrays(1, &vaoTonemap); vaoTonemap = 0; }
+        locTonemap_HDRTex = locTonemap_Exposure = locTonemap_Gamma = -1;
+        // 清理 CreateHDRFBO 遗留的 depth RBO (HDRRenderer::Shutdown 未配对 DeleteHDRFBO 时的兜底)
+        for (auto& kv : hdrFboDepthRB) {
+            if (kv.second) { GLuint rb = kv.second; glDeleteRenderbuffers(1, &rb); }
+        }
+        hdrFboDepthRB.clear();
+        tonemapSupported = false;
     }
 
     bool SupportsLit2D() const override { return lit2DSupported; }
+
+    // ==================== Phase E.3.1 — HDR + Tonemap 虚接口实现 ====================
+
+    bool SupportsHDR() const override { return tonemapSupported; }
+
+    /// 创建 HDR FBO: RGBA16F 颜色附件 + Depth24 RBO (hdrFboDepthRB map 关联管理)
+    uint32_t CreateHDRFBO(int w, int h, uint32_t* outTex) override {
+        if (!tonemapSupported || w <= 0 || h <= 0 || !outTex) return 0;
+
+        // 1. 创建 RGBA16F 颜色纹理 (GL_LINEAR + GL_CLAMP_TO_EDGE)
+        GLuint tex = 0;
+        glGenTextures(1, &tex);
+        if (!tex) return 0;
+        glBindTexture(GL_TEXTURE_2D, tex);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, w, h, 0, GL_RGBA, GL_FLOAT, nullptr);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glBindTexture(GL_TEXTURE_2D, 0);
+
+        // 2. 创建 Depth24 RBO
+        GLuint depthRB = 0;
+        glGenRenderbuffers(1, &depthRB);
+        if (!depthRB) { glDeleteTextures(1, &tex); return 0; }
+        glBindRenderbuffer(GL_RENDERBUFFER, depthRB);
+        glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, w, h);
+        glBindRenderbuffer(GL_RENDERBUFFER, 0);
+
+        // 3. 创建 FBO 并附加 color + depth
+        GLuint fbo = 0;
+        glGenFramebuffers(1, &fbo);
+        if (!fbo) {
+            glDeleteTextures(1, &tex);
+            glDeleteRenderbuffers(1, &depthRB);
+            return 0;
+        }
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
+        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, depthRB);
+
+        GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+        if (status != GL_FRAMEBUFFER_COMPLETE) {
+            CC::Log(CC::LOG_ERROR, "GL33: HDR FBO incomplete (status=0x%X, %dx%d)",
+                    status, w, h);
+            glDeleteFramebuffers(1, &fbo);
+            glDeleteRenderbuffers(1, &depthRB);
+            glDeleteTextures(1, &tex);
+            return 0;
+        }
+
+        hdrFboDepthRB[fbo] = depthRB;
+        *outTex = tex;
+        return fbo;
+    }
+
+    /// 释放 HDR FBO 资源 (与 CreateHDRFBO 配对; 自动从 map 查 depthRB)
+    void DeleteHDRFBO(uint32_t fbo, uint32_t tex) override {
+        if (fbo) {
+            auto it = hdrFboDepthRB.find(fbo);
+            if (it != hdrFboDepthRB.end()) {
+                GLuint rb = it->second;
+                if (rb) glDeleteRenderbuffers(1, &rb);
+                hdrFboDepthRB.erase(it);
+            }
+            GLuint f = fbo;
+            glDeleteFramebuffers(1, &f);
+        }
+        if (tex) {
+            GLuint t = tex;
+            glDeleteTextures(1, &t);
+        }
+    }
+
+    /// ACES tonemap 全屏 pass: HDR 纹理 → 当前绑定 framebuffer
+    /// 调用方负责: 先 UnbindFBO() 切到 default fb, 调用后不需恢复 depth/blend state.
+    void DrawTonemapFullscreen(uint32_t hdrTex, float exposure, float gamma) override {
+        if (!tonemapSupported || !hdrTex) return;
+
+        // 1. 关 depth / blend (tonemap 是 destructive full-screen write)
+        glDisable(GL_DEPTH_TEST);
+        glDisable(GL_BLEND);
+        glDisable(GL_SCISSOR_TEST);
+
+        // 2. 绑 program + uniform
+        glUseProgram(programTonemap);
+        if (locTonemap_Exposure >= 0) glUniform1f(locTonemap_Exposure, exposure);
+        if (locTonemap_Gamma    >= 0) glUniform1f(locTonemap_Gamma,    gamma);
+
+        // 3. 绑 HDR 纹理到 texture unit 0
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, (GLuint)hdrTex);
+
+        // 4. 绑 VAO + draw 6 顶点
+        glBindVertexArray(vaoTonemap);
+        glDrawArrays(GL_TRIANGLES, 0, 6);
+
+        // 5. 解绑 (不恢复 depth / blend: 下次 BeginFrame 会重置)
+        glBindVertexArray(0);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        glUseProgram(0);
+    }
 
     // ==================== Phase E.1.5 — Lit2D 绘制实现 ====================
     //
