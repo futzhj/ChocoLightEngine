@@ -41,6 +41,7 @@ State* GetState() {
 
 void SetEnabled(bool v) {
     g_state.enabled = v;
+    ++g_state.version;
 }
 
 bool IsEnabled() {
@@ -51,6 +52,7 @@ void SetAmbient(float r, float g, float b) {
     g_state.ambient[0] = r;
     g_state.ambient[1] = g;
     g_state.ambient[2] = b;
+    ++g_state.version;
 }
 
 void GetAmbient(float& r, float& g, float& b) {
@@ -70,6 +72,7 @@ int Add(const Light& l) {
         if (g_state.lights[i].type == TYPE_INACTIVE) {
             g_state.lights[i] = l;
             ++g_state.active_count;
+            ++g_state.version;
             return i + 1;  // id = index + 1 (1..16)
         }
     }
@@ -90,6 +93,7 @@ bool Update(int id, const Light& fields) {
     if (fields.type == TYPE_INACTIVE) return false;
 
     g_state.lights[idx] = fields;
+    ++g_state.version;
     return true;
 }
 
@@ -101,6 +105,7 @@ void Remove(int id) {
 
     g_state.lights[idx].type = TYPE_INACTIVE;
     --g_state.active_count;
+    ++g_state.version;
 }
 
 void Clear() {
@@ -108,6 +113,7 @@ void Clear() {
         g_state.lights[i].type = TYPE_INACTIVE;
     }
     g_state.active_count = 0;
+    ++g_state.version;
     // ambient 与 enabled 按设计保留 (符合 Lua ClearLights 语义: 只清 light, 不动全局配置)
 }
 
@@ -119,6 +125,10 @@ int GetCount() {
 
 int GetMax() {
     return MAX_LIGHTS;
+}
+
+uint32_t GetVersion() {
+    return g_state.version;
 }
 
 // ==================== 后端上传 (E.1.5 真实实现) ====================
@@ -364,6 +374,14 @@ static int l_GetMaxLights(lua_State* L) {
     return 1;
 }
 
+/// @lua_api Light.Lighting2D.GetVersion() -> int
+/// @brief Phase E.2.1 — 返回 state.version (单调递增; mutator 每次调用后 ++).
+///        主要用途: smoke 测试间接验证 backend dirty bit.
+static int l_GetVersion(lua_State* L) {
+    lua_pushinteger(L, (lua_Integer)Lighting2D::GetVersion());
+    return 1;
+}
+
 // ==================== 注册表 ====================
 
 static const luaL_Reg kLighting2DReg[] = {
@@ -378,6 +396,7 @@ static const luaL_Reg kLighting2DReg[] = {
     { "ClearLights",    l_ClearLights    },
     { "GetLightCount",  l_GetLightCount  },
     { "GetMaxLights",   l_GetMaxLights   },
+    { "GetVersion",     l_GetVersion     },
     { nullptr, nullptr }
 };
 

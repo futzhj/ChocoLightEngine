@@ -908,6 +908,11 @@ class GL33Backend : public RenderBackend {
     bool   lit2DSupported = false;  // VAO/VBO/EBO + program 全部就绪后置 true
     static constexpr int LIT2D_VBO_INITIAL_VERTS = 4;  // 单 quad; E.1.5 可按需扩容
 
+    // Phase E.2.1 — Lighting2D dirty bit cache
+    // 当 state->version 与此值相等时, UploadLighting2D 跳过所有 glUniform*v 调用
+    // 初值 0 + State 初值 1 保证首次调用一定 mismatch (触发首次上传)
+    uint32_t lastUploadedLighting2DVersion = 0;
+
     // Phase E.1.2 — Lit2D shader uniform locations
     // 标量 uniform
     GLint locLit2D_MVP            = -1;
@@ -1396,6 +1401,13 @@ public:
 
         // 独立调用时 caller 可能未 glUseProgram(programLit2D), 主动切过去保证 glUniform 生效
         glUseProgram(programLit2D);
+
+        // Phase E.2.1 — dirty bit: state 自上次上传以来未变, 跳过所有 glUniform*v
+        // 注: 仍要 glUseProgram(programLit2D) 因为 caller 可能切了其它 program
+        if (state->version == lastUploadedLighting2DVersion) {
+            return;
+        }
+        lastUploadedLighting2DVersion = state->version;
 
         // build SOA 临时数组 (栈分配, 16 light 总共 ~600 bytes, 远低于线程栈默认 1MB)
         constexpr int M = Lighting2D::MAX_LIGHTS;  // 16

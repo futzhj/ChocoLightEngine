@@ -47,10 +47,15 @@ constexpr int MAX_LIGHTS = 16;
 
 /// 全局 state (单例, 由 GetState() 访问)
 struct State {
-    bool  enabled      = true;
-    Light lights[MAX_LIGHTS];
-    int   active_count = 0;                             ///< 当前非 inactive 的 slot 数
-    float ambient[3]   = { 0.0f, 0.0f, 0.0f };          ///< 全局环境光 (RGB)
+    bool     enabled      = true;
+    Light    lights[MAX_LIGHTS];
+    int      active_count = 0;                          ///< 当前非 inactive 的 slot 数
+    float    ambient[3]   = { 0.0f, 0.0f, 0.0f };       ///< 全局环境光 (RGB)
+    /// Phase E.2.1: 单调递增版本号; mutator 每次修改后 ++version.
+    /// Backend 缓存 lastUploadedVersion, 相等则跳过 uniform 上传.
+    /// 初值 1 + Backend 初值 0 保证首次 upload 一定 mismatch.
+    /// uint32_t 溢出周期 ~497 天 (假设 1ms/update), 可忽略.
+    uint32_t version      = 1;
 };
 
 // ==================== 状态访问 ====================
@@ -89,6 +94,10 @@ int GetCount();
 
 /// 硬上限常量 (= MAX_LIGHTS)
 int GetMax();
+
+/// Phase E.2.1 — 当前 state.version (单调递增, mutator 后 ++).
+/// 主要用途: smoke 间接验证 backend dirty bit. Lua 层也暴露为 GetVersion().
+uint32_t GetVersion();
 
 // ==================== 后端上传 helper ====================
 

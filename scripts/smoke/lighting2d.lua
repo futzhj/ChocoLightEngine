@@ -326,6 +326,85 @@ else
 end
 
 -- ============================================================
+-- 16) Phase E.2.1 — dirty bit version 单调递增
+-- ============================================================
+-- 间接验证 GL33Backend::UploadLighting2D 能否通过 state.version 相等跳过 uniform 上传:
+--   - version 初始 > 0 (state 默认值为 1)
+--   - 每个 mutator 调用后 version 严格递增 (Get* 不递增)
+--   - 对幂等 mutator (Remove 已空 slot, Update 越界 id) 不递增 (version 仅在真正修改时 ++)
+
+assert(type(mod.GetVersion) == "function", "GetVersion should exist after E.2.1")
+
+-- 16.1: initial version > 0 (struct default = 1; §1-15 的 mutator 已把它推得更高)
+local v0 = mod.GetVersion()
+assert(type(v0) == "number" and v0 > 0, "initial version should be > 0, got " .. tostring(v0))
+pass("E.2.1: GetVersion initial > 0 (v=" .. v0 .. ")")
+
+-- 16.2: Get* 不递增
+local vg1 = mod.GetVersion()
+local _ = mod.GetLightCount()
+local _ = mod.IsEnabled()
+local _ = mod.GetAmbient()
+local _ = mod.GetMaxLights()
+local vg2 = mod.GetVersion()
+assert(vg1 == vg2, "Get* must NOT bump version (v before=" .. vg1 .. ", after=" .. vg2 .. ")")
+pass("E.2.1: Get* queries do not bump version")
+
+-- 16.3: 每个 mutator 都递增
+local function expectBump(desc, fn)
+    local before = mod.GetVersion()
+    fn()
+    local after = mod.GetVersion()
+    assert(after > before, desc .. " should bump version (before=" .. before .. " after=" .. after .. ")")
+end
+
+mod.ClearLights()                                          -- baseline
+expectBump("SetEnabled",  function() mod.SetEnabled(false) end)
+expectBump("SetEnabled2", function() mod.SetEnabled(true)  end)  -- 即使值相同也递增 (简化语义)
+expectBump("SetAmbient",  function() mod.SetAmbient(0.2, 0.3, 0.4) end)
+
+local idP
+expectBump("AddPointLight", function()
+    idP = mod.AddPointLight({x=100, y=100, range=200})
+    assert(idP, "AddPointLight should succeed")
+end)
+expectBump("UpdateLight",   function() mod.UpdateLight(idP, {intensity=2.0}) end)
+expectBump("RemoveLight",   function() mod.RemoveLight(idP) end)
+
+local idS
+expectBump("AddSpotLight",  function()
+    idS = mod.AddSpotLight({x=0, y=0, dirX=1, dirY=0, range=100})
+    assert(idS, "AddSpotLight should succeed")
+end)
+
+expectBump("ClearLights",   function() mod.ClearLights() end)
+pass("E.2.1: all 6 mutators (SetEnabled/SetAmbient/Add/Update/Remove/Clear) bump version")
+
+-- 16.4: 幂等 mutator 不递增 (Remove 已空 slot, Update 越界 id)
+local vIdem1 = mod.GetVersion()
+mod.RemoveLight(99)          -- 越界, no-op
+mod.RemoveLight(-1)          -- 越界
+mod.RemoveLight(0)           -- 保留, no-op
+local ok_upd = mod.UpdateLight(99, {intensity=1.0})   -- 越界 id
+assert(ok_upd == false, "UpdateLight with invalid id should return false")
+local vIdem2 = mod.GetVersion()
+assert(vIdem1 == vIdem2, "idempotent no-op mutators must NOT bump version (before=" ..
+       vIdem1 .. " after=" .. vIdem2 .. ")")
+pass("E.2.1: idempotent mutators (no-op Remove/Update) do not bump version")
+
+-- 16.5: 多次 Add 到 16 slot 满后, 第 17 次 Add 失败, version 不递增
+mod.ClearLights()
+for i = 1, 16 do mod.AddPointLight({x=i, y=i}) end
+local vFull1 = mod.GetVersion()
+local ret = mod.AddPointLight({x=0, y=0})
+assert(ret == nil, "17th AddPointLight should fail")
+local vFull2 = mod.GetVersion()
+assert(vFull1 == vFull2, "failed Add (16 full) must NOT bump version")
+pass("E.2.1: failed Add (16 slot full) does not bump version")
+
+mod.ClearLights()
+
+-- ============================================================
 -- Final cleanup
 -- ============================================================
 
