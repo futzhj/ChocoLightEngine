@@ -26,8 +26,9 @@
 #include "render_backend.h"
 #include "batch_renderer.h"
 #include "lit_batch_renderer.h"  // Phase E.2.3 — 2D Lit 批渲染器
-#include "hdr_renderer.h"         // Phase E.3.2 — HDR 离屏管线
-#include "bloom_renderer.h"       // Phase E.4.2 — Bloom 后处理
+#include "hdr_renderer.h"             // Phase E.3.2 — HDR 离屏管线
+#include "bloom_renderer.h"           // Phase E.4.2 — Bloom 后处理
+#include "auto_exposure_renderer.h"   // Phase E.5.2 — Auto Exposure (Eye Adaptation)
 #include "light_audio_backend.h"
 #include "light_platform_net.h"
 #include "platform_window.h"
@@ -498,6 +499,8 @@ static int l_Window_Open(lua_State* L) {
     HDRRenderer::Init(g_render);
     // Phase E.4.2: 初始化 BloomRenderer (不自动 Enable; autoEnable=true 时由 HDR.Enable 联动拉起)
     BloomRenderer::Init(g_render);
+    // Phase E.5.2: 初始化 AutoExposureRenderer (不自动 Enable; autoEnable=false 默认 manual exposure)
+    AutoExposureRenderer::Init(g_render);
 
     // 初始化音频后端
     if (!AudioBackend::Init()) {
@@ -722,6 +725,8 @@ static int l_UI_Resume(lua_State* L) {
             }
             PlatformNet::Shutdown();
             AudioBackend::Shutdown();
+            // Phase E.5.2: AutoExposureRenderer 依赖 backend、先于 Bloom/HDR 关闭 (luminance RT 独立)
+            AutoExposureRenderer::Shutdown();
             // Phase E.4.2: BloomRenderer 依赖 backend、先于 HDR 关闭 (pyramid 拍拭不注册 depth RBO map)
             BloomRenderer::Shutdown();
             HDRRenderer::Shutdown();

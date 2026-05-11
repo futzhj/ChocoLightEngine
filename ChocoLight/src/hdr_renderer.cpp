@@ -6,9 +6,12 @@
  */
 
 #include "hdr_renderer.h"
-#include "bloom_renderer.h"   // Phase E.4.2 — HDR Enable/Disable/Resize 联动回调
+#include "bloom_renderer.h"             // Phase E.4.2 — HDR Enable/Disable/Resize 联动回调
+#include "auto_exposure_renderer.h"     // Phase E.5.2 — HDR Enable/Disable/Resize 联动回调 + EndScene exposure 覆盖
 #include "render_backend.h"
 #include "light.h"         // CC::Log
+
+#include <chrono>
 
 namespace HDRRenderer {
 
@@ -142,11 +145,15 @@ bool Enable(int w, int h) {
 
     // Phase E.4.2 — HDR 已启用, 通知 Bloom 模块 (autoEnable=true 时自动拉起)
     BloomRenderer::OnHDREnabled(w, h);
+    // Phase E.5.2 — 同时通知 AE 模块 (autoEnable=false 时 no-op; 默认 manual exposure)
+    AutoExposureRenderer::OnHDREnabled(w, h);
     return true;
 }
 
 void Disable() {
     if (!g.enabled) return;
+    // Phase E.5.2 — 先关 AE (AE 依赖 HDR RT 与 Bloom 同, 顺序任意, 安全先关)
+    AutoExposureRenderer::OnHDRDisabled();
     // Phase E.4.2 — 先通知 Bloom 模块 (Bloom 依赖 HDR RT, 先关 Bloom 再关 HDR)
     BloomRenderer::OnHDRDisabled();
     ReleaseRT();
@@ -173,9 +180,12 @@ bool Resize(int w, int h) {
         return true;  // 尺寸相同, no-op
     }
     bool ok = Enable(w, h);  // Enable 内部会 ReleaseRT + CreateRT + OnHDREnabled
-    // 注: Enable 已调过 OnHDREnabled, 该回调等价于 Bloom Resize; 以下 OnHDRResized 重复调
+    // 注: Enable 已调过 OnHDREnabled, 该回调等价于 Bloom/AE Resize; 以下 OnHDRResized 重复调
     //     有 no-op 保护 (Resize 内部对于已同尺寸直接 return true)
-    if (ok) BloomRenderer::OnHDRResized(w, h);
+    if (ok) {
+        BloomRenderer::OnHDRResized(w, h);
+        AutoExposureRenderer::OnHDRResized(w, h);   // Phase E.5.2
+    }
     return ok;
 }
 
@@ -208,8 +218,25 @@ void EndScene() {
     // Bloom Process 内部结束时已 BindFramebuffer(0), 但为安全起见再 unbind 一次
     g.backend->UnbindFBO();
 
+    // Phase E.5.2 — Auto Exposure (内部自检 IsEnabled; 未启用 no-op)
+    // 测量 hdr+bloom 后的平均亮度, 更新内部 currentExposure 状态
+    {
+        static auto sLast = std::chrono::steady_clock::now();
+        auto now = std::chrono::steady_clock::now();
+        float dt = std::chrono::duration<float>(now - sLast).count();
+        sLast = now;
+        if (dt < 0.0f) dt = 0.0f;
+        if (dt > 0.1f) dt = 0.1f;   // clamp 防长时间挂起后跳变
+        AutoExposureRenderer::Process(g.sceneTex, dt);
+    }
+
+    // Tonemap exposure: AE 开时覆盖 manual; AE 关时回归 manual SetExposure
+    float exposure = AutoExposureRenderer::IsEnabled()
+                        ? AutoExposureRenderer::GetCurrentExposure()
+                        : g.exposure;
+
     // Tonemap + sRGB encode → default fb (E.3.4 多 operator; 输入已含 bloom 的 HDR RT)
-    g.backend->DrawTonemapFullscreen(g.sceneTex, g.exposure, g.gamma, g.tonemap);
+    g.backend->DrawTonemapFullscreen(g.sceneTex, exposure, g.gamma, g.tonemap);
 }
 
 // ==================== 曝光 / Gamma ====================
