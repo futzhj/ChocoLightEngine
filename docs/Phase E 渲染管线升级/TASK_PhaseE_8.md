@@ -78,38 +78,41 @@ flowchart LR
 
 ---
 
-### T1.1 · HDR depth Renderbuffer → Texture 升级【★ 破坏性改动需特别验证】
+### T1.1 · SSAO 独立 depth RT + glBlitFramebuffer 旁路【【用户选择 2026-05-12】零侵入 HDR】
 
 | 契约 | 值 |
 |------|---|
-| **输入依赖** | 现有 `CreateHDRFBO` + `hdrFboDepthRB` map |
-| **输出** | `CreateHDRFBO` 创建 depth texture 而非 RB；`hdrFboDepthTex` map；新增 `GetHDRDepthTex(fbo)` getter |
+| **输入依赖** | 现有 HDR FBO 保持不变（depth RB 原封不动）|
+| **输出** | 新增 `CreateSSAODepthRT(w,h, outFbo, outTex)` + `DeleteSSAODepthRT(fbo, tex)` + `BlitHDRDepthToSSAO(hdrFbo, ssaoFbo, w, h)` 三个后端虚接口实现 |
 | **文件** | `@e:\jinyiNew\Light\ChocoLight\src\render_gl33.cpp` |
-| **行数** | ~30 行修改 + 1 新方法 |
-| **验证** | (1) 现有 demo_hdr / demo_bloom / demo_ssao 前置的所有 3D demo 行为不变；(2) `GetHDRDepthTex(hdrFbo)` 返回非 0 texture id |
-| **风险** | **最高** — 影响整个 HDR RT 生命周期；老版本驱动可能不支持 depth texture |
-| **回滚策略** | 保留 RB 版本代码作为编译开关 `#ifdef CHOCO_HDR_DEPTH_TEX` 的 fallback（可选） |
+| **行数** | ~60 行新增（纯新增，无修改原有代码）|
+| **验证** | (1) 现有 demo_hdr / demo_bloom / demo_ssao 前置的所有 3D demo 行为 **零变化**（根本未动 HDR 代码）；(2) SSAO Enable 后 `CreateSSAODepthRT` 返 true + tex id 非 0；(3) `BlitHDRDepthToSSAO` 不报 GL 错误 |
+| **风险** | **低** — 原 HDR RT 零侵入；旧驱动不支持 depth blit 在 Init 阶段探测前降级 |
+| **回滚策略** | 无需 — 新接口与现有代码正交，回滚只需删新增代码 |
 
 **验收标准**：
 
 ```cpp
-// 切换前后, 以下行为必须 100% 一致:
-glEnable(GL_DEPTH_TEST);
-glDepthFunc(GL_LESS);
-glClear(GL_DEPTH_BUFFER_BIT);
-// 2D demo/3D demo 画面像素完全相同
+// 现有 HDR demo 像素完全相同 (代码未动)
+// SSAO 自测:
+GLuint ssaoFbo = 0, ssaoTex = 0;
+backend->CreateSSAODepthRT(800, 600, &ssaoFbo, &ssaoTex);
+assert(ssaoFbo != 0 && ssaoTex != 0);
+backend->BlitHDRDepthToSSAO(hdrFbo, ssaoFbo, 800, 600);
+assert(glGetError() == GL_NO_ERROR);   // blit 完成无错
+backend->DeleteSSAODepthRT(ssaoFbo, ssaoTex);
 ```
 
 ---
 
-### T1.2 · render_backend.h 新增 7 虚接口
+### T1.2 · render_backend.h 新增 9 虚接口
 
 | 契约 | 值 |
 |------|---|
 | **输入依赖** | T1.1 完成 |
-| **输出** | 7 个 `virtual ... { ... }` 默认 no-op 虚接口（Phase E.8 专区）|
+| **输出** | 9 个 `virtual ... { ... }` 默认 no-op 虚接口（Phase E.8 专区）|
 | **文件** | `@e:\jinyiNew\Light\ChocoLight\include\render_backend.h` |
-| **接口** | `SupportsSSAO` / `GetHDRDepthTex` / `CreateSSAOTargets` / `DeleteSSAOTargets` / `CreateSSAONoiseTex` / `DeleteSSAONoiseTex` / `DrawSSAO` / `DrawSSAOBlur` / `DrawSSAOComposite` + `GetProjection` / `GetView` |
+| **接口清单** | (1) `SupportsSSAO` (2) `CreateSSAODepthRT` (3) `DeleteSSAODepthRT` (4) `BlitHDRDepthToSSAO` (5) `CreateSSAOTargets` (6) `DeleteSSAOTargets` (7) `CreateSSAONoiseTex` (8) `DeleteSSAONoiseTex` (9) `DrawSSAO` + (10) `DrawSSAOBlur` + (11) `DrawSSAOComposite` + (12) `GetProjection` + (13) `GetView` |
 | **验证** | 编译通过；Legacy backend 不实现（默认 no-op 生效） |
 
 ---
@@ -152,7 +155,7 @@ glClear(GL_DEPTH_BUFFER_BIT);
 | 契约 | 值 |
 |------|---|
 | **输入依赖** | T1.1~T1.5 全部完成 |
-| **输出** | GL33Backend 完整实现 SSAO 7 虚接口；InitLensFx 追加 3 shader 编译；Shutdown 释放 3 program + noise tex |
+| **输出** | GL33Backend 完整实现 SSAO 11 虚接口（含 Blit/DepthRT）；InitLensFx 追加 3 shader 编译；Shutdown 释放 3 program + noise tex；Init 阶段探测 depth blit 支持 |
 | **文件** | `@e:\jinyiNew\Light\ChocoLight\src\render_gl33.cpp` |
 | **行数** | ~300 行新增 |
 | **GL state 保证** | 管理 glDisable(DEPTH_TEST/SCISSOR_TEST/BLEND)；恢复 viewport；unbind VAO/texture/program |
@@ -271,8 +274,8 @@ glClear(GL_DEPTH_BUFFER_BIT);
 
 | # | 风险 | 概率 | 严重度 | 缓解 |
 |---|------|------|--------|------|
-| R1 | HDR depth texture 升级破坏现有 3D demo | 中 | 高 | T1.1 验证：`demo_physics3d` / 其他 PBR demo 跑通后才进下一步 |
-| R2 | GLES 3.0 某些驱动不支持 depth texture | 低 | 中 | Init 时探测失败则 `supported = false` 降级 |
+| R1 | ~~HDR depth texture 升级破坏现有 3D demo~~ 【已消除 2026-05-12：用户选双 RT 旁路】 | 低 | 低 | HDR RT 零侵入，完全绕开 |
+| R2 | GLES 3.0 某些驱动不支持 glBlitFramebuffer depth blit | 低 | 中 | Init 时探测失败则 `supported = false` 降级 |
 | R3 | ddx/ddy 重建法线在某些角度精度差 | 中 | 低 | 若出现可视化问题，提供 TODO §G-buffer normal 路径 |
 | R4 | SSAO composite feedback loop（读 HDR 写 HDR） | 高 | 中 | DESIGN §7 已决策：加 `texs[2]` full-res temp 中转 |
 | R5 | 半分辨率 AO 放大到 full-res 有锯齿 | 中 | 低 | blur pass 已保边；若仍有则 TODO 加 upsample pass |

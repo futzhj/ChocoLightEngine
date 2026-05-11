@@ -23,7 +23,7 @@
 
 | 维度 | 现状 | SSAO 兼容性 |
 |------|------|------------|
-| **HDR RT depth** | `@e:\jinyiNew\Light\ChocoLight\src\render_gl33.cpp:2398` GL_DEPTH_COMPONENT24 **renderbuffer** | ⚠️ 不可采样，需升级为 depth texture |
+| **HDR RT depth** | `@e:\jinyiNew\Light\ChocoLight\src\render_gl33.cpp:2398` GL_DEPTH_COMPONENT24 **renderbuffer** | ✅ 保持不变，旁路 blit 到 SSAO 独立 depth texture |
 | **3D PBR 渲染** | `@e:\jinyiNew\Light\ChocoLight\src\render_gl33.cpp:507-623` 完整 PBR forward（含 normal/worldPos） | ✅ 已有 3D 用例；但无 G-buffer normal |
 | **Lit2D 渲染** | `@e:\jinyiNew\Light\ChocoLight\src\render_gl33.cpp:626-813` 2D forward lighting | ⚠️ 主要 2D，z=0 场景 SSAO 无效果（符合用户确认范围） |
 | **透视相机** | `Light.Graphics.SetPerspective(fovY, aspect, near, far)` `@e:\jinyiNew\Light\ChocoLight\src\light_graphics.cpp:297` | ✅ 已有 Lua API |
@@ -171,7 +171,7 @@ Params (14, 7 pairs):
 
 | 决策 | 选择 | 理由 |
 |------|------|------|
-| **HDR depth 升级** | RB → texture（`glTexImage2D(GL_DEPTH_COMPONENT24)`）| GLES3 核心支持；行为零变化；现有 `hdrFboDepthRB` map 仅改 1 处 |
+| **HDR depth 处理** | 【用户确认 2026-05-12】HDR RT **保持不变**；SSAO 分配独立 depth texture + `glBlitFramebuffer` 从 HDR FBO blit depth 进去 | 零侵入现有 HDR；blit 纯 GPU 操作，无重绘开销；用户 API 完全透明 |
 | **算法** | 经典 SSAO + 16 kernel + 4×4 noise | GL3.3/GLES3 通杀；性能/质量均衡 |
 | **Normal 来源** | depth 重建（`ddx/ddy + cross`）| 零 G-buffer 改造；纯 depth pass |
 | **采样 kernel 生成** | CPU 生成半球 Hammersley 序列 + noise 4×4 RGB | 质量稳定；一次生成 lifetime 复用 |
@@ -225,7 +225,7 @@ Params (14, 7 pairs):
 | # | 问题 | 决策 | 方式 |
 |---|------|------|------|
 | Q1 | SSAO 适用范围：2D + 3D 都跑 vs 仅 3D？ | 仅 3D + 显式 DepthTest 场景 | 用户确认 2026-05-12 |
-| Q2 | HDR depth 升级路径？ | 直接升级 `CreateHDRFBO` 的 depth 为 texture（路径 1） | 自决（见 §3.4） |
+| Q2 | HDR depth 处理？ | 【双 RT 旁路】HDR 不变 + SSAO 独立 depth tex + `glBlitFramebuffer` 复制 | 用户确认 2026-05-12（新）|
 | Q3 | 算法选型？ | 经典 SSAO + 16 kernel + noise | 自决 |
 | Q4 | Normal 来源？ | depth 重建（ddx/ddy） | 自决 |
 | Q5 | demo 场景？ | Lua 端用 `Mesh.New` 代码生成 cube + plane + 旋转相机 | 自决（查明 Mesh API 可用） |

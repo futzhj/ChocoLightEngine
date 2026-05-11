@@ -36,7 +36,7 @@ flowchart TD
         G2[FS_SSAO_BLUR shader]
         G3[FS_SSAO_COMPOSITE shader]
         G4[SSAO ping-pong RT + noise tex]
-        G5[★ HDR depth RB to texture 升级]
+        G5[★ SSAO 独立 depth tex + glBlitFramebuffer 从 HDR FBO 复制]
     end
 
     subgraph HDRPipeline[HDRRenderer 链路]
@@ -71,37 +71,64 @@ flowchart TD
 | `locSSAO_*` / `locSSAOBlur_*` / `locSSAOComp_*` | Uniform locations cache | GLint |
 | `ssaoSupported` | `tonemapSupported && bloomSupported` | bool |
 
-**HDR depth 升级**（关键改动）：
+**【用户选择：双 RT 旁路】SSAO 独立 depth 纹理 + blit 复制**
+
+方案：HDR RT **完全不变**（保留 `GL_DEPTH_COMPONENT24 renderbuffer`）；SSAO 模块在 `Enable(w,h)` 时另外分配一张 **独立 depth texture**（同分辨率），并创建一个 小 FBO（仅用于 blit）；在 `Process()` 入口先用 `glBlitFramebuffer` 从 HDR FBO 复制 depth 到 SSAO depth tex：
 
 ```cpp
-// BEFORE (当前):
-// GLuint depthRB = 0;
-// glGenRenderbuffers(1, &depthRB);
-// glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, w, h);
-// glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, depthRB);
-// hdrFboDepthRB[fbo] = depthRB;
+// Phase E.8 核心: 旁路 depth blit (零侵入 HDR)
+void BlitHDRDepthToSSAO(GLuint hdrFbo, GLuint ssaoDepthFbo, int w, int h) {
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, hdrFbo);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, ssaoDepthFbo);
+    glBlitFramebuffer(0, 0, w, h, 0, 0, w, h,
+                      GL_DEPTH_BUFFER_BIT, GL_NEAREST);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+}
+```
 
-// AFTER (Phase E.8):
-GLuint depthTex = 0;
-glGenTextures(1, &depthTex);
-glBindTexture(GL_TEXTURE_2D, depthTex);
+**SSAO depth RT 创建（SSAORenderer::Enable 时）**：
+
+```cpp
+// 1. 创建 depth texture (SSAO 可采样)
+GLuint ssaoDepthTex = 0;
+glGenTextures(1, &ssaoDepthTex);
+glBindTexture(GL_TEXTURE_2D, ssaoDepthTex);
 glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT24, w, h, 0,
              GL_DEPTH_COMPONENT, GL_UNSIGNED_INT, nullptr);
-glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);   // SSAO 需 NEAREST
+glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
 glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
 glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S,     GL_CLAMP_TO_EDGE);
 glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T,     GL_CLAMP_TO_EDGE);
-glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, depthTex, 0);
-hdrFboDepthTex[fbo] = depthTex;   // map 重命名
+
+// 2. 小 FBO 仅用于 blit 目标 (无 color attachment)
+GLuint ssaoDepthFbo = 0;
+glGenFramebuffers(1, &ssaoDepthFbo);
+glBindFramebuffer(GL_FRAMEBUFFER, ssaoDepthFbo);
+glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, ssaoDepthTex, 0);
+glDrawBuffer(GL_NONE);   // 无 color attachment
+glReadBuffer(GL_NONE);
+// 验证 completeness...
 ```
+
+**优点**：
+- HDR RT 创建 / 销毁 / Resize 代码零改动（所有现有 demo 行为 100% 不变）
+- `glBlitFramebuffer` 是 GPU 原生操作，开销、带宽极低（通常 < 0.1 ms 全标紧 blit）
+- 用户 API 完全透明：`SSAO.Enable(w,h)` 一键即用，无需包住 3D 绘制段
+- 旧驱动如果不支持 `glBlitFramebuffer` 或 depth blit，在 Init 时探测到失败 → `supported = false` 降级
 
 **新增虚接口实现**：
 
 ```cpp
-uint32_t GetHDRDepthTex(uint32_t fbo) override;   // 新增: SSAO 读 depth 入口
-
 bool SupportsSSAO() const override { return ssaoSupported; }
 
+// Phase E.8.1: depth tex + FBO 创建 / 销毁 (blit 目标)
+bool CreateSSAODepthRT(int w, int h, uint32_t* outFbo, uint32_t* outTex) override;
+void DeleteSSAODepthRT(uint32_t fbo, uint32_t tex) override;
+
+// Phase E.8.1: 旁路 blit — 从 HDR FBO 复制 depth 到 SSAO depth FBO
+void BlitHDRDepthToSSAO(uint32_t hdrFbo, uint32_t ssaoDepthFbo, int w, int h) override;
+
+// Phase E.8.1: AO ping-pong RT (R16F, 1/2 分辨率)
 bool CreateSSAOTargets(int w, int h, uint32_t* fbos, uint32_t* texs,
                         int* outW, int* outH) override;
 void DeleteSSAOTargets(uint32_t* fbos, uint32_t* texs) override;
@@ -177,7 +204,13 @@ struct State {
     bool     autoEnable     = false;
 
     RenderBackend* backend  = nullptr;
-    uint32_t fbos[2]        = {0, 0};    // [0]: raw AO, [1]: blur temp
+
+    // Phase E.8 双 RT 旁路: 独立 depth tex + FBO (blit 目标)
+    uint32_t depthFbo       = 0;         // blit 目标 FBO (仅 depth attachment)
+    uint32_t depthTex       = 0;         // full-res depth texture
+
+    // AO ping-pong: [0] raw, [1] blur temp (半分辨率)
+    uint32_t fbos[2]        = {0, 0};
     uint32_t texs[2]        = {0, 0};    // R16F half-res
     uint32_t noiseTex       = 0;          // 4x4 RGBA8
     int      rtW            = 0;
@@ -271,11 +304,19 @@ graph BT
 /// ==================== Phase E.8 — SSAO ====================
 virtual bool SupportsSSAO() const { return false; }
 
-/// 获取 HDR RT 的 depth texture (SSAO 读取入口)
-/// @param fbo HDRRenderer 的 HDR FBO
-/// @return depth tex id (0 = fbo 未知 / 升级前 / 不支持)
-/// @note Phase E.8 前的 HDR RT depth 是 renderbuffer; 升级后返回 texture id
-virtual uint32_t GetHDRDepthTex(uint32_t /*fbo*/) { return 0; }
+/// Phase E.8 双 RT 旁路: 创建 SSAO 专用 depth tex + FBO (无 color attachment)
+/// @param w,h      与 HDR RT 同尺寸 (用于 full-res blit)
+/// @param outFbo   输出 FBO (仅 GL_DEPTH_ATTACHMENT, glDrawBuffer=GL_NONE)
+/// @param outTex   输出 depth texture (NEAREST + CLAMP_TO_EDGE)
+/// @return true=成功; 失败时 outFbo/outTex = 0
+virtual bool CreateSSAODepthRT(int /*w*/, int /*h*/,
+                                uint32_t* /*outFbo*/, uint32_t* /*outTex*/) { return false; }
+virtual void DeleteSSAODepthRT(uint32_t /*fbo*/, uint32_t /*tex*/) {}
+
+/// Phase E.8 旁路核心: 用 glBlitFramebuffer 从 HDR FBO 复制 depth 到 SSAO FBO
+/// @note 在每帧 SSAORenderer::Process() 入口调用，GL_DEPTH_BUFFER_BIT + GL_NEAREST
+virtual void BlitHDRDepthToSSAO(uint32_t /*hdrFbo*/, uint32_t /*ssaoDepthFbo*/,
+                                 int /*w*/, int /*h*/) {}
 
 /// 创建 SSAO ping-pong RT:
 ///   [0] raw AO    (R16F, 半分辨率)
@@ -315,26 +356,30 @@ virtual void DrawSSAOComposite(uint32_t /*aoTex*/, uint32_t /*dstFbo*/,
 ### 4.2 SSAORenderer::Process 契约
 
 ```cpp
-/// @brief 执行 SSAO 完整管线: raw → blur (2 pass) → composite
+/// @brief 执行 SSAO 完整管线: blit depth → raw → blur (2 pass) → composite
 ///
 /// 内部自检:
 ///   - g.enabled == true
 ///   - g.supported == true
 ///   - backend != nullptr
-///   - fbos[0], fbos[1], noiseTex, hdrFbo, hdrTex, depthTex 全非 0
+///   - depthFbo, depthTex, fbos[0], fbos[1], noiseTex, hdrFbo, hdrTex 全非 0
 ///   - projMat4 / invProjMat4 非 nullptr
 /// 任一条件失败 → no-op 安全退出
 ///
 /// 管线 (blurEnabled=true 时):
+///   0. BlitHDRDepthToSSAO(hdrFbo, depthFbo, srcW, srcH)    ← 双 RT 旁路
 ///   1. DrawSSAO(depthTex, noiseTex, fbos[0], rtW, rtH, proj, invProj, kernel, ...)
 ///   2. DrawSSAOBlur(texs[0], depthTex, fbos[1], rtW, rtH, axis=0)
 ///   3. DrawSSAOBlur(texs[1], depthTex, fbos[0], rtW, rtH, axis=1)
 ///   4. DrawSSAOComposite(texs[0], hdrFbo, srcW, srcH, intensity)
 ///
 /// 管线 (blurEnabled=false 时):
+///   0. BlitHDRDepthToSSAO(hdrFbo, depthFbo, srcW, srcH)
 ///   1. DrawSSAO(depthTex, noiseTex, fbos[0], rtW, rtH, ...)
 ///   2. DrawSSAOComposite(texs[0], hdrFbo, srcW, srcH, intensity)
-void Process(uint32_t hdrFbo, uint32_t hdrTex, uint32_t depthTex,
+///
+/// Phase E.8 双 RT 旁路: 调用方不再传 depthTex; SSAO 管自己的 depthTex
+void Process(uint32_t hdrFbo, uint32_t hdrTex,
               const float* projMat4, const float* invProjMat4);
 ```
 
@@ -356,8 +401,8 @@ SSAORenderer::OnHDRDisabled();
 SSAORenderer::OnHDRResized(w, h);
 
 // 4. HDRRenderer::EndScene 管线序:
-SSAORenderer::Process(hdrFbo, hdrTex, backend->GetHDRDepthTex(hdrFbo),
-                       currentProj, currentInvProj);
+//    Phase E.8 双 RT 旁路: Process 内部自己做 depth blit, 调用方无需传 depthTex
+SSAORenderer::Process(hdrFbo, hdrTex, currentProj, currentInvProj);
 // ★ SSAO 必须在 Bloom 之前 (AO 是暗部加深, 应在 bright pass 前完成)
 BloomRenderer::Process(...);
 AutoExposureRenderer::Process(...);
@@ -368,7 +413,7 @@ LensFlareRenderer::Process(...);
 // 5. HDRRenderer::Pause/Resume: SSAO 无需联动 (RT 持久; 下次 Process 时 hdrFbo 重绑)
 ```
 
-**projection/invProj 供给**：`HDRRenderer` 需要从 `RenderBackend` 拿当前 projection 矩阵，新增 `GetProjectionMatrix(float out[16])` 虚接口，或者用户在 EndScene 前调 Lua API 时手动传入。**决策**：新增 `RenderBackend::GetProjection(float* out16)` 和 `GetView(float* out16)` 两个 getter，从 `@render_gl33.cpp:1410` `projection` 字段直接 memcpy 返回。
+**projection/invProj 供给**：`HDRRenderer` 需要从 `RenderBackend` 拿当前 projection 矩阵，新增 `GetProjectionMatrix(float out[16])` 虚接口。**决策**：新增 `RenderBackend::GetProjection(float* out16)` 和 `GetView(float* out16)` 两个 getter，从 `@render_gl33.cpp:1410` `projection` 字段直接 memcpy 返回。`invProj` 在 `SSAORenderer::Process` 内部用 `Mat4::Inverse()` 计算。
 
 ---
 
@@ -424,7 +469,8 @@ EndFrame
 | **Backend** | SSAO shader 编译失败 | `ssaoSupported = false`；`SupportsSSAO()` 返回 false |
 | **Backend** | noise tex 生成失败 | `CreateSSAONoiseTex` 返回 0；Renderer Enable 失败 |
 | **Backend** | SSAO RT 创建失败 | `CreateSSAOTargets` 返回 false + fbos/texs 清零 |
-| **Backend** | HDR depth tex 升级后驱动不支持 | 回退 RB；`GetHDRDepthTex` 返回 0；SSAO `supported = false` |
+| **Backend** | SSAO depth RT 创建失败 | `CreateSSAODepthRT` 返回 false + outFbo/outTex = 0 |
+| **Backend** | glBlitFramebuffer depth blit 旧驱动不支持 | Init 时探测。SSAO `supported = false` |
 | **Module** | `Process` 参数验证失败 | 静默 no-op (不崩不 log) |
 | **Module** | `Enable(w, h)` 重复调 | 幂等: 已启用则释放旧资源再建 |
 | **Module** | `Resize(w, h)` 尺寸不变 | fast path skip |
@@ -438,23 +484,25 @@ EndFrame
 │    SupportsSSAO = false                    │
 │    全链路 no-op                            │
 ├─────────────────────────────────────────────┤
-│  GL33 但不支持 depth texture (极少)         │
-│    GetHDRDepthTex 返回 0                   │
-│    Process(..., 0, ...) → 静默 no-op        │
+│  GL33 但 glBlitFramebuffer depth 受限 (极少) │
+│    InitSSAO 探测失败 → ssaoSupported = false │
+│    IsSupported() == false, Enable() 返 false │
 ├─────────────────────────────────────────────┤
 │  GL33 正常                                  │
 │    SSAO 全链路工作                         │
 └─────────────────────────────────────────────┘
 ```
 
-### 6.3 HDR depth 升级兼容性验证
+### 6.3 Blit depth 兼容性验证（Init 阶段探测）
 
 ```cpp
-// Init 时探测:
-void ProbeHDRDepthTextureSupport() {
-    // 临时创建 1x1 depth texture, 看 glCheckFramebufferStatus
-    // 失败则 hdrDepthTextureSupported = false
-    // SSAO Init 检查此标记, 直接 supported = false
+// InitSSAO() 时探测:
+void ProbeBlitDepthSupport() {
+    // 1. 创建 1x1 HDR FBO (color tex + depth RB)
+    // 2. 创建 1x1 SSAO depth tex + FBO
+    // 3. 尝试 glBlitFramebuffer(.., GL_DEPTH_BUFFER_BIT, GL_NEAREST)
+    // 4. glGetError() 检查是否 GL_INVALID_OPERATION
+    // 5. 失败 → ssaoSupported = false; 清理临时资源
 }
 ```
 
