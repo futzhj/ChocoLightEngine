@@ -622,6 +622,197 @@ void main() {
 )";
 #endif
 
+// ==================== Phase E.1.2 — VS_LIT2D + FS_LIT2D shader ====================
+//
+// 2D Lit forward 渲染 (与 3D PBR 区分: 简化 Lambertian + 多达 16 灯 + 可选 normal map).
+// 顶点输入静态 layout 由 RenderVertex2DLit 决定 (location 0..4, 见 render_backend.h).
+//
+// Uniform 设计:
+//   uMVP / uModel       — 标准变换 (model 用于把 normal/tangent 映射到世界空间)
+//   uTexture            — baseColor (texture unit 0)
+//   uNormalMap          — 法线贴图 (texture unit 1, uHasNormalMap=0 时不采样)
+//   uHasNormalMap       — 0 / 1 (E.1.5 在 normalMapTex==0 时设 0)
+//   uAmbient            — 环境光 (vec3)
+//   uLightCount         — 实际激活灯数 (0..16)
+//   uLightType[i]       — 1=Point, 2=Spot
+//   uLightPos[i].xy     — 世界坐标 (z 字段未使用, 仅占位 vec3)
+//   uLightDir[i].xy     — Spot 方向 (Point 时未使用, 字段需归一化)
+//   uLightColor[i]      — RGB
+//   uLightRange[i]      — 距离衰减半径 (d > range 时跳过)
+//   uLightIntensity[i]  — 强度乘子
+//   uLightInnerCos[i]   — cos(innerAngle), Spot only (smoothstep 内边)
+//   uLightOuterCos[i]   — cos(outerAngle), Spot only (smoothstep 外边)
+//
+// 性能预算:
+//   16 灯 × (1 int + 2 vec3 + 5 float) = 16*(1+6+5) = 16*12 = 192 标量
+//   + 1 vec3 ambient + 4 sampler/int = 196 标量 + 几个杂项
+//   远低于 GLES 3.0 MAX_FRAGMENT_UNIFORM_VECTORS=224 vec4 = 896 标量限制
+//
+// 数组大小必须用字面 16 而非宏 (C++ 宏不会扩展进 R"(...)" raw string).
+// C++ 端同步保持 LIT2D_MAX_LIGHTS=16, 越界时调用方应在 Lighting2D::Add 时拒绝.
+
+#define LIT2D_MAX_LIGHTS 16
+
+#if defined(__EMSCRIPTEN__) || defined(__ANDROID__) || defined(CHOCO_PLATFORM_IOS)
+
+// ---- VS_LIT2D (GLES 3.0) ----
+static const char* VS_LIT2D_SOURCE = R"(#version 300 es
+precision highp float;
+layout(location=0) in vec3 aPos;
+layout(location=1) in vec2 aUV;
+layout(location=2) in vec4 aColor;
+layout(location=3) in vec3 aNormal;
+layout(location=4) in vec4 aTangent;
+uniform mat4 uMVP;
+uniform mat4 uModel;
+out vec2 vUV;
+out vec4 vColor;
+out vec3 vWorldPos;
+out mat3 vTBN;
+void main() {
+    gl_Position = uMVP * vec4(aPos, 1.0);
+    vUV = aUV;
+    vColor = aColor;
+    vWorldPos = (uModel * vec4(aPos, 1.0)).xyz;
+    mat3 m3 = mat3(uModel);
+    vec3 N = normalize(m3 * aNormal);
+    vec3 T = normalize(m3 * aTangent.xyz);
+    vec3 B = cross(N, T) * aTangent.w;
+    vTBN = mat3(T, B, N);
+}
+)";
+
+// ---- FS_LIT2D (GLES 3.0) ----
+static const char* FS_LIT2D_SOURCE = R"(#version 300 es
+precision highp float;
+in vec2 vUV;
+in vec4 vColor;
+in vec3 vWorldPos;
+in mat3 vTBN;
+uniform sampler2D uTexture;
+uniform sampler2D uNormalMap;
+uniform int       uHasNormalMap;
+uniform vec3      uAmbient;
+uniform int       uLightCount;
+uniform int   uLightType[16];
+uniform vec3  uLightPos[16];
+uniform vec3  uLightDir[16];
+uniform vec3  uLightColor[16];
+uniform float uLightRange[16];
+uniform float uLightIntensity[16];
+uniform float uLightInnerCos[16];
+uniform float uLightOuterCos[16];
+layout(location=0) out vec4 FragColor;
+void main() {
+    vec4 base = texture(uTexture, vUV) * vColor;
+    vec3 N;
+    if (uHasNormalMap == 1) {
+        vec3 nTS = texture(uNormalMap, vUV).xyz * 2.0 - 1.0;
+        N = normalize(vTBN * nTS);
+    } else {
+        N = vTBN[2];
+    }
+    vec3 lightSum = uAmbient;
+    for (int i = 0; i < 16; i++) {
+        if (i >= uLightCount) break;
+        vec2 toLight = uLightPos[i].xy - vWorldPos.xy;
+        float d = length(toLight);
+        if (d > uLightRange[i]) continue;
+        vec3 L = vec3(toLight / max(d, 0.0001), 0.0);
+        float NdotL = max(dot(N, L), 0.0);
+        float atten = pow(max(1.0 - d / uLightRange[i], 0.0), 2.0);
+        if (uLightType[i] == 2) {
+            float cosA = dot(-L.xy, uLightDir[i].xy);
+            float spot_f = smoothstep(uLightOuterCos[i], uLightInnerCos[i], cosA);
+            atten *= spot_f;
+        }
+        lightSum += uLightColor[i] * uLightIntensity[i] * NdotL * atten;
+    }
+    FragColor = vec4(base.rgb * lightSum, base.a);
+}
+)";
+
+#else  // 桌面 GL 3.3 Core
+
+// ---- VS_LIT2D (GL 3.3) ----
+static const char* VS_LIT2D_SOURCE = R"(
+#version 330 core
+layout(location=0) in vec3 aPos;
+layout(location=1) in vec2 aUV;
+layout(location=2) in vec4 aColor;
+layout(location=3) in vec3 aNormal;
+layout(location=4) in vec4 aTangent;
+uniform mat4 uMVP;
+uniform mat4 uModel;
+out vec2 vUV;
+out vec4 vColor;
+out vec3 vWorldPos;
+out mat3 vTBN;
+void main() {
+    gl_Position = uMVP * vec4(aPos, 1.0);
+    vUV = aUV;
+    vColor = aColor;
+    vWorldPos = (uModel * vec4(aPos, 1.0)).xyz;
+    mat3 m3 = mat3(uModel);
+    vec3 N = normalize(m3 * aNormal);
+    vec3 T = normalize(m3 * aTangent.xyz);
+    vec3 B = cross(N, T) * aTangent.w;
+    vTBN = mat3(T, B, N);
+}
+)";
+
+// ---- FS_LIT2D (GL 3.3) ----
+static const char* FS_LIT2D_SOURCE = R"(
+#version 330 core
+in vec2 vUV;
+in vec4 vColor;
+in vec3 vWorldPos;
+in mat3 vTBN;
+uniform sampler2D uTexture;
+uniform sampler2D uNormalMap;
+uniform int       uHasNormalMap;
+uniform vec3      uAmbient;
+uniform int       uLightCount;
+uniform int   uLightType[16];
+uniform vec3  uLightPos[16];
+uniform vec3  uLightDir[16];
+uniform vec3  uLightColor[16];
+uniform float uLightRange[16];
+uniform float uLightIntensity[16];
+uniform float uLightInnerCos[16];
+uniform float uLightOuterCos[16];
+out vec4 FragColor;
+void main() {
+    vec4 base = texture(uTexture, vUV) * vColor;
+    vec3 N;
+    if (uHasNormalMap == 1) {
+        vec3 nTS = texture(uNormalMap, vUV).xyz * 2.0 - 1.0;
+        N = normalize(vTBN * nTS);
+    } else {
+        N = vTBN[2];
+    }
+    vec3 lightSum = uAmbient;
+    for (int i = 0; i < 16; i++) {
+        if (i >= uLightCount) break;
+        vec2 toLight = uLightPos[i].xy - vWorldPos.xy;
+        float d = length(toLight);
+        if (d > uLightRange[i]) continue;
+        vec3 L = vec3(toLight / max(d, 0.0001), 0.0);
+        float NdotL = max(dot(N, L), 0.0);
+        float atten = pow(max(1.0 - d / uLightRange[i], 0.0), 2.0);
+        if (uLightType[i] == 2) {
+            float cosA = dot(-L.xy, uLightDir[i].xy);
+            float spot_f = smoothstep(uLightOuterCos[i], uLightInnerCos[i], cosA);
+            atten *= spot_f;
+        }
+        lightSum += uLightColor[i] * uLightIntensity[i] * NdotL * atten;
+    }
+    FragColor = vec4(base.rgb * lightSum, base.a);
+}
+)";
+
+#endif
+
 // Phase AS.2 — Mesh GPU 资源 (Phase AX 扩展加 morph delta texture)
 struct MeshGPU {
     GLuint vao;
@@ -707,13 +898,33 @@ class GL33Backend : public RenderBackend {
     uint32_t                              nextSkinnedMorphMeshId = 0xC0000001u;
 
     // ---- Phase E.1 — 2D Lit (forward 多光 + Normal Map) ----
-    // E.1.1 (本任务): 仅创建 VAO/VBO/EBO + 配置顶点属性 layout, shader 留给 E.1.2
+    // E.1.1: VAO/VBO/EBO + 顶点属性 layout
+    // E.1.2: VS_LIT2D + FS_LIT2D shader 编译 + uniform location 缓存
     GLuint vaoLit2D     = 0;
     GLuint vboLit2D     = 0;
     GLuint eboLit2D     = 0;
-    GLuint programLit2D = 0;       // E.1.2 接入, 本任务中始终 0
-    bool   lit2DSupported = false; // E.1.1 资源就绪后置 true
+    GLuint programLit2D = 0;        // E.1.2 编译 + link 成功后非 0
+    bool   lit2DSupported = false;  // VAO/VBO/EBO + program 全部就绪后置 true
     static constexpr int LIT2D_VBO_INITIAL_VERTS = 4;  // 单 quad; E.1.5 可按需扩容
+
+    // Phase E.1.2 — Lit2D shader uniform locations
+    // 标量 uniform
+    GLint locLit2D_MVP            = -1;
+    GLint locLit2D_Model          = -1;
+    GLint locLit2D_Texture        = -1;  // sampler2D, slot 0
+    GLint locLit2D_NormalMap      = -1;  // sampler2D, slot 1
+    GLint locLit2D_HasNormalMap   = -1;
+    GLint locLit2D_Ambient        = -1;
+    GLint locLit2D_LightCount     = -1;
+    // uniform array base location (各 16 元素, glUniform*v(loc, count, ...) 一次性上传)
+    GLint locLit2D_LightType      = -1;  // int[16]
+    GLint locLit2D_LightPos       = -1;  // vec3[16]
+    GLint locLit2D_LightDir       = -1;  // vec3[16]
+    GLint locLit2D_LightColor     = -1;  // vec3[16]
+    GLint locLit2D_LightRange     = -1;  // float[16]
+    GLint locLit2D_LightIntensity = -1;  // float[16]
+    GLint locLit2D_LightInnerCos  = -1;  // float[16]
+    GLint locLit2D_LightOuterCos  = -1;  // float[16]
 
     // 编译 shader, 返回 0 表示失败
     static GLuint CompileShader(GLenum type, const char* src) {
@@ -838,7 +1049,7 @@ public:
         // ---- Phase AW — GPU Skinning: 检测 UBO 上限 + 编译 Skin shader + 创建 UBO ----
         InitGPUSkinning();
 
-        // ---- Phase E.1.1 — 2D Lit 渲染资源 (VAO/VBO/EBO) ----
+        // ---- Phase E.1.1 + E.1.2 — 2D Lit 渲染资源 + shader ----
         InitLit2D();
 
         CC::Log(CC::LOG_INFO, "RenderBackend: GL33 Core initialized (GL %s)%s%s%s",
@@ -846,7 +1057,7 @@ public:
                 (programUnlit && programPBR) ? ", 3D Unlit+PBR enabled" :
                 (programUnlit || programPBR) ? ", partial 3D shader" : "",
                 gpuSkinningSupported ? ", GPU skinning enabled" : "",
-                lit2DSupported       ? ", Lit2D resources ready" : "");
+                lit2DSupported       ? ", Lit2D enabled" : "");
         return true;
     }
 
@@ -939,16 +1150,20 @@ public:
         }
     }
 
-    // Phase E.1.1 — 2D Lit 渲染管线初始化 (仅 GL 对象, shader 在 E.1.2 接入)
+    // Phase E.1.1 + E.1.2 — 2D Lit 渲染管线初始化
     //
-    // 本任务范围:
-    //   1. glGenVertexArrays / glGenBuffers 创建 VAO + 动态 VBO + 静态 EBO
-    //   2. 配置顶点属性 layout (location 0..4, 与 VS_LIT2D 静态 layout 一致)
-    //   3. 上传单 quad 静态索引 [0,1,2, 0,2,3]
-    //   4. 不编译 shader; programLit2D 留空, 由 E.1.2 实现
+    // 阶段:
+    //   1. glGenVertexArrays / glGenBuffers 创建 VAO + 动态 VBO + 静态 EBO  (E.1.1)
+    //   2. 配置顶点属性 layout (location 0..4, 与 VS_LIT2D 静态 layout 一致) (E.1.1)
+    //   3. 上传单 quad 静态索引 [0,1,2, 0,2,3]                              (E.1.1)
+    //   4. 编译 VS_LIT2D + FS_LIT2D, link programLit2D                     (E.1.2)
+    //   5. glGetUniformLocation 缓存所有 uniform location                  (E.1.2)
+    //   6. 绑定 sampler uniform 到 texture unit 0/1                        (E.1.2)
     //
     // 失败影响: lit2DSupported = false, DrawLit2DQuad 等接口仍是默认 no-op,
     //          调用方应通过 SupportsLit2D() 检查后回退到普通 Draw 路径.
+    //
+    // GL 对象 (VAO/VBO/EBO) 与 program 任一失败都退化到 false.
     void InitLit2D() {
         glGenVertexArrays(1, &vaoLit2D);
         glGenBuffers(1, &vboLit2D);
@@ -999,11 +1214,51 @@ public:
 
         glBindVertexArray(0);
 
-        // GL 对象就绪 (shader 留 E.1.2): 后续 SupportsLit2D() 返回 true
-        // E.1.2 完成 program link 后, 可在该处加严判定 (lit2DSupported &= programLit2D != 0)
+        // ---- Phase E.1.2 — 编译 + link Lit2D shader ----
+        GLuint vsLit = CompileShader(GL_VERTEX_SHADER,   VS_LIT2D_SOURCE);
+        GLuint fsLit = CompileShader(GL_FRAGMENT_SHADER, FS_LIT2D_SOURCE);
+        if (vsLit && fsLit) {
+            programLit2D = LinkProgram(vsLit, fsLit);
+        }
+        if (vsLit) glDeleteShader(vsLit);
+        if (fsLit) glDeleteShader(fsLit);
+
+        if (!programLit2D) {
+            CC::Log(CC::LOG_WARN,
+                    "GL33: Phase E.1.2 Lit2D shader compile/link failed, SupportsLit2D=false");
+            // GL 对象保留, 由 Shutdown 释放; program=0 即代表 shader 不可用
+            lit2DSupported = false;
+            return;
+        }
+
+        // 缓存所有 uniform location (link 成功后位置稳定)
+        locLit2D_MVP            = glGetUniformLocation(programLit2D, "uMVP");
+        locLit2D_Model          = glGetUniformLocation(programLit2D, "uModel");
+        locLit2D_Texture        = glGetUniformLocation(programLit2D, "uTexture");
+        locLit2D_NormalMap      = glGetUniformLocation(programLit2D, "uNormalMap");
+        locLit2D_HasNormalMap   = glGetUniformLocation(programLit2D, "uHasNormalMap");
+        locLit2D_Ambient        = glGetUniformLocation(programLit2D, "uAmbient");
+        locLit2D_LightCount     = glGetUniformLocation(programLit2D, "uLightCount");
+        // 数组 uniform: 通过 "name[0]" 取 base location, 之后 glUniform*v(loc, count, data) 一次性上传
+        locLit2D_LightType      = glGetUniformLocation(programLit2D, "uLightType[0]");
+        locLit2D_LightPos       = glGetUniformLocation(programLit2D, "uLightPos[0]");
+        locLit2D_LightDir       = glGetUniformLocation(programLit2D, "uLightDir[0]");
+        locLit2D_LightColor     = glGetUniformLocation(programLit2D, "uLightColor[0]");
+        locLit2D_LightRange     = glGetUniformLocation(programLit2D, "uLightRange[0]");
+        locLit2D_LightIntensity = glGetUniformLocation(programLit2D, "uLightIntensity[0]");
+        locLit2D_LightInnerCos  = glGetUniformLocation(programLit2D, "uLightInnerCos[0]");
+        locLit2D_LightOuterCos  = glGetUniformLocation(programLit2D, "uLightOuterCos[0]");
+
+        // 一次性把 sampler uniform 绑到 texture unit 0/1 (link 后位置稳定, 后续 Draw 不需重设)
+        glUseProgram(programLit2D);
+        if (locLit2D_Texture   >= 0) glUniform1i(locLit2D_Texture,   0);
+        if (locLit2D_NormalMap >= 0) glUniform1i(locLit2D_NormalMap, 1);
+        glUseProgram(0);
+
         lit2DSupported = true;
         CC::Log(CC::LOG_INFO,
-                "GL33: Phase E.1.1 Lit2D VAO/VBO/EBO ready (shader pending E.1.2)");
+                "GL33: Phase E.1.2 Lit2D ready (program=%u, MAX_LIGHTS=%d)",
+                programLit2D, LIT2D_MAX_LIGHTS);
     }
 
     void Shutdown() override {
