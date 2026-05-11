@@ -479,6 +479,40 @@ else
 end
 
 -- ============================================================
+-- 18) Phase E.2.3 — LitBatchRenderer API surface + 无窗口 guard
+-- ============================================================
+-- 验证:
+--   - Light.Graphics.FlushLitBatch 存在且可调用 (无窗口环境也安全)
+--   - DrawLit/DrawLitQuad 仍可调用 (内部 SupportsLit2D=false 时静默 return 0)
+--   - 真正的 batch 行为 (drawCalls / 合批数) 需视觉验收, 留给 demo_2d_lighting
+
+local ok_gfx, gfx = pcall(require, "Light.Graphics")
+if ok_gfx and type(gfx) == "table" then
+    assert(type(gfx.FlushLitBatch) == "function", "Light.Graphics.FlushLitBatch should exist (E.2.3)")
+    pass("E.2.3: Light.Graphics.FlushLitBatch API exists")
+
+    local ok_flush = pcall(gfx.FlushLitBatch)
+    assert(ok_flush, "FlushLitBatch should be callable in headless (no-op when LitBatchRenderer not init)")
+    pass("E.2.3: FlushLitBatch headless no-window guard ok (no crash)")
+
+    -- DrawLit / DrawLitQuad 在 headless 已在 §14 验证, 这里仅再确认改造后未崩
+    if type(gfx.DrawLit) == "function" then
+        local ok_dl = pcall(gfx.DrawLit, nil, nil, 0, 0, 0, 0, 0, 45, 2, 2, 1, 32, 32, 0)
+        assert(ok_dl, "DrawLit with full 14 params (transform) should not crash")
+        pass("E.2.3: DrawLit with rot/scale/origin params ok (no crash)")
+    end
+
+    if type(gfx.DrawLitQuad) == "function" then
+        local ok_dlq = pcall(gfx.DrawLitQuad, nil, nil, 0, 0, 0, 0, 0, 32, 32,
+                              0, 0, 30, 1.5, 1.5, 1, 16, 16, 0)
+        assert(ok_dlq, "DrawLitQuad with full 18 params should not crash")
+        pass("E.2.3: DrawLitQuad with quad+transform params ok (no crash)")
+    end
+else
+    print("SKIP: E.2.3 surface smoke (Light.Graphics unavailable)")
+end
+
+-- ============================================================
 -- Final cleanup
 -- ============================================================
 

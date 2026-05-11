@@ -913,6 +913,13 @@ class GL33Backend : public RenderBackend {
     // 初值 0 + State 初值 1 保证首次调用一定 mismatch (触发首次上传)
     uint32_t lastUploadedLighting2DVersion = 0;
 
+    // Phase E.2.3 — 动态 EBO (专供 DrawLit2DBatch 的动态索引上传)
+    // 与静态 eboLit2D 分开: 静态 eboLit2D 存 [0,1,2,0,2,3] 给 DrawLit2DQuad 用
+    //                       动态 eboLit2DBatch 存 N quad 的索引 (4 顶点 / quad ×6 索引 / quad)
+    // DrawLit2DBatch 结束后必须 glBindBuffer 恢复静态 eboLit2D, 保证下次 DrawLit2DQuad 正确
+    GLuint      eboLit2DBatch         = 0;
+    GLsizeiptr  eboLit2DBatchCapacity = 0;  // 已分配的索引数 (×sizeof(uint32_t) = 字节数)
+
     // Phase E.1.2 — Lit2D shader uniform locations
     // 标量 uniform
     GLint locLit2D_MVP            = -1;
@@ -1228,6 +1235,20 @@ public:
 
         glBindVertexArray(0);
 
+        // Phase E.2.3 — 动态 EBO 在 VAO 解绑后再生成, 避免被 vaoLit2D 记住绑定;
+        // 这样 DrawLit2DBatch 可临时切到 eboLit2DBatch, 不污染 DrawLit2DQuad 的 EBO 状态.
+        glGenBuffers(1, &eboLit2DBatch);
+        if (eboLit2DBatch) {
+            // 预分配单 batch 容量 (256 quad ×6 索引 = 1536 idx ≈ 6KB)
+            const int kInitIdxCap = 256 * 6;
+            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, eboLit2DBatch);
+            glBufferData(GL_ELEMENT_ARRAY_BUFFER,
+                         kInitIdxCap * (GLsizeiptr)sizeof(uint32_t),
+                         nullptr, GL_DYNAMIC_DRAW);
+            eboLit2DBatchCapacity = kInitIdxCap;
+            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+        }
+
         // ---- Phase E.1.2 — 编译 + link Lit2D shader ----
         GLuint vsLit = CompileShader(GL_VERTEX_SHADER,   VS_LIT2D_SOURCE);
         GLuint fsLit = CompileShader(GL_FRAGMENT_SHADER, FS_LIT2D_SOURCE);
@@ -1322,10 +1343,13 @@ public:
         morphTargetsSupported = false;
 
         // Phase E.1.1 — 释放 Lit2D 资源 (VAO/VBO/EBO + program)
-        if (programLit2D) { glDeleteProgram(programLit2D); programLit2D = 0; }
-        if (eboLit2D)     { glDeleteBuffers(1, &eboLit2D); eboLit2D = 0; }
-        if (vboLit2D)     { glDeleteBuffers(1, &vboLit2D); vboLit2D = 0; }
-        if (vaoLit2D)     { glDeleteVertexArrays(1, &vaoLit2D); vaoLit2D = 0; }
+        if (programLit2D)   { glDeleteProgram(programLit2D); programLit2D = 0; }
+        if (eboLit2D)       { glDeleteBuffers(1, &eboLit2D); eboLit2D = 0; }
+        if (vboLit2D)       { glDeleteBuffers(1, &vboLit2D); vboLit2D = 0; }
+        if (vaoLit2D)       { glDeleteVertexArrays(1, &vaoLit2D); vaoLit2D = 0; }
+        // Phase E.2.3 — 释放动态 EBO
+        if (eboLit2DBatch)  { glDeleteBuffers(1, &eboLit2DBatch); eboLit2DBatch = 0; }
+        eboLit2DBatchCapacity = 0;
         vboLit2DCapacity = 0;
 
         // Phase E.1.5 — 释放 Lit2D mesh 池
@@ -1478,6 +1502,56 @@ public:
                         count * (GLsizeiptr)sizeof(RenderVertex2DLit), verts);
         // 任意三角形流 → 不用 EBO (顺序读顶点)
         glDrawArrays(GL_TRIANGLES, 0, count);
+
+        EndLit2DDraw();
+    }
+
+    /// Phase E.2.3 — 保证 eboLit2DBatch 能容纳 idxCount 个 uint32; 不够则 ×2 增长
+    void EnsureLit2DEBOBatchCapacity(int idxCount) {
+        if ((GLsizeiptr)idxCount <= eboLit2DBatchCapacity) return;
+        GLsizeiptr newCap = eboLit2DBatchCapacity ? eboLit2DBatchCapacity : 256 * 6;
+        while (newCap < (GLsizeiptr)idxCount) newCap *= 2;
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, eboLit2DBatch);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER,
+                     newCap * (GLsizeiptr)sizeof(uint32_t),
+                     nullptr, GL_DYNAMIC_DRAW);
+        eboLit2DBatchCapacity = newCap;
+    }
+
+    /// Phase E.2.3 — 批量 Lit2D 绘制 (动态 VBO + 动态 EBO + 单次 lighting upload)
+    /// 关键: 临时切到 eboLit2DBatch 后, 必须 glBindBuffer 恢复到 eboLit2D, 否则
+    /// vaoLit2D 内的 GL_ELEMENT_ARRAY_BUFFER 绑定会被改变, 下次 DrawLit2DQuad 会读错索引.
+    void DrawLit2DBatch(const RenderVertex2DLit* verts, int vertCount,
+                        const uint32_t* indices, int idxCount,
+                        uint32_t baseColorTex,
+                        uint32_t normalMapTex) override {
+        if (!lit2DSupported || !verts || vertCount <= 0 ||
+            !indices || idxCount <= 0 || (idxCount % 3) != 0) return;
+        if (!eboLit2DBatch) return;  // Init 时分配失败的 fallback
+
+        BeginLit2DDraw(baseColorTex, normalMapTex);
+
+        glBindVertexArray(vaoLit2D);
+
+        // 上传顶点 (动态 VBO 已绑到 vaoLit2D)
+        glBindBuffer(GL_ARRAY_BUFFER, vboLit2D);
+        EnsureLit2DVBOCapacity(vertCount);
+        glBufferSubData(GL_ARRAY_BUFFER, 0,
+                        vertCount * (GLsizeiptr)sizeof(RenderVertex2DLit), verts);
+
+        // 临时切到动态 EBO 上传索引
+        // (注: vaoLit2D 当前绑定的是静态 eboLit2D, 我们 *改* GL_ELEMENT_ARRAY_BUFFER 绑定后,
+        //  glDrawElements 用的是 当前绑定 的 EBO, 不是 VAO 创建时绑定的; 但 VAO 会"记忆"
+        //  GL_ELEMENT_ARRAY_BUFFER 的最后一次绑定 — 所以画完后必须切回 eboLit2D.)
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, eboLit2DBatch);
+        EnsureLit2DEBOBatchCapacity(idxCount);
+        glBufferSubData(GL_ELEMENT_ARRAY_BUFFER, 0,
+                        idxCount * (GLsizeiptr)sizeof(uint32_t), indices);
+
+        glDrawElements(GL_TRIANGLES, idxCount, GL_UNSIGNED_INT, nullptr);
+
+        // 恢复静态 EBO 绑定 (vaoLit2D 必须始终指向 eboLit2D, 否则 DrawLit2DQuad 会用错索引)
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, eboLit2D);
 
         EndLit2DDraw();
     }

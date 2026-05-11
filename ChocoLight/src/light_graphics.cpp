@@ -25,6 +25,7 @@
 #include "light.h"
 #include "render_backend.h"
 #include "batch_renderer.h"
+#include "lit_batch_renderer.h"   // Phase E.2.3 — Lit2D 批渲染
 #include <cmath>
 #include <cstring>
 
@@ -40,6 +41,10 @@
 //
 // textureId = 0 表示纯色(无纹理), 非 0 表示带纹理 quad/triangle
 static inline void SubmitOrDraw(DrawMode mode, const RenderVertex* verts, int count, uint32_t texId) {
+    // Phase E.2.3: 切到普通 sprite/几何前, 先把当前累积的 Lit 批刷出, 保证画家顺序
+    // (普通批和 Lit 批用不同 shader/VAO; 不互相感知, 必须显式 Flush 维持视觉顺序).
+    if (LitBatchRenderer::IsInited()) LitBatchRenderer::Flush();
+
     if (BatchRenderer::IsInited()) {
         if (mode == DrawMode::Quads && count == 4) {
             BatchRenderer::SubmitQuad(verts, texId);
@@ -123,6 +128,9 @@ static void ApplyDrawColor() {
 /// @brief 保存当前变换矩阵到栈
 /// @return void
 static int l_Push(lua_State* L) {
+    // Phase E.2.3: matrix stack 变动前必 Flush 当前 Lit 批
+    // (batch 内 quad 共享一个 modelview, push 后 modelview 变了 batch 会错位)
+    if (LitBatchRenderer::IsInited()) LitBatchRenderer::Flush();
     g_render->PushMatrix();
     return 0;
 }
@@ -131,6 +139,7 @@ static int l_Push(lua_State* L) {
 /// @brief 从栈恢复上一个变换矩阵
 /// @return void
 static int l_Pop(lua_State* L) {
+    if (LitBatchRenderer::IsInited()) LitBatchRenderer::Flush();
     g_render->PopMatrix();
     return 0;
 }
@@ -142,6 +151,7 @@ static int l_Pop(lua_State* L) {
 /// @param z number? 深度偏移 (默认 0)
 /// @return void
 static int l_Translate(lua_State* L) {
+    if (LitBatchRenderer::IsInited()) LitBatchRenderer::Flush();
     float x = (float)luaL_checknumber(L, 1);
     float y = (float)luaL_checknumber(L, 2);
     float z = (float)luaL_optnumber(L, 3, 0.0);
@@ -157,6 +167,7 @@ static int l_Translate(lua_State* L) {
 /// @param z number? 旋转轴 Z (默认 1)
 /// @return void
 static int l_Rotate(lua_State* L) {
+    if (LitBatchRenderer::IsInited()) LitBatchRenderer::Flush();
     float angle = (float)luaL_checknumber(L, 1);
     float x = (float)luaL_optnumber(L, 2, 0.0);
     float y = (float)luaL_optnumber(L, 3, 0.0);
@@ -172,6 +183,7 @@ static int l_Rotate(lua_State* L) {
 /// @param sz number? Z 缩放比 (默认 1)
 /// @return void
 static int l_Scale(lua_State* L) {
+    if (LitBatchRenderer::IsInited()) LitBatchRenderer::Flush();
     float sx = (float)luaL_checknumber(L, 1);
     float sy = (float)luaL_optnumber(L, 2, sx);
     float sz = (float)luaL_optnumber(L, 3, 1.0);
@@ -739,40 +751,86 @@ static int l_DrawQuad(lua_State* L) {
 }
 
 // ============================================================================
-// Phase E.1.5 — Light.Graphics.DrawLit / DrawLitQuad (2D Lit forward 多灯)
+// Phase E.1.5 + E.2.3 — Light.Graphics.DrawLit / DrawLitQuad (2D Lit forward 多灯)
 // ============================================================================
 //
-// 路径与 l_Draw / l_DrawQuad 完全平行, 唯一不同:
-//   - 构造 RenderVertex2DLit (带 normal/tangent) 而非 RenderVertex
-//   - 在 backend->DrawLit2DQuad 前 Flush BatchRenderer (避免顶点顺序答错)
-//   - 走 g_render->DrawLit2DQuad 而非 SubmitOrDraw, 不参与 batch
+// Phase E.1.5 (老路径): Push matrix → Translate → ApplyTransform → DrawLit2DQuad → Pop
+//                      每 sprite 一次 draw call, lighting state 每次重传 uniform.
 //
-// 默认 normal = (0, 0, 1) 与 tangent = (1, 0, 0, 1) — 平面 sprite
-// (调用方可未来通过 vertex stream 接口覆写 — 本 API 仅提供 sprite 便捷接口)
+// Phase E.2.3 (新路径): CPU 端用 rz/sx/sy/ox/oy 把 transform 烘焙到 4 个 vertex.pos,
+//                      然后提交到 LitBatchRenderer 累积. 同 (baseTex, normTex) 合批,
+//                      EndFrame / 状态切换时 Flush 触发一次 DrawLit2DBatch.
+//
+// 关键约束 (调用方约定):
+//   - 调用 DrawLit/DrawLitQuad 前必须用 BatchRenderer::Flush 排空普通 sprite (本函数内做).
+//   - matrix stack (Push/Translate) 仍可被本函数外部使用 (camera transform); batch 内
+//     共享同一 modelview, batch 期间调用方不能 push/pop/translate. 若必须改 matrix,
+//     先调 LitBatchRenderer::Flush.
+//
+// CPU 烘焙公式 (与原 ApplyTransform 等价但只考虑 z-axis rotation):
+//   local_pos[i]:    4 个 quad 角点 (0..fw, 0..fh)
+//   step 1 (origin): pos -= (ox, oy, oz)
+//   step 2 (scale):  pos *= (sx, sy, sz)
+//   step 3 (rotate): pos = R_z(rz) * pos     (2D 主流; rx/ry 罕用, 简化处理)
+//   step 4 (translate): pos += (x, y, z)
+//
+// tangent 随 rz 旋转 (维持 TBN 矩阵正确); normal=(0,0,1) z 轴旋转不变.
 
-/// @lua_api Light.Graphics.DrawLit(image, normalMap, x, y, [z, rot, sx, sy, ox, oy, skewX, skewY])
-/// @brief 绘制受光照的 2D sprite (走 sprite_lit_2d shader + Lighting2D state)
-/// @param image      Image|Canvas baseColor; nil 时使用纯顶点色 (默认纹理 = 0)
-/// @param normalMap  Image normal map (optional); nil/missing 时 shader 用默认 N=(0,0,1)
-/// @param x, y, z    屏幕位置 + 深度
-/// @param ...        rot/sx/sy/ox/oy/skewX/skewY (与 l_Draw 一致)
-/// @example
-///   local hero  = Light(Light.Graphics.Image):New("hero.png")
-///   local hero_n = Light(Light.Graphics.Image):New("hero_normal.png")
-///   Light.Lighting2D.SetAmbient(0.2, 0.2, 0.2)
-///   Light.Lighting2D.AddPointLight({x=200, y=100, color={r=1,g=0.8,b=0.5}, range=400})
-///   Light.Graphics.DrawLit(hero, hero_n, 150, 200)
-static int l_DrawLit(lua_State* L) {
-    if (!g_render || !g_render->SupportsLit2D()) {
-        // 后端不支持 → 默默作废, 避免调用方崩 (完整行为可通过 SupportsLit2D 检查)
-        return 0;
+/// CPU 端烘焙 sprite transform 到 4 个 vertex.pos / tangent
+/// @param ux0/uy0 - ux1/uy1  UV 范围
+static void BakeLit2DQuad(float lx0, float ly0, float lx1, float ly1,
+                          float ux0, float uy0, float ux1, float uy1,
+                          float x, float y, float z,
+                          float rx, float ry, float rz,
+                          float sx, float sy, float sz,
+                          float ox, float oy, float oz,
+                          float cr, float cg, float cb, float ca,
+                          RenderVertex2DLit out[4]) {
+    (void)rx; (void)ry;  // 2D sprite 主流只用 z-axis rotation
+    // (lx0,ly0) = 左上, (lx1,ly0) = 右上, (lx1,ly1) = 右下, (lx0,ly1) = 左下
+    const float lx[4] = { lx0, lx1, lx1, lx0 };
+    const float ly[4] = { ly0, ly0, ly1, ly1 };
+    const float u [4] = { ux0, ux1, ux1, ux0 };
+    const float v [4] = { uy0, uy0, uy1, uy1 };
+
+    const float rad = rz * (float)(M_PI / 180.0);
+    const float cs = cosf(rad), sn = sinf(rad);
+
+    for (int i = 0; i < 4; ++i) {
+        // origin offset (相当于 g_render->Translate(-ox, -oy, -oz) 推入栈)
+        float px = lx[i] - ox;
+        float py = ly[i] - oy;
+        float pz = -oz;
+        // scale
+        px *= sx; py *= sy; pz *= sz;
+        // z-axis rotate
+        float rxp = cs * px - sn * py;
+        float ryp = sn * px + cs * py;
+        // translate
+        out[i].x = x + rxp;
+        out[i].y = y + ryp;
+        out[i].z = z + pz;
+        out[i].u = u[i];
+        out[i].v = v[i];
+        out[i].r = cr; out[i].g = cg; out[i].b = cb; out[i].a = ca;
+        // normal 默认 (0,0,1); z 旋转不影响
+        out[i].nx = 0; out[i].ny = 0; out[i].nz = 1;
+        // tangent (1,0,0,1) z 轴旋转后 = (cs, sn, 0, 1)
+        out[i].tx = cs; out[i].ty = sn; out[i].tz = 0; out[i].tw = 1;
     }
+}
+
+/// @lua_api Light.Graphics.DrawLit(image, normalMap, x, y, [z, rx, ry, rz, sx, sy, sz, ox, oy, oz])
+/// @brief Phase E.2.3 — 绘制受光照 sprite, 走 LitBatchRenderer 批渲染
+static int l_DrawLit(lua_State* L) {
+    if (!g_render || !g_render->SupportsLit2D()) return 0;
 
     unsigned int baseTex = 0, normTex = 0;
     int imgW = 64, imgH = 64;
     bool hasBase = GetDrawableTexture(L, 1, &baseTex, &imgW, &imgH);
     int nW = 0, nH = 0;
     GetDrawableTexture(L, 2, &normTex, &nW, &nH);  // nil/非表 → normTex 保持 0
+    (void)hasBase;  // hasBase 仅当年 E.1.5 用来切 uv; CPU 烘焙路径 uv 仍是 0..1
 
     float x = (float)luaL_optnumber(L, 3, 0.0);
     float y = (float)luaL_optnumber(L, 4, 0.0);
@@ -781,37 +839,30 @@ static int l_DrawLit(lua_State* L) {
     float rx, ry, rz, sx, sy, sz, ox, oy, oz;
     ReadTransform(L, 6, &rx, &ry, &rz, &sx, &sy, &sz, &ox, &oy, &oz);
 
-    // Lit 不走 BatchRenderer; 主动 flush 之前累积的普通 sprite 保证顺序正确
+    // Phase E.2.3: Lit 走自己的批渲染; 进入前先 Flush 普通 BatchRenderer 保证画家顺序
     if (BatchRenderer::IsInited()) BatchRenderer::Flush();
 
-    g_render->PushMatrix();
-    g_render->Translate(x, y, z);
-    ApplyTransform(rx, ry, rz, sx, sy, sz, ox, oy, oz);
     ApplyDrawColor();
-
     const float fw = (float)imgW, fh = (float)imgH;
     const float cr = g_ctx.drawColor[0], cg = g_ctx.drawColor[1];
     const float cb = g_ctx.drawColor[2], ca = g_ctx.drawColor[3];
-    // 顶点顺序: 0=左上, 1=右上, 2=右下, 3=左下 (与静态 EBO [0,1,2,0,2,3] 一致)
-    // normal = (0,0,1) 默认面向镜头; tangent = (1,0,0,1) (bitangent sign = +1)
-    const float u0 = hasBase ? 0.0f : 0.0f;
-    const float u1 = hasBase ? 1.0f : 0.0f;
-    const float v0 = hasBase ? 0.0f : 0.0f;
-    const float v1 = hasBase ? 1.0f : 0.0f;
-    RenderVertex2DLit verts[4] = {
-        { 0,  0,  0,   u0, v0,   cr, cg, cb, ca,   0,0,1,   1,0,0,1 },
-        { fw, 0,  0,   u1, v0,   cr, cg, cb, ca,   0,0,1,   1,0,0,1 },
-        { fw, fh, 0,   u1, v1,   cr, cg, cb, ca,   0,0,1,   1,0,0,1 },
-        { 0,  fh, 0,   u0, v1,   cr, cg, cb, ca,   0,0,1,   1,0,0,1 },
-    };
-    g_render->DrawLit2DQuad(verts, baseTex, normTex);
 
-    g_render->PopMatrix();
+    RenderVertex2DLit verts[4];
+    BakeLit2DQuad(0, 0, fw, fh,         // local quad: (0,0) ~ (fw,fh)
+                  0, 0, 1, 1,           // 全图 UV
+                  x, y, z,
+                  rx, ry, rz,
+                  sx, sy, sz,
+                  ox, oy, oz,
+                  cr, cg, cb, ca,
+                  verts);
+
+    LitBatchRenderer::SubmitQuad(verts, baseTex, normTex);
     return 0;
 }
 
-/// @lua_api Light.Graphics.DrawLitQuad(image, normalMap, x, y, z, qx, qy, qw, qh)
-/// @brief 绘制受光照的 sprite 子区域 (sprite sheet 裁切, 类似 DrawQuad)
+/// @lua_api Light.Graphics.DrawLitQuad(image, normalMap, x, y, z, qx, qy, qw, qh, [rx, ry, rz, sx, sy, sz, ox, oy, oz])
+/// @brief Phase E.2.3 — 绘制 sprite 子区域 (sprite sheet), 走 LitBatchRenderer
 static int l_DrawLitQuad(lua_State* L) {
     if (!g_render || !g_render->SupportsLit2D()) return 0;
 
@@ -829,12 +880,12 @@ static int l_DrawLitQuad(lua_State* L) {
     float qw = (float)luaL_optnumber(L, 8, 64.0);
     float qh = (float)luaL_optnumber(L, 9, 64.0);
 
+    float rx, ry, rz, sx, sy, sz, ox, oy, oz;
+    ReadTransform(L, 10, &rx, &ry, &rz, &sx, &sy, &sz, &ox, &oy, &oz);
+
     if (BatchRenderer::IsInited()) BatchRenderer::Flush();
 
-    g_render->PushMatrix();
-    g_render->Translate(x, y, z);
     ApplyDrawColor();
-
     const float cr = g_ctx.drawColor[0], cg = g_ctx.drawColor[1];
     const float cb = g_ctx.drawColor[2], ca = g_ctx.drawColor[3];
     float u0 = 0.0f, v0 = 0.0f, u1 = 0.0f, v1 = 0.0f;
@@ -842,15 +893,27 @@ static int l_DrawLitQuad(lua_State* L) {
         u0 = qx / (float)imgW;          v0 = qy / (float)imgH;
         u1 = (qx + qw) / (float)imgW;   v1 = (qy + qh) / (float)imgH;
     }
-    RenderVertex2DLit verts[4] = {
-        { 0,  0,  0,   u0, v0,   cr, cg, cb, ca,   0,0,1,   1,0,0,1 },
-        { qw, 0,  0,   u1, v0,   cr, cg, cb, ca,   0,0,1,   1,0,0,1 },
-        { qw, qh, 0,   u1, v1,   cr, cg, cb, ca,   0,0,1,   1,0,0,1 },
-        { 0,  qh, 0,   u0, v1,   cr, cg, cb, ca,   0,0,1,   1,0,0,1 },
-    };
-    g_render->DrawLit2DQuad(verts, baseTex, normTex);
 
-    g_render->PopMatrix();
+    RenderVertex2DLit verts[4];
+    BakeLit2DQuad(0, 0, qw, qh,
+                  u0, v0, u1, v1,
+                  x, y, z,
+                  rx, ry, rz,
+                  sx, sy, sz,
+                  ox, oy, oz,
+                  cr, cg, cb, ca,
+                  verts);
+
+    LitBatchRenderer::SubmitQuad(verts, baseTex, normTex);
+    return 0;
+}
+
+/// @lua_api Light.Graphics.FlushLitBatch() -> void
+/// @brief Phase E.2.3 — 立即 flush 当前累积的 Lit2D 批 (画家算法 / 状态切换前调用).
+///        ECS Render() 2D 阶段末调一次保证 camera pop 前刷干净.
+static int l_FlushLitBatch(lua_State* L) {
+    (void)L;
+    if (LitBatchRenderer::IsInited()) LitBatchRenderer::Flush();
     return 0;
 }
 
@@ -1413,6 +1476,8 @@ static const luaL_Reg graphics_funcs[] = {
     // Phase E.1.5 — 2D Lit forward (配合 Light.Lighting2D + 可选 normal map)
     {"DrawLit",           l_DrawLit},
     {"DrawLitQuad",       l_DrawLitQuad},
+    // Phase E.2.3 — 立即 flush 当前 Lit 批 (画家算法 / 状态切换前调用)
+    {"FlushLitBatch",     l_FlushLitBatch},
     {"Print",             l_Print},
     {"Line",              l_Line},
     {"Triangle",          l_Triangle},

@@ -441,6 +441,31 @@ public:
                                       uint32_t normalMapTex) {}
 
     /**
+     * @brief Phase E.2.3 — 批量 Lit2D 绘制 (支持索引 EBO, 为 LitBatchRenderer 服务)
+     * @param verts          RenderVertex2DLit 数组 (CPU 端已烘焙 transform)
+     * @param vertCount      顶点数 (必须 > 0, 每 4 顶点对应 1 quad)
+     * @param indices        uint32 索引数组 (必须 6 的倍数, 描述 N 个 quad 的三角形索引)
+     * @param idxCount       索引数 (= quadCount * 6)
+     * @param baseColorTex   baseColor 纹理 (0 = 纯色)
+     * @param normalMapTex   法线贴图 (0 = 平面法线)
+     *
+     * 实现要求:
+     *   1. glUseProgram(programLit2D) + glBindVertexArray(vaoLit2D)
+     *   2. glBufferData(VBO, verts * sizeof(RenderVertex2DLit))
+     *   3. glBufferData(EBO, indices * sizeof(uint32_t))  (单 batch 内动态索引)
+     *   4. MVP/Model uniform + texture bind
+     *   5. UploadLighting2D(Lighting2D::GetState())  (E.2.1 dirty bit 护航, 未变则 no-op)
+     *   6. glDrawElements(GL_TRIANGLES, idxCount, GL_UNSIGNED_INT, 0)
+     *   7. 切回默认 2D shader
+     *
+     * 默认实现: no-op (与其它 Lit2D 虚接口一致, 非 Lit2D 后端静默跳过).
+     */
+    virtual void DrawLit2DBatch(const RenderVertex2DLit* verts, int vertCount,
+                                 const uint32_t* indices, int idxCount,
+                                 uint32_t baseColorTex,
+                                 uint32_t normalMapTex) {}
+
+    /**
      * @brief 上传 Lighting2D 状态到 programLit2D 的 uniform 数组
      *
      * 调用点: 由 Lighting2D::UploadToShader 转发; 也可被 DrawLit2DQuad 内部复用.

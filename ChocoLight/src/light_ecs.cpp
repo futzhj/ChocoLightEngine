@@ -967,18 +967,15 @@ function ECSWorld:_CollectLitSprites()
     return list
 end
 
+)LUA" R"LUA(
 -- 绘制单个 LitSprite (与 _DrawSprite 平行, 走 gfx.DrawLit / DrawLitQuad)
 -- 后端不支持 DrawLit (Legacy GL / no Lit2D) 时静默 fallback 到 gfx.Draw
+--
+-- Phase E.2.3 改造: 不再用 matrix stack (Push/Translate/Rotate/Scale 会 Flush LitBatch).
+-- 直接把 sprite 自身 transform 作为 9 参数传给 gfx.DrawLit (CPU 烘焙到 vertex.pos),
+-- 同 (image, normalMap) 的 LitSprite 在一个 batch 里合并为 1 draw call.
 function ECSWorld:_DrawLitSprite(tf, ls, gfx)
     local hasLit = (type(gfx.DrawLit) == 'function')
-    gfx.Push()
-    gfx.Translate(tf.x or 0, tf.y or 0, 0)
-    if (tf.rot or 0) ~= 0 then gfx.Rotate(tf.rot, 0, 0, 1) end
-    local sx = tf.sx or 1
-    local sy = tf.sy or 1
-    if ls.flipX then sx = -sx end
-    if ls.flipY then sy = -sy end
-    if sx ~= 1 or sy ~= 1 then gfx.Scale(sx, sy, 1) end
 
     local col = ls.color or {}
     gfx.SetColor(col.r or 1, col.g or 1, col.b or 1, col.a or 1)
@@ -991,30 +988,55 @@ function ECSWorld:_DrawLitSprite(tf, ls, gfx)
         if type(img.GetHeight) == 'function' then ih = img:GetHeight() end
     end
 
-    -- anchor 偏移
+    -- transform: anchor 当 origin, flip 当负 scale, 整体平移/旋转走 transform 参数
     local anc = ls.anchor or {}
     local ax = anc.ax or 0
     local ay = anc.ay or 0
-    local drawX = -ax * iw
-    local drawY = -ay * ih
+    local sx = tf.sx or 1
+    local sy = tf.sy or 1
+    if ls.flipX then sx = -sx end
+    if ls.flipY then sy = -sy end
+    local rot = tf.rot or 0
+    local tx, ty = tf.x or 0, tf.y or 0
+
+    -- gfx.DrawLit 签名: (image, normalMap, x, y, z, rx, ry, rz, sx, sy, sz, ox, oy, oz)
+    -- gfx.DrawLitQuad 签名: (image, normalMap, x, y, z, qx, qy, qw, qh, rx, ry, rz, sx, sy, sz, ox, oy, oz)
+    -- ox/oy: 锚点像素偏移 (ax * iw, ay * ih); CPU 烘焙公式: pos = R*(local - origin)*scale + (x,y)
 
     local q = ls.quad
     if q and (q.qw and q.qw > 0) then
+        local qw = q.qw
+        local qh = q.qh or q.qw
+        local ox = ax * qw  -- quad 模式 anchor 基于子区域
+        local oy = ay * qh
         if hasLit and type(gfx.DrawLitQuad) == 'function' then
-            gfx.DrawLitQuad(img, ls.normalMap, drawX, drawY, 0,
-                            q.qx or 0, q.qy or 0, q.qw, q.qh or q.qw)
+            gfx.DrawLitQuad(img, ls.normalMap, tx, ty, 0,
+                            q.qx or 0, q.qy or 0, qw, qh,
+                            0, 0, rot,  sx, sy, 1,  ox, oy, 0)
         else
-            gfx.DrawQuad(img, drawX, drawY, 0,
-                         q.qx or 0, q.qy or 0, q.qw, q.qh or q.qw)
+            -- Legacy fallback: 仍走 matrix stack (会触发 LitBatch flush 一次, 但 legacy 路径不重要)
+            gfx.Push()
+            gfx.Translate(tx, ty, 0)
+            if rot ~= 0 then gfx.Rotate(rot, 0, 0, 1) end
+            if sx ~= 1 or sy ~= 1 then gfx.Scale(sx, sy, 1) end
+            gfx.DrawQuad(img, -ox, -oy, 0, q.qx or 0, q.qy or 0, qw, qh)
+            gfx.Pop()
         end
     else
+        local ox = ax * iw
+        local oy = ay * ih
         if hasLit then
-            gfx.DrawLit(img, ls.normalMap, drawX, drawY, 0)
+            gfx.DrawLit(img, ls.normalMap, tx, ty, 0,
+                        0, 0, rot,  sx, sy, 1,  ox, oy, 0)
         else
-            gfx.Draw(img, drawX, drawY, 0)
+            gfx.Push()
+            gfx.Translate(tx, ty, 0)
+            if rot ~= 0 then gfx.Rotate(rot, 0, 0, 1) end
+            if sx ~= 1 or sy ~= 1 then gfx.Scale(sx, sy, 1) end
+            gfx.Draw(img, -ox, -oy, 0)
+            gfx.Pop()
         end
     end
-    gfx.Pop()
 end
 
 -- 绘制单个 sprite (在 Render() 中循环调用)
@@ -1143,6 +1165,11 @@ function ECSWorld:Render()
     end
     self._cull_stats_lit2d = {total = #litSprites, culled = litCulled,
                               drawn = #litSprites - litCulled}
+
+    -- Phase E.2.3: LitSprite 循环结束后立即 Flush LitBatch
+    -- (camera pop 前 Lit shader uniform 还有效; 之后切回普通 sprite 会触发自动 Flush, 但显式
+    --  调一次保证 EndFrame 前 batch 干净, 也方便高级用户混用 Lit/普通 sprite)
+    if type(gfx.FlushLitBatch) == 'function' then gfx.FlushLitBatch() end
 
     -- Phase D.x.6: SpriteBatch 渲染 (在 sprite 之后, 共享 camera transform)
     for _, e in ipairs(self._entities) do

@@ -25,6 +25,7 @@
 #include "light_antidebug.h"
 #include "render_backend.h"
 #include "batch_renderer.h"
+#include "lit_batch_renderer.h"  // Phase E.2.3 — 2D Lit 批渲染器
 #include "light_audio_backend.h"
 #include "light_platform_net.h"
 #include "platform_window.h"
@@ -487,6 +488,10 @@ static int l_Window_Open(lua_State* L) {
     if (!BatchRenderer::Init(g_render)) {
         CC::Log(CC::LOG_WARN, "BatchRenderer init failed, falling back to per-call rendering");
     }
+    // Phase E.2.3: 初始化 LitBatchRenderer (2D Lit 批渲染, 独立于 BatchRenderer)
+    if (!LitBatchRenderer::Init(g_render)) {
+        CC::Log(CC::LOG_WARN, "LitBatchRenderer init failed, lit sprites fall back to per-call rendering");
+    }
 
     // 初始化音频后端
     if (!AudioBackend::Init()) {
@@ -630,7 +635,8 @@ static int l_Window_Call(lua_State* L) {
     if (g_render) {
         g_render->BeginFrame(0, 0, 0, 1);
     }
-    if (BatchRenderer::IsInited()) BatchRenderer::BeginFrame();
+    if (BatchRenderer::IsInited())    BatchRenderer::BeginFrame();
+    if (LitBatchRenderer::IsInited()) LitBatchRenderer::BeginFrame();
 
     // Draw 回调
     lua_getfield(L, 1, "Draw");
@@ -658,7 +664,10 @@ static int l_Window_Call(lua_State* L) {
     }
 
     // 结束帧 + 交换缓冲区
-    if (BatchRenderer::IsInited()) BatchRenderer::EndFrame();
+    // 顺序: Lit 批先 EndFrame (依赖 BatchRenderer 不破坏 Lit shader state),
+    //       详见 light_graphics.cpp::l_DrawLit 中的双向 Flush 需求.
+    if (LitBatchRenderer::IsInited()) LitBatchRenderer::EndFrame();
+    if (BatchRenderer::IsInited())    BatchRenderer::EndFrame();
     if (g_render) g_render->EndFrame();
     PlatformWindow::SwapBuffers(g_mainWindow);
 
@@ -701,6 +710,7 @@ static int l_UI_Resume(lua_State* L) {
             }
             PlatformNet::Shutdown();
             AudioBackend::Shutdown();
+            LitBatchRenderer::Shutdown();
             BatchRenderer::Shutdown();
             if (g_render) {
                 g_render->Shutdown();
