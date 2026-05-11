@@ -665,14 +665,38 @@ function ECSWorld:_FrustumCull2D(cam2d_entity)
     }
 end
 
--- Phase D.x.5.2: 检查 sprite world AABB 是否与 bounds 相交
--- 安全策略: 难计算的情况 (parent / rotation) 都返回 true (不 cull)
-function ECSWorld:_SpriteInBounds(tf, s, bounds)
-    -- 含 parent: world 位置依赖 parent chain, 难直接算
-    if tf.parent then return true end
-    -- 有旋转: rotated AABB 比静态 AABB 大, 简化跳过 cull
-    if (tf.rot or 0) ~= 0 then return true end
-    -- 估算 sprite 大小 (优先 quad, 否则 image GetWidth/Height, 默认 64)
+-- Phase D.x.5.3: 计算 sprite 的 world AABB (含 parent chain translation + scale)
+-- 返回 nil 表示难计算 (self/parent 有 rotation), 调用方应不 cull (安全 fallback)
+function ECSWorld:_GetSpriteWorldAABB(tf, s)
+    -- self rotation: rotated AABB 计算复杂, fallback
+    if (tf.rot or 0) ~= 0 then return nil end
+    -- 累加 parent chain: world_pos = parent.scale * self.pos + parent.pos
+    local wx = tf.x or 0
+    local wy = tf.y or 0
+    local wsx = math.abs(tf.sx or 1)
+    local wsy = math.abs(tf.sy or 1)
+    if tf.parent then
+        local visited = {}
+        local cur = tf.parent
+        local depth = 0
+        while cur and not visited[cur] and depth < 32 do
+            visited[cur] = true
+            local ptf = cur._comps and cur._comps.Transform2D
+            if not ptf then break end
+            -- parent rotation: rotated AABB 复杂, fallback
+            if (ptf.rot or 0) ~= 0 then return nil end
+            local psx = math.abs(ptf.sx or 1)
+            local psy = math.abs(ptf.sy or 1)
+            -- world 累加: scale 自下而上 multiply, translate 自下而上 add
+            wx = wx * psx + (ptf.x or 0)
+            wy = wy * psy + (ptf.y or 0)
+            wsx = wsx * psx
+            wsy = wsy * psy
+            cur = ptf.parent
+            depth = depth + 1
+        end
+    end
+    -- 估算 sprite 内在大小 (优先 quad, 否则 image GetWidth/Height, 默认 64)
     local iw, ih = 64, 64
     local img = s.image
     if type(img) == 'table' then
@@ -684,22 +708,25 @@ function ECSWorld:_SpriteInBounds(tf, s, bounds)
         iw = q.qw
         ih = q.qh or q.qw
     end
-    local sx = math.abs(tf.sx or 1)
-    local sy = math.abs(tf.sy or 1)
-    local pw = iw * sx
-    local ph = ih * sy
+    -- 累加 scale 后的世界大小
+    local pw = iw * wsx
+    local ph = ih * wsy
     local anc = s.anchor or {}
     local ax = anc.ax or 0
     local ay = anc.ay or 0
-    local x = tf.x or 0
-    local y = tf.y or 0
-    local sxmin = x - ax * pw
-    local symin = y - ay * ph
-    local sxmax = sxmin + pw
-    local symax = symin + ph
-    -- AABB 不相交即 cull
-    return not (sxmax < bounds.minX or sxmin > bounds.maxX or
-                symax < bounds.minY or symin > bounds.maxY)
+    return {
+        minX = wx - ax * pw, maxX = wx - ax * pw + pw,
+        minY = wy - ay * ph, maxY = wy - ay * ph + ph,
+    }
+end
+
+-- Phase D.x.5.2/5.3: 检查 sprite 是否在 viewport bounds 内 (parent-aware)
+function ECSWorld:_SpriteInBounds(tf, s, bounds)
+    local aabb = self:_GetSpriteWorldAABB(tf, s)
+    -- 难计算 (有 rotation) 时 fallback 不 cull (安全)
+    if not aabb then return true end
+    return not (aabb.maxX < bounds.minX or aabb.minX > bounds.maxX or
+                aabb.maxY < bounds.minY or aabb.minY > bounds.maxY)
 end
 
 )LUA" R"LUA(

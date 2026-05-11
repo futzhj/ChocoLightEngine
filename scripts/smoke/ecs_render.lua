@@ -547,6 +547,88 @@ do
 end
 
 -- ============================================================
+-- Phase D.x.5.3: parent-aware cull (child sprite world AABB)
+-- ============================================================
+do
+    local gfx, calls = makeMockGraphics()
+    installMockLight(gfx)
+    local w = World.new()
+    local img = makeMockImage(64, 64)
+
+    -- camera 视口: 800×600, world AABB (-400, -300) ~ (400, 300)
+    w:CreateEntity():Add('Transform2D', {x=0, y=0})
+                    :Add('Camera2D',    {active=true, viewportW=800, viewportH=600, zoom=1.0})
+
+    -- parent at (1000, 0), child self.x=0 → world (1000, 0), 视口右外, 应 cull
+    local parent_out = w:CreateEntity():Add('Transform2D', {x=1000, y=0})
+    w:CreateEntity():Add('Transform2D', {x=0, y=0, parent=parent_out})
+                    :Add('Sprite',      {image=img})
+
+    -- parent at (0, 0), child self.x=10 → world (10, 0), 视口内, 应渲染
+    local parent_in = w:CreateEntity():Add('Transform2D', {x=0, y=0})
+    w:CreateEntity():Add('Transform2D', {x=10, y=0, parent=parent_in})
+                    :Add('Sprite',      {image=img})
+
+    w:Render()
+
+    -- 2 sprite (child of parent), 1 cull (在 1000) + 1 draw (在 10)
+    eq(w._cull_stats_2d.total,  2, "Dx5.3: total = 2 child sprites")
+    eq(w._cull_stats_2d.culled, 1, "Dx5.3: 1 culled (parent at 1000)")
+    eq(w._cull_stats_2d.drawn,  1, "Dx5.3: 1 drawn (parent at 0)")
+    pass("Dx5.3: parent-aware cull works")
+end
+
+-- ============================================================
+-- Phase D.x.5.3: parent rotation triggers fallback (no cull)
+-- ============================================================
+do
+    local gfx, calls = makeMockGraphics()
+    installMockLight(gfx)
+    local w = World.new()
+    local img = makeMockImage(64, 64)
+
+    w:CreateEntity():Add('Transform2D', {x=0, y=0})
+                    :Add('Camera2D',    {active=true, viewportW=800, viewportH=600, zoom=1.0})
+
+    -- parent 有 rotation (rot=45) → child sprite 不 cull (安全 fallback)
+    local rotated_parent = w:CreateEntity():Add('Transform2D', {x=1000, y=0, rot=45})
+    w:CreateEntity():Add('Transform2D', {x=0, y=0, parent=rotated_parent})
+                    :Add('Sprite',      {image=img})
+
+    w:Render()
+
+    -- 含 rotation 的 parent → child sprite fallback 不 cull
+    eq(w._cull_stats_2d.total,  1, "Dx5.3-AC2: total = 1")
+    eq(w._cull_stats_2d.culled, 0, "Dx5.3-AC2: parent rotation → fallback (no cull)")
+    eq(w._cull_stats_2d.drawn,  1, "Dx5.3-AC2: still drawn (safe fallback)")
+    pass("Dx5.3-AC2: parent rotation triggers safe fallback")
+end
+
+-- ============================================================
+-- Phase D.x.5.3: parent scale 累加正确
+-- ============================================================
+do
+    local gfx, calls = makeMockGraphics()
+    installMockLight(gfx)
+    local w = World.new()
+    local img = makeMockImage(64, 64)
+
+    -- viewport 800×600 → AABB (-400, -300) ~ (400, 300)
+    w:CreateEntity():Add('Transform2D', {x=0, y=0})
+                    :Add('Camera2D',    {active=true, viewportW=800, viewportH=600, zoom=1.0})
+
+    -- parent sx=10 (放大 10×), child self.x=50 → world.x = 50 * 10 = 500 (视口外)
+    local parent_scaled = w:CreateEntity():Add('Transform2D', {x=0, y=0, sx=10, sy=10})
+    w:CreateEntity():Add('Transform2D', {x=50, y=0, parent=parent_scaled})
+                    :Add('Sprite',      {image=img})
+
+    w:Render()
+
+    eq(w._cull_stats_2d.culled, 1, "Dx5.3-AC3: parent scale 10x → child at world 500 culled")
+    pass("Dx5.3-AC3: parent scale accumulated correctly")
+end
+
+-- ============================================================
 -- Phase D.x.6: SpriteBatch 渲染 (共享 Push/Pop/SetColor)
 -- ============================================================
 do
