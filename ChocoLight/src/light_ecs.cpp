@@ -355,10 +355,13 @@ int luaopen_Light_ECS(lua_State* L) {
     }
     // 此时栈顶 = module table
 
-    // 把 module table 挂到 Light.ECS
+    // 把 module table 挂到 Light.ECS.
+    // 注意: 必须用 lua_rawset 绕过 Light OOP framework metatable 的 __newindex,
+    // 否则触发 fallback("object is a static module"). 参考 light_animation.cpp 注释.
     lua_getfield(L, LUA_REGISTRYINDEX, "Light");  // [..., module, Light]
-    lua_pushvalue(L, -2);                          // [..., module, Light, module]
-    lua_setfield(L, -2, "ECS");                    // Light.ECS = module; [..., module, Light]
+    lua_pushstring(L, "ECS");                      // [..., module, Light, "ECS"]
+    lua_pushvalue(L, -3);                          // [..., module, Light, "ECS", module]
+    lua_rawset(L, -3);                              // Light.ECS = module (rawset 绕过 metatable)
     lua_pop(L, 1);                                  // pop Light; [..., module]
 
     return 1;  // 返回 module table 给 require
