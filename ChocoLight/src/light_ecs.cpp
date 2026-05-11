@@ -134,6 +134,10 @@ function ECSWorld:CreateEntity()
         if world._networked_comps[compName] then
             _markDirtyComp(world, self._id, compName)
         end
+        -- Phase D.x.5.1: sprite 相关 component 增减触发 sprite list invalidate
+        if compName == 'Sprite' or compName == 'Transform2D' then
+            world._sprite_list_dirty = true
+        end
         return self
     end
 
@@ -145,6 +149,10 @@ function ECSWorld:CreateEntity()
         end
         self._comps[compName] = nil
         self[compName] = nil
+        -- Phase D.x.5.1: sprite 相关 component 移除触发 sprite list invalidate
+        if compName == 'Sprite' or compName == 'Transform2D' then
+            world._sprite_list_dirty = true
+        end
         return self
     end
 
@@ -160,6 +168,10 @@ function ECSWorld:CreateEntity()
         end
         if self._world._networked_comps[compName] then
             _markDirtyComp(self._world, self._id, compName)
+        end
+        -- Phase D.x.5.1: Set 改 sprite 相关字段时自动 invalidate sprite list
+        if compName == 'Sprite' or compName == 'Transform2D' then
+            self._world._sprite_list_dirty = true
         end
         return self
     end
@@ -184,6 +196,10 @@ function ECSWorld:DestroyEntity(entity)
             -- Phase C: 标记销毁, 下次 sync 通过 entities 全量替换自然清除
             self._destroyed_ids[entity._id] = true
             self._has_changes = true
+            -- Phase D.x.5.1: 若被销毁 entity 有 sprite, invalidate cache
+            if e._comps.Sprite or e._comps.Transform2D then
+                self._sprite_list_dirty = true
+            end
             table.remove(self._entities, i)
             return
         end
@@ -592,7 +608,15 @@ function ECSWorld:_FindActiveCamera(camComp, tfComp)
 end
 
 -- 收集所有可见 sprite, 按 Transform2D.z 升序 (画家算法)
+-- Phase D.x.5.1: 加 cache. 失效条件:
+--   1. entity 数量变化 (CreateEntity/DestroyEntity 自动触发)
+--   2. _sprite_list_dirty 标志 true (用户 MarkSpriteListDirty 触发)
 function ECSWorld:_CollectSprites()
+    local n = #self._entities
+    if self._sprite_cache and not self._sprite_list_dirty
+       and self._sprite_cache_n == n then
+        return self._sprite_cache
+    end
     local list = {}
     for _, e in ipairs(self._entities) do
         local tf = e._comps.Transform2D
@@ -603,7 +627,15 @@ function ECSWorld:_CollectSprites()
     end
     -- 稳定排序 (Lua table.sort 非稳定, 但 z 不同时无歧义)
     table.sort(list, function(a, b) return a._z < b._z end)
+    self._sprite_cache = list
+    self._sprite_cache_n = n
+    self._sprite_list_dirty = false
     return list
+end
+
+-- Phase D.x.5.1: 用户改 sprite z / visible / parent 后调用, 强制下次 Render 重建 list
+function ECSWorld:MarkSpriteListDirty()
+    self._sprite_list_dirty = true
 end
 
 -- Phase D.x.1: Push parent transform chain (不含 self), 返回 push 次数

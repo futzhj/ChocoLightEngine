@@ -484,6 +484,45 @@ do
 end
 
 -- ============================================================
+-- Phase D.x.5.1: _CollectSprites cache 行为
+-- ============================================================
+do
+    local gfx, calls = makeMockGraphics()
+    installMockLight(gfx)
+    local w = World.new()
+    local img = makeMockImage(32, 32)
+    w:CreateEntity():Add('Transform2D', {x=0, y=0}):Add('Sprite', {image=img})
+    w:CreateEntity():Add('Transform2D', {x=10, y=0}):Add('Sprite', {image=img})
+
+    -- 第一次: 构建 cache
+    local list1 = w:_CollectSprites()
+    eq(#list1, 2, "Dx5.1: first call collects 2 sprites")
+
+    -- 第二次: cache 命中, 应返回同一 table 引用
+    local list2 = w:_CollectSprites()
+    if list1 ~= list2 then fail("Dx5.1: cache hit should return same table reference") end
+    pass("Dx5.1: cache hit returns same reference (no rebuild)")
+
+    -- 用户改 z, 必须显式 invalidate
+    list1[1].entity._comps.Transform2D.z = 999
+    -- 不调 MarkSpriteListDirty: cache 仍 hit (stale)
+    local list3 = w:_CollectSprites()
+    if list3 ~= list1 then fail("Dx5.1: without MarkSpriteListDirty cache should still hit") end
+
+    -- 显式 invalidate
+    w:MarkSpriteListDirty()
+    local list4 = w:_CollectSprites()
+    if list4 == list1 then fail("Dx5.1: after MarkSpriteListDirty cache should rebuild") end
+    pass("Dx5.1: MarkSpriteListDirty triggers rebuild")
+
+    -- entity:Add('Sprite') 自动 invalidate
+    w:CreateEntity():Add('Transform2D', {}):Add('Sprite', {image=img})
+    local list5 = w:_CollectSprites()
+    eq(#list5, 3, "Dx5.1: auto-invalidate after entity:Add(Sprite)")
+    pass("Dx5.1: auto-invalidate on Sprite Add")
+end
+
+-- ============================================================
 -- Phase D.x.1: 循环引用保护 (max 32 depth)
 -- ============================================================
 do
