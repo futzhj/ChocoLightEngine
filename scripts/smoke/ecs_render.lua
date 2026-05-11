@@ -484,6 +484,55 @@ do
 end
 
 -- ============================================================
+-- Phase D.x.6: SpriteBatch 渲染 (共享 Push/Pop/SetColor)
+-- ============================================================
+do
+    local gfx, calls = makeMockGraphics()
+    installMockLight(gfx)
+    local w = World.new()
+    local atlas = makeMockImage(256, 256)
+
+    -- 单 SpriteBatch entity, 3 个 quad
+    w:CreateEntity():Add('Transform2D', {x=100, y=200})
+                    :Add('SpriteBatch', {
+                        image = atlas,
+                        color = {r=0.5, g=1, b=0.5, a=1},
+                        quads = {
+                            {x=0,  y=0,  qx=0,   qy=0,   qw=32, qh=32},
+                            {x=32, y=0,  qx=32,  qy=0,   qw=32, qh=32},
+                            {x=64, y=0,  qx=64,  qy=0,   qw=32, qh=32},
+                        }
+                    })
+
+    w:Render()
+
+    -- 1 个 batch entity → 1 Push + 1 Pop (单纯 batch, 无 sprite, 无 cam)
+    eq(countFn(calls, "Push"), 1, "Dx6: SpriteBatch uses 1 Push (shared)")
+    eq(countFn(calls, "Pop"),  1, "Dx6: SpriteBatch uses 1 Pop")
+    -- 仅 1 次 SetColor (vs 3 次)
+    eq(countFn(calls, "SetColor"), 1, "Dx6: SpriteBatch shares SetColor")
+    -- 3 个 quad → 3 次 DrawQuad
+    eq(countFn(calls, "DrawQuad"), 3, "Dx6: 3 quads = 3 DrawQuad calls")
+    pass("Dx6: SpriteBatch saves N-1 Push/Pop and SetColor")
+
+    -- Translate 是 Transform2D 一次
+    local t1 = nthCall(calls, "Translate", 1)
+    eq(t1.args[1], 100, "Dx6: Translate uses Transform2D.x=100")
+    eq(t1.args[2], 200, "Dx6: Translate uses Transform2D.y=200")
+
+    -- DrawQuad 参数携带 quad 数据
+    local d1 = nthCall(calls, "DrawQuad", 1)
+    eq(d1.args[1], atlas, "Dx6: DrawQuad 1 uses atlas image")
+    eq(d1.args[2], 0,     "Dx6: DrawQuad 1 x=0")
+    eq(d1.args[3], 0,     "Dx6: DrawQuad 1 y=0")
+    eq(d1.args[5], 0,     "Dx6: DrawQuad 1 qx=0")
+    local d3 = nthCall(calls, "DrawQuad", 3)
+    eq(d3.args[2], 64,    "Dx6: DrawQuad 3 x=64")
+    eq(d3.args[5], 64,    "Dx6: DrawQuad 3 qx=64")
+    pass("Dx6: DrawQuad arguments propagate from quad list")
+end
+
+-- ============================================================
 -- Phase D.x.5.1: _CollectSprites cache 行为
 -- ============================================================
 do

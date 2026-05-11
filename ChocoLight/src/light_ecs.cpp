@@ -545,6 +545,10 @@ function ECSWorld:_RegisterBuiltinRenderComponents()
         {name='Transform2D',  defaults={x=0, y=0, z=0, rot=0, sx=1, sy=1, ox=0, oy=0, parent=nil}},
         {name='Sprite',       defaults={color={r=1,g=1,b=1,a=1}, visible=true,
                                          anchor={ax=0, ay=0}, flipX=false, flipY=false}},
+        -- Phase D.x.6: SpriteBatch (共享 image + color + transform 的批量 quad 容器)
+        -- quads = {{x=, y=, qx=, qy=, qw=, qh=}, ...}; 每个 quad 1 个 DrawQuad 调用
+        -- 节省: 全局共享 Push/Pop + SetColor (vs N 次)
+        {name='SpriteBatch',  defaults={image=nil, quads={}, color={r=1,g=1,b=1,a=1}, visible=true}},
         {name='Camera2D',     defaults={active=true, zoom=1.0, viewportW=0, viewportH=0}},
         {name='Transform3D',  defaults={x=0, y=0, z=0, rx=0, ry=0, rz=0, sx=1, sy=1, sz=1, parent=nil}},
         {name='MeshRenderer', defaults={visible=true}},
@@ -695,6 +699,29 @@ function ECSWorld:_PushParentChain3D(entity, gfx)
     return #chain
 end
 
+-- Phase D.x.6: 绘制 SpriteBatch (共享 image + transform + color 的 quad 列表)
+-- 节省: 全局 1 次 Push/Pop + 1 次 SetColor (vs N 次)
+function ECSWorld:_DrawSpriteBatch(tf, batch, gfx)
+    if not batch.image or not batch.quads then return end
+    gfx.Push()
+    gfx.Translate(tf.x or 0, tf.y or 0, 0)
+    if (tf.rot or 0) ~= 0 then gfx.Rotate(tf.rot, 0, 0, 1) end
+    local sx, sy = tf.sx or 1, tf.sy or 1
+    if sx ~= 1 or sy ~= 1 then gfx.Scale(sx, sy, 1) end
+    local col = batch.color or {}
+    gfx.SetColor(col.r or 1, col.g or 1, col.b or 1, col.a or 1)
+    for i = 1, #batch.quads do
+        local q = batch.quads[i]
+        if q.qw and q.qw > 0 then
+            gfx.DrawQuad(batch.image, q.x or 0, q.y or 0, 0,
+                         q.qx or 0, q.qy or 0, q.qw, q.qh or q.qw)
+        else
+            gfx.Draw(batch.image, q.x or 0, q.y or 0, 0)
+        end
+    end
+    gfx.Pop()
+end
+
 -- 绘制单个 sprite (在 Render() 中循环调用)
 function ECSWorld:_DrawSprite(tf, s, gfx)
     gfx.Push()
@@ -789,6 +816,17 @@ function ECSWorld:Render()
         local pushCount = self:_PushParentChain2D(item.entity, gfx)
         self:_DrawSprite(item.tf, item.sprite, gfx)
         for k = 1, pushCount do gfx.Pop() end
+    end
+
+    -- Phase D.x.6: SpriteBatch 渲染 (在 sprite 之后, 共享 camera transform)
+    for _, e in ipairs(self._entities) do
+        local tf = e._comps.Transform2D
+        local sb = e._comps.SpriteBatch
+        if tf and sb and sb.visible ~= false and sb.image and sb.quads and #sb.quads > 0 then
+            local pushCount = self:_PushParentChain2D(e, gfx)
+            self:_DrawSpriteBatch(tf, sb, gfx)
+            for k = 1, pushCount do gfx.Pop() end
+        end
     end
 
     if cam2d then gfx.Pop() end
