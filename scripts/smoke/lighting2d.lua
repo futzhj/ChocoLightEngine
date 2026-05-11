@@ -232,6 +232,100 @@ else
 end
 
 -- ============================================================
+-- 15) Phase E.1.6 — ECS Light2D + LitSprite 集成
+-- ============================================================
+-- 通过 _UploadLights2D 内部方法直接测试 (不依赖完整 Render 流程):
+--   - Light2D component 默认值 + 注册
+--   - LitSprite component 默认值 + 注册
+--   - _UploadLights2D 把 Light2D entity 转成 Lighting2D state
+--   - parent chain world pos 累加
+--   - enabled=false 跳过
+--   - Point / Spot type 切换
+
+local ok_ecs, ECS = pcall(require, "Light.ECS")
+-- ECS.World 是 table 含 .new 字段 (调用方用 World.new() 而非 World:new())
+if ok_ecs and type(ECS) == "table" and type(ECS.World) == "table" and type(ECS.World.new) == "function" then
+    local World = ECS.World
+
+    -- 15.1: Light2D / LitSprite component 自动注册
+    local w = World.new()
+    assert(w._components.Light2D,   "Light2D should be registered as builtin")
+    assert(w._components.LitSprite, "LitSprite should be registered as builtin")
+    assert(w._builtin_render_comps.Light2D, "Light2D builtin marker missing")
+    assert(w._builtin_render_comps.LitSprite, "LitSprite builtin marker missing")
+    assert(w._builtin_no_network and w._builtin_no_network.LitSprite,
+           "LitSprite must be marked no_network (image/normalMap is userdata)")
+    pass("ECS: Light2D + LitSprite builtin components registered")
+
+    -- 15.2: 直接调 _UploadLights2D 测试 world->view 转换 + AddLight
+    mod.ClearLights()
+    local pt = w:CreateEntity()
+    pt:Add("Transform2D", {x=100, y=200})
+    pt:Add("Light2D",     {type=1, range=300, intensity=1.5,
+                            color={r=1, g=0.5, b=0}})
+    w:_UploadLights2D(nil)  -- 无 camera, 直接 world == view
+    assert(mod.GetLightCount() == 1, "After 1 point Light2D, count=1, got " .. mod.GetLightCount())
+    pass("ECS: _UploadLights2D adds 1 point light (count=1)")
+
+    -- 15.3: Spot light type=2
+    local sp = w:CreateEntity()
+    sp:Add("Transform2D", {x=50, y=50})
+    sp:Add("Light2D",     {type=2, dirX=0, dirY=1,
+                            innerAngle=10, outerAngle=25,
+                            color={r=0, g=1, b=0}, range=400})
+    w:_UploadLights2D(nil)
+    assert(mod.GetLightCount() == 2, "After Spot Light2D, count=2, got " .. mod.GetLightCount())
+    pass("ECS: _UploadLights2D adds 1 spot light (count=2)")
+
+    -- 15.4: enabled=false 跳过
+    local off = w:CreateEntity()
+    off:Add("Transform2D", {x=0, y=0})
+    off:Add("Light2D",     {enabled=false, type=1})
+    w:_UploadLights2D(nil)
+    assert(mod.GetLightCount() == 2, "Light2D enabled=false should be skipped, got " .. mod.GetLightCount())
+    pass("ECS: Light2D enabled=false skipped (count still 2)")
+
+    -- 15.5: parent chain world pos
+    local parent = w:CreateEntity():Add("Transform2D", {x=500, y=600})
+    local child = w:CreateEntity()
+    child:Add("Transform2D", {x=10, y=20, parent=parent})
+    child:Add("Light2D",     {type=1, range=100})
+    w:_UploadLights2D(nil)
+    assert(mod.GetLightCount() == 3, "Child light should be added (count=3)")
+    pass("ECS: child Light2D under parent transform added (count=3)")
+
+    -- 15.6: camera view space 转换 (zoom + translate)
+    mod.ClearLights()
+    local w2 = World.new()
+    local cam = w2:CreateEntity()
+    cam:Add("Transform2D", {x=100, y=200})
+    cam:Add("Camera2D",    {active=true, zoom=2.0})
+
+    local pt2 = w2:CreateEntity()
+    pt2:Add("Transform2D", {x=150, y=250})  -- world (150, 250), camera (100, 200), zoom=2
+    pt2:Add("Light2D",     {type=1, range=100})
+    -- 期望: view_x = (150-100)*2 = 100, view_y = (250-200)*2 = 100, range=100*2=200
+    w2:_UploadLights2D(cam)
+    assert(mod.GetLightCount() == 1, "Camera view-space upload count=1")
+    pass("ECS: camera view-space transform applied (count=1)")
+
+    -- 15.7: LitSprite default fields
+    local ls = w2:CreateEntity()
+    ls:Add("Transform2D", {x=300, y=300})
+    ls:Add("LitSprite",   {image=nil})
+    local comp = ls._comps.LitSprite
+    assert(comp.normalMap == nil,  "LitSprite default normalMap == nil")
+    assert(comp.visible == true,   "LitSprite default visible == true")
+    assert(type(comp.color) == "table" and comp.color.r == 1, "LitSprite default color.r = 1")
+    pass("ECS: LitSprite default fields correct")
+
+    -- cleanup
+    mod.ClearLights()
+else
+    print("SKIP: Light.ECS not available, ECS integration tests skipped")
+end
+
+-- ============================================================
 -- Final cleanup
 -- ============================================================
 

@@ -563,6 +563,17 @@ function ECSWorld:_RegisterBuiltinRenderComponents()
         -- Phase D.x.4: 动画状态 (state/speed/paused/params/morphWeights 可同步)
         {name='AnimationState', defaults={state='', speed=1.0, paused=false, time=0,
                                            crossfade=0, looping=true, params={}, morphWeights={}}},
+        -- Phase E.1.6: 2D Lit 多灯 system
+        -- Light2D: type=1 Point / type=2 Spot (与 Light.Lighting2D.TYPE_POINT / TYPE_SPOT 一致)
+        -- innerAngle/outerAngle 单位"度" (Lua API 调用时内部转 cos)
+        {name='Light2D', defaults={enabled=true, type=1,
+                                    color={r=1, g=1, b=1}, range=200, intensity=1,
+                                    dirX=1, dirY=0, innerAngle=20, outerAngle=35}},
+        -- LitSprite: 与 Sprite 字段并行 + normalMap 可选; quad 支持 sprite sheet 裁切
+        {name='LitSprite', defaults={image=nil, normalMap=nil,
+                                      color={r=1, g=1, b=1, a=1}, visible=true,
+                                      anchor={ax=0, ay=0}, flipX=false, flipY=false,
+                                      quad=nil}},
     }
     for _, c in ipairs(builtins) do
         if not self._components[c.name] then
@@ -573,6 +584,8 @@ function ECSWorld:_RegisterBuiltinRenderComponents()
     -- Phase D.x.4: 标记不可序列化的内置 component (含 userdata 字段)
     self._builtin_no_network = self._builtin_no_network or {}
     self._builtin_no_network['SkinnedMeshRenderer'] = true
+    -- Phase E.1.6: LitSprite 含 image/normalMap userdata, 不可 JSON 序列化
+    self._builtin_no_network['LitSprite'] = true
 end
 
 -- 把内置渲染 component 重标 networked=true. 必须在 NetworkSync 前调用.
@@ -822,6 +835,164 @@ function ECSWorld:_DrawSpriteBatch(tf, batch, gfx)
     gfx.Pop()
 end
 
+)LUA" R"LUA(
+-- ============ Phase E.1.6: ECS Light2D + LitSprite 集成 ============
+--
+-- 设计决策:
+--   - 灯坐标与 sprite 渲染 vertex 同一空间 (camera view space):
+--       view_x = (light_world_x - cam_x) * zoom
+--     原因: shader 里 vWorldPos = uModel * aPos, ECS 在 cam2d push 后 modelview
+--     包含 camera translate + zoom, 所以 vWorldPos 是 view space.
+--     light pos 也必须 view space 才能与 vWorldPos 作減法一致.
+--   - range 也乘以 zoom (高 zoom 下 sprite 变大, 灯范围也要同比例放大)
+--   - 每帧 ClearLights + 重新 Add (简单可靠, 16 灯 * 6 行 Lua   < 100 个 Lua call)
+--   - LitSprite 不参与 BatchRenderer (与 DrawLit2DQuad C++ 设计一致)
+--   - cull 复用 _GetSpriteWorldAABB / _SpriteInBounds (LitSprite 与 Sprite 同构)
+
+-- 计算 entity 在 world 坐标的 (x, y); parent chain visited 表 + 32 层防环
+-- 与 _GetSpriteWorldAABB 里的 wx/wy 累加逻辑完全一致 (简化版: 不返 scale/size)
+function ECSWorld:_GetWorldPos2D(tf)
+    local wx = tf.x or 0
+    local wy = tf.y or 0
+    if tf.parent then
+        local visited = {}
+        local cur = tf.parent
+        local depth = 0
+        while cur and not visited[cur] and depth < 32 do
+            visited[cur] = true
+            local ptf = cur._comps and cur._comps.Transform2D
+            if not ptf then break end
+            local psx = math.abs(ptf.sx or 1)
+            local psy = math.abs(ptf.sy or 1)
+            wx = wx * psx + (ptf.x or 0)
+            wy = wy * psy + (ptf.y or 0)
+            cur = ptf.parent
+            depth = depth + 1
+        end
+    end
+    return wx, wy
+end
+
+-- 扫描所有 Light2D entity, 转换到 camera view space 后调 Light.Lighting2D API
+-- 调用时机: Render() 2D 阶段 camera push 后, sprite 循环之前
+--
+-- 模块解析: Lumen 的 L->Require(name, proc) 只挂到 package.loaded[name],
+-- 不会自动注入到 _G.Light.XXX 子字段, 所以这里必须主动 require + cache.
+function ECSWorld:_UploadLights2D(cam2d)
+    -- cache module table on world (避免每帧 require 查 package.loaded 哈希)
+    if self._L2D_cache == nil then
+        local ok, m = pcall(require, 'Light.Lighting2D')
+        self._L2D_cache = (ok and type(m) == 'table') and m or false
+    end
+    local L2D = self._L2D_cache
+    if not L2D or type(L2D.ClearLights) ~= 'function' then return end
+
+    -- 取 camera 变换 (与 Render() 中 gfx.Translate/gfx.Scale 完全对齐)
+    local cx, cy, zoom = 0, 0, 1.0
+    if cam2d then
+        local ctf = cam2d._comps.Transform2D
+        local cc  = cam2d._comps.Camera2D
+        if ctf then cx = ctf.x or 0; cy = ctf.y or 0 end
+        if cc  then zoom = cc.zoom or 1.0 end
+    end
+
+    L2D.ClearLights()
+    for _, e in ipairs(self._entities) do
+        local tf = e._comps.Transform2D
+        local lt = e._comps.Light2D
+        if tf and lt and lt.enabled ~= false then
+            local wx, wy = self:_GetWorldPos2D(tf)
+            -- world -> view space (与 sprite shader 内 vWorldPos 一致)
+            local vx, vy = (wx - cx) * zoom, (wy - cy) * zoom
+            local col = lt.color or {}
+            local t = lt.type or 1
+            if t == 2 then
+                L2D.AddSpotLight{
+                    x = vx, y = vy,
+                    dirX = lt.dirX or 1, dirY = lt.dirY or 0,
+                    color = {r = col.r or 1, g = col.g or 1, b = col.b or 1},
+                    range = (lt.range or 200) * zoom,
+                    intensity = lt.intensity or 1,
+                    innerAngle = lt.innerAngle or 20,
+                    outerAngle = lt.outerAngle or 35,
+                }
+            else
+                L2D.AddPointLight{
+                    x = vx, y = vy,
+                    color = {r = col.r or 1, g = col.g or 1, b = col.b or 1},
+                    range = (lt.range or 200) * zoom,
+                    intensity = lt.intensity or 1,
+                }
+            end
+        end
+    end
+end
+
+-- 收集所有可见 LitSprite, 按 Transform2D.z 升序 (画家算法)
+-- 简化版: 不加 cache (LitSprite 通常 < 50 个, 每帧扫描 O(n) 可接受)
+function ECSWorld:_CollectLitSprites()
+    local list = {}
+    for _, e in ipairs(self._entities) do
+        local tf = e._comps.Transform2D
+        local ls = e._comps.LitSprite
+        if tf and ls and ls.visible ~= false and ls.image then
+            list[#list + 1] = {entity = e, tf = tf, sprite = ls, _z = tf.z or 0}
+        end
+    end
+    table.sort(list, function(a, b) return a._z < b._z end)
+    return list
+end
+
+-- 绘制单个 LitSprite (与 _DrawSprite 平行, 走 gfx.DrawLit / DrawLitQuad)
+-- 后端不支持 DrawLit (Legacy GL / no Lit2D) 时静默 fallback 到 gfx.Draw
+function ECSWorld:_DrawLitSprite(tf, ls, gfx)
+    local hasLit = (type(gfx.DrawLit) == 'function')
+    gfx.Push()
+    gfx.Translate(tf.x or 0, tf.y or 0, 0)
+    if (tf.rot or 0) ~= 0 then gfx.Rotate(tf.rot, 0, 0, 1) end
+    local sx = tf.sx or 1
+    local sy = tf.sy or 1
+    if ls.flipX then sx = -sx end
+    if ls.flipY then sy = -sy end
+    if sx ~= 1 or sy ~= 1 then gfx.Scale(sx, sy, 1) end
+
+    local col = ls.color or {}
+    gfx.SetColor(col.r or 1, col.g or 1, col.b or 1, col.a or 1)
+
+    -- 取图像尺寸 (与 _DrawSprite 一致)
+    local img = ls.image
+    local iw, ih = 64, 64
+    if type(img) == 'table' then
+        if type(img.GetWidth) == 'function' then iw = img:GetWidth() end
+        if type(img.GetHeight) == 'function' then ih = img:GetHeight() end
+    end
+
+    -- anchor 偏移
+    local anc = ls.anchor or {}
+    local ax = anc.ax or 0
+    local ay = anc.ay or 0
+    local drawX = -ax * iw
+    local drawY = -ay * ih
+
+    local q = ls.quad
+    if q and (q.qw and q.qw > 0) then
+        if hasLit and type(gfx.DrawLitQuad) == 'function' then
+            gfx.DrawLitQuad(img, ls.normalMap, drawX, drawY, 0,
+                            q.qx or 0, q.qy or 0, q.qw, q.qh or q.qw)
+        else
+            gfx.DrawQuad(img, drawX, drawY, 0,
+                         q.qx or 0, q.qy or 0, q.qw, q.qh or q.qw)
+        end
+    else
+        if hasLit then
+            gfx.DrawLit(img, ls.normalMap, drawX, drawY, 0)
+        else
+            gfx.Draw(img, drawX, drawY, 0)
+        end
+    end
+    gfx.Pop()
+end
+
 -- 绘制单个 sprite (在 Render() 中循环调用)
 function ECSWorld:_DrawSprite(tf, s, gfx)
     gfx.Push()
@@ -909,6 +1080,9 @@ function ECSWorld:Render()
         gfx.Translate(-(ctf.x or 0), -(ctf.y or 0), 0)
     end
 
+    -- Phase E.1.6: 上传 Light2D 状态 (在 sprite 渲染前, 以便 LitSprite 调用时 uniform 已就绪)
+    self:_UploadLights2D(cam2d)
+
     local sprites = self:_CollectSprites()
     -- Phase D.x.5.2: 计算 camera frustum, 跳过出场 sprite
     local bounds = self:_FrustumCull2D(cam2d)
@@ -925,6 +1099,23 @@ function ECSWorld:Render()
         end
     end
     self._cull_stats_2d = {total = #sprites, culled = culled, drawn = #sprites - culled}
+
+    -- Phase E.1.6: LitSprite 渲染 (在 sprite 之后, SpriteBatch 之前)
+    -- LitSprite 不走 BatchRenderer; 复用 cull 机制与 Sprite 一致
+    local litSprites = self:_CollectLitSprites()
+    local litCulled = 0
+    for i = 1, #litSprites do
+        local item = litSprites[i]
+        if bounds and not self:_SpriteInBounds(item.tf, item.sprite, bounds) then
+            litCulled = litCulled + 1
+        else
+            local pushCount = self:_PushParentChain2D(item.entity, gfx)
+            self:_DrawLitSprite(item.tf, item.sprite, gfx)
+            for k = 1, pushCount do gfx.Pop() end
+        end
+    end
+    self._cull_stats_lit2d = {total = #litSprites, culled = litCulled,
+                              drawn = #litSprites - litCulled}
 
     -- Phase D.x.6: SpriteBatch 渲染 (在 sprite 之后, 共享 camera transform)
     for _, e in ipairs(self._entities) do
