@@ -1485,6 +1485,119 @@ static int l_DrawSprite(lua_State* L) {
     return 0;
 }
 
+// ==================== Phase E.3.3 — Light.Graphics.HDR Lua API ====================
+//
+// 子表 Light.Graphics.HDR 挂在 luaopen_Light_Graphics 注册时附加.
+//
+// API 设计:
+//   Enable(w, h) -> bool        创建 HDR RT (RGBA16F); 失败 false
+//   Disable()                   释放 HDR RT
+//   IsEnabled() -> bool         当前是否启用 HDR
+//   IsSupported() -> bool       后端是否支持 (GL33 = true, Legacy = false)
+//   Resize(w, h) -> bool        变更 HDR RT 尺寸 (内部 Disable + Enable)
+//   SetExposure(v)              线性曝光预乘 (默认 1.0)
+//   GetExposure() -> number
+//   SetGamma(v)                 sRGB encode gamma (默认 2.2)
+//   GetGamma() -> number
+//   GetSceneTexture() -> int    HDR RT 的 GL texture id (0 = 未启用)
+
+/// @lua_api Light.Graphics.HDR.Enable
+/// @brief 启用 HDR 离屏管线 (创建 RGBA16F RT)
+/// @param w number RT 宽度 (像素, > 0)
+/// @param h number RT 高度 (像素, > 0)
+/// @return boolean true 成功; false = 后端不支持 / 参数非法 / 资源创建失败
+static int l_HDR_Enable(lua_State* L) {
+    int w = (int)luaL_checkinteger(L, 1);
+    int h = (int)luaL_checkinteger(L, 2);
+    lua_pushboolean(L, HDRRenderer::Enable(w, h) ? 1 : 0);
+    return 1;
+}
+
+/// @lua_api Light.Graphics.HDR.Disable
+/// @brief 禁用 HDR 离屏管线 (释放 RT, 后续主循环走 LDR 路径)
+/// @return void
+static int l_HDR_Disable(lua_State* L) {
+    HDRRenderer::Disable();
+    return 0;
+}
+
+/// @lua_api Light.Graphics.HDR.IsEnabled
+/// @return boolean HDR 是否启用
+static int l_HDR_IsEnabled(lua_State* L) {
+    lua_pushboolean(L, HDRRenderer::IsEnabled() ? 1 : 0);
+    return 1;
+}
+
+/// @lua_api Light.Graphics.HDR.IsSupported
+/// @brief 查询后端是否支持 HDR (Enable 前可查)
+/// @return boolean GL33 = true, Legacy / 不支持 float RT 的后端 = false
+static int l_HDR_IsSupported(lua_State* L) {
+    lua_pushboolean(L, HDRRenderer::IsSupported() ? 1 : 0);
+    return 1;
+}
+
+/// @lua_api Light.Graphics.HDR.Resize
+/// @brief 变更 HDR RT 尺寸 (窗口 resize 时调用方主动调)
+/// @param w number
+/// @param h number
+/// @return boolean
+static int l_HDR_Resize(lua_State* L) {
+    int w = (int)luaL_checkinteger(L, 1);
+    int h = (int)luaL_checkinteger(L, 2);
+    lua_pushboolean(L, HDRRenderer::Resize(w, h) ? 1 : 0);
+    return 1;
+}
+
+/// @lua_api Light.Graphics.HDR.SetExposure
+/// @param v number 线性曝光倍率 (默认 1.0; < 1.0 = 暗; > 1.0 = 亮)
+static int l_HDR_SetExposure(lua_State* L) {
+    HDRRenderer::SetExposure((float)luaL_checknumber(L, 1));
+    return 0;
+}
+
+/// @lua_api Light.Graphics.HDR.GetExposure
+/// @return number
+static int l_HDR_GetExposure(lua_State* L) {
+    lua_pushnumber(L, (lua_Number)HDRRenderer::GetExposure());
+    return 1;
+}
+
+/// @lua_api Light.Graphics.HDR.SetGamma
+/// @param v number sRGB encode gamma (默认 2.2)
+static int l_HDR_SetGamma(lua_State* L) {
+    HDRRenderer::SetGamma((float)luaL_checknumber(L, 1));
+    return 0;
+}
+
+/// @lua_api Light.Graphics.HDR.GetGamma
+/// @return number
+static int l_HDR_GetGamma(lua_State* L) {
+    lua_pushnumber(L, (lua_Number)HDRRenderer::GetGamma());
+    return 1;
+}
+
+/// @lua_api Light.Graphics.HDR.GetSceneTexture
+/// @brief 高级用法: 获取 HDR RT 的 GL texture id (用于自定义 shader 采样)
+/// @return integer 0 = 未启用 / 非 GL33 后端
+static int l_HDR_GetSceneTexture(lua_State* L) {
+    lua_pushinteger(L, (lua_Integer)HDRRenderer::GetSceneTexture());
+    return 1;
+}
+
+static const luaL_Reg hdr_funcs[] = {
+    {"Enable",          l_HDR_Enable},
+    {"Disable",         l_HDR_Disable},
+    {"IsEnabled",       l_HDR_IsEnabled},
+    {"IsSupported",     l_HDR_IsSupported},
+    {"Resize",          l_HDR_Resize},
+    {"SetExposure",     l_HDR_SetExposure},
+    {"GetExposure",     l_HDR_GetExposure},
+    {"SetGamma",        l_HDR_SetGamma},
+    {"GetGamma",        l_HDR_GetGamma},
+    {"GetSceneTexture", l_HDR_GetSceneTexture},
+    {NULL, NULL}
+};
+
 static const luaL_Reg graphics_funcs[] = {
     // --- 绘图基元 ---
     {"Draw",              l_Draw},
@@ -1566,6 +1679,11 @@ int luaopen_Light_Graphics(lua_State* L) {
         // Drawable 空表 (供 OOP 使用)
         lua_createtable(L, 0, 0);
         lua_setfield(L, -2, "Drawable");
+
+        // Phase E.3.3 — HDR 子表 (Light.Graphics.HDR.*)
+        lua_createtable(L, 0, 0);
+        luaL_setfuncs(L, hdr_funcs, 0);
+        lua_setfield(L, -2, "HDR");
 
         lua_rawset(L, -3);
         lua_pushstring(L, "Graphics");
