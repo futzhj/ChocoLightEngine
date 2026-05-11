@@ -401,5 +401,70 @@ do
     pass("Compat: Phase C MirrorFromRoom preserved")
 end
 
+-- ============================================================
+-- Phase D.x.1: parent 层级 (递归 Push parent 变换)
+-- ============================================================
+do
+    local gfx, calls = makeMockGraphics()
+    installMockLight(gfx)
+
+    local w = World.new()
+    local img = makeMockImage(32, 32)
+
+    -- root: position (100, 200), 无 parent
+    local root = w:CreateEntity():Add('Transform2D', {x=100, y=200})
+                                  :Add('Sprite',      {image=img})
+
+    -- child: position (10, 20), parent=root
+    local child = w:CreateEntity():Add('Transform2D', {x=10, y=20, parent=root})
+                                   :Add('Sprite',      {image=img})
+
+    w:Render()
+
+    -- Push 次数:
+    --   root: 1 (self) + 0 (no parent) = 1
+    --   child: 1 (parent chain root) + 1 (self) = 2
+    --   合计 3
+    eq(countFn(calls, "Push"), 3, "Dx1: total Push = 3 (root self + child parent + child self)")
+    eq(countFn(calls, "Pop"),  3, "Dx1: Pop balances Push")
+    pass("Dx1: parent chain Push/Pop balance ok")
+
+    -- 第 1 个 Translate 应是 root self (100, 200)
+    local t1 = nthCall(calls, "Translate", 1)
+    eq(t1.args[1], 100, "Dx1: first Translate is root x=100")
+    eq(t1.args[2], 200, "Dx1: first Translate is root y=200")
+
+    -- 第 2 个 Translate 是 child's parent chain (root 再 Translate 一次), 也是 (100, 200)
+    local t2 = nthCall(calls, "Translate", 2)
+    eq(t2.args[1], 100, "Dx1: second Translate is parent (root again) x=100")
+    eq(t2.args[2], 200, "Dx1: second Translate is parent y=200")
+
+    -- 第 3 个 Translate 是 child self (10, 20)
+    local t3 = nthCall(calls, "Translate", 3)
+    eq(t3.args[1], 10, "Dx1: third Translate is child self x=10")
+    eq(t3.args[2], 20, "Dx1: third Translate is child self y=20")
+    pass("Dx1: child renders with parent chain applied")
+end
+
+-- ============================================================
+-- Phase D.x.1: 循环引用保护 (max 32 depth)
+-- ============================================================
+do
+    local gfx, calls = makeMockGraphics()
+    installMockLight(gfx)
+    local w = World.new()
+    local img = makeMockImage(32, 32)
+    -- 故意创造 a.parent = b, b.parent = a (循环)
+    local a = w:CreateEntity():Add('Transform2D', {})
+                               :Add('Sprite',      {image=img})
+    local b = w:CreateEntity():Add('Transform2D', {})
+    a._comps.Transform2D.parent = b
+    b._comps.Transform2D.parent = a
+    -- Render 不应崩 (visited set + depth limit)
+    local ok = pcall(function() w:Render() end)
+    if not ok then fail("Dx1: parent cycle should not crash Render") end
+    pass("Dx1: parent cycle protection ok")
+end
+
 print("")
 print("Phase D ECS render smoke: ALL PASS")

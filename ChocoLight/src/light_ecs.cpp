@@ -525,11 +525,12 @@ end
 -- 用户若已注册同名 component, 引擎跳过该项以尊重用户优先
 function ECSWorld:_RegisterBuiltinRenderComponents()
     local builtins = {
-        {name='Transform2D',  defaults={x=0, y=0, z=0, rot=0, sx=1, sy=1, ox=0, oy=0}},
+        -- Phase D.x.1: Transform2D/3D 加 parent 字段 (entity 引用) 支持层级
+        {name='Transform2D',  defaults={x=0, y=0, z=0, rot=0, sx=1, sy=1, ox=0, oy=0, parent=nil}},
         {name='Sprite',       defaults={color={r=1,g=1,b=1,a=1}, visible=true,
                                          anchor={ax=0, ay=0}, flipX=false, flipY=false}},
         {name='Camera2D',     defaults={active=true, zoom=1.0, viewportW=0, viewportH=0}},
-        {name='Transform3D',  defaults={x=0, y=0, z=0, rx=0, ry=0, rz=0, sx=1, sy=1, sz=1}},
+        {name='Transform3D',  defaults={x=0, y=0, z=0, rx=0, ry=0, rz=0, sx=1, sy=1, sz=1, parent=nil}},
         {name='MeshRenderer', defaults={visible=true}},
         {name='Camera3D',     defaults={active=true, fovY=60, aspect=1.333, nearZ=0.1, farZ=1000,
                                          targetX=0, targetY=0, targetZ=0,
@@ -603,6 +604,35 @@ function ECSWorld:_CollectSprites()
     -- 稳定排序 (Lua table.sort 非稳定, 但 z 不同时无歧义)
     table.sort(list, function(a, b) return a._z < b._z end)
     return list
+end
+
+-- Phase D.x.1: Push parent transform chain (不含 self), 返回 push 次数
+-- 调用方在 self draw 之后, 必须 Pop 返回的次数才能平衡 stack
+-- 循环引用保护: visited 表 + 32 层 max depth
+function ECSWorld:_PushParentChain2D(entity, gfx)
+    local tf = entity and entity._comps and entity._comps.Transform2D
+    if not tf or not tf.parent then return 0 end
+    -- 1. 从 leaf 向 root 收集 chain (跳过 self)
+    local chain = {}
+    local visited = {}
+    local cur = tf.parent
+    while cur and not visited[cur] and #chain < 32 do
+        visited[cur] = true
+        local ptf = cur._comps and cur._comps.Transform2D
+        if not ptf then break end
+        chain[#chain + 1] = ptf
+        cur = ptf.parent
+    end
+    -- 2. 反向 push (root 最外层, leaf 最内层)
+    for i = #chain, 1, -1 do
+        local ptf = chain[i]
+        gfx.Push()
+        gfx.Translate(ptf.x or 0, ptf.y or 0, 0)
+        if (ptf.rot or 0) ~= 0 then gfx.Rotate(ptf.rot, 0, 0, 1) end
+        local sx, sy = ptf.sx or 1, ptf.sy or 1
+        if sx ~= 1 or sy ~= 1 then gfx.Scale(sx, sy, 1) end
+    end
+    return #chain
 end
 
 -- 绘制单个 sprite (在 Render() 中循环调用)
@@ -694,7 +724,11 @@ function ECSWorld:Render()
 
     local sprites = self:_CollectSprites()
     for i = 1, #sprites do
-        self:_DrawSprite(sprites[i].tf, sprites[i].sprite, gfx)
+        local item = sprites[i]
+        -- Phase D.x.1: parent chain push (root → leaf 外侧), pop 平衡
+        local pushCount = self:_PushParentChain2D(item.entity, gfx)
+        self:_DrawSprite(item.tf, item.sprite, gfx)
+        for k = 1, pushCount do gfx.Pop() end
     end
 
     if cam2d then gfx.Pop() end
