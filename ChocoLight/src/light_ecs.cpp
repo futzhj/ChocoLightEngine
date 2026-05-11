@@ -220,6 +220,8 @@ function ECSWorld:Update(dt)
         local entities = self:Query(_unpack(sys.required))
         sys.func(entities, dt)
     end
+    -- Phase D.x.4: 内置动画系统 (auto animator:Update + AnimationState 字段桥接)
+    if self._AnimationSystem then self:_AnimationSystem(dt) end
     -- Phase C: 末尾自动同步 (若有 networked 变化且已绑 room)
     if self._sync_room and self._has_changes then
         self:_SyncToRoom()
@@ -532,6 +534,11 @@ function ECSWorld:_RegisterBuiltinRenderComponents()
         {name='Camera3D',     defaults={active=true, fovY=60, aspect=1.333, nearZ=0.1, farZ=1000,
                                          targetX=0, targetY=0, targetZ=0,
                                          upX=0, upY=1, upZ=0}},
+        -- Phase D.x.4: 骨骼动画 (mesh/animator 是 userdata, 不可序列化; 故不标 networked)
+        {name='SkinnedMeshRenderer', defaults={visible=true}},
+        -- Phase D.x.4: 动画状态 (state/speed/paused/params/morphWeights 可同步)
+        {name='AnimationState', defaults={state='', speed=1.0, paused=false, time=0,
+                                           crossfade=0, looping=true, params={}, morphWeights={}}},
     }
     for _, c in ipairs(builtins) do
         if not self._components[c.name] then
@@ -539,12 +546,17 @@ function ECSWorld:_RegisterBuiltinRenderComponents()
             self._builtin_render_comps[c.name] = true
         end
     end
+    -- Phase D.x.4: 标记不可序列化的内置 component (含 userdata 字段)
+    self._builtin_no_network = self._builtin_no_network or {}
+    self._builtin_no_network['SkinnedMeshRenderer'] = true
 end
 
 -- 把内置渲染 component 重标 networked=true. 必须在 NetworkSync 前调用.
+-- Phase D.x.4: 自动跳过 _builtin_no_network 标记的 component (含 userdata, 不能 JSON 序列化)
 function ECSWorld:MarkRenderNetworked()
+    local skip = self._builtin_no_network or {}
     for name, _ in pairs(self._builtin_render_comps) do
-        if self._components[name] then
+        if self._components[name] and not skip[name] then
             self._networked_comps[name] = true
         end
     end
@@ -693,7 +705,106 @@ function ECSWorld:Render()
             end
         end
 
+        -- Phase D.x.4: 蒙皮 mesh 渲染 (在普通 mesh 之后, 仍在 depth test 内)
+        for _, e in ipairs(self._entities) do
+            local tf  = e._comps.Transform3D
+            local smr = e._comps.SkinnedMeshRenderer
+            if tf and smr and smr.visible ~= false and smr.mesh and smr.animator then
+                self:_DrawSkinnedMesh(tf, smr)
+            end
+        end
+
         if type(gfx.SetDepthTest) == 'function' then gfx.SetDepthTest(false) end
+    end
+end
+
+-- ==================== Phase D.x.4: 骨骼动画 ECS 集成 ====================
+
+-- 构造 列主序 4x4 model matrix from Transform3D (T * RotY * Scale 简化版)
+-- 多轴旋转留 Phase D.x.4.x; 角色游戏 80% 用例仅 Y 轴 (heading)
+function ECSWorld:_BuildModelMatrix3D(tf)
+    local ry  = (tf.ry or 0) * math.pi / 180
+    local c   = math.cos(ry)
+    local s   = math.sin(ry)
+    local scx = tf.sx or 1
+    local scy = tf.sy or 1
+    local scz = tf.sz or 1
+    return {
+         c*scx, 0,     -s*scx, 0,
+         0,     scy,    0,     0,
+         s*scz, 0,      c*scz, 0,
+         tf.x or 0, tf.y or 0, tf.z or 0, 1,
+    }
+end
+
+-- 绘制蒙皮 mesh 单次. 内部调 Light.Animation.DrawSkinnedMesh (CPU/GPU 分流由后端决定)
+function ECSWorld:_DrawSkinnedMesh(tf, smr)
+    local Anim = Light and Light.Animation
+    if not (Anim and type(Anim.DrawSkinnedMesh) == 'function') then return end
+    local model = self:_BuildModelMatrix3D(tf)
+    pcall(Anim.DrawSkinnedMesh, smr.mesh, smr.animator, model, smr.material)
+end
+
+-- 动画系统: 在 world:Update(dt) 末尾自动跑 (sync 前)
+-- 职责:
+--   1. 遍历所有 SkinnedMeshRenderer + AnimationState entity
+--   2. 检测 AnimationState 字段变化, 桥接到 animator 对应方法
+--   3. 推进 animator:Update(dt)
+function ECSWorld:_AnimationSystem(dt)
+    local Anim = Light and Light.Animation
+    if not Anim then return end
+    self._anim_cache = self._anim_cache or {}
+    for _, e in ipairs(self._entities) do
+        local smr = e._comps.SkinnedMeshRenderer
+        local as  = e._comps.AnimationState
+        if smr and smr.animator and as then
+            local cache = self._anim_cache[e._id]
+            if not cache then
+                cache = {lastState='', lastSpeed=1.0, lastPaused=false, lastParams={}, lastMorph={}}
+                self._anim_cache[e._id] = cache
+            end
+            local an = smr.animator
+            -- state 桥接 (crossfade>0 走 Crossfade, 否则 Play)
+            if as.state ~= cache.lastState and as.state and as.state ~= '' then
+                if (as.crossfade or 0) > 0 and type(an.Crossfade) == 'function' then
+                    pcall(an.Crossfade, an, as.state, as.crossfade)
+                elseif type(an.Play) == 'function' then
+                    pcall(an.Play, an, as.state)
+                end
+                cache.lastState = as.state
+            end
+            -- speed 桥接
+            if as.speed ~= cache.lastSpeed and type(an.SetSpeed) == 'function' then
+                pcall(an.SetSpeed, an, as.speed or 1)
+                cache.lastSpeed = as.speed
+            end
+            -- paused 桥接
+            if as.paused ~= cache.lastPaused then
+                if as.paused and type(an.Pause) == 'function' then pcall(an.Pause, an)
+                elseif type(an.Resume) == 'function' then pcall(an.Resume, an) end
+                cache.lastPaused = as.paused
+            end
+            -- params 桥接 (diff apply)
+            if as.params then
+                for k, v in pairs(as.params) do
+                    if cache.lastParams[k] ~= v and type(an.SetParam) == 'function' then
+                        pcall(an.SetParam, an, k, v)
+                        cache.lastParams[k] = v
+                    end
+                end
+            end
+            -- morphWeights 桥接 (1-based key)
+            if as.morphWeights then
+                for i, w in pairs(as.morphWeights) do
+                    if cache.lastMorph[i] ~= w and type(an.SetMorphWeight) == 'function' then
+                        pcall(an.SetMorphWeight, an, i, w)
+                        cache.lastMorph[i] = w
+                    end
+                end
+            end
+            -- 推进时间
+            if type(an.Update) == 'function' then pcall(an.Update, an, dt) end
+        end
     end
 end
 
