@@ -23,7 +23,7 @@ flowchart LR
     T3["C-T3<br/>NetworkSync + SyncToRoom<br/>2h"]
     T4["C-T4<br/>MirrorFromRoom + ApplyState<br/>3h"]
     T5["C-T5<br/>smoke ecs_network.lua<br/>1.5h"]
-    T6["C-T6<br/>demo_ecs_sync (双进程)<br/>3h, optional"]
+    T6["C-T6 ✅<br/>demo_ecs_network (双进程)<br/>3h, optional"]
 
     T1 --> T2
     T2 --> T3
@@ -313,35 +313,36 @@ assert(mirror._mirror_by_id[2] == nil)    -- entity 2 被销毁
 
 ---
 
-### C-T6 (可选): demo_ecs_sync 双进程
+### C-T6 (可选, ✅ 已完成): demo_ecs_network 双进程
 
 **输入契约**:
 - 前置依赖: C-T5 完成 (API 已稳定)
 - 参考: `samples/demo_udp_echo/main.lua` (本会话刚交付的双模式 demo 模板)
 
-**输出契约**:
-- `samples/demo_ecs_sync/main.lua` — 单文件 + arg[1] 切换 server/client
-- `samples/demo_ecs_sync/README.md` — 用法 + 预期输出
+**输出契约** (✅ 实际交付):
+- `samples/demo_ecs_network/main.lua` — 单文件 + arg[1] 切换 server/client
+- `samples/demo_ecs_network/README.md` — 用法 + 预期输出 + 已知限制
 - 演示场景:
-  - server 创建 5 个 entity, 每个有 Position + Sprite (networked)
-  - server `Update` 中模拟 random walk (每帧 entity 移动)
-  - server 5 秒后销毁 entity 1
-  - client 连接后 mirror world 同步, 每秒打印 `mirror:Query("Position")` 结果
+  - server 创建 3 个 entity (Position+Velocity networked, Tag 非 networked)
+  - Move 系统每帧用 `entity:Set` 推进 Position
+  - t=5s 新增 `late_joiner` entity, t=8s 销毁 e2
+  - client `MirrorFromRoom` 自动镜像, 每秒打印 mirror entities (验证增删)
 
 **实现约束**:
-- 与 demo_udp_echo 同风格 (端口 P=9001)
+- 与 demo_udp_echo 同风格 (端口 P=9101 避免冲突)
 - 不依赖 GUI (纯文本输出)
 - 双进程必须可独立运行 (server 不依赖 client 启动)
 
-**验收标准**:
-- `lightc -p` 通过
-- 用户手动跑双终端能看到 entity 同步序列 (smoke 不覆盖, 文档说明)
+**验收标准** (✅ 已通过):
+- `lightc -p samples/demo_ecs_network/main.lua` 退出 0
+- README 包含预期输出片段供用户对照
+- 验证 4 项 (C-T1..C-T4) + per-component networked 过滤 (Tag 不传)
 
 **估时**: 3h
 
 **依赖**: C-T5
 
-**后置任务**: 无
+**后置任务**: 无 (Phase C 主体收尾)
 
 ---
 
@@ -358,8 +359,8 @@ assert(mirror._mirror_by_id[2] == nil)    -- entity 2 被销毁
 - 单 commit: `test(phase-c): smoke for ECS networked + mirror`
 - 此时 CI 应全过
 
-### 切片 D: 可选 demo (C-T6 = 3h)
-- 单 commit: `feat(phase-c): demo_ecs_sync end-to-end`
+### 切片 D: 可选 demo (C-T6 = 3h, ✅ 已完成)
+- 单 commit: `feat(phase-c): demo_ecs_network end-to-end`
 
 **总切片**: 3 必做 + 1 可选, 约 9h-12h. 6A Stage 4 (Approve) 通过后开始 Stage 5 实施.
 
