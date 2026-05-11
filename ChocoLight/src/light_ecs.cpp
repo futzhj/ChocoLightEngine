@@ -878,7 +878,12 @@ end
 --
 -- 模块解析: Lumen 的 L->Require(name, proc) 只挂到 package.loaded[name],
 -- 不会自动注入到 _G.Light.XXX 子字段, 所以这里必须主动 require + cache.
-function ECSWorld:_UploadLights2D(cam2d)
+--
+-- Phase E.2.2 — 可选 bounds 参数 (world-space AABB, 由 _FrustumCull2D 产生):
+-- 若传入, 对每个 Light2D 做 AABB-Circle cull: 影响圆 (wx, wy, range) 与 bounds 不相交
+-- 则跳过上传 (保守: 实际漏 cull 可接受, 错 cull 则会看到突兀的暗区, 绝不允许).
+-- bounds == nil 时向后兼容: 上传所有 Light2D.
+function ECSWorld:_UploadLights2D(cam2d, bounds)
     -- cache module table on world (避免每帧 require 查 package.loaded 哈希)
     if self._L2D_cache == nil then
         local ok, m = pcall(require, 'Light.Lighting2D')
@@ -897,35 +902,54 @@ function ECSWorld:_UploadLights2D(cam2d)
     end
 
     L2D.ClearLights()
+    local uploaded, culled = 0, 0
     for _, e in ipairs(self._entities) do
         local tf = e._comps.Transform2D
         local lt = e._comps.Light2D
         if tf and lt and lt.enabled ~= false then
             local wx, wy = self:_GetWorldPos2D(tf)
-            -- world -> view space (与 sprite shader 内 vWorldPos 一致)
-            local vx, vy = (wx - cx) * zoom, (wy - cy) * zoom
-            local col = lt.color or {}
-            local t = lt.type or 1
-            if t == 2 then
-                L2D.AddSpotLight{
-                    x = vx, y = vy,
-                    dirX = lt.dirX or 1, dirY = lt.dirY or 0,
-                    color = {r = col.r or 1, g = col.g or 1, b = col.b or 1},
-                    range = (lt.range or 200) * zoom,
-                    intensity = lt.intensity or 1,
-                    innerAngle = lt.innerAngle or 20,
-                    outerAngle = lt.outerAngle or 35,
-                }
+            local range_world = lt.range or 200
+            -- Phase E.2.2: AABB-Circle cull (world space; bounds 由 _FrustumCull2D 给, 同 space)
+            local keep = true
+            if bounds then
+                if wx + range_world < bounds.minX or
+                   wx - range_world > bounds.maxX or
+                   wy + range_world < bounds.minY or
+                   wy - range_world > bounds.maxY then
+                    keep = false
+                end
+            end
+            if keep then
+                -- world -> view space (与 sprite shader 内 vWorldPos 一致)
+                local vx, vy = (wx - cx) * zoom, (wy - cy) * zoom
+                local col = lt.color or {}
+                local t = lt.type or 1
+                if t == 2 then
+                    L2D.AddSpotLight{
+                        x = vx, y = vy,
+                        dirX = lt.dirX or 1, dirY = lt.dirY or 0,
+                        color = {r = col.r or 1, g = col.g or 1, b = col.b or 1},
+                        range = range_world * zoom,
+                        intensity = lt.intensity or 1,
+                        innerAngle = lt.innerAngle or 20,
+                        outerAngle = lt.outerAngle or 35,
+                    }
+                else
+                    L2D.AddPointLight{
+                        x = vx, y = vy,
+                        color = {r = col.r or 1, g = col.g or 1, b = col.b or 1},
+                        range = range_world * zoom,
+                        intensity = lt.intensity or 1,
+                    }
+                end
+                uploaded = uploaded + 1
             else
-                L2D.AddPointLight{
-                    x = vx, y = vy,
-                    color = {r = col.r or 1, g = col.g or 1, b = col.b or 1},
-                    range = (lt.range or 200) * zoom,
-                    intensity = lt.intensity or 1,
-                }
+                culled = culled + 1
             end
         end
     end
+    -- 诊断统计 (smoke / 性能调试可读)
+    self._light2d_stats = {uploaded = uploaded, culled = culled}
 end
 
 -- 收集所有可见 LitSprite, 按 Transform2D.z 升序 (画家算法)
@@ -1080,12 +1104,15 @@ function ECSWorld:Render()
         gfx.Translate(-(ctf.x or 0), -(ctf.y or 0), 0)
     end
 
-    -- Phase E.1.6: 上传 Light2D 状态 (在 sprite 渲染前, 以便 LitSprite 调用时 uniform 已就绪)
-    self:_UploadLights2D(cam2d)
+    -- Phase D.x.5.2: 计算 camera frustum, 跳过出场 sprite
+    -- Phase E.2.2: 提前计算 bounds (world AABB), 同时供 light cull + sprite cull
+    local bounds = self:_FrustumCull2D(cam2d)
+
+    -- Phase E.1.6 / E.2.2: 上传 Light2D 状态 (在 sprite 渲染前, 以便 LitSprite 调用时 uniform 已就绪)
+    -- bounds 传入后, 对每个 light 做 AABB-Circle cull, 视口外的 light 跳过上传.
+    self:_UploadLights2D(cam2d, bounds)
 
     local sprites = self:_CollectSprites()
-    -- Phase D.x.5.2: 计算 camera frustum, 跳过出场 sprite
-    local bounds = self:_FrustumCull2D(cam2d)
     local culled = 0
     for i = 1, #sprites do
         local item = sprites[i]

@@ -405,6 +405,80 @@ pass("E.2.1: failed Add (16 slot full) does not bump version")
 mod.ClearLights()
 
 -- ============================================================
+-- 17) Phase E.2.2 — ECS _UploadLights2D 加 bounds 参数 (AABB-Circle cull)
+-- ============================================================
+-- 验证:
+--   - bounds == nil 向后兼容: 所有 light 上传 (culled=0)
+--   - 中心在 bounds 外, 影响圆也不触及 bounds → culled
+--   - 中心在 bounds 外但 range 足够穿入 bounds → uploaded (不过度 cull)
+--   - 中心在 bounds 内 → uploaded
+
+if ok_ecs and type(ECS) == "table" and type(ECS.World) == "table" and type(ECS.World.new) == "function" then
+    local World = ECS.World
+    local w = World.new()
+
+    -- bounds = viewport (-100, -100) ~ (100, 100) (world space, 200x200 窗口)
+    local bounds = {minX = -100, maxX = 100, minY = -100, maxY = 100}
+
+    -- L1: 视口内 (0, 0), range=50 → uploaded
+    local e1 = w:CreateEntity()
+    e1:Add("Transform2D", {x=0, y=0})
+    e1:Add("Light2D",     {type=1, range=50})
+
+    -- L2: 远处 (1000, 0), range=50 → culled (视口右 100, light 中心在 1000, 影响圆 950~1050 与 bounds 不交)
+    local e2 = w:CreateEntity()
+    e2:Add("Transform2D", {x=1000, y=0})
+    e2:Add("Light2D",     {type=1, range=50})
+
+    -- L3: 远处 (1000, 0), range=1500 → uploaded (影响圆覆盖 bounds)
+    local e3 = w:CreateEntity()
+    e3:Add("Transform2D", {x=1000, y=0})
+    e3:Add("Light2D",     {type=1, range=1500})
+
+    -- L4: 视口正下方远处 (0, 2000), range=100 → culled (y=2000-100=1900 > maxY=100)
+    local e4 = w:CreateEntity()
+    e4:Add("Transform2D", {x=0, y=2000})
+    e4:Add("Light2D",     {type=1, range=100})
+
+    -- 17.1: 传入 bounds, 应 uploaded=2 (L1+L3), culled=2 (L2+L4)
+    mod.ClearLights()
+    w:_UploadLights2D(nil, bounds)
+    local stats = w._light2d_stats
+    assert(stats and stats.uploaded == 2 and stats.culled == 2,
+           "bounds cull: expected uploaded=2, culled=2, got uploaded=" ..
+           tostring(stats and stats.uploaded) .. ", culled=" ..
+           tostring(stats and stats.culled))
+    assert(mod.GetLightCount() == 2, "light count should match uploaded=2")
+    pass("E.2.2: AABB-Circle cull (uploaded=2 / culled=2)")
+
+    -- 17.2: bounds == nil 向后兼容: 全部上传, culled=0
+    mod.ClearLights()
+    w:_UploadLights2D(nil, nil)
+    stats = w._light2d_stats
+    assert(stats and stats.uploaded == 4 and stats.culled == 0,
+           "bounds=nil: all 4 uploaded, culled=0, got uploaded=" ..
+           tostring(stats and stats.uploaded) .. ", culled=" ..
+           tostring(stats and stats.culled))
+    assert(mod.GetLightCount() == 4, "bounds=nil: light count = 4")
+    pass("E.2.2: bounds == nil backward compat (all 4 uploaded)")
+
+    -- 17.3: 收紧 bounds 到 L1 也被 cull (L1 在 (0,0), range=50; bounds 移到 200 外)
+    local bounds_far = {minX=200, maxX=400, minY=200, maxY=400}
+    mod.ClearLights()
+    w:_UploadLights2D(nil, bounds_far)
+    stats = w._light2d_stats
+    -- 只 L3 (range=1500 从 (1000, 0), 影响范围 x=-500~2500, y=-1500~1500) 覆盖 bounds_far
+    assert(stats.uploaded == 1 and stats.culled == 3,
+           "far bounds: only L3 uploaded (range=1500 covers bounds_far), got uploaded=" ..
+           stats.uploaded .. ", culled=" .. stats.culled)
+    pass("E.2.2: tighter bounds culls more lights (uploaded=1)")
+
+    mod.ClearLights()
+else
+    print("SKIP: E.2.2 cull smoke (Light.ECS unavailable)")
+end
+
+-- ============================================================
 -- Final cleanup
 -- ============================================================
 
