@@ -79,6 +79,27 @@ float GetChromaticAberration();
 void SetDistortionEnabled(bool flag);
 bool GetDistortionEnabled();
 
+// ==================== Phase E.7.4 — 用户贴图 ====================
+
+/**
+ * @brief 设置用户提供的 lens flare 贴图 GL tex id
+ * @param texId  GL tex id; 0 = 用 1x1 白 fallback (回到纯 procedural 行为)
+ *
+ * 行为: shader 在每个像素采 flareTex(vUV).rgb 后整体相乘 result.
+ *       1x1 白 fallback 使 result 不变, 完全向后兼容.
+ *       用户可提供:
+ *         - 纯白图     -> 等于纯 procedural (但浪费 1 个采样)
+ *         - 渐变 LUT    -> 染色 ghost (类似 grading)
+ *         - 中心亮 vignette -> 边缘衰减
+ *         - 星芒贴图   -> star flare 视觉
+ *         - 彩虹纹理   -> 极致幻彩 ghost
+ *
+ * 注意: tex id 仅存 uint32_t; Lua 端 Image userdata 由用户负责生命周期.
+ *       绑定后需保持 GL 资源有效, 否则下次 Process 会读到无效纹理.
+ */
+void     SetFlareTextureId(uint32_t texId);
+uint32_t GetFlareTextureId();
+
 // ==================== 管线调用 ====================
 
 /**

@@ -37,6 +37,9 @@ struct State {
     float haloWidth           = 0.5f;
     float chromaticAberration = 0.005f;
     bool  distortionEnabled   = true;
+
+    // Phase E.7.4 — 用户贴图 (0 = 后端 1x1 白 fallback)
+    uint32_t flareTexId       = 0;
 };
 
 static State g;
@@ -179,6 +182,11 @@ float GetChromaticAberration()         { return g.chromaticAberration; }
 void SetDistortionEnabled(bool flag)   { g.distortionEnabled = flag; }
 bool GetDistortionEnabled()            { return g.distortionEnabled; }
 
+// ==================== Phase E.7.4 — 用户贴图 ====================
+
+void     SetFlareTextureId(uint32_t texId) { g.flareTexId = texId; }
+uint32_t GetFlareTextureId()               { return g.flareTexId; }
+
 // ==================== 管线调用 ====================
 
 void Process(uint32_t hdrFbo, uint32_t hdrTex) {
@@ -190,7 +198,8 @@ void Process(uint32_t hdrFbo, uint32_t hdrTex) {
     g.backend->DrawBloomBrightPass(hdrTex, g.fbos[0], g.lumW, g.lumH, g.threshold);
 
     // 2. Ghost + Halo + Chromatic Aberration: lfRT[0] → lfRT[1]
-    g.backend->DrawLensFlareGhost(g.texs[0], g.fbos[1],
+    //    Phase E.7.4: 后端对 flareTexId=0 fallback 到 1x1 白 (纯 procedural 等价)
+    g.backend->DrawLensFlareGhost(g.texs[0], g.flareTexId, g.fbos[1],
                                     g.lumW, g.lumH,
                                     g.ghostCount, g.ghostDispersal,
                                     g.haloWidth, g.chromaticAberration,

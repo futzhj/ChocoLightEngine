@@ -13,6 +13,7 @@
 --   7 / 8    : ChromaticAberration -/+ (步长 0.001)
 --   9 / 0    : Intensity    -/+ (步长 0.05)
 --   D        : 切换 DistortionEnabled (色差开关)
+--   T        : 切换 Flare Texture (Phase E.7.4: procedural <-> 程序生成 LUT)
 --   R        : reset 所有参数到默认
 --   ESC      : 退出
 -- ============================================================================
@@ -156,12 +157,59 @@ while win:IsOpen() do
         print('[demo] LF distortion = ' .. tostring(LF.GetDistortionEnabled()))
     end
 
+    -- T: Phase E.7.4 — 切换 Flare Texture (procedural / 内置渐变 LUT)
+    if keyTap('t') then
+        if LF.GetFlareTextureId() == 0 then
+            -- 启用：生成一张 64x64 渐变彩虹 LUT (中心暖色 + 边缘冷色)
+            if Gfx.Image and Gfx.ImageData then
+                local W, H = 64, 64
+                local bytes = {}
+                local cx, cy = (W - 1) * 0.5, (H - 1) * 0.5
+                for y = 0, H - 1 do
+                    for x = 0, W - 1 do
+                        local dx = (x - cx) / cx
+                        local dy = (y - cy) / cy
+                        local d  = math.min(1.0, math.sqrt(dx * dx + dy * dy))
+                        -- 中心黄白 (1.0, 0.9, 0.6) -> 边缘暗紫 (0.3, 0.2, 0.6)
+                        local r = (1.0 - d) * 1.0 + d * 0.3
+                        local g = (1.0 - d) * 0.9 + d * 0.2
+                        local b = (1.0 - d) * 0.6 + d * 0.6
+                        bytes[#bytes + 1] = string.char(
+                            math.floor(r * 255 + 0.5),
+                            math.floor(g * 255 + 0.5),
+                            math.floor(b * 255 + 0.5),
+                            255)
+                    end
+                end
+                local rgba = table.concat(bytes)
+                local img  = Light(Gfx.Image):New(W, H, rgba)
+                if img then
+                    -- demo 持有 img 引用避免 GC; LF 仅存 tex id
+                    _G.__demo_flare_img = img
+                    LF.SetFlareTexture(img)
+                    print('[demo] Flare texture ON (procedural LUT 64x64, id=' ..
+                        tostring(LF.GetFlareTextureId()) .. ')')
+                else
+                    print('[demo] Flare texture creation failed')
+                end
+            else
+                print('[demo] Light.Graphics.Image not available, skip flare texture')
+            end
+        else
+            LF.SetFlareTexture(nil)
+            _G.__demo_flare_img = nil
+            print('[demo] Flare texture OFF (back to procedural)')
+        end
+    end
+
     -- R: reset
     if keyTap('r') then
         LF.SetThreshold(1.0); LF.SetIntensity(0.4)
         LF.SetGhostCount(4); LF.SetGhostDispersal(0.4)
         LF.SetHaloWidth(0.5); LF.SetChromaticAberration(0.005)
         LF.SetDistortionEnabled(true)
+        LF.SetFlareTexture(nil)
+        _G.__demo_flare_img = nil
         print('[demo] reset defaults')
     end
 
@@ -183,16 +231,19 @@ while win:IsOpen() do
             LF.GetThreshold(), LF.GetIntensity(),
             LF.GetGhostCount(), LF.GetGhostDispersal(),
             LF.GetHaloWidth()))
-        line(string.format('LF: chroma=%.3f distortion=%s',
+        line(string.format('LF: chroma=%.3f distortion=%s  flareTex=%s',
             LF.GetChromaticAberration(),
-            LF.GetDistortionEnabled() and 'ON' or 'OFF'))
-        line('Keys: F=LF 1/2=ghost# 3/4=disp 5/6=halo 7/8=chroma 9/0=int D=distort R=reset ESC')
+            LF.GetDistortionEnabled() and 'ON' or 'OFF',
+            LF.GetFlareTextureId() ~= 0 and 'LUT(' .. LF.GetFlareTextureId() .. ')' or 'fallback'))
+        line('Keys: F=LF 1/2=ghost# 3/4=disp 5/6=halo 7/8=chroma 9/0=int D=distort T=flareTex R=reset ESC')
     end
 
     win:EndFrame()
 end
 
 -- 反向清理
+LF.SetFlareTexture(nil)        -- Phase E.7.4: 提前断引避免 LF 持悬挂 tex id
+_G.__demo_flare_img = nil
 if LF.IsEnabled() then LF.Disable() end
 if Bloom.IsEnabled() then Bloom.Disable() end
 if hdrEnabled then HDR.Disable() end

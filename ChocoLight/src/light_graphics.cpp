@@ -2290,6 +2290,43 @@ static int l_LF_GetDistortionEnabled(lua_State* L) {
     return 1;
 }
 
+/// @lua_api Light.Graphics.LensFlare.SetFlareTexture
+/// @param arg Image table (with :GetTextureId()) / number (tex id) / nil (reset to fallback)
+/// @brief Phase E.7.4 — 接受 Image userdata / number / nil; nil 时回到 1x1 白 fallback (纯 procedural)
+static int l_LF_SetFlareTexture(lua_State* L) {
+    if (lua_gettop(L) < 1 || lua_isnil(L, 1)) {
+        LensFlareRenderer::SetFlareTextureId(0);    // fallback to backend 1x1 white
+        return 0;
+    }
+    int t = lua_type(L, 1);
+    if (t == LUA_TNUMBER) {
+        // 直接是 GL tex id
+        LensFlareRenderer::SetFlareTextureId((uint32_t)lua_tointeger(L, 1));
+        return 0;
+    }
+    if (t == LUA_TTABLE) {
+        // Image userdata: 调 :GetTextureId()
+        lua_getfield(L, 1, "GetTextureId");
+        if (!lua_isfunction(L, -1)) {
+            lua_pop(L, 1);
+            return luaL_error(L, "LensFlare.SetFlareTexture: table missing GetTextureId() method");
+        }
+        lua_pushvalue(L, 1);   // self
+        lua_call(L, 1, 1);
+        uint32_t tid = (uint32_t)lua_tointeger(L, -1);
+        lua_pop(L, 1);
+        LensFlareRenderer::SetFlareTextureId(tid);
+        return 0;
+    }
+    return luaL_error(L, "LensFlare.SetFlareTexture: expected Image table, number, or nil (got %s)",
+                     lua_typename(L, t));
+}
+
+static int l_LF_GetFlareTextureId(lua_State* L) {
+    lua_pushinteger(L, (lua_Integer)LensFlareRenderer::GetFlareTextureId());
+    return 1;
+}
+
 static const luaL_Reg lens_flare_funcs[] = {
     {"Enable",                  l_LF_Enable},
     {"Disable",                 l_LF_Disable},
@@ -2312,6 +2349,8 @@ static const luaL_Reg lens_flare_funcs[] = {
     {"GetChromaticAberration",  l_LF_GetChromaticAberration},
     {"SetDistortionEnabled",    l_LF_SetDistortionEnabled},
     {"GetDistortionEnabled",    l_LF_GetDistortionEnabled},
+    {"SetFlareTexture",         l_LF_SetFlareTexture},        // Phase E.7.4
+    {"GetFlareTextureId",       l_LF_GetFlareTextureId},      // Phase E.7.4
     {NULL, NULL}
 };
 

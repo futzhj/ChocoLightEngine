@@ -18,7 +18,8 @@ light.exe samples/demo_lens_flare/main.lua
 | `5` / `6` | HaloWidth −/+ （步长 0.05, 范围 [0, 1.0]） |
 | `7` / `8` | ChromaticAberration −/+ （步长 0.001, 范围 [0, 0.02]） |
 | `9` / `0` | Intensity −/+ （步长 0.05） |
-| `D` | 切换 DistortionEnabled（色差开关） |
+| `D` | 切换 DistortionEnabled（色差开关）|
+| `T` | **Phase E.7.4** — 切换 Flare Texture（procedural ↔ 程序生成 64×64 LUT）|
 | `R` | reset 所有参数到默认 |
 | `ESC` | 退出 |
 
@@ -89,7 +90,7 @@ if (uHaloWidth > 0.0) {
 
 ## API 入口汇总
 
-**LensFlare (21 fn)**:
+**LensFlare (23 fn, Phase E.7.4 → 23)**:
 ```
 Enable(w, h) / Disable / IsEnabled / IsSupported / Resize(w, h)
 SetAutoEnable / GetAutoEnable
@@ -100,7 +101,35 @@ SetGhostDispersal / GetGhostDispersal
 SetHaloWidth / GetHaloWidth
 SetChromaticAberration / GetChromaticAberration
 SetDistortionEnabled / GetDistortionEnabled
+SetFlareTexture(img|id|nil) / GetFlareTextureId    -- Phase E.7.4 新增
 ```
+
+## Phase E.7.4 — Flare Texture (用户贴图)
+
+**贴图代一切（仅仅是乘法调制）**：shader 在最后一步乘 `texture(uFlareTex, vUV).rgb`，1×1 白 fallback 使默认行为不变。用户可提供：
+
+| 贴图类型 | 视觉效果 |
+|----------|---------|
+| **中心亮 边缘暗 LUT**（demo `T` 生成）| ghost 带上肤色调，边缘被压暗 |
+| 纯黑白渐变 vignette | 边缘衰减 flare |
+| 彩虹 LUT | 幻彩 ghost（可能过艳）|
+| 星芒/条纹贴图 | star flare 样式 |
+| 纯白贴图 | 等价 procedural（但多 1 次采样开销）|
+
+**入口三态**（与 `LensDirt.SetDirtTexture` 同风格）：
+```lua
+-- 方式 1: Image userdata
+local img = Light(Light.Graphics.Image):New("assets/lens_flare_lut.png")
+Light.Graphics.LensFlare.SetFlareTexture(img)
+
+-- 方式 2: 源生 GL tex id (来自 Canvas 或自定义)
+Light.Graphics.LensFlare.SetFlareTexture(img:GetTextureId())
+
+-- 方式 3: 重置为内置 1×1 白 fallback (回到纯 procedural)
+Light.Graphics.LensFlare.SetFlareTexture(nil)   -- 或 0
+```
+
+**生命周期责任**：LensFlare 仅存 `uint32_t` tex id。Lua 端必须保持 Image userdata 引用（如 demo 中 `_G.__demo_flare_img`），否则 GC 后 GL 资源释放，下次 Process 读到无效纹理。Disable 前应先 `SetFlareTexture(nil)` 断引。
 
 ## 已知限制
 
@@ -109,3 +138,4 @@ SetDistortionEnabled / GetDistortionEnabled
 3. **Ghost 朝中心反投**：固定算法，无法朝光源主方向（需 camera matrix → 留 Phase E.8 候选）
 4. **Direction 偏移不可调**：Halo 总是径向；非径向方向需新 uniform
 5. **Legacy 后端 no-op**：`SupportsLensFlare = false`，Lua API 全链路静默
+6. **Phase E.7.4 — Flare Texture 仅 “整体乘法调制”**：未实现「每个 ghost 局部 UV 采样」。要让每个 ghost 看起来像 flare 贴图中一个独立图案（如 UE4 BlueprintFlare），需新增 shader uniform 并重构 ghost 循环— 留 Phase E.7.5 候选

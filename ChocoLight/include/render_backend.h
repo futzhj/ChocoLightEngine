@@ -820,6 +820,7 @@ public:
      * 算法详见类内注释; shader 静态循环 8 上限 + 早退 (GLES3 兼容).
      *
      * @param brightTex            输入 (bright pass 输出)
+     * @param flareTex             Phase E.7.4 — 用户贴图 GL tex id (0 = 用 1x1 白 fallback)
      * @param dstFbo               输出 FBO (lens flare ping-pong 第 2 张)
      * @param w, h                 dst RT 尺寸
      * @param ghostCount           [0, 8] 整数; 0 = 不生成 ghost
@@ -828,7 +829,7 @@ public:
      * @param chromaticAberration  [0, 0.02] RGB 分量径向偏移
      * @param distortionEnabled    bool 是否启用色差 (false = RGB 同采)
      */
-    virtual void DrawLensFlareGhost(uint32_t /*brightTex*/, uint32_t /*dstFbo*/,
+    virtual void DrawLensFlareGhost(uint32_t /*brightTex*/, uint32_t /*flareTex*/, uint32_t /*dstFbo*/,
                                      int /*w*/, int /*h*/,
                                      int /*ghostCount*/,
                                      float /*ghostDispersal*/,

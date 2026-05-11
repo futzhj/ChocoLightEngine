@@ -1,6 +1,6 @@
 -- Phase E.7 smoke: Light.Graphics.LensFlare
 --
--- API coverage (21):
+-- API coverage (23):
 --   Lifecycle 5:  Enable(w,h) / Disable / IsEnabled / IsSupported / Resize(w,h)
 --   AutoEnable 2: SetAutoEnable / GetAutoEnable
 --   Params 14 (7 pairs):
@@ -11,6 +11,7 @@
 --     SetHaloWidth / GetHaloWidth
 --     SetChromaticAberration / GetChromaticAberration
 --     SetDistortionEnabled / GetDistortionEnabled
+--   Phase E.7.4 Texture 2: SetFlareTexture / GetFlareTextureId
 --
 -- Headless tolerant; ASCII-only.
 
@@ -38,6 +39,7 @@ local fns = {
     "SetHaloWidth", "GetHaloWidth",
     "SetChromaticAberration", "GetChromaticAberration",
     "SetDistortionEnabled", "GetDistortionEnabled",
+    "SetFlareTexture", "GetFlareTextureId",   -- Phase E.7.4
 }
 for _, k in ipairs(fns) do
     if type(LF[k]) ~= "function" then
@@ -222,5 +224,63 @@ pass("Boundary GhostCount=0, HaloWidth=0, CA=0 preserved (no crash potential)")
 LF.SetGhostCount(4)
 LF.SetHaloWidth(0.5)
 LF.SetChromaticAberration(0.005)
+
+-- ============================================================
+-- M) Phase E.7.4 - SetFlareTexture / GetFlareTextureId
+-- ============================================================
+
+-- M.1 default state: id == 0 (use 1x1 white fallback)
+local initId = LF.GetFlareTextureId()
+if type(initId) ~= "number" then fail("GetFlareTextureId not number") end
+if initId ~= 0 then fail("Initial FlareTextureId must be 0 (got " .. tostring(initId) .. ")") end
+pass("Initial GetFlareTextureId() == 0 (white fallback)")
+
+-- M.2 set to a number id, round-trip
+LF.SetFlareTexture(42)
+if LF.GetFlareTextureId() ~= 42 then fail("SetFlareTexture(number) round-trip failed") end
+pass("SetFlareTexture(42) -> GetFlareTextureId() == 42")
+
+-- M.3 reset via nil
+LF.SetFlareTexture(nil)
+if LF.GetFlareTextureId() ~= 0 then fail("SetFlareTexture(nil) did not reset to 0") end
+pass("SetFlareTexture(nil) reset to 0")
+
+-- M.4 set via 0 (explicit fallback) - same as nil
+LF.SetFlareTexture(99)
+LF.SetFlareTexture(0)
+if LF.GetFlareTextureId() ~= 0 then fail("SetFlareTexture(0) did not reset to 0") end
+pass("SetFlareTexture(0) explicit fallback ok")
+
+-- M.5 zero-arg fallback (same as nil)
+LF.SetFlareTexture(77)
+LF.SetFlareTexture()
+if LF.GetFlareTextureId() ~= 0 then fail("SetFlareTexture() zero-arg did not reset to 0") end
+pass("SetFlareTexture() zero-arg fallback ok")
+
+-- M.6 Image-table-like (mock with GetTextureId() method)
+local fakeImage = setmetatable({}, {})
+function fakeImage:GetTextureId() return 1234 end
+LF.SetFlareTexture(fakeImage)
+if LF.GetFlareTextureId() ~= 1234 then
+    fail("SetFlareTexture(Image-like) did not call :GetTextureId()")
+end
+pass("SetFlareTexture(Image-like) -> 1234 via :GetTextureId()")
+
+-- M.7 invalid type rejected
+local okErr, errMsg = pcall(LF.SetFlareTexture, true)
+if okErr then
+    fail("SetFlareTexture(boolean) should error")
+end
+pass("SetFlareTexture(boolean) rejected: " .. tostring(errMsg):sub(1, 80))
+
+-- M.8 table without GetTextureId rejected
+local okErr2, errMsg2 = pcall(LF.SetFlareTexture, {})
+if okErr2 then
+    fail("SetFlareTexture(empty table) should error")
+end
+pass("SetFlareTexture(empty table) rejected: " .. tostring(errMsg2):sub(1, 80))
+
+-- restore final state
+LF.SetFlareTexture(nil)
 
 print("[OK] Phase E.7 smoke (Light.Graphics.LensFlare): all checks passed")

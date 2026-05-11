@@ -1052,6 +1052,7 @@ precision highp float;
 in  vec2 vUV;
 out vec4 FragColor;
 uniform sampler2D uBrightTex;
+uniform sampler2D uFlareTex;        // Phase E.7.4: 用户贴图 (1x1 白 fallback)
 uniform int   uGhostCount;          // [0, 8]
 uniform float uGhostDispersal;      // [0, 2]
 uniform float uHaloWidth;           // [0, 1]
@@ -1096,6 +1097,10 @@ void main() {
         float haloWeight   = smoothstep(0.5, 0.0, distFromRing);
         result += sampleChroma(uBrightTex, haloUV, caDir) * haloWeight;
     }
+
+    // Phase E.7.4: 用户贴图整体调制 (1x1 白 fallback = 不变)
+    vec3 flareModulation = texture(uFlareTex, vUV).rgb;
+    result *= flareModulation;
 
     FragColor = vec4(result, 1.0);
 }
@@ -1318,6 +1323,7 @@ static const char* FS_LENS_FLARE_GHOST_SOURCE = R"(
 in  vec2 vUV;
 out vec4 FragColor;
 uniform sampler2D uBrightTex;
+uniform sampler2D uFlareTex;        // Phase E.7.4: 用户贴图 (1x1 白 fallback)
 uniform int   uGhostCount;          // [0, 8]
 uniform float uGhostDispersal;      // [0, 2]
 uniform float uHaloWidth;           // [0, 1]
@@ -1359,6 +1365,10 @@ void main() {
         float haloWeight   = smoothstep(0.5, 0.0, distFromRing);
         result += sampleChroma(uBrightTex, haloUV, caDir) * haloWeight;
     }
+
+    // Phase E.7.4: 用户贴图整体调制 (1x1 白 fallback = 不变)
+    vec3 flareModulation = texture(uFlareTex, vUV).rgb;
+    result *= flareModulation;
 
     FragColor = vec4(result, 1.0);
 }
@@ -1523,6 +1533,7 @@ class GL33Backend : public RenderBackend {
     GLuint programLensFlareGhost       = 0;
     bool   lensFlareSupported          = false;
     GLint  locLensFlare_BrightTex      = -1;
+    GLint  locLensFlare_FlareTex       = -1;   // Phase E.7.4 — 用户贴图 sampler
     GLint  locLensFlare_GhostCount     = -1;
     GLint  locLensFlare_GhostDispersal = -1;
     GLint  locLensFlare_HaloWidth      = -1;
@@ -2222,13 +2233,15 @@ public:
         programLensFlareGhost = buildProgram(FS_LENS_FLARE_GHOST_SOURCE, "LensFlareGhost");
         if (programLensFlareGhost) {
             locLensFlare_BrightTex      = glGetUniformLocation(programLensFlareGhost, "uBrightTex");
+            locLensFlare_FlareTex       = glGetUniformLocation(programLensFlareGhost, "uFlareTex");
             locLensFlare_GhostCount     = glGetUniformLocation(programLensFlareGhost, "uGhostCount");
             locLensFlare_GhostDispersal = glGetUniformLocation(programLensFlareGhost, "uGhostDispersal");
             locLensFlare_HaloWidth      = glGetUniformLocation(programLensFlareGhost, "uHaloWidth");
             locLensFlare_Aberration     = glGetUniformLocation(programLensFlareGhost, "uChromaticAberration");
             locLensFlare_DistortionEn   = glGetUniformLocation(programLensFlareGhost, "uDistortionEnabled");
             glUseProgram(programLensFlareGhost);
-            if (locLensFlare_BrightTex >= 0) glUniform1i(locLensFlare_BrightTex, 0);
+            if (locLensFlare_BrightTex >= 0) glUniform1i(locLensFlare_BrightTex, 0);   // slot 0
+            if (locLensFlare_FlareTex  >= 0) glUniform1i(locLensFlare_FlareTex,  1);   // slot 1
             glUseProgram(0);
             // Lens Flare 需要 Bloom bright/composite 都可用 (复用)
             lensFlareSupported = bloomSupported;
@@ -2350,7 +2363,7 @@ public:
 
         // Phase E.7 — 释放 Lens Flare ghost shader (RT 由 LensFlareRenderer::Shutdown 配对释放)
         if (programLensFlareGhost) { glDeleteProgram(programLensFlareGhost); programLensFlareGhost = 0; }
-        locLensFlare_BrightTex = locLensFlare_GhostCount = locLensFlare_GhostDispersal = -1;
+        locLensFlare_BrightTex = locLensFlare_FlareTex = locLensFlare_GhostCount = locLensFlare_GhostDispersal = -1;
         locLensFlare_HaloWidth = locLensFlare_Aberration = locLensFlare_DistortionEn = -1;
         lensFlareSupported = false;
     }
@@ -3066,12 +3079,17 @@ public:
     }
 
     /// Ghost + Halo + Chromatic Aberration: brightTex → dstFbo (覆盖写, 不开 blend)
-    void DrawLensFlareGhost(uint32_t brightTex, uint32_t dstFbo,
+    /// Phase E.7.4: flareTex==0 时 fallback 到 1x1 白 (不影响 procedural 行为)
+    void DrawLensFlareGhost(uint32_t brightTex, uint32_t flareTex, uint32_t dstFbo,
                              int w, int h,
                              int ghostCount, float ghostDispersal,
                              float haloWidth, float chromaticAberration,
                              bool distortionEnabled) override {
         if (!lensFlareSupported || !brightTex || !dstFbo || w <= 0 || h <= 0) return;
+
+        // Phase E.7.4: flareTex == 0 fallback 到 LensDirt 复用的 1x1 白纹理
+        GLuint flare = flareTex ? (GLuint)flareTex : whiteTex1x1;
+        if (!flare) return;   // 白纹理未创建 (极少发生)
 
         glBindFramebuffer(GL_FRAMEBUFFER, (GLuint)dstFbo);
         glViewport(0, 0, w, h);
@@ -3088,11 +3106,16 @@ public:
 
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, (GLuint)brightTex);
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, flare);
 
         glBindVertexArray(vaoTonemap);
         glDrawArrays(GL_TRIANGLES, 0, 6);
 
         glBindVertexArray(0);
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, 0);
         glUseProgram(0);
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
