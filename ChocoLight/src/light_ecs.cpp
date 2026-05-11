@@ -242,7 +242,9 @@ function ECSWorld:_BuildEntityState(entity)
     end
     return row
 end
-
+)LUA"
+// MSVC 字符串字面量上限 ~16KB, 拆成两段在此拼接 (C++ 标准: 相邻字面量自动 concat)
+R"LUA(
 -- Phase C.x.1: 按 id 查找 entity (O(n), MVP 够用)
 function ECSWorld:_FindById(id)
     for _, e in ipairs(self._entities) do
