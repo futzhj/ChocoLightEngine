@@ -992,6 +992,58 @@ void main() {
 }
 )";
 
+// ==================== Phase E.6 — Lens Dirt + Streak shader (GLES 3.0) ====================
+
+// ---- FS_LENS_DIRT_COMPOSITE (GLES 3.0): bloom x dirt x intensity (additive blend 由调用方控) ----
+static const char* FS_LENS_DIRT_COMPOSITE_SOURCE = R"(#version 300 es
+precision highp float;
+in  vec2 vUV;
+out vec4 FragColor;
+uniform sampler2D uBloomTex;
+uniform sampler2D uDirtTex;
+uniform float uIntensity;
+void main() {
+    vec3 bloom = texture(uBloomTex, vUV).rgb;
+    vec3 dirt  = texture(uDirtTex,  vUV).rgb;
+    FragColor = vec4(bloom * dirt * uIntensity, 1.0);
+}
+)";
+
+// ---- FS_STREAK_BLUR (GLES 3.0): 7-tap 方向高斯 ----
+static const char* FS_STREAK_BLUR_SOURCE = R"(#version 300 es
+precision highp float;
+in  vec2 vUV;
+out vec4 FragColor;
+uniform sampler2D uSrc;
+uniform vec2  uTexel;
+uniform float uLength;
+uniform vec2  uDirection;
+void main() {
+    vec2 d  = normalize(uDirection) * uLength;
+    vec3 c  = texture(uSrc, vUV - 3.0 * d).rgb * 0.05
+            + texture(uSrc, vUV - 2.0 * d).rgb * 0.10
+            + texture(uSrc, vUV - 1.0 * d).rgb * 0.20
+            + texture(uSrc, vUV).rgb           * 0.30
+            + texture(uSrc, vUV + 1.0 * d).rgb * 0.20
+            + texture(uSrc, vUV + 2.0 * d).rgb * 0.10
+            + texture(uSrc, vUV + 3.0 * d).rgb * 0.05;
+    FragColor = vec4(c, 1.0);
+}
+)";
+
+// ---- FS_STREAK_COMPOSITE (GLES 3.0): streak x intensity (additive blend 由调用方控) ----
+static const char* FS_STREAK_COMPOSITE_SOURCE = R"(#version 300 es
+precision highp float;
+in  vec2 vUV;
+out vec4 FragColor;
+uniform sampler2D uSrc;
+uniform float uIntensity;
+void main() {
+    vec3 c = texture(uSrc, vUV).rgb;
+    FragColor = vec4(c * uIntensity, 1.0);
+}
+)";
+
 #else  // 桌面 GL 3.3 Core
 
 // ---- VS_TONEMAP (GL 3.3) ----
@@ -1150,6 +1202,58 @@ void main() {
 }
 )";
 
+// ==================== Phase E.6 — Lens Dirt + Streak shader (GL 3.3 Core) ====================
+
+// ---- FS_LENS_DIRT_COMPOSITE (GL 3.3): bloom x dirt x intensity ----
+static const char* FS_LENS_DIRT_COMPOSITE_SOURCE = R"(
+#version 330 core
+in  vec2 vUV;
+out vec4 FragColor;
+uniform sampler2D uBloomTex;
+uniform sampler2D uDirtTex;
+uniform float uIntensity;
+void main() {
+    vec3 bloom = texture(uBloomTex, vUV).rgb;
+    vec3 dirt  = texture(uDirtTex,  vUV).rgb;
+    FragColor = vec4(bloom * dirt * uIntensity, 1.0);
+}
+)";
+
+// ---- FS_STREAK_BLUR (GL 3.3): 7-tap 方向高斯 ----
+static const char* FS_STREAK_BLUR_SOURCE = R"(
+#version 330 core
+in  vec2 vUV;
+out vec4 FragColor;
+uniform sampler2D uSrc;
+uniform vec2  uTexel;
+uniform float uLength;
+uniform vec2  uDirection;
+void main() {
+    vec2 d  = normalize(uDirection) * uLength;
+    vec3 c  = texture(uSrc, vUV - 3.0 * d).rgb * 0.05
+            + texture(uSrc, vUV - 2.0 * d).rgb * 0.10
+            + texture(uSrc, vUV - 1.0 * d).rgb * 0.20
+            + texture(uSrc, vUV).rgb           * 0.30
+            + texture(uSrc, vUV + 1.0 * d).rgb * 0.20
+            + texture(uSrc, vUV + 2.0 * d).rgb * 0.10
+            + texture(uSrc, vUV + 3.0 * d).rgb * 0.05;
+    FragColor = vec4(c, 1.0);
+}
+)";
+
+// ---- FS_STREAK_COMPOSITE (GL 3.3): streak x intensity ----
+static const char* FS_STREAK_COMPOSITE_SOURCE = R"(
+#version 330 core
+in  vec2 vUV;
+out vec4 FragColor;
+uniform sampler2D uSrc;
+uniform float uIntensity;
+void main() {
+    vec3 c = texture(uSrc, vUV).rgb;
+    FragColor = vec4(c * uIntensity, 1.0);
+}
+)";
+
 #endif
 
 // Phase AS.2 — Mesh GPU 资源 (Phase AX 扩展加 morph delta texture)
@@ -1285,6 +1389,25 @@ class GL33Backend : public RenderBackend {
     GLuint programLumaExtract        = 0;
     bool   autoExposureSupported     = false;
     GLint  locLumaExtract_HDRTex     = -1;
+
+    // ---- Phase E.6 — Lens Dirt + Streak ----
+    // Lens Dirt: 1 composite shader + 1x1 white fallback tex
+    GLuint programLensDirt           = 0;
+    GLuint whiteTex1x1               = 0;       // LensDirt fallback (dirtTex=0 时用)
+    bool   lensDirtSupported         = false;
+    GLint  locLensDirt_BloomTex      = -1;
+    GLint  locLensDirt_DirtTex       = -1;
+    GLint  locLensDirt_Intensity     = -1;
+    // Streak: 2 shader (blur + composite) + 共用 programBloomBright 作 bright pass
+    GLuint programStreakBlur         = 0;
+    GLuint programStreakComposite    = 0;
+    bool   streakSupported           = false;
+    GLint  locStreakBlur_Src         = -1;
+    GLint  locStreakBlur_Texel       = -1;
+    GLint  locStreakBlur_Length      = -1;
+    GLint  locStreakBlur_Direction   = -1;
+    GLint  locStreakComposite_Src    = -1;
+    GLint  locStreakComposite_Intensity = -1;
 
     // Phase E.2.1 — Lighting2D dirty bit cache
     // 当 state->version 与此值相等时, UploadLighting2D 跳过所有 glUniform*v 调用
@@ -1458,6 +1581,9 @@ public:
 
         // ---- Phase E.5 — Auto Exposure shader (依赖 tonemap 的 vaoTonemap) ----
         InitAutoExposure();
+
+        // ---- Phase E.6 — Lens Dirt + Streak shader (依赖 tonemap 的 vaoTonemap + Bloom bright pass) ----
+        InitLensFx();
 
         CC::Log(CC::LOG_INFO, "RenderBackend: GL33 Core initialized (GL %s)%s%s%s",
                 (const char*)glGetString(GL_VERSION),
@@ -1884,6 +2010,101 @@ public:
                 programLumaExtract);
     }
 
+    // ==================== Phase E.6 — Lens Dirt + Streak shader 初始化 ====================
+    //
+    // 流程:
+    //   1. 依赖 tonemapSupported = true (共用 vaoTonemap 全屏 quad)
+    //   2. 编译 3 个 FS shader (VS 复用 VS_TONEMAP_SOURCE):
+    //      - programLensDirt       (bloom x dirt x intensity)
+    //      - programStreakBlur     (7-tap 方向高斯)
+    //      - programStreakComposite (streak x intensity)
+    //   3. 缓存 uniform location + 绑定 sampler slot
+    //   4. 创建 1x1 白纹理 fallback (LensDirt.SetDirtTexture 未设时用)
+    //
+    // 失败影响:
+    //   - LensDirt shader fail → lensDirtSupported=false (LensDirt API 降级)
+    //   - Streak shader (blur 或 composite) fail → streakSupported=false
+    //   - 两者独立, Bloom bright pass 作 streak bright 复用, 不需额外 shader
+    void InitLensFx() {
+        if (!tonemapSupported) {
+            lensDirtSupported = false;
+            streakSupported = false;
+            return;
+        }
+
+        auto buildProgram = [this](const char* fsSrc, const char* name) -> GLuint {
+            GLuint vs = CompileShader(GL_VERTEX_SHADER,   VS_TONEMAP_SOURCE);
+            GLuint fs = CompileShader(GL_FRAGMENT_SHADER, fsSrc);
+            GLuint prog = 0;
+            if (vs && fs) prog = LinkProgram(vs, fs);
+            if (vs) glDeleteShader(vs);
+            if (fs) glDeleteShader(fs);
+            if (!prog) {
+                CC::Log(CC::LOG_WARN,
+                        "GL33: Phase E.6 LensFx shader '%s' compile/link failed", name);
+            }
+            return prog;
+        };
+
+        // --- 1x1 白纹理 fallback ---
+        glGenTextures(1, &whiteTex1x1);
+        glBindTexture(GL_TEXTURE_2D, whiteTex1x1);
+        uint8_t whitePixel[4] = {255, 255, 255, 255};
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 1, 1, 0, GL_RGBA,
+                     GL_UNSIGNED_BYTE, whitePixel);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glBindTexture(GL_TEXTURE_2D, 0);
+
+        // --- Lens Dirt ---
+        programLensDirt = buildProgram(FS_LENS_DIRT_COMPOSITE_SOURCE, "LensDirtComposite");
+        if (programLensDirt) {
+            locLensDirt_BloomTex  = glGetUniformLocation(programLensDirt, "uBloomTex");
+            locLensDirt_DirtTex   = glGetUniformLocation(programLensDirt, "uDirtTex");
+            locLensDirt_Intensity = glGetUniformLocation(programLensDirt, "uIntensity");
+            glUseProgram(programLensDirt);
+            if (locLensDirt_BloomTex >= 0) glUniform1i(locLensDirt_BloomTex, 0);
+            if (locLensDirt_DirtTex  >= 0) glUniform1i(locLensDirt_DirtTex, 1);
+            glUseProgram(0);
+            lensDirtSupported = true;
+        } else {
+            lensDirtSupported = false;
+        }
+
+        // --- Streak Blur + Composite (两者需同时成功, 否则 streak 整体不可用) ---
+        programStreakBlur      = buildProgram(FS_STREAK_BLUR_SOURCE,      "StreakBlur");
+        programStreakComposite = buildProgram(FS_STREAK_COMPOSITE_SOURCE, "StreakComposite");
+
+        if (programStreakBlur && programStreakComposite) {
+            locStreakBlur_Src        = glGetUniformLocation(programStreakBlur, "uSrc");
+            locStreakBlur_Texel      = glGetUniformLocation(programStreakBlur, "uTexel");
+            locStreakBlur_Length     = glGetUniformLocation(programStreakBlur, "uLength");
+            locStreakBlur_Direction  = glGetUniformLocation(programStreakBlur, "uDirection");
+            glUseProgram(programStreakBlur);
+            if (locStreakBlur_Src >= 0) glUniform1i(locStreakBlur_Src, 0);
+
+            locStreakComposite_Src       = glGetUniformLocation(programStreakComposite, "uSrc");
+            locStreakComposite_Intensity = glGetUniformLocation(programStreakComposite, "uIntensity");
+            glUseProgram(programStreakComposite);
+            if (locStreakComposite_Src >= 0) glUniform1i(locStreakComposite_Src, 0);
+            glUseProgram(0);
+
+            streakSupported = true;
+        } else {
+            if (programStreakBlur)      { glDeleteProgram(programStreakBlur);      programStreakBlur = 0; }
+            if (programStreakComposite) { glDeleteProgram(programStreakComposite); programStreakComposite = 0; }
+            streakSupported = false;
+        }
+
+        CC::Log(CC::LOG_INFO,
+                "GL33: Phase E.6 LensFx ready (lensDirt=%s, streak=%s; whiteTex=%u, lensDirt=%u, streakBlur=%u, streakComposite=%u)",
+                lensDirtSupported ? "yes" : "no",
+                streakSupported   ? "yes" : "no",
+                whiteTex1x1, programLensDirt, programStreakBlur, programStreakComposite);
+    }
+
     void Shutdown() override {
         if (program) glDeleteProgram(program);
         if (vbo) glDeleteBuffers(1, &vbo);
@@ -1975,6 +2196,17 @@ public:
         if (programLumaExtract) { glDeleteProgram(programLumaExtract); programLumaExtract = 0; }
         locLumaExtract_HDRTex = -1;
         autoExposureSupported = false;
+
+        // Phase E.6 — 释放 LensFx shader + 1x1 白纹理 (streak RT 由 StreakRenderer::Shutdown 配对释放)
+        if (programLensDirt)         { glDeleteProgram(programLensDirt);         programLensDirt = 0; }
+        if (programStreakBlur)       { glDeleteProgram(programStreakBlur);       programStreakBlur = 0; }
+        if (programStreakComposite)  { glDeleteProgram(programStreakComposite);  programStreakComposite = 0; }
+        if (whiteTex1x1)             { glDeleteTextures(1, &whiteTex1x1);        whiteTex1x1 = 0; }
+        locLensDirt_BloomTex = locLensDirt_DirtTex = locLensDirt_Intensity = -1;
+        locStreakBlur_Src = locStreakBlur_Texel = locStreakBlur_Length = locStreakBlur_Direction = -1;
+        locStreakComposite_Src = locStreakComposite_Intensity = -1;
+        lensDirtSupported = false;
+        streakSupported = false;
     }
 
     bool SupportsLit2D() const override { return lit2DSupported; }
@@ -2415,6 +2647,206 @@ public:
 
         glBindFramebuffer(GL_FRAMEBUFFER, (GLuint)prevFbo);
         return pixel;
+    }
+
+    // ==================== Phase E.6 — Lens Dirt 虚接口实现 ====================
+
+    bool SupportsLensDirt() const override { return lensDirtSupported; }
+
+    /// Lens dirt composite: hdrFbo += bloomTex x dirtTex x intensity
+    void DrawLensDirtComposite(uint32_t bloomTex, uint32_t dirtTex,
+                                uint32_t hdrFbo,
+                                int w, int h, float intensity) override {
+        if (!lensDirtSupported || !bloomTex || !hdrFbo || w <= 0 || h <= 0) return;
+
+        // dirtTex == 0 时 fallback 到 1x1 白纹理 (乘白色 = bloom x intensity 原样)
+        GLuint dirt = dirtTex ? (GLuint)dirtTex : whiteTex1x1;
+        if (!dirt) return;   // 白纹理未创建 (极少发生)
+
+        glBindFramebuffer(GL_FRAMEBUFFER, (GLuint)hdrFbo);
+        glViewport(0, 0, w, h);
+        glDisable(GL_DEPTH_TEST);
+        glDisable(GL_SCISSOR_TEST);
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_ONE, GL_ONE);
+
+        glUseProgram(programLensDirt);
+        if (locLensDirt_Intensity >= 0) glUniform1f(locLensDirt_Intensity, intensity);
+
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, (GLuint)bloomTex);
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, dirt);
+
+        glBindVertexArray(vaoTonemap);
+        glDrawArrays(GL_TRIANGLES, 0, 6);
+
+        glBindVertexArray(0);
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        glUseProgram(0);
+        glDisable(GL_BLEND);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    }
+
+    // ==================== Phase E.6 — Streak 虚接口实现 ====================
+
+    bool SupportsStreak() const override { return streakSupported; }
+
+    /// 创建 streak ping-pong RT 对 (2 个 RGBA16F + FBO)
+    bool CreateStreakTargets(int srcW, int srcH,
+                              uint32_t* outFbos, uint32_t* outTexs,
+                              int* outW, int* outH) override {
+        if (!streakSupported || srcW <= 0 || srcH <= 0
+            || !outFbos || !outTexs || !outW || !outH) return false;
+
+        int w = srcW / 2; if (w < 32) w = 32;
+        int h = srcH / 2; if (h < 32) h = 32;
+
+        // 创建 2 个 tex + 2 个 FBO; 任何一步失败则清理全部
+        GLuint texs[2] = {0, 0};
+        GLuint fbos[2] = {0, 0};
+        bool ok = true;
+
+        for (int i = 0; i < 2 && ok; ++i) {
+            glGenTextures(1, &texs[i]);
+            glBindTexture(GL_TEXTURE_2D, texs[i]);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, w, h, 0,
+                         GL_RGBA, GL_HALF_FLOAT, nullptr);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+            glBindTexture(GL_TEXTURE_2D, 0);
+
+            glGenFramebuffers(1, &fbos[i]);
+            glBindFramebuffer(GL_FRAMEBUFFER, fbos[i]);
+            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                                    GL_TEXTURE_2D, texs[i], 0);
+            GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+            glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+            if (status != GL_FRAMEBUFFER_COMPLETE) {
+                CC::Log(CC::LOG_WARN,
+                        "GL33: Phase E.6 CreateStreakTargets slot %d incomplete (0x%X)",
+                        i, (unsigned)status);
+                ok = false;
+                break;
+            }
+        }
+
+        if (!ok) {
+            for (int i = 0; i < 2; ++i) {
+                if (fbos[i]) glDeleteFramebuffers(1, &fbos[i]);
+                if (texs[i]) glDeleteTextures(1, &texs[i]);
+            }
+            return false;
+        }
+
+        outFbos[0] = (uint32_t)fbos[0];
+        outFbos[1] = (uint32_t)fbos[1];
+        outTexs[0] = (uint32_t)texs[0];
+        outTexs[1] = (uint32_t)texs[1];
+        *outW = w;
+        *outH = h;
+        return true;
+    }
+
+    void DeleteStreakTargets(uint32_t* fbos, uint32_t* texs) override {
+        if (!fbos || !texs) return;
+        for (int i = 0; i < 2; ++i) {
+            if (fbos[i]) { GLuint f = (GLuint)fbos[i]; glDeleteFramebuffers(1, &f); fbos[i] = 0; }
+            if (texs[i]) { GLuint t = (GLuint)texs[i]; glDeleteTextures(1, &t);     texs[i] = 0; }
+        }
+    }
+
+    /// Streak bright pass: v1 复用 Bloom programBloomBright (相同 threshold + soft knee)
+    void DrawStreakBright(uint32_t hdrTex, uint32_t outFbo,
+                           int w, int h, float threshold) override {
+        if (!streakSupported || !bloomSupported || !hdrTex || !outFbo) return;
+
+        glBindFramebuffer(GL_FRAMEBUFFER, (GLuint)outFbo);
+        glViewport(0, 0, w, h);
+        glDisable(GL_DEPTH_TEST);
+        glDisable(GL_SCISSOR_TEST);
+        glDisable(GL_BLEND);
+
+        glUseProgram(programBloomBright);
+        if (locBloomBright_Threshold >= 0) glUniform1f(locBloomBright_Threshold, threshold);
+
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, (GLuint)hdrTex);
+
+        glBindVertexArray(vaoTonemap);
+        glDrawArrays(GL_TRIANGLES, 0, 6);
+
+        glBindVertexArray(0);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        glUseProgram(0);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    }
+
+    /// 1D 方向模糊: srcTex → dstFbo (7-tap 方向高斯)
+    void DrawStreakBlur(uint32_t srcTex, uint32_t dstFbo,
+                         int w, int h,
+                         float length,
+                         float dirX, float dirY) override {
+        if (!streakSupported || !srcTex || !dstFbo || w <= 0 || h <= 0) return;
+
+        float texelX = 1.0f / (float)w;
+        float texelY = 1.0f / (float)h;
+
+        glBindFramebuffer(GL_FRAMEBUFFER, (GLuint)dstFbo);
+        glViewport(0, 0, w, h);
+        glDisable(GL_DEPTH_TEST);
+        glDisable(GL_SCISSOR_TEST);
+        glDisable(GL_BLEND);
+
+        glUseProgram(programStreakBlur);
+        if (locStreakBlur_Texel     >= 0) glUniform2f(locStreakBlur_Texel, texelX, texelY);
+        if (locStreakBlur_Length    >= 0) glUniform1f(locStreakBlur_Length, length);
+        if (locStreakBlur_Direction >= 0) glUniform2f(locStreakBlur_Direction, dirX, dirY);
+
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, (GLuint)srcTex);
+
+        glBindVertexArray(vaoTonemap);
+        glDrawArrays(GL_TRIANGLES, 0, 6);
+
+        glBindVertexArray(0);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        glUseProgram(0);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    }
+
+    /// 加性合成: streakTex × intensity → hdrFbo
+    void DrawStreakComposite(uint32_t streakTex, uint32_t hdrFbo,
+                              int w, int h, float intensity) override {
+        if (!streakSupported || !streakTex || !hdrFbo || w <= 0 || h <= 0) return;
+
+        glBindFramebuffer(GL_FRAMEBUFFER, (GLuint)hdrFbo);
+        glViewport(0, 0, w, h);
+        glDisable(GL_DEPTH_TEST);
+        glDisable(GL_SCISSOR_TEST);
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_ONE, GL_ONE);
+
+        glUseProgram(programStreakComposite);
+        if (locStreakComposite_Intensity >= 0) glUniform1f(locStreakComposite_Intensity, intensity);
+
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, (GLuint)streakTex);
+
+        glBindVertexArray(vaoTonemap);
+        glDrawArrays(GL_TRIANGLES, 0, 6);
+
+        glBindVertexArray(0);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        glUseProgram(0);
+        glDisable(GL_BLEND);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
     }
 
     // ==================== Phase E.1.5 — Lit2D 绘制实现 ====================

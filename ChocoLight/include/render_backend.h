@@ -687,6 +687,91 @@ public:
      * @return float        log luminance 值; 失败 / 不支持时返 0.0
      */
     virtual float ReadbackLuminance1x1(uint32_t /*lumFbo*/, int /*lastMipLevel*/) { return 0.0f; }
+
+    // ==================== Phase E.6 — Lens Dirt ====================
+
+    /**
+     * @brief 是否支持 Lens Dirt (shader 编译成功)
+     * 默认实现 (Legacy): 返回 false, 所有 LensDirt API no-op.
+     */
+    virtual bool SupportsLensDirt() const { return false; }
+
+    /**
+     * @brief Lens dirt 合成: hdrFbo += bloomTex x dirtTex x intensity
+     *
+     * shader:
+     *   bloom = texture(uBloomTex, vUV).rgb
+     *   dirt  = texture(uDirtTex,  vUV).rgb
+     *   out   = bloom * dirt * intensity
+     * 调用方内部会 enable GL_BLEND (ONE, ONE), 结束后 disable.
+     *
+     * @param bloomTex   Bloom pyramid[0] 颜色 tex (输入)
+     * @param dirtTex    用户 dirt 纹理; 0 = 后端内部 1x1 白纹理 fallback
+     * @param hdrFbo     HDR RT FBO id (目标, additive 写入)
+     * @param w, h       hdrFbo 尺寸 (viewport)
+     * @param intensity  合成强度 (>= 0)
+     */
+    virtual void DrawLensDirtComposite(uint32_t /*bloomTex*/, uint32_t /*dirtTex*/,
+                                        uint32_t /*hdrFbo*/,
+                                        int /*w*/, int /*h*/, float /*intensity*/) {}
+
+    // ==================== Phase E.6 — Streak (Anamorphic Flare) ====================
+
+    /**
+     * @brief 是否支持 Streak (shader 编译成功 + RGBA16F FBO 可用)
+     */
+    virtual bool SupportsStreak() const { return false; }
+
+    /**
+     * @brief 创建 streak ping-pong RT 对 (2 x RGBA16F + FBO, 同尺寸)
+     *
+     * 内部按 srcW/2, srcH/2 创建 (节省 fragment); 下限 32x32.
+     *
+     * @param srcW, srcH   源 HDR RT 尺寸
+     * @param outFbos[2]   [out] 两个 FBO id
+     * @param outTexs[2]   [out] 两个 tex id
+     * @param outW, outH   [out] 实际创建尺寸
+     * @return             true 成功; false 失败 (会清理已分配资源)
+     */
+    virtual bool CreateStreakTargets(int /*srcW*/, int /*srcH*/,
+                                      uint32_t* /*outFbos*/,   // uint32_t[2]
+                                      uint32_t* /*outTexs*/,   // uint32_t[2]
+                                      int* /*outW*/, int* /*outH*/) { return false; }
+
+    virtual void DeleteStreakTargets(uint32_t* /*fbos*/, uint32_t* /*texs*/) {}
+
+    /**
+     * @brief Streak bright pass: hdrTex -> outFbo (亮度阈值提取)
+     *
+     * v1 实现复用 Bloom programBloomBright (相同算法 + soft knee).
+     */
+    virtual void DrawStreakBright(uint32_t /*hdrTex*/, uint32_t /*outFbo*/,
+                                   int /*w*/, int /*h*/, float /*threshold*/) {}
+
+    /**
+     * @brief 1D 方向模糊: srcTex -> dstFbo (7-tap 方向高斯)
+     *
+     * shader 内 normalize(direction). 步长 = direction * length.
+     * 不启用 blend (直接覆盖写 dst).
+     *
+     * @param srcTex      输入 streak RT 的一侧
+     * @param dstFbo      输出 streak RT 的另一侧 (ping-pong)
+     * @param w, h        dst 尺寸
+     * @param length      单步 UV 距离
+     * @param dirX, dirY  方向向量 (shader 内 normalize)
+     */
+    virtual void DrawStreakBlur(uint32_t /*srcTex*/, uint32_t /*dstFbo*/,
+                                 int /*w*/, int /*h*/,
+                                 float /*length*/,
+                                 float /*dirX*/, float /*dirY*/) {}
+
+    /**
+     * @brief 加性合成: streakTex x intensity -> hdrFbo
+     *
+     * 调用方内部 enable GL_BLEND (ONE, ONE), 结束后 disable.
+     */
+    virtual void DrawStreakComposite(uint32_t /*streakTex*/, uint32_t /*hdrFbo*/,
+                                      int /*w*/, int /*h*/, float /*intensity*/) {}
 };
 
 // ==================== 工厂函数 ====================
