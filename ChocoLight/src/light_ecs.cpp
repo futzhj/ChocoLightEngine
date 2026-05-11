@@ -215,8 +215,9 @@ end
 
 -- 更新所有系统
 function ECSWorld:Update(dt)
+    local _unpack = table.unpack or unpack  -- Lua 5.1: 全局 unpack; Lua 5.2+: table.unpack
     for _, sys in ipairs(self._systems) do
-        local entities = self:Query(table.unpack(sys.required))
+        local entities = self:Query(_unpack(sys.required))
         sys.func(entities, dt)
     end
     -- Phase C: 末尾自动同步 (若有 networked 变化且已绑 room)
