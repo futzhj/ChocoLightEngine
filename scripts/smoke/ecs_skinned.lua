@@ -289,6 +289,89 @@ do
 end
 
 -- ============================================================
+-- Dx4.1-AC1: AnimationState.looping 桥接 animator:SetLooping
+-- ============================================================
+do
+    local _, origLight = makeMockAnimGlobal()
+    local w = World.new()
+    local an = makeMockAnimator()
+    function an:SetLooping(b) self._calls[#self._calls+1] = {fn='SetLooping', b=b} end
+    local e = w:CreateEntity():Add('Transform3D', {})
+                              :Add('SkinnedMeshRenderer', {mesh='m', animator=an})
+                              :Add('AnimationState',      {state='', looping=false})
+    w:Update(0.016)
+    eq(countFn(an._calls, 'SetLooping'), 1, "Dx4.1-AC1: SetLooping called when looping changes")
+    eq(lastCall(an._calls, 'SetLooping').b, false, "Dx4.1-AC1: SetLooping(false)")
+
+    -- 改回 true
+    e:Set('AnimationState', {state='', looping=true})
+    w:Update(0.016)
+    eq(countFn(an._calls, 'SetLooping'), 2, "Dx4.1-AC1: SetLooping(true)")
+    restoreLight(origLight)
+    pass("Dx4.1-AC1: looping bridge ok")
+end
+
+-- ============================================================
+-- Dx4.1-AC2: ECS.LookAt helper 返回 16-element 列主序矩阵
+-- ============================================================
+do
+    if type(ECS.LookAt) ~= 'function' then fail("Dx4.1-AC2: ECS.LookAt missing") end
+    -- eye=(0,0,5), target=(0,0,0), up=(0,1,0) — 看向 -Z, 应等于经典 view matrix
+    local m = ECS.LookAt(0, 0, 5,   0, 0, 0,   0, 1, 0)
+    eq(type(m), 'table', "Dx4.1-AC2: LookAt returns table")
+    eq(#m, 16,            "Dx4.1-AC2: LookAt 16 elements")
+    -- 该 case: right=(1,0,0) up=(0,1,0) -fwd=(0,0,1)
+    -- 列主序前 12 个应是 r,u,-f 各 4 元素 (含 w=0)
+    eq(m[1], 1, "Dx4.1-AC2: m[0][0] = right.x = 1")
+    eq(m[5], 0, "Dx4.1-AC2: m[1][0] = right.y = 0")
+    eq(m[9], 0, "Dx4.1-AC2: m[2][0] = right.z = 0")
+    eq(m[16], 1, "Dx4.1-AC2: m[3][3] = 1")
+    pass("Dx4.1-AC2: LookAt produces correct view matrix")
+end
+
+-- ============================================================
+-- Dx4.1-AC3: _BuildModelMatrix3D 完整 ZYX Euler 旋转
+-- ============================================================
+do
+    local w = World.new()
+    -- Case 1: 单位变换 (tf 全默认), 期望 identity
+    local m0 = w:_BuildModelMatrix3D({})
+    eq(#m0, 16, "Dx4.1-AC3: matrix has 16 elements")
+    for i, expected in ipairs({1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1}) do
+        if math.abs(m0[i] - expected) > 1e-6 then
+            fail(string.format("Dx4.1-AC3: identity[%d] expected=%g got=%g", i, expected, m0[i]))
+        end
+    end
+    pass("Dx4.1-AC3: identity matrix correct")
+
+    -- Case 2: 平移 (10, 20, 30)
+    local m1 = w:_BuildModelMatrix3D({x=10, y=20, z=30})
+    eq(m1[13], 10, "Dx4.1-AC3: m[3][0] tx=10")
+    eq(m1[14], 20, "Dx4.1-AC3: m[3][1] ty=20")
+    eq(m1[15], 30, "Dx4.1-AC3: m[3][2] tz=30")
+    pass("Dx4.1-AC3: translation correct")
+
+    -- Case 3: 绕 X 轴 90 度 (rx=90 → cos=0, sin=1)
+    local m2 = w:_BuildModelMatrix3D({rx=90})
+    -- m[1][1] = cx*cz + sx*sy*sz = 0  (cz=1, sx=1, sy=0, sz=0)
+    -- m[1][2] = sx*cy = 1
+    -- m[2][1] = -sx*cz + cx*sy*sz = -1
+    -- m[2][2] = cx*cy = 0
+    if math.abs(m2[6]) > 1e-6 then fail("Dx4.1-AC3: rx=90 m11 expected 0") end
+    if math.abs(m2[7] - 1) > 1e-6 then fail("Dx4.1-AC3: rx=90 m21 expected 1") end
+    if math.abs(m2[10] + 1) > 1e-6 then fail("Dx4.1-AC3: rx=90 m12 expected -1") end
+    if math.abs(m2[11]) > 1e-6 then fail("Dx4.1-AC3: rx=90 m22 expected 0") end
+    pass("Dx4.1-AC3: rx=90 rotation correct (X-axis)")
+
+    -- Case 4: 缩放 (2, 3, 4)
+    local m3 = w:_BuildModelMatrix3D({sx=2, sy=3, sz=4})
+    eq(m3[1], 2, "Dx4.1-AC3: sx=2 in m[0][0]")
+    eq(m3[6], 3, "Dx4.1-AC3: sy=3 in m[1][1]")
+    eq(m3[11], 4, "Dx4.1-AC3: sz=4 in m[2][2]")
+    pass("Dx4.1-AC3: scale correct")
+end
+
+-- ============================================================
 -- 兼容性: Phase C/C.x.1/D 现有 API 不破坏
 -- ============================================================
 do

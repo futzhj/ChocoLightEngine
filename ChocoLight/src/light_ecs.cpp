@@ -720,20 +720,68 @@ end
 
 -- ==================== Phase D.x.4: 骨骼动画 ECS 集成 ====================
 
--- 构造 列主序 4x4 model matrix from Transform3D (T * RotY * Scale 简化版)
--- 多轴旋转留 Phase D.x.4.x; 角色游戏 80% 用例仅 Y 轴 (heading)
+-- 构造 列主序 4x4 model matrix from Transform3D
+-- Phase D.x.4.1: 完整 ZYX Euler 旋转 (M = T * Rz * Ry * Rx * S), 角度单位度
 function ECSWorld:_BuildModelMatrix3D(tf)
-    local ry  = (tf.ry or 0) * math.pi / 180
-    local c   = math.cos(ry)
-    local s   = math.sin(ry)
+    local rx = (tf.rx or 0) * math.pi / 180
+    local ry = (tf.ry or 0) * math.pi / 180
+    local rz = (tf.rz or 0) * math.pi / 180
+    local cx, sx = math.cos(rx), math.sin(rx)
+    local cy, sy = math.cos(ry), math.sin(ry)
+    local cz, sz = math.cos(rz), math.sin(rz)
     local scx = tf.sx or 1
     local scy = tf.sy or 1
     local scz = tf.sz or 1
+    -- R = Rz * Ry * Rx 展开 (列主序约定)
+    --   [cy*cz, -cx*sz+sx*sy*cz, sx*sz+cx*sy*cz, 0]
+    --   [cy*sz, cx*cz+sx*sy*sz,  -sx*cz+cx*sy*sz, 0]
+    --   [-sy,   sx*cy,           cx*cy,           0]
+    --   [tx,    ty,              tz,              1]
+    local m00 = cy*cz
+    local m10 = cy*sz
+    local m20 = -sy
+    local m01 = -cx*sz + sx*sy*cz
+    local m11 = cx*cz + sx*sy*sz
+    local m21 = sx*cy
+    local m02 = sx*sz + cx*sy*cz
+    local m12 = -sx*cz + cx*sy*sz
+    local m22 = cx*cy
     return {
-         c*scx, 0,     -s*scx, 0,
-         0,     scy,    0,     0,
-         s*scz, 0,      c*scz, 0,
-         tf.x or 0, tf.y or 0, tf.z or 0, 1,
+        m00*scx, m10*scx, m20*scx, 0,
+        m01*scy, m11*scy, m21*scy, 0,
+        m02*scz, m12*scz, m22*scz, 0,
+        tf.x or 0, tf.y or 0, tf.z or 0, 1,
+    }
+end
+
+-- Phase D.x.4.1: LookAt helper (列主序 view matrix), 用于 Camera 或角色朝向计算
+-- 返回 16-element table; 用户可以从中取出朝向角度或直接传给 Light.Graphics.SetCamera
+local function _LookAtMatrix(eyeX, eyeY, eyeZ, tgtX, tgtY, tgtZ, upX, upY, upZ)
+    -- forward = normalize(target - eye)
+    local fx, fy, fz = tgtX - eyeX, tgtY - eyeY, tgtZ - eyeZ
+    local fl = math.sqrt(fx*fx + fy*fy + fz*fz)
+    if fl < 1e-10 then fl = 1 end
+    fx, fy, fz = fx/fl, fy/fl, fz/fl
+    -- right = normalize(forward x up)
+    local rx = fy*upZ - fz*upY
+    local ry = fz*upX - fx*upZ
+    local rz = fx*upY - fy*upX
+    local rl = math.sqrt(rx*rx + ry*ry + rz*rz)
+    if rl < 1e-10 then rl = 1 end
+    rx, ry, rz = rx/rl, ry/rl, rz/rl
+    -- up' = right x forward (重新正交化)
+    local ux = ry*fz - rz*fy
+    local uy = rz*fx - rx*fz
+    local uz = rx*fy - ry*fx
+    -- 列主序 view matrix
+    return {
+        rx, ux, -fx, 0,
+        ry, uy, -fy, 0,
+        rz, uz, -fz, 0,
+        -(rx*eyeX + ry*eyeY + rz*eyeZ),
+        -(ux*eyeX + uy*eyeY + uz*eyeZ),
+         (fx*eyeX + fy*eyeY + fz*eyeZ),
+        1,
     }
 end
 
@@ -760,7 +808,8 @@ function ECSWorld:_AnimationSystem(dt)
         if smr and smr.animator and as then
             local cache = self._anim_cache[e._id]
             if not cache then
-                cache = {lastState='', lastSpeed=1.0, lastPaused=false, lastParams={}, lastMorph={}}
+                cache = {lastState='', lastSpeed=1.0, lastPaused=false, lastLooping=true,
+                          lastParams={}, lastMorph={}}
                 self._anim_cache[e._id] = cache
             end
             local an = smr.animator
@@ -783,6 +832,11 @@ function ECSWorld:_AnimationSystem(dt)
                 if as.paused and type(an.Pause) == 'function' then pcall(an.Pause, an)
                 elseif type(an.Resume) == 'function' then pcall(an.Resume, an) end
                 cache.lastPaused = as.paused
+            end
+            -- Phase D.x.4.1: looping 桥接
+            if as.looping ~= cache.lastLooping and type(an.SetLooping) == 'function' then
+                pcall(an.SetLooping, an, as.looping and true or false)
+                cache.lastLooping = as.looping
             end
             -- params 桥接 (diff apply)
             if as.params then
@@ -812,6 +866,8 @@ end
 return {
     World           = ECSWorld,
     MirrorFromRoom  = MirrorFromRoom,
+    -- Phase D.x.4.1: helper functions
+    LookAt          = _LookAtMatrix,
 }
 )LUA";
 
