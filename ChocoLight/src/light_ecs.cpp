@@ -549,6 +549,9 @@ function ECSWorld:_RegisterBuiltinRenderComponents()
         -- quads = {{x=, y=, qx=, qy=, qw=, qh=}, ...}; 每个 quad 1 个 DrawQuad 调用
         -- 节省: 全局共享 Push/Pop + SetColor (vs N 次)
         {name='SpriteBatch',  defaults={image=nil, quads={}, color={r=1,g=1,b=1,a=1}, visible=true}},
+        -- Phase D.x.8: TextRenderer (ECS 文字渲染, 底层调 gfx.Print)
+        -- font 是 Light.Graphics.Font instance (userdata 包装 table, 不可序列化)
+        {name='TextRenderer', defaults={text='', font=nil, color={r=1,g=1,b=1,a=1}, visible=true}},
         {name='Camera2D',     defaults={active=true, zoom=1.0, viewportW=0, viewportH=0}},
         {name='Transform3D',  defaults={x=0, y=0, z=0, rx=0, ry=0, rz=0, sx=1, sy=1, sz=1, parent=nil}},
         {name='MeshRenderer', defaults={visible=true}},
@@ -787,6 +790,15 @@ function ECSWorld:_PushParentChain3D(entity, gfx)
     return #chain
 end
 
+-- Phase D.x.8: 绘制 TextRenderer (调底层 gfx.Print)
+-- gfx.Print 内部已 Push/Translate/Pop, 此处仅 SetColor (Print 用全局 drawColor) 后调用
+function ECSWorld:_DrawText(tf, tr, gfx)
+    if not tr.font or not tr.text or tr.text == '' then return end
+    local col = tr.color or {}
+    gfx.SetColor(col.r or 1, col.g or 1, col.b or 1, col.a or 1)
+    gfx.Print(tr.text, tr.font, tf.x or 0, tf.y or 0, 0)
+end
+
 -- Phase D.x.6: 绘制 SpriteBatch (共享 image + transform + color 的 quad 列表)
 -- 节省: 全局 1 次 Push/Pop + 1 次 SetColor (vs N 次)
 function ECSWorld:_DrawSpriteBatch(tf, batch, gfx)
@@ -921,6 +933,17 @@ function ECSWorld:Render()
         if tf and sb and sb.visible ~= false and sb.image and sb.quads and #sb.quads > 0 then
             local pushCount = self:_PushParentChain2D(e, gfx)
             self:_DrawSpriteBatch(tf, sb, gfx)
+            for k = 1, pushCount do gfx.Pop() end
+        end
+    end
+
+    -- Phase D.x.8: TextRenderer 渲染 (在 sprite/batch 之后, UI 文字覆盖)
+    for _, e in ipairs(self._entities) do
+        local tf = e._comps.Transform2D
+        local tr = e._comps.TextRenderer
+        if tf and tr and tr.visible ~= false and tr.text and tr.text ~= '' and tr.font then
+            local pushCount = self:_PushParentChain2D(e, gfx)
+            self:_DrawText(tf, tr, gfx)
             for k = 1, pushCount do gfx.Pop() end
         end
     end

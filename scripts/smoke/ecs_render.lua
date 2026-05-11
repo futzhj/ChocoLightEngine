@@ -73,7 +73,7 @@ local function makeMockGraphics()
     local calls = {}
     local gfx = {}
     local fnNames = {"Push", "Pop", "Translate", "Rotate", "Scale", "SetColor",
-                     "Draw", "DrawQuad", "SetPerspective", "SetCamera", "SetDepthTest"}
+                     "Draw", "DrawQuad", "Print", "SetPerspective", "SetCamera", "SetDepthTest"}
     for _, fn in ipairs(fnNames) do
         gfx[fn] = function(...)
             calls[#calls + 1] = {fn=fn, args={...}}
@@ -626,6 +626,105 @@ do
 
     eq(w._cull_stats_2d.culled, 1, "Dx5.3-AC3: parent scale 10x → child at world 500 culled")
     pass("Dx5.3-AC3: parent scale accumulated correctly")
+end
+
+-- ============================================================
+-- Phase D.x.8: TextRenderer (gfx.Print 调用 + color/text/font 参数传递)
+-- ============================================================
+do
+    local gfx, calls = makeMockGraphics()
+    installMockLight(gfx)
+    local w = World.new()
+    -- mock font (实际是 Light.Graphics.Font instance 含 __instance userdata)
+    local fontMock = {__instance = "fake_font_userdata"}
+
+    -- 单 TextRenderer entity
+    w:CreateEntity():Add('Transform2D', {x=100, y=200})
+                    :Add('TextRenderer', {
+                        text  = "Hello World",
+                        font  = fontMock,
+                        color = {r=1, g=0.5, b=0, a=1},
+                    })
+
+    w:Render()
+
+    -- 1 次 SetColor + 1 次 Print
+    eq(countFn(calls, "SetColor"), 1, "Dx8: TextRenderer calls SetColor once")
+    eq(countFn(calls, "Print"),    1, "Dx8: TextRenderer calls gfx.Print once")
+
+    -- SetColor 参数 = color (1, 0.5, 0, 1)
+    local sc = nthCall(calls, "SetColor", 1)
+    eq(sc.args[1], 1,   "Dx8: SetColor r=1")
+    eq(sc.args[2], 0.5, "Dx8: SetColor g=0.5")
+    eq(sc.args[3], 0,   "Dx8: SetColor b=0")
+    eq(sc.args[4], 1,   "Dx8: SetColor a=1")
+
+    -- Print 参数 = (text, font, x, y, z)
+    local pr = nthCall(calls, "Print", 1)
+    eq(pr.args[1], "Hello World", "Dx8: Print text")
+    eq(pr.args[2], fontMock,      "Dx8: Print font")
+    eq(pr.args[3], 100,           "Dx8: Print x=100")
+    eq(pr.args[4], 200,           "Dx8: Print y=200")
+    eq(pr.args[5], 0,             "Dx8: Print z=0")
+    pass("Dx8: TextRenderer routes to gfx.Print with correct args")
+end
+
+-- ============================================================
+-- Phase D.x.8: TextRenderer 边界条件 (nil font / empty text / visible=false)
+-- ============================================================
+do
+    local gfx, calls = makeMockGraphics()
+    installMockLight(gfx)
+    local w = World.new()
+    local fontMock = {__instance = "fake_font"}
+
+    -- A: font=nil → skip
+    w:CreateEntity():Add('Transform2D', {x=0, y=0})
+                    :Add('TextRenderer', {text="A", font=nil})
+    -- B: text="" → skip
+    w:CreateEntity():Add('Transform2D', {x=0, y=0})
+                    :Add('TextRenderer', {text="", font=fontMock})
+    -- C: visible=false → skip
+    w:CreateEntity():Add('Transform2D', {x=0, y=0})
+                    :Add('TextRenderer', {text="C", font=fontMock, visible=false})
+    -- D: 正常 → 渲染
+    w:CreateEntity():Add('Transform2D', {x=0, y=0})
+                    :Add('TextRenderer', {text="D", font=fontMock})
+
+    w:Render()
+
+    -- 仅 D 走 Print
+    eq(countFn(calls, "Print"), 1, "Dx8-AC2: only 1 Print (3 skipped by boundary)")
+    local pr = nthCall(calls, "Print", 1)
+    eq(pr.args[1], "D", "Dx8-AC2: only D entity rendered")
+    pass("Dx8-AC2: boundary conditions skip rendering correctly")
+end
+
+-- ============================================================
+-- Phase D.x.8: TextRenderer 与 parent chain 协作
+-- ============================================================
+do
+    local gfx, calls = makeMockGraphics()
+    installMockLight(gfx)
+    local w = World.new()
+    local fontMock = {__instance = "fake_font"}
+
+    -- parent at (50, 60), child text 自身 (10, 20) → 最终需 parent Push + Translate(50,60) 然后 Print(10,20)
+    local parent = w:CreateEntity():Add('Transform2D', {x=50, y=60})
+    w:CreateEntity():Add('Transform2D', {x=10, y=20, parent=parent})
+                    :Add('TextRenderer', {text="Child", font=fontMock})
+
+    w:Render()
+
+    -- 应有 parent 的 Push + Translate + Print(10, 20) + Pop
+    -- Push 数 == Pop 数 (parent chain push 1 次)
+    eq(countFn(calls, "Push"), countFn(calls, "Pop"),
+       "Dx8-AC3: Push/Pop balanced with parent chain")
+    -- Print 第 1 个参数是 "Child", 第 3 个是 child 自身 x=10 (parent transform 已通过 stack 应用)
+    local pr = nthCall(calls, "Print", 1)
+    eq(pr.args[1], "Child", "Dx8-AC3: Print text=Child")
+    eq(pr.args[3], 10,      "Dx8-AC3: Print x=10 (child local; parent translate in stack)")
+    pass("Dx8-AC3: TextRenderer works with parent chain")
 end
 
 -- ============================================================
