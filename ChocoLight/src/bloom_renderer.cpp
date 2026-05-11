@@ -10,7 +10,7 @@
 
 #include "bloom_renderer.h"
 #include "render_backend.h"
-#include "cc_core.h"
+#include "light.h"            // CC::Log
 
 namespace {
 
