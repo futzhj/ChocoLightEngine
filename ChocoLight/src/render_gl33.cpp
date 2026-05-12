@@ -3486,7 +3486,9 @@ public:
         if (!fbo) { glDeleteTextures(1, &tex); return false; }
         glBindFramebuffer(GL_FRAMEBUFFER, fbo);
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, tex, 0);
-        glDrawBuffer(GL_NONE);   // 无 color: GL3.3 桌面必须显式声明
+        // 无 color attachment: 用 glDrawBuffers (GL3.3 + GLES3 都支持; glDrawBuffer 是桌面专用)
+        static const GLenum noneBufs[1] = { GL_NONE };
+        glDrawBuffers(1, noneBufs);
         glReadBuffer(GL_NONE);
         GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
