@@ -1,7 +1,7 @@
 # Phase E.10 SSR Blur — ACCEPTANCE 验收文档
 
 > **任务名**：Phase E.10 SSR Blur（半分辨率 ping-pong 5-tap Gaussian）
-> **状态**：✅ 已完成（local 验证全过 / 等 CI green）
+> **状态**：✅ 已完成（local 验证全过 + CI 6/6 green）
 > **commit**：`ac166f5` — `feat(phase-e10): SSR Blur (half-res Gaussian) + SSAO smoke E.8.x carry-over`
 > **CI run**：[`25719344367`](https://github.com/futzhj/ChocoLightEngine/actions/runs/25719344367)
 > **基线**：Phase E.9 SSR 已合入 main（commit `9402396`）
@@ -24,8 +24,8 @@
 | T4.1 smoke | ssr.lua 49 检查点（含 11 个新增 BlurRadius / 联动） | ✅ |
 | T4.2 demo | demo_ssr B / 9 / 0 键 + HUD + README | ✅ |
 | T4.3 回归 | SSAO smoke 不回归 + CI workflow 增加 ssr.lua | ✅ |
-| T4.4 CI | commit `ac166f5` 已推送，run 25719344367 进行中 | 🕒 |
-| Assess | ACCEPTANCE / FINAL / TODO（本文档 + 续两个） | 🟡 进行中 |
+| T4.4 CI | commit `ac166f5` run 25719344367 — **6/6 green** | ✅ |
+| Assess | ACCEPTANCE / FINAL / TODO（本文档 + 续两个），commit `43f3521` | ✅ |
 
 ---
 
@@ -94,8 +94,8 @@
 | 7 | smoke 49 检查点全过（local） | 见 §4.1 完整输出 | ✅ |
 | 8 | SSAO smoke 不回归 | local PASS（含 Phase E.8.x section J） | ✅ |
 | 9 | demo headless 优雅退出 | `demo_ssr ok (no window)` exit code 0 | ✅ |
-| 10 | CI 6/6 平台 build 通过 | run 25719344367（监控中） | 🕒 |
-| 11 | CI Windows runtime smoke ssr.lua pass | workflow 已挂 ssr.lua | 🕒 |
+| 10 | CI 6/6 平台 build 通过 | linux/macos/ios/web/android/windows 全 success | ✅ |
+| 11 | CI Windows runtime smoke ssr.lua pass | build-windows job success（含 runtime smoke chain） | ✅ |
 | 12 | 文档同步：API_REFERENCE / demo README / docs/Phase E.10/ 全 | 全部 commit 同步 | ✅ |
 
 ---
@@ -277,8 +277,8 @@ scripts/smoke/ssao.lua                            |  +36  |   0  (Phase E.8.x ca
 | 编译 0 error / 0 warning | local 已确认 | ✅ AI |
 | smoke 49/49 PASS | 含 11 Phase E.10 新增 | ✅ AI |
 | demo headless 通过 | exit 0 | ✅ AI |
-| CI green | 等待 run 25719344367 完成 | 🕒 |
-| docs 完整 | ALIGNMENT/CONSENSUS/DESIGN/TASK/ACCEPTANCE 已交付 | ✅ AI |
+| CI green | run 25719344367 conclusion=success，6/6 平台全绿 | ✅ AI |
+| docs 完整 | ALIGNMENT/CONSENSUS/DESIGN/TASK/ACCEPTANCE/FINAL/TODO 7 份全交付 | ✅ AI |
 
 ---
 
@@ -291,5 +291,7 @@ scripts/smoke/ssao.lua                            |  +36  |   0  (Phase E.8.x ca
 
 ---
 
-> **文档结束**
-> 等 CI run 25719344367 完成后，更新 §3 第 10/11 项为 ✅ 并交付 FINAL。
+> **文档结束 — Phase E.10 闭环**
+>
+> ✅ 全部任务验收通过，包含 CI 6/6 green。
+> 下一步请参考 `TODO_PhaseE_10.md` 选择后续路径（候选 A/B/C）。

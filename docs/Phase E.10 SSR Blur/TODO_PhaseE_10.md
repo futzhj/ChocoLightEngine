@@ -5,24 +5,20 @@
 
 ---
 
-## 🔴 P0 — 必须关闭（等 CI 验证）
+## ✅ P0 — 已关闭
 
-### T-1. 等 CI run 25719344367 green
+### T-1. CI run 25719344367 — 已 6/6 green ✅
 
-**操作指引**：
-```powershell
-gh run watch 25719344367
-```
+| Job | 状态 |
+|-----|------|
+| build-linux | ✅ |
+| build-macos | ✅ |
+| build-ios | ✅ |
+| build-web | ✅ |
+| build-android | ✅ |
+| build-windows（含 runtime smoke chain，ssr.lua 49 检查点全过）| ✅ |
 
-**期望**：6/6 平台 build + Windows runtime smoke chain 全 PASS（含 `scripts\smoke\ssr.lua` 新挂）
-
-**如失败**：
-```powershell
-gh run view 25719344367 --log-failed
-```
-按日志在 **本地修改 → commit → 再 push** 重新验证。
-
-**状态**：🕒 监控中（web ✅，其余 in_progress）
+run conclusion=success — **Phase E.10 闭环**。
 
 ---
 

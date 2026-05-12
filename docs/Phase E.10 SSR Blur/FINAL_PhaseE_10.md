@@ -150,10 +150,18 @@ samples/demo_ssr/README.md
 - ✅ demo_ssr headless：exit 0
 - ✅ Light.dll local compile：0 error / 0 warning
 
-### 4.3 CI
+### 4.3 CI — ✅ 6/6 green
 
-run [`25719344367`](https://github.com/futzhj/ChocoLightEngine/actions/runs/25719344367)
-监控中 — 期望 6/6 平台 build + Windows runtime smoke 全过。
+run [`25719344367`](https://github.com/futzhj/ChocoLightEngine/actions/runs/25719344367) conclusion=success
+
+| Job | 结果 |
+|-----|------|
+| build-linux | ✅ |
+| build-macos | ✅ |
+| build-ios | ✅ |
+| build-web | ✅ |
+| build-android | ✅ |
+| **build-windows**（含 Windows runtime smoke chain） | **✅** — ssr.lua 验证通过 |
 
 ---
 
@@ -281,4 +289,4 @@ DESIGN §6.4 留了 hook：在 `FS_SSR_BLUR` 中加 `uDepthTex` + depth diff thr
 - Phase E.9 / E.8 / E.4 既有代码与文档 — 复用基线
 
 > **签字**：✅ AI 完成 6A 全流程，代码 + 测试 + 文档 + CI 一致交付
-> **状态**：等 CI run 25719344367 green 后整个 Phase E.10 闭环
+> **状态**：✅ **Phase E.10 闭环** — CI run 25719344367 × 6/6 全绿
