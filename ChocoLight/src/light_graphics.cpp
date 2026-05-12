@@ -2496,9 +2496,9 @@ static const luaL_Reg ssao_funcs[] = {
     {NULL, NULL}
 };
 
-// ==================== Phase E.9+E.10 — Light.Graphics.SSR Lua API ====================
+// ==================== Phase E.9+E.10+E.11 — Light.Graphics.SSR Lua API ====================
 //
-// API (24 fn): lifecycle 5 + autoEnable 2 + params 16 (8 Set+Get pairs) + debug 1
+// API (28 fn): lifecycle 5 + autoEnable 2 + params 20 (10 Set+Get pairs) + debug 1
 //   Lifecycle:  Enable(w,h) / Disable / IsEnabled / IsSupported / Resize(w,h)
 //   AutoEnable: SetAutoEnable / GetAutoEnable
 //   Params:     SetMaxSteps / GetMaxSteps              (int [8, 128], 默认 64)
@@ -2509,6 +2509,8 @@ static const luaL_Reg ssao_funcs[] = {
 //               SetEdgeFade / GetEdgeFade              (float [0.0, 0.5], 默认 0.1)
 //               SetBlurEnabled / GetBlurEnabled        (bool, 默认 false; Phase E.10 已激活)
 //               SetBlurRadius / GetBlurRadius          (float [0.5, 4.0], 默认 1.5; Phase E.10)
+//               SetBilateralEnabled / GetBilateralEnabled (bool, 默认 true; Phase E.11)
+//               SetBlurDepthSigma / GetBlurDepthSigma  (float [50, 500], 默认 200; Phase E.11)
 //   Debug:      GetReflectionTexId                     (uint32_t reflection RT GL id, 0 = 未启用)
 
 static int l_SSR_Enable(lua_State* L) {
@@ -2625,6 +2627,36 @@ static int l_SSR_GetBlurRadius(lua_State* L) {
     return 1;
 }
 
+/// @lua_api Light.Graphics.SSR.SetBilateralEnabled — Phase E.11 切换 bilateral 模式
+/// @param flag boolean true=depth-aware bilateral (默认), false=纯 Gaussian (Phase E.10 行为)
+/// @note 仅在 BlurEnabled=true 时影响视觉; 不影响资源分配.
+static int l_SSR_SetBilateralEnabled(lua_State* L) {
+    SSRRenderer::SetBilateralEnabled(lua_toboolean(L, 1) != 0);
+    return 0;
+}
+
+/// @lua_api Light.Graphics.SSR.GetBilateralEnabled — Phase E.11 bilateral 模式读取
+/// @return boolean 当前 bilateral 开关
+static int l_SSR_GetBilateralEnabled(lua_State* L) {
+    lua_pushboolean(L, SSRRenderer::GetBilateralEnabled() ? 1 : 0);
+    return 1;
+}
+
+/// @lua_api Light.Graphics.SSR.SetBlurDepthSigma — Phase E.11 bilateral 深度权重 σ
+/// @param v number, clamp [50.0, 500.0], 默认 200.0. σ 越大跨边模糊衰减越快.
+/// @note 仅 BilateralEnabled=true && BlurEnabled=true 时影响视觉.
+static int l_SSR_SetBlurDepthSigma(lua_State* L) {
+    SSRRenderer::SetBlurDepthSigma((float)luaL_checknumber(L, 1));
+    return 0;
+}
+
+/// @lua_api Light.Graphics.SSR.GetBlurDepthSigma — Phase E.11 bilateral σ 读取
+/// @return number 当前 clamp 后的 sigma
+static int l_SSR_GetBlurDepthSigma(lua_State* L) {
+    lua_pushnumber(L, (lua_Number)SSRRenderer::GetBlurDepthSigma());
+    return 1;
+}
+
 /// @lua_api Light.Graphics.SSR.GetReflectionTexId — Phase E.9 调试接口
 /// @return integer 当前反射 RT (RGBA16F full-res) GL id, 0 = SSR 未启用.
 /// 用途: smoke / sample 可视化反射通路, 不应在生产代码使用.
@@ -2661,6 +2693,11 @@ static const luaL_Reg ssr_funcs[] = {
     // Phase E.10 — 反射模糊半径 (1 对新增)
     {"SetBlurRadius",       l_SSR_SetBlurRadius},
     {"GetBlurRadius",       l_SSR_GetBlurRadius},
+    // Phase E.11 — depth-aware bilateral 双对 (2 对 +4)
+    {"SetBilateralEnabled", l_SSR_SetBilateralEnabled},
+    {"GetBilateralEnabled", l_SSR_GetBilateralEnabled},
+    {"SetBlurDepthSigma",   l_SSR_SetBlurDepthSigma},
+    {"GetBlurDepthSigma",   l_SSR_GetBlurDepthSigma},
     // debug (1)
     {"GetReflectionTexId",  l_SSR_GetReflectionTexId},
     {NULL, NULL}

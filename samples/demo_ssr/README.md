@@ -1,7 +1,7 @@
-# demo_ssr — Phase E.9 + E.10 Screen-Space Reflection (含 Blur)
+# demo_ssr — Phase E.9 + E.10 + E.11 Screen-Space Reflection (含 Bilateral Blur)
 
-ChocoLight Phase E.9 SSR (屏幕空间反射) + Phase E.10 SSR Blur demo，演示金属反射场景，
-含可选 half-res Gaussian 模糊。
+ChocoLight Phase E.9 SSR + Phase E.10 SSR Blur + Phase E.11 Bilateral demo，演示金属反射场景，
+含可选 half-res Gaussian / depth-aware Bilateral 模糊（A/B 对比）。
 
 ## 场景
 
@@ -23,7 +23,8 @@ HDR Pipeline EndScene:
    ├── Streak
    ├── SSAO              (基于 G-buffer normal)
    ├── SSR raw          (Phase E.9 — ray march 写入 reflection RT)
-   ├── SSR Blur ★       (Phase E.10 — 可选 half-res 5-tap Gaussian, H + V)
+   ├── SSR Blur ★       (Phase E.10 — 5-tap separable; Phase E.11 位可选 Bilateral)
+   │  └─ mode: BlurEnabled=true × BilateralEnabled 选 Gaussian / Bilateral
    ├── SSR Composite    (additive 入 HDR color)
    ├── LensFlare
    ├── AutoExposure
@@ -44,6 +45,8 @@ HDR Pipeline EndScene:
 | `[` / `]`   | EdgeFade -/+（步长 0.05）             | [0.0, 0.5]          |
 | `B`         | 切换 SSR Blur on/off   *(Phase E.10)*  | —                   |
 | `9` / `0`   | BlurRadius -/+（步长 0.25） *(E.10)* | [0.5, 4.0]          |
+| `V`         | 切换 Bilateral on/off  *(Phase E.11)*  | —                   |
+| `,` / `.`   | BlurDepthSigma -/+（步长 25） *(E.11)*| [50, 500]           |
 | `R`         | reset 所有参数到默认                  | —                   |
 | `ESC`       | 退出                                  | —                   |
 
@@ -58,6 +61,8 @@ Intensity   = 0.7       composite 强度
 EdgeFade    = 0.1       屏幕边缘 fade 区域宽度
 BlurEnabled = false     Phase E.10 默认关（保持向后兼容）
 BlurRadius  = 1.5       Phase E.10　Gaussian 半径 [0.5, 4.0]
+BilateralEnabled = true Phase E.11 默认开（高质量默认，BlurEnabled=true 时生效）
+BlurDepthSigma = 200    Phase E.11　bilateral 深度权重 σ [50, 500]
 ```
 
 ## 性能调优建议
@@ -81,12 +86,14 @@ headless（无窗口/无 GL）下：自动 fallback 到 API probe，
 - SSR 反射依赖屏幕已渲染的几何体（屏外物体不反射）
 - 自反射剔除阈值 `dot(viewN, viewV) < 0.05` 时跳过
 - **Phase E.10 Blur**：统一模糊半径（未采用 PBR roughness-aware blur）；half-res 上采样有少量边缘锁步闪烁
+- **Phase E.11 Bilateral**：仅 depth-aware （未采用 normal-aware）；跨超大深度跨 (>uDepthSigma 上限) 可能权重过低导致突变
 - 半透明物体不写 depth/normal，因此不会被 SSR 反射
 - 后端不支持 G-buffer MRT 时 silent skip + 首次 warn（不崩溃）
 
 ## 相关文档
 
 - Phase E.9 设计文档：`docs/Phase E.9 SSR/`
-- **Phase E.10 设计文档**：`docs/Phase E.10 SSR Blur/`
+- Phase E.10 设计文档：`docs/Phase E.10 SSR Blur/`
+- **Phase E.11 设计文档**：`docs/Phase E.11 Bilateral SSR Blur/`
 - API 参考：`docs/API_REFERENCE.md` → Light.Graphics.SSR
 - smoke 测试：`scripts/smoke/ssr.lua`

@@ -1,11 +1,12 @@
 -- ============================================================================
--- ChocoLight Phase E.9+E.10 — SSR (Screen-Space Reflection) demo
+-- ChocoLight Phase E.9+E.10+E.11 — SSR (Screen-Space Reflection) demo
 -- ============================================================================
--- 金属反射场景: plane 地面 + 多色 cube + 旋转相机 + SSR toggle + Blur toggle.
+-- 金属反射场景: plane 地面 + 多色 cube + 旋转相机 + SSR toggle + Blur toggle + Bilateral.
 --   * 显式 SetPerspective + SetCamera + SetDepthTest(true)
 --   * G-buffer normal MRT 由 HDR pipeline 提供 (Phase E.8.x)
 --   * SSR linear ray march (64 step) 写入反射 RT, additive composite 入 HDR
 --   * Phase E.10: 可选 half-res Gaussian blur (5-tap separable) 模糊反射
+--   * Phase E.11: 可选 depth-aware bilateral 权重门控，消除跨深度边 leak
 --   * 反射效果最强: 摄像机斜俯视地面 (法线向上, 反射方向命中周围 cube)
 --
 -- 控制:
@@ -18,6 +19,8 @@
 --   [ / ]    : EdgeFade      -/+  (步长 0.05, 范围 [0.0, 0.5])
 --   B        : 切换 SSR Blur on/off            (Phase E.10)
 --   9 / 0    : BlurRadius    -/+  (步长 0.25, 范围 [0.5, 4.0])  (Phase E.10)
+--   V        : 切换 Bilateral on/off           (Phase E.11; off = E.10 Gaussian)
+--   , / .    : BlurDepthSigma -/+ (步长 25,   范围 [50, 500])    (Phase E.11)
 --   R        : reset 所有参数到默认
 --   ESC      : 退出
 -- ============================================================================
@@ -269,11 +272,29 @@ while win:IsOpen() do
         print('[demo] BlurRadius = ' .. string.format('%.2f', SSR.GetBlurRadius()))
     end
 
+    -- Phase E.11 — V: 切换 Bilateral
+    if keyTap('v') then
+        local b = not SSR.GetBilateralEnabled()
+        SSR.SetBilateralEnabled(b)
+        print('[demo] SSR Bilateral ' .. (b and 'ON' or 'OFF') .. ' (sigma=' .. string.format('%.0f', SSR.GetBlurDepthSigma()) .. ')')
+    end
+
+    -- Phase E.11 — ,/.: BlurDepthSigma
+    if keyTap(',') then
+        SSR.SetBlurDepthSigma(clampNum(SSR.GetBlurDepthSigma() - 25.0, 50.0, 500.0))
+        print('[demo] BlurDepthSigma = ' .. string.format('%.0f', SSR.GetBlurDepthSigma()))
+    end
+    if keyTap('.') then
+        SSR.SetBlurDepthSigma(clampNum(SSR.GetBlurDepthSigma() + 25.0, 50.0, 500.0))
+        print('[demo] BlurDepthSigma = ' .. string.format('%.0f', SSR.GetBlurDepthSigma()))
+    end
+
     -- R: reset 默认
     if keyTap('r') then
         SSR.SetMaxSteps(64); SSR.SetStepSize(0.1); SSR.SetThickness(0.5)
         SSR.SetMaxDistance(50.0); SSR.SetIntensity(0.7); SSR.SetEdgeFade(0.1)
-        SSR.SetBlurEnabled(false); SSR.SetBlurRadius(1.5)   -- Phase E.10
+        SSR.SetBlurEnabled(false); SSR.SetBlurRadius(1.5)         -- Phase E.10
+        SSR.SetBilateralEnabled(true); SSR.SetBlurDepthSigma(200.0)  -- Phase E.11
         print('[demo] reset defaults')
     end
 
@@ -318,9 +339,12 @@ while win:IsOpen() do
             SSR.GetMaxSteps(), SSR.GetStepSize(), SSR.GetThickness()))
         line(string.format('SSR: maxDist=%.0f intensity=%.2f edgeFade=%.2f',
             SSR.GetMaxDistance(), SSR.GetIntensity(), SSR.GetEdgeFade()))
-        line(string.format('SSR Blur: %s  radius=%.2f  (half-res ping-pong)',
-            SSR.GetBlurEnabled() and 'ON' or 'OFF', SSR.GetBlurRadius()))
-        line('Keys: F=SSR B=Blur 1/2=steps 3/4=step 5/6=thick 7/8=int -/=dist [/]=edge 9/0=radius R=reset ESC')
+        line(string.format('SSR Blur: %s  radius=%.2f  Bilateral=%s  sigma=%.0f',
+            SSR.GetBlurEnabled() and 'ON' or 'OFF',
+            SSR.GetBlurRadius(),
+            SSR.GetBilateralEnabled() and 'ON' or 'OFF',
+            SSR.GetBlurDepthSigma()))
+        line('Keys: F=SSR B=Blur V=Bilateral 1/2=steps 9/0=radius ,/.=sigma -/=dist [/]=edge R=reset ESC')
     end
 
     win:EndFrame()

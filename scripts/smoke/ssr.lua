@@ -1,9 +1,9 @@
--- Phase E.9+E.10 smoke: Light.Graphics.SSR
+-- Phase E.9+E.10+E.11 smoke: Light.Graphics.SSR
 --
--- API coverage (24):
+-- API coverage (28):
 --   Lifecycle 5:  Enable(w,h) / Disable / IsEnabled / IsSupported / Resize(w,h)
 --   AutoEnable 2: SetAutoEnable / GetAutoEnable
---   Params 16 (8 pairs):
+--   Params 20 (10 pairs):
 --     SetMaxSteps / GetMaxSteps              (int   [8, 128],     default 64)
 --     SetStepSize / GetStepSize              (float [0.01, 1.0],  default 0.1)
 --     SetThickness / GetThickness            (float [0.01, 5.0],  default 0.5)
@@ -12,6 +12,8 @@
 --     SetEdgeFade / GetEdgeFade              (float [0.0, 0.5],   default 0.1)
 --     SetBlurEnabled / GetBlurEnabled        (bool,               default false; Phase E.10 active)
 --     SetBlurRadius / GetBlurRadius          (float [0.5, 4.0],   default 1.5; Phase E.10)
+--     SetBilateralEnabled / GetBilateralEnabled (bool,            default true; Phase E.11)
+--     SetBlurDepthSigma / GetBlurDepthSigma  (float [50, 500],    default 200; Phase E.11)
 --   Debug 1: GetReflectionTexId
 --
 -- Headless tolerant; ASCII-only.
@@ -27,7 +29,7 @@ if type(S) ~= "table" then fail("SSR subtable missing (got " .. type(S) .. ")") 
 pass("Light.Graphics.SSR subtable present")
 
 -- ============================================================
--- A) Surface (24 functions, Phase E.10 adds SetBlurRadius/GetBlurRadius)
+-- A) Surface (28 functions, Phase E.11 adds 2 pairs: Bilateral, BlurDepthSigma)
 -- ============================================================
 
 local fns = {
@@ -41,6 +43,8 @@ local fns = {
     "SetEdgeFade", "GetEdgeFade",
     "SetBlurEnabled", "GetBlurEnabled",
     "SetBlurRadius", "GetBlurRadius",   -- Phase E.10
+    "SetBilateralEnabled", "GetBilateralEnabled",   -- Phase E.11
+    "SetBlurDepthSigma", "GetBlurDepthSigma",       -- Phase E.11
     "GetReflectionTexId",
 }
 for _, k in ipairs(fns) do
@@ -112,6 +116,15 @@ local br = S.GetBlurRadius()
 if math.abs(br - 1.5) > 1e-4 then fail("Default BlurRadius != 1.5 (got " .. tostring(br) .. ")") end
 pass("Default BlurRadius == 1.5 (Phase E.10)")
 
+-- Phase E.11 — BilateralEnabled default
+if S.GetBilateralEnabled() ~= true then fail("Default BilateralEnabled != true (Phase E.11)") end
+pass("Default BilateralEnabled == true (Phase E.11)")
+
+-- Phase E.11 — BlurDepthSigma default
+local bs = S.GetBlurDepthSigma()
+if math.abs(bs - 200.0) > 1e-3 then fail("Default BlurDepthSigma != 200 (got " .. tostring(bs) .. ")") end
+pass("Default BlurDepthSigma == 200 (Phase E.11)")
+
 -- ============================================================
 -- E) Param Set/Get round-trip
 -- ============================================================
@@ -152,6 +165,19 @@ pass("SetBlurEnabled(false) round-trip ok")
 S.SetBlurRadius(2.5)
 if math.abs(S.GetBlurRadius() - 2.5) > 1e-4 then fail("SetBlurRadius round-trip") end
 pass("SetBlurRadius(2.5) round-trip ok")
+
+-- Phase E.11 — BilateralEnabled round-trip
+S.SetBilateralEnabled(false)
+if S.GetBilateralEnabled() ~= false then fail("SetBilateralEnabled(false) round-trip") end
+pass("SetBilateralEnabled(false) round-trip ok")
+S.SetBilateralEnabled(true)
+if S.GetBilateralEnabled() ~= true then fail("SetBilateralEnabled(true) round-trip") end
+pass("SetBilateralEnabled(true) round-trip ok")
+
+-- Phase E.11 — BlurDepthSigma round-trip
+S.SetBlurDepthSigma(150.0)
+if math.abs(S.GetBlurDepthSigma() - 150.0) > 1e-3 then fail("SetBlurDepthSigma round-trip") end
+pass("SetBlurDepthSigma(150) round-trip ok")
 
 -- ============================================================
 -- F) Param clamping
@@ -223,6 +249,15 @@ S.SetBlurRadius(99.0)
 if not near(S.GetBlurRadius(), 4.0) then fail("SetBlurRadius(99) clamp to 4.0, got " .. tostring(S.GetBlurRadius())) end
 pass("SetBlurRadius(99) -> clamp 4.0")
 
+-- Phase E.11 — BlurDepthSigma clamp [50, 500]
+S.SetBlurDepthSigma(-100.0)
+if not near(S.GetBlurDepthSigma(), 50.0) then fail("SetBlurDepthSigma(-100) clamp to 50, got " .. tostring(S.GetBlurDepthSigma())) end
+pass("SetBlurDepthSigma(-100) -> clamp 50")
+
+S.SetBlurDepthSigma(9999.0)
+if not near(S.GetBlurDepthSigma(), 500.0) then fail("SetBlurDepthSigma(9999) clamp to 500, got " .. tostring(S.GetBlurDepthSigma())) end
+pass("SetBlurDepthSigma(9999) -> clamp 500")
+
 -- ============================================================
 -- G) Restore defaults
 -- ============================================================
@@ -235,6 +270,8 @@ S.SetIntensity(0.7)
 S.SetEdgeFade(0.1)
 S.SetBlurEnabled(false)
 S.SetBlurRadius(1.5)   -- Phase E.10
+S.SetBilateralEnabled(true)   -- Phase E.11
+S.SetBlurDepthSigma(200.0)    -- Phase E.11
 pass("All params restored to defaults")
 
 -- ============================================================
@@ -375,4 +412,48 @@ S.SetBlurRadius(1.5)
 S.SetMaxSteps(64)
 S.SetIntensity(0.7)
 
-print("[OK] Phase E.9+E.10 smoke (Light.Graphics.SSR): all checks passed")
+-- ============================================================
+-- L) Phase E.11 — Bilateral × BlurDepthSigma 联动行为
+-- ============================================================
+
+-- 1. Bilateral on + sigma 1· round-trip combo
+S.SetBilateralEnabled(true)
+S.SetBlurDepthSigma(300.0)
+if S.GetBilateralEnabled() ~= true or math.abs(S.GetBlurDepthSigma() - 300.0) > 1e-3 then
+    fail("Bilateral=true + sigma=300 combo broken")
+end
+pass("Bilateral=true + sigma=300 保持 (高严格场景)")
+
+-- 2. Bilateral off + sigma value not affected
+S.SetBilateralEnabled(false)
+if math.abs(S.GetBlurDepthSigma() - 300.0) > 1e-3 then
+    fail("BlurDepthSigma 被 Bilateral=false 意外重置")
+end
+pass("Bilateral=false 后 BlurDepthSigma 保持 300 (独立)")
+
+-- 3. Phase E.11 默认高质量预设 (BlurEnabled=on, Bilateral=on, sigma=200)
+S.SetBlurEnabled(true)
+S.SetBilateralEnabled(true)
+S.SetBlurDepthSigma(200.0)
+if not (S.GetBlurEnabled() == true and S.GetBilateralEnabled() == true
+        and math.abs(S.GetBlurDepthSigma() - 200.0) < 1e-3) then
+    fail("Phase E.11 默认高质量预设不一致")
+end
+pass("Phase E.11 默认预设 (blur+bilateral+sigma=200) 保持")
+
+-- 4. Phase E.10 向后兼容预设 (BlurEnabled=on, Bilateral=off)
+S.SetBilateralEnabled(false)
+if S.GetBilateralEnabled() ~= false or S.GetBlurEnabled() ~= true then
+    fail("Phase E.10 向后兼容预设 (blur=on, bilateral=off) 不一致")
+end
+pass("Phase E.10 向后兼容预设 (blur=on, bilateral=off) 保持")
+
+-- restore
+S.SetBlurEnabled(false)
+S.SetBlurRadius(1.5)
+S.SetMaxSteps(64)
+S.SetIntensity(0.7)
+S.SetBilateralEnabled(true)
+S.SetBlurDepthSigma(200.0)
+
+print("[OK] Phase E.9+E.10+E.11 smoke (Light.Graphics.SSR): all checks passed")

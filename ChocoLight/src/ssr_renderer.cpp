@@ -95,6 +95,10 @@ struct State {
     int      blurW          = 0;        // half-res 宽 (max(1, srcW/2))
     int      blurH          = 0;
     float    blurRadius     = 1.5f;     // texel 半径乘子, clamp [0.5, 4.0]
+
+    // Phase E.11 — depth-aware bilateral 选项
+    bool     bilateralEnabled = true;   // 默认 true (默认享用最佳质量), false 切回 E.10 Gaussian
+    float    blurDepthSigma   = 200.0f; // bilateral 深度权重 σ, clamp [50, 500]
 };
 
 static State g;
@@ -250,6 +254,14 @@ bool GetBlurEnabled()         { return g.blurEnabled; }
 void  SetBlurRadius(float v) { g.blurRadius = clampf(v, 0.5f, 4.0f); }
 float GetBlurRadius()         { return g.blurRadius; }
 
+// Phase E.11 — depth-aware bilateral 开关 (默认 true)
+void SetBilateralEnabled(bool f) { g.bilateralEnabled = f; }
+bool GetBilateralEnabled()        { return g.bilateralEnabled; }
+
+// Phase E.11 — bilateral 深度权重 σ, clamp [50, 500] (与 SSAO bilateral 一致)
+void  SetBlurDepthSigma(float v) { g.blurDepthSigma = clampf(v, 50.0f, 500.0f); }
+float GetBlurDepthSigma()         { return g.blurDepthSigma; }
+
 // ==================== 调试 API ====================
 
 uint32_t GetReflectionTexId() {
@@ -301,11 +313,17 @@ void Process(uint32_t hdrFbo, uint32_t hdrTex) {
     if (g.blurEnabled && g.blurFbos[0] && g.blurFbos[1] && g.blurW > 0 && g.blurH > 0) {
         // H pass: full-res reflectTex -> half-res blurFbos[0]
         //   (一举完成 downsample + horizontal blur, 由硬件 bilinear filter 隐式 downsample)
-        g.backend->DrawSSRBlur(g.reflectTex, g.blurFbos[0],
-                                g.blurW, g.blurH, 0, g.blurRadius);
+        // Phase E.11: 额外传入 depthTex + bilateralEnabled + blurDepthSigma,
+        //             shader runtime 选择 Gaussian/Bilateral 路径
+        g.backend->DrawSSRBlur(g.reflectTex, g.depthTex,
+                                g.blurFbos[0], g.blurW, g.blurH,
+                                0, g.blurRadius,
+                                g.bilateralEnabled, g.blurDepthSigma);
         // V pass: half-res blurTexs[0] -> half-res blurFbos[1]
-        g.backend->DrawSSRBlur(g.blurTexs[0], g.blurFbos[1],
-                                g.blurW, g.blurH, 1, g.blurRadius);
+        g.backend->DrawSSRBlur(g.blurTexs[0], g.depthTex,
+                                g.blurFbos[1], g.blurW, g.blurH,
+                                1, g.blurRadius,
+                                g.bilateralEnabled, g.blurDepthSigma);
         finalReflectTex = g.blurTexs[1];   // composite 用 half-res 模糊结果, 自动 bilinear upscale
     }
 

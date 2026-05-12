@@ -95,6 +95,20 @@ bool GetBlurEnabled();
 void  SetBlurRadius(float v);
 float GetBlurRadius();
 
+/// Phase E.11 — 切换 bilateral 深度感知模式, 默认 true.
+/// true  = depth-aware bilateral (跨深度边权重衰减, 消除 leak)
+/// false = 纯 Gaussian (Phase E.10 行为, 向后兼容; 用于 A/B 对比)
+/// 仅在 BlurEnabled=true 时影响最终视觉.
+void SetBilateralEnabled(bool flag);
+bool GetBilateralEnabled();
+
+/// Phase E.11 — bilateral 深度权重灵敏度 sigma, clamp [50.0, 500.0], 默认 200.0.
+/// σ 越大: 跨深度边模糊衰减越快 (锐利边缘保留更好)
+/// σ 越小: 跨深度边权重宽容 (行为接近 Gaussian)
+/// 仅在 BilateralEnabled=true && BlurEnabled=true 时影响视觉.
+void  SetBlurDepthSigma(float v);
+float GetBlurDepthSigma();
+
 // ==================== 调试 API ====================
 
 /// 当前反射 RT id (0 = 未启用), 供 Lua 端可视化反射纹理

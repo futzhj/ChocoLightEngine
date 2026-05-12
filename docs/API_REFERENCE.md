@@ -43,7 +43,7 @@
 | Streak | `Light.Graphics.Streak` | ~10 | E.6 | 同上 |
 | Lens Flare | `Light.Graphics.LensFlare` | ~12 | E.7 | `docs/Phase E.7 Lens Flare/FINAL_*.md` |
 | **SSAO** | `Light.Graphics.SSAO` | **20**（含 `GetNormalTexId`）| E.8 + E.8.x | `docs/Phase E.8 SSAO/FINAL_*.md`、`docs/Phase E.8.x G-buffer normal/FINAL_PhaseE_8x.md` |
-| **SSR** | `Light.Graphics.SSR` | **24**（含 `GetReflectionTexId` + Phase E.10 `Set/GetBlurRadius`）| **E.9 + E.10** | **`docs/Phase E.9 SSR/FINAL_PhaseE_9.md`**、**`docs/Phase E.10 SSR Blur/FINAL_PhaseE_10.md`** |
+| **SSR** | `Light.Graphics.SSR` | **28**（含 `GetReflectionTexId` + E.10 `Set/GetBlurRadius` + E.11 `Set/GetBilateralEnabled` `Set/GetBlurDepthSigma`）| **E.9 + E.10 + E.11** | `docs/Phase E.9 SSR/`、`docs/Phase E.10 SSR Blur/`、**`docs/Phase E.11 Bilateral SSR Blur/FINAL_PhaseE_11.md`** |
 
 ### Light.Graphics.SSAO 关键 API 速查（Phase E.8 + E.8.x）
 
@@ -75,9 +75,9 @@ Light.Graphics.SSAO.GetNormalTexId() -> integer
 
 **Phase E.8.x 升级说明**：SSAO 内部法线重建由 `ddx/dFdy derivative` 升级为 **真实 G-buffer view-space normal RT (MRT)**，质量显著提升（消除边缘条纹、改善细节 AO）。用户侧 Lua 代码无需变更，**完全向后兼容**。
 
-### Light.Graphics.SSR 关键 API 速查（Phase E.9 + E.10）
+### Light.Graphics.SSR 关键 API 速查（Phase E.9 + E.10 + E.11）
 
-> 屏幕空间反射 — 高质量方案（full-res RGBA16F + 64 步 linear ray march + 可选 half-res Gaussian blur）
+> 屏幕空间反射 — 高质量方案（full-res RGBA16F + 64 步 linear ray march + 可选 half-res Gaussian/Bilateral blur）
 
 ```lua
 -- 生命周期
@@ -90,7 +90,7 @@ Light.Graphics.SSR.Resize(w, h) -> boolean
 -- 自动启用（HDR 启动时联动）
 Light.Graphics.SSR.SetAutoEnable(bool) / GetAutoEnable() -> bool
 
--- 8 对参数（带 clamp）
+-- 10 对参数（带 clamp）
 Light.Graphics.SSR.SetMaxSteps(int [8, 128])         / GetMaxSteps() -> int       -- default 64
 Light.Graphics.SSR.SetStepSize(float [0.01, 1.0])    / GetStepSize() -> float     -- default 0.1
 Light.Graphics.SSR.SetThickness(float [0.01, 5.0])   / GetThickness() -> float    -- default 0.5
@@ -99,6 +99,8 @@ Light.Graphics.SSR.SetIntensity(float [0, 2])        / GetIntensity() -> float  
 Light.Graphics.SSR.SetEdgeFade(float [0, 0.5])       / GetEdgeFade() -> float     -- default 0.1
 Light.Graphics.SSR.SetBlurEnabled(bool)              / GetBlurEnabled() -> bool   -- default false (Phase E.10 激活)
 Light.Graphics.SSR.SetBlurRadius(float [0.5, 4.0])   / GetBlurRadius() -> float   -- default 1.5 (Phase E.10)
+Light.Graphics.SSR.SetBilateralEnabled(bool)         / GetBilateralEnabled() -> bool  -- default true  (Phase E.11)
+Light.Graphics.SSR.SetBlurDepthSigma(float [50, 500]) / GetBlurDepthSigma() -> float  -- default 200  (Phase E.11)
 
 -- Phase E.9 — 调试接口
 Light.Graphics.SSR.GetReflectionTexId() -> integer

@@ -1022,15 +1022,27 @@ public:
                                   int* /*outW*/, int* /*outH*/) { return false; }
     virtual void DeleteSSRBlurRT(uint32_t* /*fbos*/, uint32_t* /*texs*/) {}
 
-    /// separable Gaussian blur pass: srcTex -> dstFbo
-    /// @param srcTex  源 tex (full-res reflect 或 half-res blur 中间, 由 caller 控制)
-    /// @param dstFbo  目标 FBO (half-res blurFbos[axis])
-    /// @param dstW, dstH  目标 RT 尺寸 (uTexel = 1/dstSize)
-    /// @param axis    0=horizontal, 1=vertical
-    /// @param radius  texel 半径乘子 [0.5, 4.0]
-    virtual void DrawSSRBlur(uint32_t /*srcTex*/, uint32_t /*dstFbo*/,
-                              int /*dstW*/, int /*dstH*/,
-                              int /*axis*/, float /*radius*/) {}
+    /// separable blur pass: srcTex -> dstFbo  (Phase E.11 Bilateral 升级)
+    ///
+    /// Phase E.10: 纯 Gaussian 5-tap
+    /// Phase E.11: 单 shader 双模式, runtime 通过 bilateralEnabled 切换
+    ///   - false: Phase E.10 Gaussian 路径（向后兼容）
+    ///   - true:  Bilateral 路径, 用 depthTex 计算跨深度边权重衰减
+    ///
+    /// @param srcTex           源 tex (full-res reflect 或 half-res blur 中间, 由 caller 控制)
+    /// @param depthTex         SSR depth tex (full-res, NEAREST; Phase E.11 bilateral 必需;
+    ///                         bilateralEnabled=false 时仍建议传有效值以避免 driver 差异)
+    /// @param dstFbo           目标 FBO (half-res blurFbos[axis])
+    /// @param dstW, dstH       目标 RT 尺寸 (uTexel = 1/dstSize)
+    /// @param axis             0=horizontal, 1=vertical
+    /// @param radius           texel 半径乘子 [0.5, 4.0]
+    /// @param bilateralEnabled Phase E.11: true=Bilateral, false=Gaussian (Phase E.10 行为)
+    /// @param depthSigma       Phase E.11: bilateral 深度权重 σ [50, 500]
+    ///                         (bilateralEnabled=false 时 ignored)
+    virtual void DrawSSRBlur(uint32_t /*srcTex*/, uint32_t /*depthTex*/,
+                              uint32_t /*dstFbo*/, int /*dstW*/, int /*dstH*/,
+                              int /*axis*/, float /*radius*/,
+                              bool /*bilateralEnabled*/, float /*depthSigma*/) {}
 };
 
 // ==================== 工厂函数 ====================

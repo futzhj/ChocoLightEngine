@@ -1673,11 +1673,13 @@ void main() {
 }
 )";
 
-// ---- FS_SSR_BLUR (GLES 3.0): separable Gaussian 5-tap ----
-// Phase E.10 — 反射模糊 (粗糙度模拟), user-pinned half-res ping-pong.
+// ---- FS_SSR_BLUR (GLES 3.0): Phase E.11 dual-mode (Gaussian / Bilateral) ----
+// Phase E.10 baseline: separable Gaussian 5-tap, half-res ping-pong.
+// Phase E.11 添加: depth-aware bilateral 权重门控 (单 shader 双 mode, runtime 切换).
 //   axis=0 水平 / axis=1 垂直; uTexel = 1/dstSize (half-res);
 //   uRadius 控制扩散半径 [0.5, 4.0] (texel 单位).
-//   不做 depth-aware (模糊金属表面应当连续扩散).
+//   uBilateral=0 → 纯 Gaussian (Phase E.10 行为, 兼容);
+//   uBilateral=1 → Bilateral, w_neighbor *= exp(-|cDepth-d|·uDepthSigma).
 static const char* FS_SSR_BLUR_SOURCE = R"(#version 300 es
 precision highp float;
 precision highp sampler2D;
@@ -1685,9 +1687,12 @@ in  vec2 vUV;
 out vec4 FragColor;
 
 uniform sampler2D uSrcTex;
-uniform vec2  uTexel;    // 1.0 / vec2(dstW, dstH)
-uniform int   uAxis;     // 0=H, 1=V
-uniform float uRadius;   // [0.5, 4.0]
+uniform sampler2D uDepthTex;    // Phase E.11 (full-res, NEAREST)
+uniform vec2  uTexel;           // 1.0 / vec2(dstW, dstH)
+uniform int   uAxis;            // 0=H, 1=V
+uniform float uRadius;          // [0.5, 4.0]
+uniform int   uBilateral;       // Phase E.11: 0=Gaussian, 非 0=Bilateral
+uniform float uDepthSigma;      // Phase E.11: [50, 500]
 
 void main() {
     // 5-tap Gaussian (sigma ~= 1.6) weights, 中心 + ±1 + ±2
@@ -1699,12 +1704,45 @@ void main() {
     vec2 off1 = dir * uRadius;
     vec2 off2 = dir * uRadius * 2.0;
 
-    vec4 c = texture(uSrcTex, vUV) * W0;
-    c += texture(uSrcTex, vUV + off1) * W1;
-    c += texture(uSrcTex, vUV - off1) * W1;
-    c += texture(uSrcTex, vUV + off2) * W2;
-    c += texture(uSrcTex, vUV - off2) * W2;
-    FragColor = c;
+    if (uBilateral == 0) {
+        // Phase E.10 Gaussian (向后兼容)
+        vec4 c = texture(uSrcTex, vUV) * W0;
+        c += texture(uSrcTex, vUV + off1) * W1;
+        c += texture(uSrcTex, vUV - off1) * W1;
+        c += texture(uSrcTex, vUV + off2) * W2;
+        c += texture(uSrcTex, vUV - off2) * W2;
+        FragColor = c;
+        return;
+    }
+
+    // Phase E.11 Bilateral 路径
+    float cDepth = texture(uDepthTex, vUV).r;
+    vec4  sum   = texture(uSrcTex, vUV) * W0;
+    float wsum  = W0;
+
+    vec2 uv;  float d, w;
+
+    uv = vUV + off1;
+    d  = texture(uDepthTex, uv).r;
+    w  = W1 * exp(-abs(cDepth - d) * uDepthSigma);
+    sum += texture(uSrcTex, uv) * w; wsum += w;
+
+    uv = vUV - off1;
+    d  = texture(uDepthTex, uv).r;
+    w  = W1 * exp(-abs(cDepth - d) * uDepthSigma);
+    sum += texture(uSrcTex, uv) * w; wsum += w;
+
+    uv = vUV + off2;
+    d  = texture(uDepthTex, uv).r;
+    w  = W2 * exp(-abs(cDepth - d) * uDepthSigma);
+    sum += texture(uSrcTex, uv) * w; wsum += w;
+
+    uv = vUV - off2;
+    d  = texture(uDepthTex, uv).r;
+    w  = W2 * exp(-abs(cDepth - d) * uDepthSigma);
+    sum += texture(uSrcTex, uv) * w; wsum += w;
+
+    FragColor = sum / max(wsum, 1e-4);
 }
 )";
 
@@ -1917,16 +1955,22 @@ void main() {
 }
 )";
 
-// ---- FS_SSR_BLUR (GL 3.3): separable Gaussian 5-tap ----
+// ---- FS_SSR_BLUR (GL 3.3): Phase E.11 dual-mode (Gaussian / Bilateral) ----
+//   uBilateral = 0 → Phase E.10 纯 Gaussian (向后兼容)
+//   uBilateral = 1 → Phase E.11 depth-aware Bilateral
+//                     w_neighbor = W_i × exp(-|cDepth - d| × uDepthSigma)
 static const char* FS_SSR_BLUR_SOURCE = R"(
 #version 330 core
 in  vec2 vUV;
 out vec4 FragColor;
 
 uniform sampler2D uSrcTex;
+uniform sampler2D uDepthTex;    // Phase E.11 (full-res, NEAREST)
 uniform vec2  uTexel;
 uniform int   uAxis;
 uniform float uRadius;
+uniform int   uBilateral;       // Phase E.11: 0=Gaussian, 非 0=Bilateral
+uniform float uDepthSigma;      // Phase E.11: [50, 500]
 
 void main() {
     const float W0 = 0.227027;
@@ -1937,12 +1981,45 @@ void main() {
     vec2 off1 = dir * uRadius;
     vec2 off2 = dir * uRadius * 2.0;
 
-    vec4 c = texture(uSrcTex, vUV) * W0;
-    c += texture(uSrcTex, vUV + off1) * W1;
-    c += texture(uSrcTex, vUV - off1) * W1;
-    c += texture(uSrcTex, vUV + off2) * W2;
-    c += texture(uSrcTex, vUV - off2) * W2;
-    FragColor = c;
+    if (uBilateral == 0) {
+        // Phase E.10 Gaussian (向后兼容)
+        vec4 c = texture(uSrcTex, vUV) * W0;
+        c += texture(uSrcTex, vUV + off1) * W1;
+        c += texture(uSrcTex, vUV - off1) * W1;
+        c += texture(uSrcTex, vUV + off2) * W2;
+        c += texture(uSrcTex, vUV - off2) * W2;
+        FragColor = c;
+        return;
+    }
+
+    // Phase E.11 Bilateral 路径
+    float cDepth = texture(uDepthTex, vUV).r;
+    vec4  sum   = texture(uSrcTex, vUV) * W0;
+    float wsum  = W0;
+
+    vec2 uv;  float d, w;
+
+    uv = vUV + off1;
+    d  = texture(uDepthTex, uv).r;
+    w  = W1 * exp(-abs(cDepth - d) * uDepthSigma);
+    sum += texture(uSrcTex, uv) * w; wsum += w;
+
+    uv = vUV - off1;
+    d  = texture(uDepthTex, uv).r;
+    w  = W1 * exp(-abs(cDepth - d) * uDepthSigma);
+    sum += texture(uSrcTex, uv) * w; wsum += w;
+
+    uv = vUV + off2;
+    d  = texture(uDepthTex, uv).r;
+    w  = W2 * exp(-abs(cDepth - d) * uDepthSigma);
+    sum += texture(uSrcTex, uv) * w; wsum += w;
+
+    uv = vUV - off2;
+    d  = texture(uDepthTex, uv).r;
+    w  = W2 * exp(-abs(cDepth - d) * uDepthSigma);
+    sum += texture(uSrcTex, uv) * w; wsum += w;
+
+    FragColor = sum / max(wsum, 1e-4);
 }
 )";
 
@@ -2173,12 +2250,16 @@ class GL33Backend : public RenderBackend {
     int    ssrCompTempH            = 0;
 
     // Phase E.10 — SSR Blur (反射模糊, half-res ping-pong, 用户拍板 2026-05-12)
+    // Phase E.11 — 添加 depth-aware bilateral 双模式统一 shader
     GLuint programSSRBlur          = 0;
     bool   ssrBlurSupported        = false;
     GLint  locSSRBlur_SrcTex       = -1;
+    GLint  locSSRBlur_DepthTex     = -1;   // Phase E.11
     GLint  locSSRBlur_Texel        = -1;
     GLint  locSSRBlur_Axis         = -1;
     GLint  locSSRBlur_Radius       = -1;
+    GLint  locSSRBlur_Bilateral    = -1;   // Phase E.11
+    GLint  locSSRBlur_DepthSigma   = -1;   // Phase E.11
 
     // Phase E.2.1 — Lighting2D dirty bit cache
     // 当 state->version 与此值相等时, UploadLighting2D 跳过所有 glUniform*v 调用
@@ -2970,14 +3051,19 @@ public:
         }
 
         // --- Phase E.10 — SSR Blur (反射模糊, half-res ping-pong; 用户拍板 2026-05-12) ---
+        // Phase E.11 — 同一 program 双模式 (uBilateral runtime 切换)
         programSSRBlur = buildProgram(FS_SSR_BLUR_SOURCE, "SSRBlur");
         if (programSSRBlur && ssrSupported) {
-            locSSRBlur_SrcTex = glGetUniformLocation(programSSRBlur, "uSrcTex");
-            locSSRBlur_Texel  = glGetUniformLocation(programSSRBlur, "uTexel");
-            locSSRBlur_Axis   = glGetUniformLocation(programSSRBlur, "uAxis");
-            locSSRBlur_Radius = glGetUniformLocation(programSSRBlur, "uRadius");
+            locSSRBlur_SrcTex     = glGetUniformLocation(programSSRBlur, "uSrcTex");
+            locSSRBlur_DepthTex   = glGetUniformLocation(programSSRBlur, "uDepthTex");    // Phase E.11
+            locSSRBlur_Texel      = glGetUniformLocation(programSSRBlur, "uTexel");
+            locSSRBlur_Axis       = glGetUniformLocation(programSSRBlur, "uAxis");
+            locSSRBlur_Radius     = glGetUniformLocation(programSSRBlur, "uRadius");
+            locSSRBlur_Bilateral  = glGetUniformLocation(programSSRBlur, "uBilateral");   // Phase E.11
+            locSSRBlur_DepthSigma = glGetUniformLocation(programSSRBlur, "uDepthSigma");  // Phase E.11
             glUseProgram(programSSRBlur);
-            if (locSSRBlur_SrcTex >= 0) glUniform1i(locSSRBlur_SrcTex, 0);  // slot 0
+            if (locSSRBlur_SrcTex   >= 0) glUniform1i(locSSRBlur_SrcTex,   0);  // slot 0
+            if (locSSRBlur_DepthTex >= 0) glUniform1i(locSSRBlur_DepthTex, 1);  // slot 1 (Phase E.11)
             glUseProgram(0);
             ssrBlurSupported = true;
         } else {
@@ -3137,7 +3223,9 @@ public:
         // Phase E.10 — 清理 SSR Blur (1 program; ping-pong RT 由 SSRRenderer 管 DeleteSSRBlurRT)
         if (programSSRBlur) { glDeleteProgram(programSSRBlur); programSSRBlur = 0; }
         ssrBlurSupported = false;
-        locSSRBlur_SrcTex = locSSRBlur_Texel = locSSRBlur_Axis = locSSRBlur_Radius = -1;
+        locSSRBlur_SrcTex     = locSSRBlur_DepthTex = -1;
+        locSSRBlur_Texel      = locSSRBlur_Axis = locSSRBlur_Radius = -1;
+        locSSRBlur_Bilateral  = locSSRBlur_DepthSigma = -1;
     }
 
     bool SupportsLit2D() const override { return lit2DSupported; }
@@ -4555,10 +4643,13 @@ public:
 
     /// separable Gaussian blur pass: srcTex -> dstFbo
     /// axis 0=horizontal, 1=vertical; uTexel = 1/dstSize.
-    void DrawSSRBlur(uint32_t srcTex, uint32_t dstFbo,
-                     int dstW, int dstH,
-                     int axis, float radius) override {
-        if (!ssrBlurSupported || !programSSRBlur || !srcTex || !dstFbo ||
+    void DrawSSRBlur(uint32_t srcTex, uint32_t depthTex,
+                     uint32_t dstFbo, int dstW, int dstH,
+                     int axis, float radius,
+                     bool bilateralEnabled, float depthSigma) override {
+        // Phase E.11: depthTex 必须非零 (bilateral=true 时依赖; bilateral=false 时 shader
+        // 不采样 depthTex, 但本函数仍会 bind slot 1 避免 driver 状态不一致 — 所以仍要严检)
+        if (!ssrBlurSupported || !programSSRBlur || !srcTex || !depthTex || !dstFbo ||
             dstW <= 0 || dstH <= 0) return;
 
         glBindFramebuffer(GL_FRAMEBUFFER, (GLuint)dstFbo);
@@ -4569,18 +4660,27 @@ public:
         glDisable(GL_CULL_FACE);
 
         glUseProgram(programSSRBlur);
-        if (locSSRBlur_Texel  >= 0) glUniform2f(locSSRBlur_Texel,  1.0f / (float)dstW, 1.0f / (float)dstH);
-        if (locSSRBlur_Axis   >= 0) glUniform1i(locSSRBlur_Axis,   axis ? 1 : 0);
-        if (locSSRBlur_Radius >= 0) glUniform1f(locSSRBlur_Radius, radius);
+        if (locSSRBlur_Texel      >= 0) glUniform2f(locSSRBlur_Texel,  1.0f / (float)dstW, 1.0f / (float)dstH);
+        if (locSSRBlur_Axis       >= 0) glUniform1i(locSSRBlur_Axis,   axis ? 1 : 0);
+        if (locSSRBlur_Radius     >= 0) glUniform1f(locSSRBlur_Radius, radius);
+        // Phase E.11 — dual-mode uniform
+        if (locSSRBlur_Bilateral  >= 0) glUniform1i(locSSRBlur_Bilateral,  bilateralEnabled ? 1 : 0);
+        if (locSSRBlur_DepthSigma >= 0) glUniform1f(locSSRBlur_DepthSigma, depthSigma);
 
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, (GLuint)srcTex);
+        glActiveTexture(GL_TEXTURE1);                              // Phase E.11 — depth slot 1
+        glBindTexture(GL_TEXTURE_2D, (GLuint)depthTex);
 
         // 复用 tonemap fullscreen VAO (6 vert triangles, NDC 直绘)
         glBindVertexArray(vaoTonemap);
         glDrawArrays(GL_TRIANGLES, 0, 6);
 
         glBindVertexArray(0);
+        // 反向解绑 (slot 1 → 0), 与 DrawSSAO / DrawSSAOBlur 同模式
+        glActiveTexture(GL_TEXTURE1);                              // Phase E.11
+        glBindTexture(GL_TEXTURE_2D, 0);
+        glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, 0);
         glUseProgram(0);
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
