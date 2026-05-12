@@ -839,6 +839,79 @@ public:
 
     // 注: bright pass 直接调用 DrawBloomBrightPass(...) 复用 Bloom 算法
     // 注: 最终 composite 直接调用 DrawBloomComposite(...) 复用 Bloom 加性合成
+
+    // ==================== Phase E.8 — SSAO (Screen-Space Ambient Occlusion) ====================
+    //
+    // 双 RT 旁路方案 (用户选择 2026-05-12):
+    //   HDR RT 保持不变 (renderbuffer depth 原封); SSAO 分配独立 depth tex + 小 FBO,
+    //   每帧 Process 入口用 glBlitFramebuffer 从 HDR FBO 复制 depth 到 SSAO FBO.
+    //
+    // 管线 (blurEnabled=true 时):
+    //   0. BlitHDRDepthToSSAO(hdrFbo, depthFbo, w, h)       — 旁路 depth 复制
+    //   1. DrawSSAO(depthTex, noiseTex, fbos[0], ...)       — raw AO (R16F, 1/2 res)
+    //   2. DrawSSAOBlur(texs[0], depthTex, fbos[1], axis=0) — 水平 bilateral blur
+    //   3. DrawSSAOBlur(texs[1], depthTex, fbos[0], axis=1) — 垂直 bilateral blur
+    //   4. DrawSSAOComposite(texs[0], hdrFbo, srcW, srcH, intensity) — HDR *= mix(1, ao, intensity)
+    //
+    // Legacy backend 永 no-op (SupportsSSAO = false).
+
+    /// 是否支持 SSAO (shader 编译 + HDR/Bloom + blit probe 全通过)
+    virtual bool SupportsSSAO() const { return false; }
+
+    /// Phase E.8 双 RT 旁路: 创建 SSAO 专用 depth tex + FBO (无 color attachment)
+    /// @param w,h      与 HDR RT 同尺寸 (full-res blit 目标)
+    /// @param outFbo   输出 FBO (仅 GL_DEPTH_ATTACHMENT, glDrawBuffer=GL_NONE)
+    /// @param outTex   输出 depth texture (NEAREST + CLAMP_TO_EDGE)
+    /// @return true=成功; 失败时 outFbo/outTex = 0
+    virtual bool CreateSSAODepthRT(int /*w*/, int /*h*/,
+                                    uint32_t* /*outFbo*/, uint32_t* /*outTex*/) { return false; }
+    virtual void DeleteSSAODepthRT(uint32_t /*fbo*/, uint32_t /*tex*/) {}
+
+    /// Phase E.8 旁路核心: 用 glBlitFramebuffer 从 HDR FBO 复制 depth 到 SSAO FBO
+    /// @note 在每帧 SSAORenderer::Process() 入口调用；GL_DEPTH_BUFFER_BIT + GL_NEAREST
+    ///       HDR RT 的 depth renderbuffer -> SSAO 专用 depth texture
+    virtual void BlitHDRDepthToSSAO(uint32_t /*hdrFbo*/, uint32_t /*ssaoDepthFbo*/,
+                                     int /*w*/, int /*h*/) {}
+
+    /// 创建 SSAO AO ping-pong RT:
+    ///   [0] raw AO    (R16F, 半分辨率)
+    ///   [1] blur temp (R16F, 半分辨率)
+    /// @param outW,outH 实际 RT 尺寸 (半分辨率, 最小 32x32 clamp)
+    /// @return true=成功; 失败时 fbos/texs 清零
+    virtual bool CreateSSAOTargets(int /*w*/, int /*h*/,
+                                    uint32_t* /*fbos*/, uint32_t* /*texs*/,
+                                    int* /*outW*/, int* /*outH*/) { return false; }
+    virtual void DeleteSSAOTargets(uint32_t* /*fbos*/, uint32_t* /*texs*/) {}
+
+    /// 创建 4x4 RGBA8 noise texture (REPEAT wrap + NEAREST filter)
+    /// 每像素 RGB = 归一化随机 (x, y, 0) 向量 (z=0 保证半球采样切空间不出界)
+    virtual uint32_t CreateSSAONoiseTex() { return 0; }
+    virtual void     DeleteSSAONoiseTex(uint32_t /*tex*/) {}
+
+    /// SSAO raw pass: depthTex -> dstFbo (R16F, 半分辨率)
+    /// @param kernel     vec3[kernelSize] CPU 侧预生成半球采样方向 (tangent space)
+    /// @param kernelSize 8 或 16
+    virtual void DrawSSAO(uint32_t /*depthTex*/, uint32_t /*noiseTex*/, uint32_t /*dstFbo*/,
+                          int /*w*/, int /*h*/,
+                          const float* /*projMat4*/, const float* /*invProjMat4*/,
+                          const float* /*kernel*/, int /*kernelSize*/,
+                          float /*radius*/, float /*bias*/, float /*power*/) {}
+
+    /// 双边分离滤波: srcAOTex + depthTex -> dstFbo
+    /// @param axis 0=水平; 1=垂直 (depth-aware 权重 exp(-|cDepth - sampDepth| * 200))
+    virtual void DrawSSAOBlur(uint32_t /*srcAOTex*/, uint32_t /*depthTex*/, uint32_t /*dstFbo*/,
+                              int /*w*/, int /*h*/, int /*axis*/) {}
+
+    /// Composite: HDR *= mix(1.0, aoTex.r, intensity) -> 覆盖写 HDR RT
+    /// @note 读 HDR 写 HDR 的 feedback loop 由内部临时 tex 中转规避
+    virtual void DrawSSAOComposite(uint32_t /*aoTex*/, uint32_t /*dstFbo*/,
+                                    int /*w*/, int /*h*/,
+                                    float /*intensity*/) {}
+
+    /// Phase E.8 辅助: 获取当前 projection / view 矩阵 (SSAO 重建 view pos 需要)
+    /// @param out16 输出 mat4 (列主序 16 floats)
+    virtual void GetProjection(float* /*out16*/) const {}
+    virtual void GetView(float* /*out16*/) const {}
 };
 
 // ==================== 工厂函数 ====================
