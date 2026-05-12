@@ -32,6 +32,7 @@
 #include "lens_dirt_renderer.h"       // Phase E.6.2 — Lens Dirt
 #include "streak_renderer.h"          // Phase E.6.2 — Streak (Anamorphic Flare)
 #include "lens_flare_renderer.h"      // Phase E.7.2 — Lens Flare (Ghost + Halo + Chromatic)
+#include "ssao_renderer.h"              // Phase E.8.2 — SSAO (屏幕空间环境光遮蔽)
 #include "light_audio_backend.h"
 #include "light_platform_net.h"
 #include "platform_window.h"
@@ -509,6 +510,8 @@ static int l_Window_Open(lua_State* L) {
     StreakRenderer::Init(g_render);
     // Phase E.7.2: 初始化 LensFlare (默认 autoEnable=false)
     LensFlareRenderer::Init(g_render);
+    // Phase E.8.2: 初始化 SSAO (默认 autoEnable=false)
+    SSAORenderer::Init(g_render);
 
     // 初始化音频后端
     if (!AudioBackend::Init()) {
@@ -733,6 +736,8 @@ static int l_UI_Resume(lua_State* L) {
             }
             PlatformNet::Shutdown();
             AudioBackend::Shutdown();
+            // Phase E.8.2: SSAO 依赖 HDR RT depth; 最先关闭 (管线末端)
+            SSAORenderer::Shutdown();
             // Phase E.7.2: LensFlare 依赖 Bloom + HDR; 最先关闭 (管线末端)
             LensFlareRenderer::Shutdown();
             // Phase E.6.2: LensFx 依赖 backend + Bloom; 最先关闭 (反初始化顺序)

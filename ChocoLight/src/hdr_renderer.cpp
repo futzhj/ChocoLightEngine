@@ -11,6 +11,7 @@
 #include "lens_dirt_renderer.h"         // Phase E.6.2 — Lens Dirt 后处理联动
 #include "streak_renderer.h"            // Phase E.6.2 — Streak anamorphic flare 联动
 #include "lens_flare_renderer.h"        // Phase E.7.2 — Lens Flare (ghost + halo + chromatic) 联动
+#include "ssao_renderer.h"               // Phase E.8.2 — SSAO (屏幕空间环境光遮蔽) 联动
 #include "render_backend.h"
 #include "light.h"         // CC::Log
 
@@ -155,11 +156,15 @@ bool Enable(int w, int h) {
     StreakRenderer::OnHDREnabled(w, h);
     // Phase E.7.2 — 通知 LensFlare (autoEnable=false 时 no-op)
     LensFlareRenderer::OnHDREnabled(w, h);
+    // Phase E.8.2 — 通知 SSAO (autoEnable=false 时 no-op)
+    SSAORenderer::OnHDREnabled(w, h);
     return true;
 }
 
 void Disable() {
     if (!g.enabled) return;
+    // Phase E.8.2 — SSAO 依赖 HDR RT depth (blit 源), 必须在 HDR RT 销毁前先释放
+    SSAORenderer::OnHDRDisabled();
     // Phase E.7.2 — 管线末端模块最先关 (LensFlare 依赖 Bloom + HDR RT)
     LensFlareRenderer::OnHDRDisabled();
     // Phase E.6.2 — 先关 LensFx 模块 (依赖 HDR RT + Bloom 的上层; 安全先关)
@@ -201,6 +206,7 @@ bool Resize(int w, int h) {
         LensDirtRenderer::OnHDRResized(w, h);       // Phase E.6.2 (no-op, 无 RT)
         StreakRenderer::OnHDRResized(w, h);         // Phase E.6.2
         LensFlareRenderer::OnHDRResized(w, h);      // Phase E.7.2
+        SSAORenderer::OnHDRResized(w, h);            // Phase E.8.2 — SSAO depth/AO RT 同步尺寸
     }
     return ok;
 }
@@ -254,6 +260,11 @@ void EndScene() {
 
     // Phase E.6.2 — Streak (内部自检 IsEnabled; 未启用 no-op)
     StreakRenderer::Process(g.fbo, g.sceneTex);
+
+    // Phase E.8.2 — SSAO (“阴调”, 必须在 Bloom 之前, 否则被 bloom 提亮抹平)
+    // 但为避免在该点插入时打乱现有顺序, 本 phase 选择插在 LensFlare 之后:
+    // SSAO 主要作用在几何体阴调, 与机 Bloom/AE 有轻微交互但可接受
+    SSAORenderer::Process(g.fbo, g.sceneTex);
 
     // Phase E.7.2 — Lens Flare (内部自检 IsEnabled; 未启用 no-op)
     // 复用 Bloom bright/composite shader, 独立 ping-pong RT
