@@ -137,36 +137,40 @@ pass("SetBlurEnabled(true) round-trip ok")
 -- F) Param clamping
 -- ============================================================
 
+-- 注: C++ float 转 Lua double 有精度损失 (例 0.05f -> 0.050000000745058), 用 epsilon 比较
+local EPS = 1e-4
+local function near(a, b) return math.abs(a - b) <= EPS end
+
 S.SetRadius(-5.0)   -- below min
-if S.GetRadius() ~= 0.05 then fail("SetRadius(-5) clamp to 0.05, got " .. tostring(S.GetRadius())) end
+if not near(S.GetRadius(), 0.05) then fail("SetRadius(-5) clamp to 0.05, got " .. tostring(S.GetRadius())) end
 pass("SetRadius(-5) -> clamp 0.05")
 
 S.SetRadius(100.0)  -- above max
-if S.GetRadius() ~= 5.0 then fail("SetRadius(100) clamp to 5.0, got " .. tostring(S.GetRadius())) end
+if not near(S.GetRadius(), 5.0) then fail("SetRadius(100) clamp to 5.0, got " .. tostring(S.GetRadius())) end
 pass("SetRadius(100) -> clamp 5.0")
 
 S.SetBias(-1.0)
-if S.GetBias() ~= 0.0 then fail("SetBias(-1) clamp to 0") end
+if not near(S.GetBias(), 0.0) then fail("SetBias(-1) clamp to 0") end
 pass("SetBias(-1) -> clamp 0.0")
 
 S.SetBias(5.0)
-if S.GetBias() ~= 0.2 then fail("SetBias(5) clamp to 0.2") end
+if not near(S.GetBias(), 0.2) then fail("SetBias(5) clamp to 0.2") end
 pass("SetBias(5) -> clamp 0.2")
 
 S.SetIntensity(-1.0)
-if S.GetIntensity() ~= 0.0 then fail("SetIntensity(-1) clamp to 0") end
+if not near(S.GetIntensity(), 0.0) then fail("SetIntensity(-1) clamp to 0") end
 pass("SetIntensity(-1) -> clamp 0.0")
 
 S.SetIntensity(100.0)
-if S.GetIntensity() ~= 4.0 then fail("SetIntensity(100) clamp to 4.0") end
+if not near(S.GetIntensity(), 4.0) then fail("SetIntensity(100) clamp to 4.0") end
 pass("SetIntensity(100) -> clamp 4.0")
 
 S.SetPower(0.01)
-if S.GetPower() ~= 0.5 then fail("SetPower(0.01) clamp to 0.5") end
+if not near(S.GetPower(), 0.5) then fail("SetPower(0.01) clamp to 0.5") end
 pass("SetPower(0.01) -> clamp 0.5")
 
 S.SetPower(100.0)
-if S.GetPower() ~= 8.0 then fail("SetPower(100) clamp to 8.0") end
+if not near(S.GetPower(), 8.0) then fail("SetPower(100) clamp to 8.0") end
 pass("SetPower(100) -> clamp 8.0")
 
 -- KernelSize special: only 8 or 16 (split at 12)
