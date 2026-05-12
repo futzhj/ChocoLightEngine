@@ -134,12 +134,13 @@ lua -e "loadfile('samples/demo_ssao/main.lua')"
 
 ## 5. 完结清单
 
-- [x] E.8.1 backend ✅ CI 6/6（fix `c4e7d35`）
-- [x] E.8.2 module ✅ CI 待 head 验证
-- [x] E.8.3 Lua + smoke + demo + CI ⏳ 跑中
+- [x] E.8.1 backend ✅ CI 6/6（含 fix1 `c4e7d35` + fix2 `a6c2a78`）
+- [x] E.8.2 module ✅ CI 6/6
+- [x] E.8.3 Lua + smoke + demo + CI ✅ CI 6/6（含 fix `a52130e` epsilon）
 - [x] ACCEPTANCE_PhaseE_8.md ✅
 - [x] FINAL_PhaseE_8.md ✅
 - [x] TODO_PhaseE_8.md ✅（本文件）
+- [x] **最终 head `a52130e` CI run 25705912000 全 6/6 绿** ✨
 - [ ] 真机视觉验收（用户参与）
 - [ ] G-buffer normal RT（建议中期补；视觉质量↑大）
 - [ ] HBAO/GTAO 升级（长期可选）

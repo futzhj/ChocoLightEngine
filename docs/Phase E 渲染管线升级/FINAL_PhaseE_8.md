@@ -12,10 +12,11 @@
 | 阶段 | commit | 范围 | CI |
 |------|--------|------|-----|
 | 规划 | `40aef66` + `1ec8464` | ALIGNMENT + DESIGN + TASK（含双 RT 旁路策略修订）| ✅ 6/6 |
-| **E.8.1** Backend | `7f14b96` + fix `c4e7d35` | render_backend.h 11 虚接口 + GL33 3 shader 双 profile + 实现 + InitLensFx + Shutdown | ⏳ 跑中 |
-| **E.8.2** Module | `9cd60af` | SSAORenderer namespace (27 C++ fn) + HDR 5 联动点 + light_ui + CMake | ⏳ 跑中 |
-| **E.8.3** Lua API | `f9108cb` | Light.Graphics.SSAO 19 fn + smoke ~50 断言 + demo_ssao 3D 场景 + CI 注册 | TBD |
-| docs | `pending` | ACCEPTANCE + FINAL + TODO | — |
+| **E.8.1** Backend | `7f14b96` + fix `c4e7d35` + fix `a6c2a78` | render_backend.h 11 虚接口 + GL33 3 shader 双 profile + 实现 + InitLensFx + Shutdown + 2 平台修复 | ✅ 6/6 |
+| **E.8.2** Module | `9cd60af` | SSAORenderer namespace (27 C++ fn) + HDR 5 联动点 + light_ui + CMake | ✅ 6/6 |
+| **E.8.3** Lua API | `f9108cb` + fix `a52130e` | Light.Graphics.SSAO 19 fn + smoke ~50 断言 + demo_ssao 3D 场景 + CI 注册 + epsilon 修复 | ✅ 6/6 |
+| docs | `a6c2a78` (+ 本文) | ACCEPTANCE + FINAL + TODO | — |
+| **最终 head** | **`a52130e`** | **CI run 25705912000** | **✅ 6/6 全绿** ✨ |
 
 ### 1.2 改动文件清单
 
@@ -189,14 +190,15 @@ void GetView(float* out16);
 | Commit | Run | 结论 |
 |--------|-----|------|
 | 规划 docs | （随 push 走） | ✅ 6/6 |
-| `7f14b96` E.8.1 backend (含 glDrawBuffer bug) | 25703520xxx | ❌ 4/6 (Linux/iOS/Web/Android 失败) |
-| `c4e7d35` E.8.1 fix（glDrawBuffer → glDrawBuffers）+ E.8.2 module | 25705155526 | ⏳ 跑中 |
-| `f9108cb` E.8.3 Lua + smoke + demo + CI 注册 | TBD（合并下次 push）| TBD |
+| `7f14b96` E.8.1 backend (含 glDrawBuffer bug) | 25703520xxx | ❌ 2/6 (Win+macOS 过) |
+| `c4e7d35` E.8.1 fix1 + E.8.2 | 25705155526 | ❌ 5/6 (Linux 还 fail — sqrtf) |
+| `a6c2a78` E.8.1 fix2 + E.8.3 + docs | 25705500619 | ❌ 5/6 (Win runtime — FP 精度) |
+| **`a52130e` E.8.3 epsilon fix** | **25705912000** | **✅ 6/6 全绿** ✨ |
 
-**fix 详情**：
-- `glDrawBuffer(GL_NONE)` 是桌面 GL 专用 API
-- GLES3 / WebGL2 / iOS / Android emcc gl3.h 没有此函数
-- 解决：改用 `glDrawBuffers(1, {GL_NONE})` 两个平台都支持
+**3 个 fix 根因**：
+1. `glDrawBuffer(GL_NONE)` 桌面 GL 专用 → `glDrawBuffers(1, {GL_NONE})` 双平台。
+2. `sqrtf` 在 Linux gcc 需显式 `#include <cmath>` （clang 其他平台隐式查找）。
+3. Lua smoke 浮点 strict 比较 `≠` 需改 epsilon：`0.05f → double` 为 `0.050000000745058` 会抖动失败。
 
 ---
 

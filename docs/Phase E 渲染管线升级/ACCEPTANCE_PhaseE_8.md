@@ -10,10 +10,10 @@
 | 子阶段 | commit | 范围 | 行数 | 状态 |
 |--------|--------|------|------|------|
 | 规划 | `40aef66` + `1ec8464` | ALIGNMENT + DESIGN + TASK（含双 RT 旁路策略修订）| ~900 | ✅ |
-| **E.8.1** Backend | `7f14b96` + fix `c4e7d35` | render_backend.h 11 虚接口 + 3 SSAO shader 双 profile + GL33 实现 + InitLensFx + Shutdown + GLES3 兼容修复 | ~750 | ✅ CI 待验 |
-| **E.8.2** Module | `9cd60af` | SSAORenderer namespace 27 fn + HDR 5 联动点 + light_ui Init/Shutdown + CMake | ~440 | ✅ CI 待验 |
-| **E.8.3** Lua + smoke + demo | `f9108cb` | Light.Graphics.SSAO 19 fn 子表 + ssao.lua smoke + demo_ssao + CI 注册 | ~800 | ✅ CI 待验 |
-| **E.8.4** docs | `pending` | ACCEPTANCE + FINAL + TODO | ~400 | ⏳ |
+| **E.8.1** Backend | `7f14b96` + fix `c4e7d35` + fix `a6c2a78` | render_backend.h 11 虚接口 + 3 SSAO shader 双 profile + GL33 实现 + InitLensFx + Shutdown + 2 平台修复 | ~750 | ✅ |
+| **E.8.2** Module | `9cd60af` | SSAORenderer namespace 27 fn + HDR 5 联动点 + light_ui Init/Shutdown + CMake | ~440 | ✅ |
+| **E.8.3** Lua + smoke + demo | `f9108cb` + fix `a52130e` | Light.Graphics.SSAO 19 fn 子表 + ssao.lua smoke + demo_ssao + CI 注册 + epsilon 修复 | ~800 | ✅ |
+| **E.8.4** docs | `a6c2a78` | ACCEPTANCE + FINAL + TODO | ~400 | ✅ |
 
 **总代码行数**：约 2900 行（C++ ~1900 / Lua ~330 / YAML ~3 / Docs ~660）
 
@@ -78,11 +78,14 @@ lumen-master\build\src\lightc\Release\lightc.exe -p samples\demo_ssao\main.lua
 
 | Commit | Run | Windows | Linux | macOS | iOS | Android | Web |
 |--------|-----|---------|-------|-------|-----|---------|-----|
-| `7f14b96` E.8.1 (含 glDrawBuffer bug) | run 25703520xxx | ✅ | ❌ | ✅ | ❌ | ❌ | ❌ |
-| `c4e7d35` E.8.1 fix + E.8.2 | run 25705155526 | ⏳ | ⏳ | ⏳ | ⏳ | ⏳ | ⏳ |
-| `f9108cb` E.8.3 (将与下次 push 合并) | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
+| `7f14b96` E.8.1 (含 glDrawBuffer bug) | 25703520xxx | ✅ | ❌ | ✅ | ❌ | ❌ | ❌ |
+| `c4e7d35` E.8.1 fix1 + E.8.2 | 25705155526 | ✅ | ❌ | ✅ | ✅ | ✅ | ✅ |
+| `a6c2a78` E.8.1 fix2 + E.8.3 + docs | 25705500619 | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **`a52130e` E.8.3 epsilon fix ✨最终** | **25705912000** | **✅** | **✅** | **✅** | **✅** | **✅** | **✅** |
 
-**fix 根因**：`glDrawBuffer` 是桌面 GL 专用 API，GLES3 没有。已修为 `glDrawBuffers(1, {GL_NONE})` 双平台通用。
+**fix1 根因**：`glDrawBuffer` 是桌面 GL 专用 API，GLES3 没有 → `glDrawBuffers(1, {GL_NONE})` 双平台通用。
+**fix2 根因**：`sqrtf` 在 Linux gcc 需显式 `#include <cmath>`（其他平台 clang 隐式查找）。
+**fix3 根因**：Windows smoke `0.05f → double` 有精度损失 `0.050000000745058`；clamp 比较改 epsilon。
 
 ### 3.3 Smoke 断言覆盖
 
@@ -130,7 +133,7 @@ lumen-master\build\src\lightc\Release\lightc.exe -p samples\demo_ssao\main.lua
 |--------|------|------|
 | 完整性 | 所有 17 原子任务交付 | ✅ |
 | 一致性 | 与 ALIGNMENT/DESIGN/TASK 对齐 | ✅ |
-| 可行性 | 编译通过（CI 验证中）| ⏳ |
+| 可行性 | 编译通过 | ✅ 6/6 |
 | 可控性 | HDR RT 零侵入（双 RT 旁路）| ✅ |
 | 可测性 | smoke 50+ 断言覆盖 | ✅ |
 | 向后兼容 | 现有 demo 行为不变 | ✅ 设计层面 |
