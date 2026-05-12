@@ -32,6 +32,7 @@
 #include "lens_dirt_renderer.h"      // Phase E.6.2 — Lens Dirt
 #include "streak_renderer.h"         // Phase E.6.2 — Streak (Anamorphic Flare)
 #include "lens_flare_renderer.h"     // Phase E.7.2 — Lens Flare (Ghost + Halo + Chromatic)
+#include "ssao_renderer.h"            // Phase E.8.2 — SSAO (屏幕空间环境光遮蔽)
 #include <cmath>
 #include <cstring>
 
@@ -2354,6 +2355,131 @@ static const luaL_Reg lens_flare_funcs[] = {
     {NULL, NULL}
 };
 
+// ==================== Phase E.8.3 — Light.Graphics.SSAO Lua API ====================
+//
+// API (19 fn): lifecycle 5 + autoEnable 2 + params 12 (6 Set+Get pairs)
+//   Lifecycle:  Enable(w,h) / Disable / IsEnabled / IsSupported / Resize(w,h)
+//   AutoEnable: SetAutoEnable / GetAutoEnable
+//   Params:     SetRadius / GetRadius                  (float [0.05, 5.0])
+//               SetBias / GetBias                      (float [0, 0.2])
+//               SetIntensity / GetIntensity            (float [0, 4.0])
+//               SetKernelSize / GetKernelSize          (int {8, 16})
+//               SetPower / GetPower                    (float [0.5, 8.0])
+//               SetBlurEnabled / GetBlurEnabled        (bool)
+
+static int l_SSAO_Enable(lua_State* L) {
+    int w = (int)luaL_checkinteger(L, 1);
+    int h = (int)luaL_checkinteger(L, 2);
+    lua_pushboolean(L, SSAORenderer::Enable(w, h) ? 1 : 0);
+    return 1;
+}
+
+static int l_SSAO_Disable(lua_State* L)     { (void)L; SSAORenderer::Disable(); return 0; }
+static int l_SSAO_IsEnabled(lua_State* L)   { lua_pushboolean(L, SSAORenderer::IsEnabled()   ? 1 : 0); return 1; }
+static int l_SSAO_IsSupported(lua_State* L) { lua_pushboolean(L, SSAORenderer::IsSupported() ? 1 : 0); return 1; }
+
+static int l_SSAO_Resize(lua_State* L) {
+    int w = (int)luaL_checkinteger(L, 1);
+    int h = (int)luaL_checkinteger(L, 2);
+    lua_pushboolean(L, SSAORenderer::Resize(w, h) ? 1 : 0);
+    return 1;
+}
+
+static int l_SSAO_SetAutoEnable(lua_State* L) {
+    luaL_checkany(L, 1);
+    SSAORenderer::SetAutoEnable(lua_toboolean(L, 1) != 0);
+    return 0;
+}
+
+static int l_SSAO_GetAutoEnable(lua_State* L) {
+    lua_pushboolean(L, SSAORenderer::GetAutoEnable() ? 1 : 0);
+    return 1;
+}
+
+static int l_SSAO_SetRadius(lua_State* L) {
+    SSAORenderer::SetRadius((float)luaL_checknumber(L, 1));
+    return 0;
+}
+
+static int l_SSAO_GetRadius(lua_State* L) {
+    lua_pushnumber(L, (lua_Number)SSAORenderer::GetRadius());
+    return 1;
+}
+
+static int l_SSAO_SetBias(lua_State* L) {
+    SSAORenderer::SetBias((float)luaL_checknumber(L, 1));
+    return 0;
+}
+
+static int l_SSAO_GetBias(lua_State* L) {
+    lua_pushnumber(L, (lua_Number)SSAORenderer::GetBias());
+    return 1;
+}
+
+static int l_SSAO_SetIntensity(lua_State* L) {
+    SSAORenderer::SetIntensity((float)luaL_checknumber(L, 1));
+    return 0;
+}
+
+static int l_SSAO_GetIntensity(lua_State* L) {
+    lua_pushnumber(L, (lua_Number)SSAORenderer::GetIntensity());
+    return 1;
+}
+
+static int l_SSAO_SetKernelSize(lua_State* L) {
+    SSAORenderer::SetKernelSize((int)luaL_checkinteger(L, 1));
+    return 0;
+}
+
+static int l_SSAO_GetKernelSize(lua_State* L) {
+    lua_pushinteger(L, (lua_Integer)SSAORenderer::GetKernelSize());
+    return 1;
+}
+
+static int l_SSAO_SetPower(lua_State* L) {
+    SSAORenderer::SetPower((float)luaL_checknumber(L, 1));
+    return 0;
+}
+
+static int l_SSAO_GetPower(lua_State* L) {
+    lua_pushnumber(L, (lua_Number)SSAORenderer::GetPower());
+    return 1;
+}
+
+static int l_SSAO_SetBlurEnabled(lua_State* L) {
+    luaL_checkany(L, 1);
+    SSAORenderer::SetBlurEnabled(lua_toboolean(L, 1) != 0);
+    return 0;
+}
+
+static int l_SSAO_GetBlurEnabled(lua_State* L) {
+    lua_pushboolean(L, SSAORenderer::GetBlurEnabled() ? 1 : 0);
+    return 1;
+}
+
+static const luaL_Reg ssao_funcs[] = {
+    {"Enable",          l_SSAO_Enable},
+    {"Disable",         l_SSAO_Disable},
+    {"IsEnabled",       l_SSAO_IsEnabled},
+    {"IsSupported",     l_SSAO_IsSupported},
+    {"Resize",          l_SSAO_Resize},
+    {"SetAutoEnable",   l_SSAO_SetAutoEnable},
+    {"GetAutoEnable",   l_SSAO_GetAutoEnable},
+    {"SetRadius",       l_SSAO_SetRadius},
+    {"GetRadius",       l_SSAO_GetRadius},
+    {"SetBias",         l_SSAO_SetBias},
+    {"GetBias",         l_SSAO_GetBias},
+    {"SetIntensity",    l_SSAO_SetIntensity},
+    {"GetIntensity",    l_SSAO_GetIntensity},
+    {"SetKernelSize",   l_SSAO_SetKernelSize},
+    {"GetKernelSize",   l_SSAO_GetKernelSize},
+    {"SetPower",        l_SSAO_SetPower},
+    {"GetPower",        l_SSAO_GetPower},
+    {"SetBlurEnabled",  l_SSAO_SetBlurEnabled},
+    {"GetBlurEnabled",  l_SSAO_GetBlurEnabled},
+    {NULL, NULL}
+};
+
 static const luaL_Reg graphics_funcs[] = {
     // --- 绘图基元 ---
     {"Draw",              l_Draw},
@@ -2465,6 +2591,11 @@ int luaopen_Light_Graphics(lua_State* L) {
         lua_createtable(L, 0, 0);
         luaL_setfuncs(L, lens_flare_funcs, 0);
         lua_setfield(L, -2, "LensFlare");
+
+        // Phase E.8.3 — SSAO 子表 (Light.Graphics.SSAO.*)
+        lua_createtable(L, 0, 0);
+        luaL_setfuncs(L, ssao_funcs, 0);
+        lua_setfield(L, -2, "SSAO");
 
         lua_rawset(L, -3);
         lua_pushstring(L, "Graphics");
