@@ -1,6 +1,7 @@
-# demo_ssr — Phase E.9 Screen-Space Reflection
+# demo_ssr — Phase E.9 + E.10 Screen-Space Reflection (含 Blur)
 
-ChocoLight Phase E.9 SSR (屏幕空间反射) demo，演示金属反射场景。
+ChocoLight Phase E.9 SSR (屏幕空间反射) + Phase E.10 SSR Blur demo，演示金属反射场景，
+含可选 half-res Gaussian 模糊。
 
 ## 场景
 
@@ -20,8 +21,10 @@ ChocoLight Phase E.9 SSR (屏幕空间反射) demo，演示金属反射场景。
 HDR Pipeline EndScene:
    ├── LensDirt
    ├── Streak
-   ├── SSAO         (基于 G-buffer normal)
-   ├── SSR ★       (Phase E.9 — 本 demo 主角)
+   ├── SSAO              (基于 G-buffer normal)
+   ├── SSR raw          (Phase E.9 — ray march 写入 reflection RT)
+   ├── SSR Blur ★       (Phase E.10 — 可选 half-res 5-tap Gaussian, H + V)
+   ├── SSR Composite    (additive 入 HDR color)
    ├── LensFlare
    ├── AutoExposure
    ├── Bloom
@@ -39,6 +42,8 @@ HDR Pipeline EndScene:
 | `7` / `8`   | Intensity -/+（步长 0.1）             | [0.0, 2.0]          |
 | `-` / `=`   | MaxDistance -/+（步长 10）            | [1, 1000]           |
 | `[` / `]`   | EdgeFade -/+（步长 0.05）             | [0.0, 0.5]          |
+| `B`         | 切换 SSR Blur on/off   *(Phase E.10)*  | —                   |
+| `9` / `0`   | BlurRadius -/+（步长 0.25） *(E.10)* | [0.5, 4.0]          |
 | `R`         | reset 所有参数到默认                  | —                   |
 | `ESC`       | 退出                                  | —                   |
 
@@ -51,13 +56,16 @@ Thickness   = 0.5       depth 命中容差
 MaxDistance = 50.0      ray march 距离上限
 Intensity   = 0.7       composite 强度
 EdgeFade    = 0.1       屏幕边缘 fade 区域宽度
+BlurEnabled = false     Phase E.10 默认关（保持向后兼容）
+BlurRadius  = 1.5       Phase E.10　Gaussian 半径 [0.5, 4.0]
 ```
 
 ## 性能调优建议
 
-- **高端 PC**：默认 64 步即可，~3 ms（1080p）
-- **中端 GPU**：降到 32 步，~2 ms（按 `1` 三次）
-- **低端 / 移动**：降到 16 步 + 减小 MaxDistance 到 20，~1 ms
+- **高端 PC**：默认 64 步 + Blur on (radius=2.0)，~3.3 ms（1080p）
+- **中端 GPU**：32 步 + Blur on (radius=1.5)，~2.3 ms
+- **低端 / 移动**：16 步 + Blur off + MaxDistance 调到 20，~1 ms
+- **Blur 额外成本**：~0.3 ms（1080p, half-res H+V pass + composite读取）
 
 ## 运行
 
@@ -72,13 +80,13 @@ headless（无窗口/无 GL）下：自动 fallback 到 API probe，
 
 - SSR 反射依赖屏幕已渲染的几何体（屏外物体不反射）
 - 自反射剔除阈值 `dot(viewN, viewV) < 0.05` 时跳过
-- 当前未实现反射 blur（粗糙度模糊），平面反射看起来较"硬"
-  （Phase E.10+ 可补 blur pass）
+- **Phase E.10 Blur**：统一模糊半径（未采用 PBR roughness-aware blur）；half-res 上采样有少量边缘锁步闪烁
 - 半透明物体不写 depth/normal，因此不会被 SSR 反射
 - 后端不支持 G-buffer MRT 时 silent skip + 首次 warn（不崩溃）
 
 ## 相关文档
 
-- 设计文档：`docs/Phase E.9 SSR/`
+- Phase E.9 设计文档：`docs/Phase E.9 SSR/`
+- **Phase E.10 设计文档**：`docs/Phase E.10 SSR Blur/`
 - API 参考：`docs/API_REFERENCE.md` → Light.Graphics.SSR
 - smoke 测试：`scripts/smoke/ssr.lua`

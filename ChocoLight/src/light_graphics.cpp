@@ -2496,9 +2496,9 @@ static const luaL_Reg ssao_funcs[] = {
     {NULL, NULL}
 };
 
-// ==================== Phase E.9 — Light.Graphics.SSR Lua API ====================
+// ==================== Phase E.9+E.10 — Light.Graphics.SSR Lua API ====================
 //
-// API (22 fn): lifecycle 5 + autoEnable 2 + params 14 (7 Set+Get pairs) + debug 1
+// API (24 fn): lifecycle 5 + autoEnable 2 + params 16 (8 Set+Get pairs) + debug 1
 //   Lifecycle:  Enable(w,h) / Disable / IsEnabled / IsSupported / Resize(w,h)
 //   AutoEnable: SetAutoEnable / GetAutoEnable
 //   Params:     SetMaxSteps / GetMaxSteps              (int [8, 128], 默认 64)
@@ -2507,7 +2507,8 @@ static const luaL_Reg ssao_funcs[] = {
 //               SetMaxDistance / GetMaxDistance        (float [1.0, 1000.0], 默认 50.0)
 //               SetIntensity / GetIntensity            (float [0.0, 2.0], 默认 0.7)
 //               SetEdgeFade / GetEdgeFade              (float [0.0, 0.5], 默认 0.1)
-//               SetBlurEnabled / GetBlurEnabled        (bool, 默认 false; 保留 API 兼容)
+//               SetBlurEnabled / GetBlurEnabled        (bool, 默认 false; Phase E.10 已激活)
+//               SetBlurRadius / GetBlurRadius          (float [0.5, 4.0], 默认 1.5; Phase E.10)
 //   Debug:      GetReflectionTexId                     (uint32_t reflection RT GL id, 0 = 未启用)
 
 static int l_SSR_Enable(lua_State* L) {
@@ -2610,6 +2611,20 @@ static int l_SSR_GetBlurEnabled(lua_State* L) {
     return 1;
 }
 
+/// @lua_api Light.Graphics.SSR.SetBlurRadius — Phase E.10 反射模糊半径
+/// @param v float, clamp [0.5, 4.0], 默认 1.5. 仅 BlurEnabled=true 时生效.
+static int l_SSR_SetBlurRadius(lua_State* L) {
+    SSRRenderer::SetBlurRadius((float)luaL_checknumber(L, 1));
+    return 0;
+}
+
+/// @lua_api Light.Graphics.SSR.GetBlurRadius — Phase E.10 反射模糊半径读取
+/// @return number 当前 clamp 后的 blur radius
+static int l_SSR_GetBlurRadius(lua_State* L) {
+    lua_pushnumber(L, (lua_Number)SSRRenderer::GetBlurRadius());
+    return 1;
+}
+
 /// @lua_api Light.Graphics.SSR.GetReflectionTexId — Phase E.9 调试接口
 /// @return integer 当前反射 RT (RGBA16F full-res) GL id, 0 = SSR 未启用.
 /// 用途: smoke / sample 可视化反射通路, 不应在生产代码使用.
@@ -2643,6 +2658,9 @@ static const luaL_Reg ssr_funcs[] = {
     {"GetEdgeFade",         l_SSR_GetEdgeFade},
     {"SetBlurEnabled",      l_SSR_SetBlurEnabled},
     {"GetBlurEnabled",      l_SSR_GetBlurEnabled},
+    // Phase E.10 — 反射模糊半径 (1 对新增)
+    {"SetBlurRadius",       l_SSR_SetBlurRadius},
+    {"GetBlurRadius",       l_SSR_GetBlurRadius},
     // debug (1)
     {"GetReflectionTexId",  l_SSR_GetReflectionTexId},
     {NULL, NULL}

@@ -1,16 +1,17 @@
--- Phase E.9 smoke: Light.Graphics.SSR
+-- Phase E.9+E.10 smoke: Light.Graphics.SSR
 --
--- API coverage (22):
+-- API coverage (24):
 --   Lifecycle 5:  Enable(w,h) / Disable / IsEnabled / IsSupported / Resize(w,h)
 --   AutoEnable 2: SetAutoEnable / GetAutoEnable
---   Params 14 (7 pairs):
+--   Params 16 (8 pairs):
 --     SetMaxSteps / GetMaxSteps              (int   [8, 128],     default 64)
 --     SetStepSize / GetStepSize              (float [0.01, 1.0],  default 0.1)
 --     SetThickness / GetThickness            (float [0.01, 5.0],  default 0.5)
 --     SetMaxDistance / GetMaxDistance        (float [1.0, 1000.0],default 50.0)
 --     SetIntensity / GetIntensity            (float [0.0, 2.0],   default 0.7)
 --     SetEdgeFade / GetEdgeFade              (float [0.0, 0.5],   default 0.1)
---     SetBlurEnabled / GetBlurEnabled        (bool,               default false)
+--     SetBlurEnabled / GetBlurEnabled        (bool,               default false; Phase E.10 active)
+--     SetBlurRadius / GetBlurRadius          (float [0.5, 4.0],   default 1.5; Phase E.10)
 --   Debug 1: GetReflectionTexId
 --
 -- Headless tolerant; ASCII-only.
@@ -26,7 +27,7 @@ if type(S) ~= "table" then fail("SSR subtable missing (got " .. type(S) .. ")") 
 pass("Light.Graphics.SSR subtable present")
 
 -- ============================================================
--- A) Surface (22 functions)
+-- A) Surface (24 functions, Phase E.10 adds SetBlurRadius/GetBlurRadius)
 -- ============================================================
 
 local fns = {
@@ -39,6 +40,7 @@ local fns = {
     "SetIntensity", "GetIntensity",
     "SetEdgeFade", "GetEdgeFade",
     "SetBlurEnabled", "GetBlurEnabled",
+    "SetBlurRadius", "GetBlurRadius",   -- Phase E.10
     "GetReflectionTexId",
 }
 for _, k in ipairs(fns) do
@@ -105,6 +107,11 @@ pass("Default EdgeFade == 0.1")
 if S.GetBlurEnabled() ~= false then fail("Default BlurEnabled != false") end
 pass("Default BlurEnabled == false")
 
+-- Phase E.10 — BlurRadius default
+local br = S.GetBlurRadius()
+if math.abs(br - 1.5) > 1e-4 then fail("Default BlurRadius != 1.5 (got " .. tostring(br) .. ")") end
+pass("Default BlurRadius == 1.5 (Phase E.10)")
+
 -- ============================================================
 -- E) Param Set/Get round-trip
 -- ============================================================
@@ -140,6 +147,11 @@ pass("SetBlurEnabled(true) round-trip ok")
 S.SetBlurEnabled(false)
 if S.GetBlurEnabled() ~= false then fail("SetBlurEnabled(false) round-trip") end
 pass("SetBlurEnabled(false) round-trip ok")
+
+-- Phase E.10 — BlurRadius round-trip
+S.SetBlurRadius(2.5)
+if math.abs(S.GetBlurRadius() - 2.5) > 1e-4 then fail("SetBlurRadius round-trip") end
+pass("SetBlurRadius(2.5) round-trip ok")
 
 -- ============================================================
 -- F) Param clamping
@@ -202,6 +214,15 @@ S.SetEdgeFade(5.0)
 if not near(S.GetEdgeFade(), 0.5) then fail("SetEdgeFade(5) clamp to 0.5") end
 pass("SetEdgeFade(5) -> clamp 0.5")
 
+-- Phase E.10 — BlurRadius clamp [0.5, 4.0]
+S.SetBlurRadius(-10.0)
+if not near(S.GetBlurRadius(), 0.5) then fail("SetBlurRadius(-10) clamp to 0.5, got " .. tostring(S.GetBlurRadius())) end
+pass("SetBlurRadius(-10) -> clamp 0.5")
+
+S.SetBlurRadius(99.0)
+if not near(S.GetBlurRadius(), 4.0) then fail("SetBlurRadius(99) clamp to 4.0, got " .. tostring(S.GetBlurRadius())) end
+pass("SetBlurRadius(99) -> clamp 4.0")
+
 -- ============================================================
 -- G) Restore defaults
 -- ============================================================
@@ -213,6 +234,7 @@ S.SetMaxDistance(50.0)
 S.SetIntensity(0.7)
 S.SetEdgeFade(0.1)
 S.SetBlurEnabled(false)
+S.SetBlurRadius(1.5)   -- Phase E.10
 pass("All params restored to defaults")
 
 -- ============================================================
@@ -309,4 +331,48 @@ else
     pass("Light.Graphics.HDR 不可用, 跳过 autoEnable 联动验证")
 end
 
-print("[OK] Phase E.9 smoke (Light.Graphics.SSR): all checks passed")
+-- ============================================================
+-- K) Phase E.10 — BlurEnabled × BlurRadius 联动行为
+--    验证: 独立状态位 (BlurEnabled 与 BlurRadius 互不干扰)
+-- ============================================================
+
+-- 1. BlurEnabled 状态 × BlurRadius 调整: 互不影响
+S.SetBlurEnabled(true)
+S.SetBlurRadius(3.0)
+if S.GetBlurEnabled() ~= true or math.abs(S.GetBlurRadius() - 3.0) > 1e-4 then
+    fail("BlurEnabled × BlurRadius independence broken")
+end
+pass("BlurEnabled=true + BlurRadius=3.0 独立状态位保持")
+
+-- 2. BlurEnabled=false 后 BlurRadius 仍可设置且生效 (不被 clear)
+S.SetBlurEnabled(false)
+if math.abs(S.GetBlurRadius() - 3.0) > 1e-4 then
+    fail("BlurRadius 被 Disable BlurEnabled 意外重置")
+end
+pass("BlurEnabled=false 后 BlurRadius 保持 3.0 (独立)")
+
+-- 3. Low-end 预设: blur 关 + intensity 低 (移动端省性能)
+S.SetBlurEnabled(false)
+S.SetMaxSteps(16)
+S.SetIntensity(0.3)
+if S.GetBlurEnabled() ~= false or S.GetMaxSteps() ~= 16 or math.abs(S.GetIntensity() - 0.3) > 1e-4 then
+    fail("Low-end preset 不一致")
+end
+pass("Low-end 预设 (blur=off, steps=16, intensity=0.3) 保持")
+
+-- 4. High-end 预设: blur 开 + radius=2.0 + steps=128 (云渲染 / 高端桌面)
+S.SetBlurEnabled(true)
+S.SetBlurRadius(2.0)
+S.SetMaxSteps(128)
+if S.GetBlurEnabled() ~= true or math.abs(S.GetBlurRadius() - 2.0) > 1e-4 or S.GetMaxSteps() ~= 128 then
+    fail("High-end preset 不一致")
+end
+pass("High-end 预设 (blur=on, radius=2.0, steps=128) 保持")
+
+-- restore
+S.SetBlurEnabled(false)
+S.SetBlurRadius(1.5)
+S.SetMaxSteps(64)
+S.SetIntensity(0.7)
+
+print("[OK] Phase E.9+E.10 smoke (Light.Graphics.SSR): all checks passed")

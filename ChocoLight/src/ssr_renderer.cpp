@@ -87,14 +87,21 @@ struct State {
     float   maxDistance     = 50.0f;
     float   intensity       = 0.7f;
     float   edgeFade        = 0.1f;
-    bool    blurEnabled     = false;   // Phase E.9 不实际作用, 保留 API 兼容
+    bool    blurEnabled     = false;   // Phase E.10 已激活: true 时 Process 走 H+V 模糊
+
+    // Phase E.10 — half-res blur ping-pong (用户拍板 2026-05-12)
+    uint32_t blurFbos[2]    = {0, 0};   // [0] = H pass dst, [1] = V pass dst
+    uint32_t blurTexs[2]    = {0, 0};
+    int      blurW          = 0;        // half-res 宽 (max(1, srcW/2))
+    int      blurH          = 0;
+    float    blurRadius     = 1.5f;     // texel 半径乘子, clamp [0.5, 4.0]
 };
 
 static State g;
 
 // ==================== 内部资源管理 ====================
 
-/// 释放所有动态资源 (depth RT + reflect RT), 不动 backend / 参数
+/// 释放所有动态资源 (depth RT + reflect RT + Phase E.10 blur RT × 2), 不动 backend / 参数
 static void DestroyResources() {
     if (!g.backend) return;
     if (g.depthFbo || g.depthTex) {
@@ -104,10 +111,16 @@ static void DestroyResources() {
     if (g.reflectFbo || g.reflectTex) {
         g.backend->DeleteSSRTargets(&g.reflectFbo, &g.reflectTex);
     }
+    // Phase E.10 — half-res blur ping-pong
+    if (g.blurFbos[0] || g.blurFbos[1] || g.blurTexs[0] || g.blurTexs[1]) {
+        g.backend->DeleteSSRBlurRT(g.blurFbos, g.blurTexs);
+    }
+    g.blurW = g.blurH = 0;
     g.srcW = g.srcH = 0;
 }
 
-/// 分配所有资源 (depth RT + reflect RT, 全 full-res 与 HDR 同尺寸)
+/// 分配所有资源 (depth RT full-res + reflect RT full-res + Phase E.10 blur RT half-res)
+/// blur RT 即使 BlurEnabled=false 也分配 (简化生命周期; 1080p 仅 ~4MB 代价)
 static bool AllocateResources(int w, int h) {
     if (!g.backend || w <= 0 || h <= 0) return false;
 
@@ -122,6 +135,13 @@ static bool AllocateResources(int w, int h) {
         g.backend->DeleteSSRDepthRT(g.depthFbo, g.depthTex);
         g.depthFbo = g.depthTex = 0;
         return false;
+    }
+    // Phase E.10 — blur ping-pong RT: half-res RGBA16F × 2 (失败不致命, silent fallback 到无 blur)
+    if (!g.backend->CreateSSRBlurRT(w, h, g.blurFbos, g.blurTexs, &g.blurW, &g.blurH)) {
+        // backend 不支持 SSR Blur (旧 GL / Legacy) -> blur 自动 no-op, 不影响 reflect 主路径
+        g.blurFbos[0] = g.blurFbos[1] = 0;
+        g.blurTexs[0] = g.blurTexs[1] = 0;
+        g.blurW = g.blurH = 0;
     }
     g.srcW = w;
     g.srcH = h;
@@ -226,6 +246,10 @@ float GetEdgeFade()           { return g.edgeFade; }
 void SetBlurEnabled(bool f)  { g.blurEnabled = f; }
 bool GetBlurEnabled()         { return g.blurEnabled; }
 
+// Phase E.10 — 反射模糊半径 [0.5, 4.0] (texel 单位)
+void  SetBlurRadius(float v) { g.blurRadius = clampf(v, 0.5f, 4.0f); }
+float GetBlurRadius()         { return g.blurRadius; }
+
 // ==================== 调试 API ====================
 
 uint32_t GetReflectionTexId() {
@@ -271,9 +295,23 @@ void Process(uint32_t hdrFbo, uint32_t hdrTex) {
                        g.maxSteps, g.stepSize, g.thickness,
                        g.maxDistance, g.edgeFade);
 
-    // 2. composite: HDR += reflect.rgb * reflect.a * intensity (加性)
+    // 2. (Phase E.10) 可选 blur: separable Gaussian H+V on half-res ping-pong
+    //    blur 资源未分配 (旧 backend) 时 silent skip, composite 仍用 full-res reflect
+    uint32_t finalReflectTex = g.reflectTex;
+    if (g.blurEnabled && g.blurFbos[0] && g.blurFbos[1] && g.blurW > 0 && g.blurH > 0) {
+        // H pass: full-res reflectTex -> half-res blurFbos[0]
+        //   (一举完成 downsample + horizontal blur, 由硬件 bilinear filter 隐式 downsample)
+        g.backend->DrawSSRBlur(g.reflectTex, g.blurFbos[0],
+                                g.blurW, g.blurH, 0, g.blurRadius);
+        // V pass: half-res blurTexs[0] -> half-res blurFbos[1]
+        g.backend->DrawSSRBlur(g.blurTexs[0], g.blurFbos[1],
+                                g.blurW, g.blurH, 1, g.blurRadius);
+        finalReflectTex = g.blurTexs[1];   // composite 用 half-res 模糊结果, 自动 bilinear upscale
+    }
+
+    // 3. composite: HDR += reflect.rgb * reflect.a * intensity (加性)
     //    backend 内部用临时 RT 解 feedback loop
-    g.backend->DrawSSRComposite(g.reflectTex, hdrFbo, g.srcW, g.srcH, g.intensity);
+    g.backend->DrawSSRComposite(finalReflectTex, hdrFbo, g.srcW, g.srcH, g.intensity);
 }
 
 } // namespace SSRRenderer

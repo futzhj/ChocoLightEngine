@@ -1673,6 +1673,41 @@ void main() {
 }
 )";
 
+// ---- FS_SSR_BLUR (GLES 3.0): separable Gaussian 5-tap ----
+// Phase E.10 — 反射模糊 (粗糙度模拟), user-pinned half-res ping-pong.
+//   axis=0 水平 / axis=1 垂直; uTexel = 1/dstSize (half-res);
+//   uRadius 控制扩散半径 [0.5, 4.0] (texel 单位).
+//   不做 depth-aware (模糊金属表面应当连续扩散).
+static const char* FS_SSR_BLUR_SOURCE = R"(#version 300 es
+precision highp float;
+precision highp sampler2D;
+in  vec2 vUV;
+out vec4 FragColor;
+
+uniform sampler2D uSrcTex;
+uniform vec2  uTexel;    // 1.0 / vec2(dstW, dstH)
+uniform int   uAxis;     // 0=H, 1=V
+uniform float uRadius;   // [0.5, 4.0]
+
+void main() {
+    // 5-tap Gaussian (sigma ~= 1.6) weights, 中心 + ±1 + ±2
+    const float W0 = 0.227027;
+    const float W1 = 0.194594;
+    const float W2 = 0.121622;
+
+    vec2 dir = (uAxis == 0) ? vec2(uTexel.x, 0.0) : vec2(0.0, uTexel.y);
+    vec2 off1 = dir * uRadius;
+    vec2 off2 = dir * uRadius * 2.0;
+
+    vec4 c = texture(uSrcTex, vUV) * W0;
+    c += texture(uSrcTex, vUV + off1) * W1;
+    c += texture(uSrcTex, vUV - off1) * W1;
+    c += texture(uSrcTex, vUV + off2) * W2;
+    c += texture(uSrcTex, vUV - off2) * W2;
+    FragColor = c;
+}
+)";
+
 #else  // 桌面 GL 3.3 Core
 
 // ---- FS_SSAO (GL 3.3): 同 GLES3 算法 ----
@@ -1879,6 +1914,35 @@ void main() {
     vec3 hdr = texture(uSceneTex, vUV).rgb;
     vec4 ref = texture(uReflectTex, vUV);
     FragColor = vec4(hdr + ref.rgb * ref.a * uIntensity, 1.0);
+}
+)";
+
+// ---- FS_SSR_BLUR (GL 3.3): separable Gaussian 5-tap ----
+static const char* FS_SSR_BLUR_SOURCE = R"(
+#version 330 core
+in  vec2 vUV;
+out vec4 FragColor;
+
+uniform sampler2D uSrcTex;
+uniform vec2  uTexel;
+uniform int   uAxis;
+uniform float uRadius;
+
+void main() {
+    const float W0 = 0.227027;
+    const float W1 = 0.194594;
+    const float W2 = 0.121622;
+
+    vec2 dir = (uAxis == 0) ? vec2(uTexel.x, 0.0) : vec2(0.0, uTexel.y);
+    vec2 off1 = dir * uRadius;
+    vec2 off2 = dir * uRadius * 2.0;
+
+    vec4 c = texture(uSrcTex, vUV) * W0;
+    c += texture(uSrcTex, vUV + off1) * W1;
+    c += texture(uSrcTex, vUV - off1) * W1;
+    c += texture(uSrcTex, vUV + off2) * W2;
+    c += texture(uSrcTex, vUV - off2) * W2;
+    FragColor = c;
 }
 )";
 
@@ -2107,6 +2171,14 @@ class GL33Backend : public RenderBackend {
     GLuint ssrCompTempTex          = 0;
     int    ssrCompTempW            = 0;
     int    ssrCompTempH            = 0;
+
+    // Phase E.10 — SSR Blur (反射模糊, half-res ping-pong, 用户拍板 2026-05-12)
+    GLuint programSSRBlur          = 0;
+    bool   ssrBlurSupported        = false;
+    GLint  locSSRBlur_SrcTex       = -1;
+    GLint  locSSRBlur_Texel        = -1;
+    GLint  locSSRBlur_Axis         = -1;
+    GLint  locSSRBlur_Radius       = -1;
 
     // Phase E.2.1 — Lighting2D dirty bit cache
     // 当 state->version 与此值相等时, UploadLighting2D 跳过所有 glUniform*v 调用
@@ -2897,17 +2969,33 @@ public:
             ssrSupported = false;
         }
 
+        // --- Phase E.10 — SSR Blur (反射模糊, half-res ping-pong; 用户拍板 2026-05-12) ---
+        programSSRBlur = buildProgram(FS_SSR_BLUR_SOURCE, "SSRBlur");
+        if (programSSRBlur && ssrSupported) {
+            locSSRBlur_SrcTex = glGetUniformLocation(programSSRBlur, "uSrcTex");
+            locSSRBlur_Texel  = glGetUniformLocation(programSSRBlur, "uTexel");
+            locSSRBlur_Axis   = glGetUniformLocation(programSSRBlur, "uAxis");
+            locSSRBlur_Radius = glGetUniformLocation(programSSRBlur, "uRadius");
+            glUseProgram(programSSRBlur);
+            if (locSSRBlur_SrcTex >= 0) glUniform1i(locSSRBlur_SrcTex, 0);  // slot 0
+            glUseProgram(0);
+            ssrBlurSupported = true;
+        } else {
+            ssrBlurSupported = false;
+        }
+
         CC::Log(CC::LOG_INFO,
-                "GL33: Phase E.6+E.7+E.8+E.9 LensFx/SSAO/SSR ready (lensDirt=%s, streak=%s, lensFlare=%s, ssao=%s, ssr=%s; programs=[LD=%u, SB=%u, SC=%u, LFG=%u, S=%u, SB=%u, SC=%u, SSR=%u, SSRC=%u])",
+                "GL33: Phase E.6+E.7+E.8+E.9+E.10 LensFx/SSAO/SSR ready (lensDirt=%s, streak=%s, lensFlare=%s, ssao=%s, ssr=%s, ssrBlur=%s; programs=[LD=%u, SB=%u, SC=%u, LFG=%u, S=%u, SB=%u, SC=%u, SSR=%u, SSRC=%u, SSRB=%u])",
                 lensDirtSupported ? "yes" : "no",
                 streakSupported   ? "yes" : "no",
                 lensFlareSupported? "yes" : "no",
                 ssaoSupported     ? "yes" : "no",
                 ssrSupported      ? "yes" : "no",
+                ssrBlurSupported  ? "yes" : "no",
                 programLensDirt, programStreakBlur, programStreakComposite,
                 programLensFlareGhost,
                 programSSAO, programSSAOBlur, programSSAOComposite,
-                programSSR, programSSRComposite);
+                programSSR, programSSRComposite, programSSRBlur);
     }
 
     void Shutdown() override {
@@ -3044,11 +3132,12 @@ public:
         if (ssrCompTempFbo)        { glDeleteFramebuffers(1, &ssrCompTempFbo); ssrCompTempFbo = 0; }
         if (ssrCompTempTex)        { glDeleteTextures(1, &ssrCompTempTex);     ssrCompTempTex = 0; }
         ssrCompTempW = ssrCompTempH = 0;
-        locSSR_DepthTex = locSSR_NormalTex = locSSR_HDRTex = -1;
-        locSSR_Proj = locSSR_InvProj = -1;
-        locSSR_MaxSteps = locSSR_StepSize = locSSR_Thickness = locSSR_MaxDistance = locSSR_EdgeFade = -1;
-        locSSRComp_SceneTex = locSSRComp_ReflectTex = locSSRComp_Intensity = -1;
         ssrSupported = false;
+
+        // Phase E.10 — 清理 SSR Blur (1 program; ping-pong RT 由 SSRRenderer 管 DeleteSSRBlurRT)
+        if (programSSRBlur) { glDeleteProgram(programSSRBlur); programSSRBlur = 0; }
+        ssrBlurSupported = false;
+        locSSRBlur_SrcTex = locSSRBlur_Texel = locSSRBlur_Axis = locSSRBlur_Radius = -1;
     }
 
     bool SupportsLit2D() const override { return lit2DSupported; }
@@ -4391,6 +4480,107 @@ public:
         glActiveTexture(GL_TEXTURE1);
         glBindTexture(GL_TEXTURE_2D, 0);
         glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        glUseProgram(0);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    }
+
+    // ==================== Phase E.10 — SSR Blur 实现 ====================
+    //
+    // 设计: half-res ping-pong (用户拍板 2026-05-12), 内存代价 1080p ~4MB,
+    //       性能 < 0.3 ms (vs Phase E.9 SSR 主 pass ~3 ms).
+    //       反射 upscale 由 composite 阶段硬件 bilinear filter 自动完成.
+
+    /// 创建 half-res blur ping-pong RT (RGBA16F × 2)
+    bool CreateSSRBlurRT(int wFull, int hFull,
+                          uint32_t* outFbos, uint32_t* outTexs,
+                          int* outW, int* outH) override {
+        // 防御性检查
+        if (!ssrBlurSupported || !outFbos || !outTexs || !outW || !outH ||
+            wFull <= 0 || hFull <= 0) {
+            if (outW) *outW = 0;
+            if (outH) *outH = 0;
+            return false;
+        }
+        // half-res: 至少 1×1 像素
+        int hw = (wFull / 2 > 0) ? (wFull / 2) : 1;
+        int hh = (hFull / 2 > 0) ? (hFull / 2) : 1;
+
+        // 先全部清零, 后续失败时可统一调 DeleteSSRBlurRT 清理
+        outFbos[0] = outFbos[1] = 0;
+        outTexs[0] = outTexs[1] = 0;
+
+        for (int i = 0; i < 2; ++i) {
+            glGenTextures(1, &outTexs[i]);
+            if (!outTexs[i]) { DeleteSSRBlurRT(outFbos, outTexs); *outW = *outH = 0; return false; }
+            glBindTexture(GL_TEXTURE_2D, outTexs[i]);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, hw, hh, 0, GL_RGBA, GL_HALF_FLOAT, nullptr);
+            // bilinear filter: composite 阶段读 half-res 自动 upscale
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S,     GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T,     GL_CLAMP_TO_EDGE);
+            glBindTexture(GL_TEXTURE_2D, 0);
+
+            glGenFramebuffers(1, &outFbos[i]);
+            if (!outFbos[i]) { DeleteSSRBlurRT(outFbos, outTexs); *outW = *outH = 0; return false; }
+            glBindFramebuffer(GL_FRAMEBUFFER, outFbos[i]);
+            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                                    GL_TEXTURE_2D, outTexs[i], 0);
+            GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+            glBindFramebuffer(GL_FRAMEBUFFER, 0);
+            if (status != GL_FRAMEBUFFER_COMPLETE) {
+                DeleteSSRBlurRT(outFbos, outTexs);
+                *outW = *outH = 0;
+                return false;
+            }
+        }
+        *outW = hw;
+        *outH = hh;
+        return true;
+    }
+
+    void DeleteSSRBlurRT(uint32_t* fbos, uint32_t* texs) override {
+        if (fbos) {
+            for (int i = 0; i < 2; ++i) {
+                if (fbos[i]) { glDeleteFramebuffers(1, &fbos[i]); fbos[i] = 0; }
+            }
+        }
+        if (texs) {
+            for (int i = 0; i < 2; ++i) {
+                if (texs[i]) { glDeleteTextures(1, &texs[i]); texs[i] = 0; }
+            }
+        }
+    }
+
+    /// separable Gaussian blur pass: srcTex -> dstFbo
+    /// axis 0=horizontal, 1=vertical; uTexel = 1/dstSize.
+    void DrawSSRBlur(uint32_t srcTex, uint32_t dstFbo,
+                     int dstW, int dstH,
+                     int axis, float radius) override {
+        if (!ssrBlurSupported || !programSSRBlur || !srcTex || !dstFbo ||
+            dstW <= 0 || dstH <= 0) return;
+
+        glBindFramebuffer(GL_FRAMEBUFFER, (GLuint)dstFbo);
+        glViewport(0, 0, dstW, dstH);
+        glDisable(GL_DEPTH_TEST);
+        glDisable(GL_SCISSOR_TEST);
+        glDisable(GL_BLEND);
+        glDisable(GL_CULL_FACE);
+
+        glUseProgram(programSSRBlur);
+        if (locSSRBlur_Texel  >= 0) glUniform2f(locSSRBlur_Texel,  1.0f / (float)dstW, 1.0f / (float)dstH);
+        if (locSSRBlur_Axis   >= 0) glUniform1i(locSSRBlur_Axis,   axis ? 1 : 0);
+        if (locSSRBlur_Radius >= 0) glUniform1f(locSSRBlur_Radius, radius);
+
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, (GLuint)srcTex);
+
+        // 复用 tonemap fullscreen VAO (6 vert triangles, NDC 直绘)
+        glBindVertexArray(vaoTonemap);
+        glDrawArrays(GL_TRIANGLES, 0, 6);
+
+        glBindVertexArray(0);
         glBindTexture(GL_TEXTURE_2D, 0);
         glUseProgram(0);
         glBindFramebuffer(GL_FRAMEBUFFER, 0);

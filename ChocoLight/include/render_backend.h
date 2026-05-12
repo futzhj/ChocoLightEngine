@@ -1001,6 +1001,36 @@ public:
     /// 后端内部用临时 RT 解 feedback loop (HDR 既读又写).
     virtual void DrawSSRComposite(uint32_t /*reflectTex*/, uint32_t /*hdrFbo*/,
                                    int /*w*/, int /*h*/, float /*intensity*/) {}
+
+    // ==================== Phase E.10 — SSR Blur (反射模糊, 粗糙度模拟) ====================
+    //
+    // 用户拍板 (2026-05-12): half-res ping-pong RGBA16F + separable Gaussian 5-tap.
+    //   1080p full-res reflect RT ~8 MB,  blur ping-pong ~2 MB × 2 = ~4 MB 额外.
+    //   反射 upscale 由 composite 阶段硬件 bilinear filter 自动处理.
+    //
+    // Process 中插入位置: DrawSSR 之后, DrawSSRComposite 之前.
+    // 仅当 SSRRenderer.blurEnabled=true 且 blur RT 分配成功才执行.
+
+    /// 创建 half-res blur ping-pong RT (RGBA16F × 2)
+    /// @param wFull, hFull   full-res 输入 (内部自动 max(1, w/2))
+    /// @param outFbos[2]     输出 FBO 数组 (axis=0 dst + axis=1 dst)
+    /// @param outTexs[2]     输出 tex 数组 (GL_LINEAR + GL_CLAMP_TO_EDGE)
+    /// @param outW, outH     实际 half-res 尺寸 (外部读取, 用于 viewport / uTexel)
+    /// @return true=成功, 失败时所有 out* 清零
+    virtual bool CreateSSRBlurRT(int /*wFull*/, int /*hFull*/,
+                                  uint32_t* /*outFbos*/, uint32_t* /*outTexs*/,
+                                  int* /*outW*/, int* /*outH*/) { return false; }
+    virtual void DeleteSSRBlurRT(uint32_t* /*fbos*/, uint32_t* /*texs*/) {}
+
+    /// separable Gaussian blur pass: srcTex -> dstFbo
+    /// @param srcTex  源 tex (full-res reflect 或 half-res blur 中间, 由 caller 控制)
+    /// @param dstFbo  目标 FBO (half-res blurFbos[axis])
+    /// @param dstW, dstH  目标 RT 尺寸 (uTexel = 1/dstSize)
+    /// @param axis    0=horizontal, 1=vertical
+    /// @param radius  texel 半径乘子 [0.5, 4.0]
+    virtual void DrawSSRBlur(uint32_t /*srcTex*/, uint32_t /*dstFbo*/,
+                              int /*dstW*/, int /*dstH*/,
+                              int /*axis*/, float /*radius*/) {}
 };
 
 // ==================== 工厂函数 ====================

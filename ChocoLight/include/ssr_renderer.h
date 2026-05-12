@@ -86,9 +86,14 @@ float GetIntensity();
 void  SetEdgeFade(float v);
 float GetEdgeFade();
 
-/// 是否启用反射 blur, 默认 false (Phase E.9 暂不实现; 保留 API 兼容 Phase E.10+)
+/// 是否启用反射 blur, 默认 false. Phase E.10 已激活: 启用后 Process 执行 H+V 两 pass 高斯模糊.
 void SetBlurEnabled(bool flag);
 bool GetBlurEnabled();
+
+/// Phase E.10 — 反射模糊半径 (texel 空间), clamp [0.5, 4.0], 默认 1.5.
+/// 仅在 BlurEnabled=true 时生效. 调大模拟更粗糙的金属表面.
+void  SetBlurRadius(float v);
+float GetBlurRadius();
 
 // ==================== 调试 API ====================
 

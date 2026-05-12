@@ -248,4 +248,40 @@ pass("Boundary blur=false + kernel=8 preserved (low-spec config)")
 S.SetBlurEnabled(true)
 S.SetKernelSize(16)
 
+-- ============================================================
+-- J) Phase E.8.x — G-buffer normal MRT 调试接口
+-- ============================================================
+
+if type(S.GetNormalTexId) ~= "function" then
+    fail("SSAO.GetNormalTexId 缺失 (Phase E.8.x)")
+end
+pass("SSAO.GetNormalTexId 接口存在")
+
+-- HDR 未启用时必须返回 0 (无效 FBO)
+local nid_off = S.GetNormalTexId()
+if type(nid_off) ~= "number" or nid_off ~= 0 then
+    fail("HDR 未启用时 GetNormalTexId 应为 0, 得到 " .. tostring(nid_off))
+end
+pass("HDR 未启用时 GetNormalTexId() == 0")
+
+-- HDR 启用后, 后端支持 MRT 才返回非 0; headless / Legacy 后端均允许 0
+local HDR = Graphics.HDR
+if type(HDR) == "table" and type(HDR.Enable) == "function" then
+    local hdr_ok = HDR.Enable(640, 480)
+    if hdr_ok then
+        local nid_on = S.GetNormalTexId()
+        if type(nid_on) ~= "number" then
+            fail("HDR 启用后 GetNormalTexId 返回非数字: " .. type(nid_on))
+        end
+        -- 后端支持 MRT -> 非 0; 不支持 -> 0 (silent fallback, 双向都视为通过)
+        pass("HDR 启用后 GetNormalTexId = " .. tostring(nid_on)
+             .. (nid_on > 0 and " (MRT 已启用)" or " (后端不支持 MRT, silent fallback)"))
+        HDR.Disable()
+    else
+        pass("HDR.Enable headless 返回 false, 跳过 normal tex 通路验证")
+    end
+else
+    pass("Light.Graphics.HDR 不可用, 跳过 normal tex 通路验证")
+end
+
 print("[OK] Phase E.8 smoke (Light.Graphics.SSAO): all checks passed")
