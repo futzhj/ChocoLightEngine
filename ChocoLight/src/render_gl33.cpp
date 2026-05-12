@@ -22,6 +22,7 @@
 #include "platform_window.h"
 #include <vector>
 #include <cstring>
+#include <cmath>          // Phase E.8.1 — sqrtf for SSAO noise LCG (Linux gcc 严格要求)
 #include <unordered_map>
 
 // ==================== 内嵌 Shader 源码 ====================
