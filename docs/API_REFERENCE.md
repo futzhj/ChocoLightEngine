@@ -1,9 +1,12 @@
 # ChocoLight Lua API 参考文档
 
 > 自动从源代码 `/// @lua_api` 注释生成
+>
+> **本文档是 v0.3 自动生成版本（94 API / 16 模块），覆盖核心子系统。**
+> Phase E 高级渲染特性（HDR / Bloom / SSAO / Lens Dirt / Lens Flare / Streak / Auto Exposure）独立 API 文档见下方 [Phase E 高级特性入口](#phase-e-高级特性入口)。
 
-**API 总数**: 94
-**模块数**: 16
+**API 总数**: 94 (核心) + ~100 (Phase E 高级特性，独立索引)
+**模块数**: 16 (核心) + 7 (Phase E 子模块)
 
 ## 模块目录
 
@@ -23,6 +26,92 @@
 - [Light.Network.HttpServer](#lightnetworkhttpserver) (3 个 API)
 - [Light.Plugins.NEMData](#lightpluginsnemdata) (8 个 API)
 - [Light.Plugins.WDFData](#lightpluginswdfdata) (6 个 API)
+- [Phase E 高级特性入口](#phase-e-高级特性入口) (7 子模块, ~100 API)
+
+---
+
+## Phase E 高级特性入口
+
+> v0.3 ~ v0.4 期间新增的高级渲染管线 API。完整说明（含设计文档 + smoke 验证 + acceptance 验收）见各 Phase 目录的 `FINAL_*.md`。
+
+| 子模块 | Lua 命名空间 | API 数 | Phase | 文档 |
+|--------|--------------|--------|-------|------|
+| HDR 离屏渲染 | `Light.Graphics.HDR` | 12 | E.3 | `docs/Phase E.3 HDR/FINAL_*.md` |
+| Bloom 后处理 | `Light.Graphics.Bloom` | ~10 | E.4 | `docs/Phase E.4 Bloom/FINAL_*.md` |
+| Auto Exposure | `Light.Graphics.AutoExposure` | ~10 | E.5 | `docs/Phase E.5 Auto Exposure/FINAL_*.md` |
+| Lens Dirt | `Light.Graphics.LensDirt` | ~10 | E.6 | `docs/Phase E.6 Lens Dirt+Streak/FINAL_*.md` |
+| Streak | `Light.Graphics.Streak` | ~10 | E.6 | 同上 |
+| Lens Flare | `Light.Graphics.LensFlare` | ~12 | E.7 | `docs/Phase E.7 Lens Flare/FINAL_*.md` |
+| **SSAO** | `Light.Graphics.SSAO` | **20**（含 `GetNormalTexId`）| E.8 + E.8.x | `docs/Phase E.8 SSAO/FINAL_*.md`、`docs/Phase E.8.x G-buffer normal/FINAL_PhaseE_8x.md` |
+| **SSR** | `Light.Graphics.SSR` | **22**（含 `GetReflectionTexId`）| **E.9** | **`docs/Phase E.9 SSR/FINAL_PhaseE_9.md`** |
+
+### Light.Graphics.SSAO 关键 API 速查（Phase E.8 + E.8.x）
+
+```lua
+-- 生命周期
+Light.Graphics.SSAO.Enable(w, h) -> boolean
+Light.Graphics.SSAO.Disable()
+Light.Graphics.SSAO.IsEnabled() -> boolean
+Light.Graphics.SSAO.IsSupported() -> boolean
+Light.Graphics.SSAO.Resize(w, h) -> boolean
+
+-- 自动启用（HDR 启动时联动）
+Light.Graphics.SSAO.SetAutoEnable(bool) / GetAutoEnable() -> bool
+
+-- 6 对参数（带 clamp）
+Light.Graphics.SSAO.SetRadius(float [0.05, 5.0])      / GetRadius() -> float
+Light.Graphics.SSAO.SetBias(float [0, 0.2])            / GetBias() -> float
+Light.Graphics.SSAO.SetIntensity(float [0, 4.0])       / GetIntensity() -> float
+Light.Graphics.SSAO.SetKernelSize(int 8 | 16)          / GetKernelSize() -> int
+Light.Graphics.SSAO.SetPower(float [0.5, 8.0])         / GetPower() -> float
+Light.Graphics.SSAO.SetBlurEnabled(bool)               / GetBlurEnabled() -> bool
+
+-- Phase E.8.x — G-buffer normal MRT 调试接口（新增）
+Light.Graphics.SSAO.GetNormalTexId() -> integer
+--   返回 view-space normal RG16F 纹理 GL id
+--   0 = HDR 未启用 / 后端不支持 MRT (silent fallback, SSAO 自动跳过)
+--   > 0 = G-buffer normal RT 已就绪, 可用于自定义 shader / 调试可视化
+```
+
+**Phase E.8.x 升级说明**：SSAO 内部法线重建由 `ddx/dFdy derivative` 升级为 **真实 G-buffer view-space normal RT (MRT)**，质量显著提升（消除边缘条纹、改善细节 AO）。用户侧 Lua 代码无需变更，**完全向后兼容**。
+
+### Light.Graphics.SSR 关键 API 速查（Phase E.9）
+
+> 屏幕空间反射 — 高质量方案（full-res RGBA16F + 64 步 linear ray march）
+
+```lua
+-- 生命周期
+Light.Graphics.SSR.Enable(w, h) -> boolean
+Light.Graphics.SSR.Disable()
+Light.Graphics.SSR.IsEnabled() -> boolean
+Light.Graphics.SSR.IsSupported() -> boolean
+Light.Graphics.SSR.Resize(w, h) -> boolean
+
+-- 自动启用（HDR 启动时联动）
+Light.Graphics.SSR.SetAutoEnable(bool) / GetAutoEnable() -> bool
+
+-- 7 对参数（带 clamp）
+Light.Graphics.SSR.SetMaxSteps(int [8, 128])         / GetMaxSteps() -> int       -- default 64
+Light.Graphics.SSR.SetStepSize(float [0.01, 1.0])    / GetStepSize() -> float     -- default 0.1
+Light.Graphics.SSR.SetThickness(float [0.01, 5.0])   / GetThickness() -> float    -- default 0.5
+Light.Graphics.SSR.SetMaxDistance(float [1, 1000])   / GetMaxDistance() -> float  -- default 50
+Light.Graphics.SSR.SetIntensity(float [0, 2])        / GetIntensity() -> float    -- default 0.7
+Light.Graphics.SSR.SetEdgeFade(float [0, 0.5])       / GetEdgeFade() -> float     -- default 0.1
+Light.Graphics.SSR.SetBlurEnabled(bool)              / GetBlurEnabled() -> bool   -- default false (保留)
+
+-- Phase E.9 — 调试接口
+Light.Graphics.SSR.GetReflectionTexId() -> integer
+--   返回反射 RT (RGBA16F full-res) GL id
+--   0 = SSR 未启用 / Enable 失败 (headless)
+--   > 0 = 反射 RT 已就绪, 可用于自定义可视化
+```
+
+**Phase E.9 设计要点**：
+- 复用 Phase E.8.x G-buffer view-space normal RG16F MRT（无侵入式集成）
+- HDR 管线插入位置：**SSAO 之后 / LensFlare 之前**（反射看 AO 阴部 + Bloom 提亮反射）
+- 缺 G-buffer normal 时 once-warn + silent skip（不影响其他后处理）
+- Legacy backend 自动 no-op（`SupportsSSR()` 默认 false）
+- 性能调优：`SetMaxSteps(32)` 适合中端 GPU，`SetMaxSteps(16) + SetMaxDistance(20)` 适合移动端
 
 ---
 

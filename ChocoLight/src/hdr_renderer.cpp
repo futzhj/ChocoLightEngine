@@ -12,6 +12,7 @@
 #include "streak_renderer.h"            // Phase E.6.2 — Streak anamorphic flare 联动
 #include "lens_flare_renderer.h"        // Phase E.7.2 — Lens Flare (ghost + halo + chromatic) 联动
 #include "ssao_renderer.h"               // Phase E.8.2 — SSAO (屏幕空间环境光遮蔽) 联动
+#include "ssr_renderer.h"                // Phase E.9 — SSR (屏幕空间反射) 联动
 #include "render_backend.h"
 #include "light.h"         // CC::Log
 
@@ -56,11 +57,14 @@ void ReleaseRT() {
 }
 
 // 内部辅助: 创建 RT 资源 (失败返回 false 并清理)
+// Phase E.8.x: 默认请求 MRT (color + normal). 若 backend 不支持则 silent fallback
+// 到 single-RT (normalTex=0). SSAO 模块在 normalTex=0 时自动跳过 Process.
 bool CreateRT(int w, int h) {
     if (!g.backend) return false;
     if (w <= 0 || h <= 0) return false;
     uint32_t tex = 0;
-    uint32_t fbo = g.backend->CreateHDRFBO(w, h, &tex);
+    uint32_t normalTex = 0;
+    uint32_t fbo = g.backend->CreateHDRFBO(w, h, &tex, &normalTex);
     if (!fbo || !tex) {
         if (fbo || tex) g.backend->DeleteHDRFBO(fbo, tex);  // 部分失败兜底
         return false;
@@ -69,6 +73,7 @@ bool CreateRT(int w, int h) {
     g.sceneTex = tex;
     g.width = w;
     g.height = h;
+    // normalTex 由 backend 内部 map 管理 + GetHDRNormalTex 暴露给 SSAO; 此处不需 cache.
     return true;
 }
 
@@ -158,11 +163,15 @@ bool Enable(int w, int h) {
     LensFlareRenderer::OnHDREnabled(w, h);
     // Phase E.8.2 — 通知 SSAO (autoEnable=false 时 no-op)
     SSAORenderer::OnHDREnabled(w, h);
+    // Phase E.9 — 通知 SSR (autoEnable=false 时 no-op)
+    SSRRenderer::OnHDREnabled(w, h);
     return true;
 }
 
 void Disable() {
     if (!g.enabled) return;
+    // Phase E.9 — SSR 依赖 HDR RT depth + normal (blit 源), 必须在 HDR RT 销毁前先释放 (在 SSAO 之前, 与容释放顺序无冲突)
+    SSRRenderer::OnHDRDisabled();
     // Phase E.8.2 — SSAO 依赖 HDR RT depth (blit 源), 必须在 HDR RT 销毁前先释放
     SSAORenderer::OnHDRDisabled();
     // Phase E.7.2 — 管线末端模块最先关 (LensFlare 依赖 Bloom + HDR RT)
@@ -207,6 +216,7 @@ bool Resize(int w, int h) {
         StreakRenderer::OnHDRResized(w, h);         // Phase E.6.2
         LensFlareRenderer::OnHDRResized(w, h);      // Phase E.7.2
         SSAORenderer::OnHDRResized(w, h);            // Phase E.8.2 — SSAO depth/AO RT 同步尺寸
+        SSRRenderer::OnHDRResized(w, h);             // Phase E.9 — SSR depth/reflect RT 同步尺寸
     }
     return ok;
 }
@@ -266,6 +276,11 @@ void EndScene() {
     // SSAO 主要作用在几何体阴调, 与机 Bloom/AE 有轻微交互但可接受
     SSAORenderer::Process(g.fbo, g.sceneTex);
 
+    // Phase E.9 — SSR (屏幕空间反射, 加性写入 HDR; 在 SSAO 之后、Bloom 之前)
+    // SSR 反射需要看到 SSAO 修正后的 HDR 调 (阴部在反射中仍为暗); Bloom 取反射 + AO HDR 提亮.
+    // 内部自检 IsEnabled/IsSupported; 未启用时 no-op. 缺 G-buffer normal 时 silent skip + once warn.
+    SSRRenderer::Process(g.fbo, g.sceneTex);
+
     // Phase E.7.2 — Lens Flare (内部自检 IsEnabled; 未启用 no-op)
     // 复用 Bloom bright/composite shader, 独立 ping-pong RT
     LensFlareRenderer::Process(g.fbo, g.sceneTex);
@@ -303,6 +318,7 @@ int GetTonemapper() { return g.tonemap; }
 // ==================== 高级查询 ====================
 
 uint32_t GetSceneTexture() { return g.sceneTex; }
+uint32_t GetFBO()          { return g.fbo; }    // Phase E.8.x — SSAO 拿 normal tex 用
 int      GetWidth()        { return g.width; }
 int      GetHeight()       { return g.height; }
 

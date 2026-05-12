@@ -33,6 +33,7 @@
 #include "streak_renderer.h"         // Phase E.6.2 — Streak (Anamorphic Flare)
 #include "lens_flare_renderer.h"     // Phase E.7.2 — Lens Flare (Ghost + Halo + Chromatic)
 #include "ssao_renderer.h"            // Phase E.8.2 — SSAO (屏幕空间环境光遮蔽)
+#include "ssr_renderer.h"             // Phase E.9 — SSR (屏幕空间反射)
 #include <cmath>
 #include <cstring>
 
@@ -2457,6 +2458,20 @@ static int l_SSAO_GetBlurEnabled(lua_State* L) {
     return 1;
 }
 
+/// @lua_api Light.Graphics.SSAO.GetNormalTexId — Phase E.8.x 调试接口
+/// @return integer G-buffer view-space normal RG16F 纹理 GL id
+///                  (0 = HDR 未启用 / 后端不支持 MRT)
+/// 用途: smoke / sample 验证 G-buffer normal 通路是否打通, 不应在生产代码使用.
+static int l_SSAO_GetNormalTexId(lua_State* L) {
+    uint32_t fbo = HDRRenderer::GetFBO();
+    if (!g_render || !fbo) {
+        lua_pushinteger(L, 0);
+        return 1;
+    }
+    lua_pushinteger(L, (lua_Integer)g_render->GetHDRNormalTex(fbo));
+    return 1;
+}
+
 static const luaL_Reg ssao_funcs[] = {
     {"Enable",          l_SSAO_Enable},
     {"Disable",         l_SSAO_Disable},
@@ -2477,6 +2492,159 @@ static const luaL_Reg ssao_funcs[] = {
     {"GetPower",        l_SSAO_GetPower},
     {"SetBlurEnabled",  l_SSAO_SetBlurEnabled},
     {"GetBlurEnabled",  l_SSAO_GetBlurEnabled},
+    {"GetNormalTexId",  l_SSAO_GetNormalTexId},   // Phase E.8.x 调试
+    {NULL, NULL}
+};
+
+// ==================== Phase E.9 — Light.Graphics.SSR Lua API ====================
+//
+// API (22 fn): lifecycle 5 + autoEnable 2 + params 14 (7 Set+Get pairs) + debug 1
+//   Lifecycle:  Enable(w,h) / Disable / IsEnabled / IsSupported / Resize(w,h)
+//   AutoEnable: SetAutoEnable / GetAutoEnable
+//   Params:     SetMaxSteps / GetMaxSteps              (int [8, 128], 默认 64)
+//               SetStepSize / GetStepSize              (float [0.01, 1.0], 默认 0.1)
+//               SetThickness / GetThickness            (float [0.01, 5.0], 默认 0.5)
+//               SetMaxDistance / GetMaxDistance        (float [1.0, 1000.0], 默认 50.0)
+//               SetIntensity / GetIntensity            (float [0.0, 2.0], 默认 0.7)
+//               SetEdgeFade / GetEdgeFade              (float [0.0, 0.5], 默认 0.1)
+//               SetBlurEnabled / GetBlurEnabled        (bool, 默认 false; 保留 API 兼容)
+//   Debug:      GetReflectionTexId                     (uint32_t reflection RT GL id, 0 = 未启用)
+
+static int l_SSR_Enable(lua_State* L) {
+    int w = (int)luaL_checkinteger(L, 1);
+    int h = (int)luaL_checkinteger(L, 2);
+    lua_pushboolean(L, SSRRenderer::Enable(w, h) ? 1 : 0);
+    return 1;
+}
+
+static int l_SSR_Disable(lua_State* L)     { (void)L; SSRRenderer::Disable(); return 0; }
+static int l_SSR_IsEnabled(lua_State* L)   { lua_pushboolean(L, SSRRenderer::IsEnabled()   ? 1 : 0); return 1; }
+static int l_SSR_IsSupported(lua_State* L) { lua_pushboolean(L, SSRRenderer::IsSupported() ? 1 : 0); return 1; }
+
+static int l_SSR_Resize(lua_State* L) {
+    int w = (int)luaL_checkinteger(L, 1);
+    int h = (int)luaL_checkinteger(L, 2);
+    lua_pushboolean(L, SSRRenderer::Resize(w, h) ? 1 : 0);
+    return 1;
+}
+
+static int l_SSR_SetAutoEnable(lua_State* L) {
+    luaL_checkany(L, 1);
+    SSRRenderer::SetAutoEnable(lua_toboolean(L, 1) != 0);
+    return 0;
+}
+
+static int l_SSR_GetAutoEnable(lua_State* L) {
+    lua_pushboolean(L, SSRRenderer::GetAutoEnable() ? 1 : 0);
+    return 1;
+}
+
+static int l_SSR_SetMaxSteps(lua_State* L) {
+    SSRRenderer::SetMaxSteps((int)luaL_checkinteger(L, 1));
+    return 0;
+}
+
+static int l_SSR_GetMaxSteps(lua_State* L) {
+    lua_pushinteger(L, (lua_Integer)SSRRenderer::GetMaxSteps());
+    return 1;
+}
+
+static int l_SSR_SetStepSize(lua_State* L) {
+    SSRRenderer::SetStepSize((float)luaL_checknumber(L, 1));
+    return 0;
+}
+
+static int l_SSR_GetStepSize(lua_State* L) {
+    lua_pushnumber(L, (lua_Number)SSRRenderer::GetStepSize());
+    return 1;
+}
+
+static int l_SSR_SetThickness(lua_State* L) {
+    SSRRenderer::SetThickness((float)luaL_checknumber(L, 1));
+    return 0;
+}
+
+static int l_SSR_GetThickness(lua_State* L) {
+    lua_pushnumber(L, (lua_Number)SSRRenderer::GetThickness());
+    return 1;
+}
+
+static int l_SSR_SetMaxDistance(lua_State* L) {
+    SSRRenderer::SetMaxDistance((float)luaL_checknumber(L, 1));
+    return 0;
+}
+
+static int l_SSR_GetMaxDistance(lua_State* L) {
+    lua_pushnumber(L, (lua_Number)SSRRenderer::GetMaxDistance());
+    return 1;
+}
+
+static int l_SSR_SetIntensity(lua_State* L) {
+    SSRRenderer::SetIntensity((float)luaL_checknumber(L, 1));
+    return 0;
+}
+
+static int l_SSR_GetIntensity(lua_State* L) {
+    lua_pushnumber(L, (lua_Number)SSRRenderer::GetIntensity());
+    return 1;
+}
+
+static int l_SSR_SetEdgeFade(lua_State* L) {
+    SSRRenderer::SetEdgeFade((float)luaL_checknumber(L, 1));
+    return 0;
+}
+
+static int l_SSR_GetEdgeFade(lua_State* L) {
+    lua_pushnumber(L, (lua_Number)SSRRenderer::GetEdgeFade());
+    return 1;
+}
+
+static int l_SSR_SetBlurEnabled(lua_State* L) {
+    luaL_checkany(L, 1);
+    SSRRenderer::SetBlurEnabled(lua_toboolean(L, 1) != 0);
+    return 0;
+}
+
+static int l_SSR_GetBlurEnabled(lua_State* L) {
+    lua_pushboolean(L, SSRRenderer::GetBlurEnabled() ? 1 : 0);
+    return 1;
+}
+
+/// @lua_api Light.Graphics.SSR.GetReflectionTexId — Phase E.9 调试接口
+/// @return integer 当前反射 RT (RGBA16F full-res) GL id, 0 = SSR 未启用.
+/// 用途: smoke / sample 可视化反射通路, 不应在生产代码使用.
+static int l_SSR_GetReflectionTexId(lua_State* L) {
+    lua_pushinteger(L, (lua_Integer)SSRRenderer::GetReflectionTexId());
+    return 1;
+}
+
+static const luaL_Reg ssr_funcs[] = {
+    // lifecycle (5)
+    {"Enable",              l_SSR_Enable},
+    {"Disable",             l_SSR_Disable},
+    {"IsEnabled",           l_SSR_IsEnabled},
+    {"IsSupported",         l_SSR_IsSupported},
+    {"Resize",              l_SSR_Resize},
+    // autoEnable (2)
+    {"SetAutoEnable",       l_SSR_SetAutoEnable},
+    {"GetAutoEnable",       l_SSR_GetAutoEnable},
+    // params (14 = 7 对)
+    {"SetMaxSteps",         l_SSR_SetMaxSteps},
+    {"GetMaxSteps",         l_SSR_GetMaxSteps},
+    {"SetStepSize",         l_SSR_SetStepSize},
+    {"GetStepSize",         l_SSR_GetStepSize},
+    {"SetThickness",        l_SSR_SetThickness},
+    {"GetThickness",        l_SSR_GetThickness},
+    {"SetMaxDistance",      l_SSR_SetMaxDistance},
+    {"GetMaxDistance",      l_SSR_GetMaxDistance},
+    {"SetIntensity",        l_SSR_SetIntensity},
+    {"GetIntensity",        l_SSR_GetIntensity},
+    {"SetEdgeFade",         l_SSR_SetEdgeFade},
+    {"GetEdgeFade",         l_SSR_GetEdgeFade},
+    {"SetBlurEnabled",      l_SSR_SetBlurEnabled},
+    {"GetBlurEnabled",      l_SSR_GetBlurEnabled},
+    // debug (1)
+    {"GetReflectionTexId",  l_SSR_GetReflectionTexId},
     {NULL, NULL}
 };
 
@@ -2596,6 +2764,11 @@ int luaopen_Light_Graphics(lua_State* L) {
         lua_createtable(L, 0, 0);
         luaL_setfuncs(L, ssao_funcs, 0);
         lua_setfield(L, -2, "SSAO");
+
+        // Phase E.9 — SSR 子表 (Light.Graphics.SSR.*)
+        lua_createtable(L, 0, 0);
+        luaL_setfuncs(L, ssr_funcs, 0);
+        lua_setfield(L, -2, "SSR");
 
         lua_rawset(L, -3);
         lua_pushstring(L, "Graphics");

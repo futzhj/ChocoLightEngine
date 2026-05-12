@@ -51,12 +51,14 @@ in vec4 vColor;
 uniform sampler2D uTexture;
 uniform int uUseTexture;
 layout(location=0) out vec4 FragColor;
+layout(location=1) out vec2 FragNormal;   // Phase E.8.x: 2D batch 默认 朝相机
 void main() {
     if (uUseTexture == 1) {
         FragColor = vColor * texture(uTexture, vTexCoord);
     } else {
         FragColor = vColor;
     }
+    FragNormal = vec2(0.5, 0.5);   // 代表 view-space (0,0,1)
 }
 )";
 #else
@@ -86,7 +88,8 @@ in vec4 vColor;
 uniform sampler2D uTexture;
 uniform int uUseTexture;
 
-out vec4 FragColor;
+layout(location=0) out vec4 FragColor;
+layout(location=1) out vec2 FragNormal;   // Phase E.8.x: 2D batch 默认 朝相机
 
 void main() {
     if (uUseTexture == 1) {
@@ -94,6 +97,7 @@ void main() {
     } else {
         FragColor = vColor;
     }
+    FragNormal = vec2(0.5, 0.5);   // view-space (0,0,1)
 }
 )";
 #endif
@@ -229,6 +233,7 @@ static const char* FS_UNLIT_SOURCE = R"(#version 300 es
 precision mediump float;
 in vec2 vTexCoord;
 in vec4 vColor;
+in vec3 vNormalW;                // Phase E.8.x: 供 MRT normal 输出
 uniform vec4 uColor;
 uniform vec3 uEmissive;
 uniform sampler2D uTexBaseColor;
@@ -237,7 +242,9 @@ uniform int uHasBaseColorTex;
 uniform int uHasEmissiveTex;
 uniform int uAlphaMode;       // 0=opaque, 1=blend, 2=mask
 uniform float uAlphaCutoff;
+uniform mat3 uViewMat3;          // Phase E.8.x: world->view 3x3
 layout(location=0) out vec4 FragColor;
+layout(location=1) out vec2 FragNormal;   // Phase E.8.x: view-space normal MRT
 void main() {
     vec4 base = uColor * vColor;
     if (uHasBaseColorTex == 1) base *= texture(uTexBaseColor, vTexCoord);
@@ -246,6 +253,9 @@ void main() {
     if (uAlphaMode == 2 && base.a < uAlphaCutoff) discard;
     float outAlpha = (uAlphaMode == 1) ? base.a : 1.0;
     FragColor = vec4(base.rgb + emissive, outAlpha);
+    // Phase E.8.x: encode view-space normal 到 MRT slot 1
+    vec3 nView = normalize(uViewMat3 * vNormalW);
+    FragNormal = nView.xy * 0.5 + 0.5;
 }
 )";
 
@@ -283,7 +293,9 @@ uniform int   uPointLightCount;
 uniform vec3  uPointLightPos[4];
 uniform vec3  uPointLightColor[4];
 uniform float uPointLightRange[4];
+uniform mat3  uViewMat3;        // Phase E.8.x: world->view 3x3 (为 G-buffer normal MRT 用)
 layout(location=0) out vec4 FragColor;
+layout(location=1) out vec2 FragNormal;   // Phase E.8.x: view-space normal MRT (encode xy [0,1])
 const float PI = 3.14159265;
 
 vec3 BRDF(vec3 N, vec3 V, vec3 L, vec3 baseColor, float metallic, float roughness, vec3 F0) {
@@ -366,6 +378,9 @@ void main() {
     if (uHasEmissiveTex == 1) emissive *= texture(uTexEmissive, vTexCoord).rgb;
     float outAlpha = (uAlphaMode == 1) ? base.a : 1.0;
     FragColor = vec4(ambient + lightSum + emissive, outAlpha);
+    // Phase E.8.x: 世界法线 -> view-space 法线, encode 到 RG16F (xy [-1,1] -> [0,1])
+    vec3 nView = normalize(uViewMat3 * N);
+    FragNormal = nView.xy * 0.5 + 0.5;
 }
 )";
 
@@ -484,6 +499,7 @@ static const char* FS_UNLIT_SOURCE = R"(
 #version 330 core
 in vec2 vTexCoord;
 in vec4 vColor;
+in vec3 vNormalW;                // Phase E.8.x
 uniform vec4 uColor;
 uniform vec3 uEmissive;
 uniform sampler2D uTexBaseColor;
@@ -492,7 +508,9 @@ uniform int uHasBaseColorTex;
 uniform int uHasEmissiveTex;
 uniform int uAlphaMode;
 uniform float uAlphaCutoff;
-out vec4 FragColor;
+uniform mat3 uViewMat3;          // Phase E.8.x: world->view 3x3
+layout(location=0) out vec4 FragColor;
+layout(location=1) out vec2 FragNormal;   // Phase E.8.x: view-space normal MRT
 void main() {
     vec4 base = uColor * vColor;
     if (uHasBaseColorTex == 1) base *= texture(uTexBaseColor, vTexCoord);
@@ -501,6 +519,8 @@ void main() {
     if (uAlphaMode == 2 && base.a < uAlphaCutoff) discard;
     float outAlpha = (uAlphaMode == 1) ? base.a : 1.0;
     FragColor = vec4(base.rgb + emissive, outAlpha);
+    vec3 nView = normalize(uViewMat3 * vNormalW);
+    FragNormal = nView.xy * 0.5 + 0.5;
 }
 )";
 
@@ -538,7 +558,9 @@ uniform int   uPointLightCount;
 uniform vec3  uPointLightPos[4];
 uniform vec3  uPointLightColor[4];
 uniform float uPointLightRange[4];
-out vec4 FragColor;
+uniform mat3  uViewMat3;        // Phase E.8.x: world->view 3x3
+layout(location=0) out vec4 FragColor;
+layout(location=1) out vec2 FragNormal;   // Phase E.8.x: view-space normal MRT
 const float PI = 3.14159265;
 
 vec3 BRDF(vec3 N, vec3 V, vec3 L, vec3 baseColor, float metallic, float roughness, vec3 F0) {
@@ -620,6 +642,9 @@ void main() {
     if (uHasEmissiveTex == 1) emissive *= texture(uTexEmissive, vTexCoord).rgb;
     float outAlpha = (uAlphaMode == 1) ? base.a : 1.0;
     FragColor = vec4(ambient + lightSum + emissive, outAlpha);
+    // Phase E.8.x: 世界法线 -> view-space 法线, encode 到 RG16F
+    vec3 nView = normalize(uViewMat3 * N);
+    FragNormal = nView.xy * 0.5 + 0.5;
 }
 )";
 #endif
@@ -705,6 +730,7 @@ uniform float uLightIntensity[16];
 uniform float uLightInnerCos[16];
 uniform float uLightOuterCos[16];
 layout(location=0) out vec4 FragColor;
+layout(location=1) out vec2 FragNormal;   // Phase E.8.x: 2D 默认 朝相机
 void main() {
     vec4 base = texture(uTexture, vUV) * vColor;
     vec3 N;
@@ -731,6 +757,7 @@ void main() {
         lightSum += uLightColor[i] * uLightIntensity[i] * NdotL * atten;
     }
     FragColor = vec4(base.rgb * lightSum, base.a);
+    FragNormal = vec2(0.5, 0.5);   // view-space (0,0,1)
 }
 )";
 
@@ -783,7 +810,8 @@ uniform float uLightRange[16];
 uniform float uLightIntensity[16];
 uniform float uLightInnerCos[16];
 uniform float uLightOuterCos[16];
-out vec4 FragColor;
+layout(location=0) out vec4 FragColor;
+layout(location=1) out vec2 FragNormal;   // Phase E.8.x: 2D 默认 朝相机
 void main() {
     vec4 base = texture(uTexture, vUV) * vColor;
     vec3 N;
@@ -810,6 +838,7 @@ void main() {
         lightSum += uLightColor[i] * uLightIntensity[i] * NdotL * atten;
     }
     FragColor = vec4(base.rgb * lightSum, base.a);
+    FragNormal = vec2(0.5, 0.5);   // view-space (0,0,1)
 }
 )";
 
@@ -1407,6 +1436,7 @@ out vec4 FragColor;
 
 uniform sampler2D uDepthTex;     // full-res depth texture (NEAREST)
 uniform sampler2D uNoiseTex;     // 4x4 RGBA8 noise (REPEAT)
+uniform sampler2D uNormalTex;    // Phase E.8.x: G-buffer view-space normal (RG16F)
 uniform mat4  uProj;             // 当前 projection (view -> clip)
 uniform mat4  uInvProj;          // inverse(uProj)
 uniform vec3  uKernel[16];       // 半球采样方向 (tangent space)
@@ -1423,14 +1453,22 @@ vec3 ReconstructViewPos(vec2 uv, float d) {
     return v.xyz / v.w;
 }
 
+// Phase E.8.x: 从 RG16F G-buffer 解码 view-space normal
+// xy 存 [0,1] (代表 [-1,1]); z 由 sqrt(1 - x² - y²) 重建 (z >= 0 背向相机侧)
+vec3 DecodeViewNormal(vec2 enc) {
+    vec2 nxy = enc * 2.0 - 1.0;
+    float zsq = max(0.0, 1.0 - dot(nxy, nxy));
+    return vec3(nxy, sqrt(zsq));
+}
+
 void main() {
     float d = texture(uDepthTex, vUV).r;
     // 天空 / 无几何: AO = 1 (无遮蔽)
     if (d >= 0.9999) { FragColor = vec4(1.0); return; }
 
     vec3 P = ReconstructViewPos(vUV, d);
-    // 屏幕空间 ddx/ddy 重建法线
-    vec3 N = normalize(cross(dFdy(P), dFdx(P)));
+    // Phase E.8.x: G-buffer normal 取代 ddx/ddy 重建 (边缘无条纹噪声)
+    vec3 N = DecodeViewNormal(texture(uNormalTex, vUV).rg);
     // noise: (rx, ry, 0), 每像素旋转 kernel 避免 banding
     vec3 R = texture(uNoiseTex, vUV * uNoiseScale).xyz * 2.0 - 1.0;
     R = normalize(vec3(R.xy, 0.0));
@@ -1517,6 +1555,124 @@ void main() {
 }
 )";
 
+// ==================== Phase E.9 — SSR shaders (GLES 3.0) ====================
+//
+// 2 shader:
+//   FS_SSR           — linear ray march in view space
+//   FS_SSR_COMPOSITE — HDR += reflect.rgb * reflect.a * intensity (additive)
+//
+// 复用 Phase E.8.x 的 G-buffer view-space normal RG16F MRT (slot 1).
+// 高质量方案: full-res RGBA16F + 64 步默认 (用户拍板 2026-05-12).
+
+// ---- FS_SSR (GLES 3.0): linear ray march 计算反射 ----
+static const char* FS_SSR_SOURCE = R"(#version 300 es
+precision highp float;
+precision highp sampler2D;
+in  vec2 vUV;
+out vec4 FragColor;
+
+uniform sampler2D uDepthTex;     // full-res HDR depth (NEAREST, 已 blit)
+uniform sampler2D uNormalTex;    // Phase E.8.x: G-buffer view-space normal (RG16F)
+uniform sampler2D uHDRTex;       // HDR color (反射采样源)
+uniform mat4  uProj;             // view -> clip
+uniform mat4  uInvProj;          // inverse(uProj)
+uniform int   uMaxSteps;         // [8, 128] ray march 步数
+uniform float uStepSize;         // 每步 view-space units
+uniform float uThickness;        // 深度命中容差 (view-space units)
+uniform float uMaxDistance;      // ray march 距离上限
+uniform float uEdgeFade;         // 屏幕边缘 fade 区域宽度 [0, 0.5]
+
+// 与 SSAO 同算法: NDC -> view space (perspective divide)
+vec3 ReconstructViewPos(vec2 uv, float d) {
+    vec4 clip = vec4(uv * 2.0 - 1.0, d * 2.0 - 1.0, 1.0);
+    vec4 v    = uInvProj * clip;
+    return v.xyz / v.w;
+}
+
+// Phase E.8.x: 从 RG16F G-buffer 解码 view-space normal
+vec3 DecodeViewNormal(vec2 enc) {
+    vec2 nxy = enc * 2.0 - 1.0;
+    float zsq = max(0.0, 1.0 - dot(nxy, nxy));
+    return vec3(nxy, sqrt(zsq));
+}
+
+void main() {
+    float d = texture(uDepthTex, vUV).r;
+    // 天空盒不反射 (depth >= 1 表示无几何)
+    if (d >= 0.9999) { FragColor = vec4(0.0); return; }
+
+    vec3 viewPos = ReconstructViewPos(vUV, d);
+    vec3 viewN   = DecodeViewNormal(texture(uNormalTex, vUV).rg);
+    vec3 viewV   = normalize(-viewPos);   // 视点方向 (camera 在原点)
+
+    // 自反射剔除: 法线背向相机 (本不该可见, 防御)
+    if (dot(viewN, viewV) < 0.05) { FragColor = vec4(0.0); return; }
+
+    // 反射方向 = reflect(入射, 法线); 入射 = -viewV
+    vec3 viewR = reflect(-viewV, viewN);
+
+    // ray march in view space
+    vec3 hitColor   = vec3(0.0);
+    float hitAlpha  = 0.0;
+
+    for (int i = 1; i <= 128; ++i) {
+        if (i > uMaxSteps) break;
+
+        vec3 samplePosVS = viewPos + viewR * (uStepSize * float(i));
+        // 距离上限 (view-space depth 是负值; -z 是真实距离)
+        if (-samplePosVS.z > uMaxDistance) break;
+
+        // 投影到屏幕
+        vec4 sampleClip = uProj * vec4(samplePosVS, 1.0);
+        if (sampleClip.w <= 0.0) break;   // 后向裁剪
+        vec2 sampleUV   = sampleClip.xy / sampleClip.w * 0.5 + 0.5;
+
+        // 屏外 -> 立即终止 (无 fallback, 边缘用 fade)
+        if (sampleUV.x < 0.0 || sampleUV.x > 1.0
+            || sampleUV.y < 0.0 || sampleUV.y > 1.0) break;
+
+        float sampleDepth = texture(uDepthTex, sampleUV).r;
+        // 跳过天空盒采样
+        if (sampleDepth >= 0.9999) continue;
+        vec3 sampleVS = ReconstructViewPos(sampleUV, sampleDepth);
+
+        // depthDiff > 0: ray 已穿过深度面前 (射线 z 小于 surface z, view space z 是负值)
+        float depthDiff = sampleVS.z - samplePosVS.z;
+        if (depthDiff > 0.0 && depthDiff < uThickness) {
+            // 命中: 边缘 fade 平滑过渡
+            float fade = smoothstep(0.0, uEdgeFade, sampleUV.x)
+                       * smoothstep(0.0, uEdgeFade, 1.0 - sampleUV.x)
+                       * smoothstep(0.0, uEdgeFade, sampleUV.y)
+                       * smoothstep(0.0, uEdgeFade, 1.0 - sampleUV.y);
+            hitColor = texture(uHDRTex, sampleUV).rgb;
+            hitAlpha = fade;
+            break;
+        }
+    }
+
+    FragColor = vec4(hitColor, hitAlpha);
+}
+)";
+
+// ---- FS_SSR_COMPOSITE (GLES 3.0): HDR += reflect.rgb * reflect.a * intensity ----
+static const char* FS_SSR_COMPOSITE_SOURCE = R"(#version 300 es
+precision highp float;
+precision highp sampler2D;
+in  vec2 vUV;
+out vec4 FragColor;
+
+uniform sampler2D uSceneTex;     // HDR color (临时拷贝, 解 feedback loop)
+uniform sampler2D uReflectTex;   // SSR 反射 RT (RGBA16F, .a = fade weight)
+uniform float     uIntensity;
+
+void main() {
+    vec3 hdr = texture(uSceneTex, vUV).rgb;
+    vec4 ref = texture(uReflectTex, vUV);
+    // additive: HDR + reflect.rgb * reflect.a (fade) * intensity
+    FragColor = vec4(hdr + ref.rgb * ref.a * uIntensity, 1.0);
+}
+)";
+
 #else  // 桌面 GL 3.3 Core
 
 // ---- FS_SSAO (GL 3.3): 同 GLES3 算法 ----
@@ -1527,6 +1683,7 @@ out vec4 FragColor;
 
 uniform sampler2D uDepthTex;
 uniform sampler2D uNoiseTex;
+uniform sampler2D uNormalTex;    // Phase E.8.x: G-buffer view-space normal (RG16F)
 uniform mat4  uProj;
 uniform mat4  uInvProj;
 uniform vec3  uKernel[16];
@@ -1542,12 +1699,19 @@ vec3 ReconstructViewPos(vec2 uv, float d) {
     return v.xyz / v.w;
 }
 
+// Phase E.8.x: 从 RG16F G-buffer 解码 view-space normal
+vec3 DecodeViewNormal(vec2 enc) {
+    vec2 nxy = enc * 2.0 - 1.0;
+    float zsq = max(0.0, 1.0 - dot(nxy, nxy));
+    return vec3(nxy, sqrt(zsq));
+}
+
 void main() {
     float d = texture(uDepthTex, vUV).r;
     if (d >= 0.9999) { FragColor = vec4(1.0); return; }
 
     vec3 P = ReconstructViewPos(vUV, d);
-    vec3 N = normalize(cross(dFdy(P), dFdx(P)));
+    vec3 N = DecodeViewNormal(texture(uNormalTex, vUV).rg);
     vec3 R = texture(uNoiseTex, vUV * uNoiseScale).xyz * 2.0 - 1.0;
     R = normalize(vec3(R.xy, 0.0));
     vec3 T = normalize(R - N * dot(R, N));
@@ -1619,6 +1783,102 @@ void main() {
     float ao = texture(uAOTex, vUV).r;
     float o = mix(1.0, ao, uIntensity);
     FragColor = vec4(hdr * o, 1.0);
+}
+)";
+
+// ==================== Phase E.9 — SSR shaders (GL 3.3) ====================
+
+// ---- FS_SSR (GL 3.3): linear ray march in view space ----
+static const char* FS_SSR_SOURCE = R"(
+#version 330 core
+in  vec2 vUV;
+out vec4 FragColor;
+
+uniform sampler2D uDepthTex;
+uniform sampler2D uNormalTex;    // Phase E.8.x: G-buffer view-space normal (RG16F)
+uniform sampler2D uHDRTex;
+uniform mat4  uProj;
+uniform mat4  uInvProj;
+uniform int   uMaxSteps;
+uniform float uStepSize;
+uniform float uThickness;
+uniform float uMaxDistance;
+uniform float uEdgeFade;
+
+vec3 ReconstructViewPos(vec2 uv, float d) {
+    vec4 clip = vec4(uv * 2.0 - 1.0, d * 2.0 - 1.0, 1.0);
+    vec4 v    = uInvProj * clip;
+    return v.xyz / v.w;
+}
+
+vec3 DecodeViewNormal(vec2 enc) {
+    vec2 nxy = enc * 2.0 - 1.0;
+    float zsq = max(0.0, 1.0 - dot(nxy, nxy));
+    return vec3(nxy, sqrt(zsq));
+}
+
+void main() {
+    float d = texture(uDepthTex, vUV).r;
+    if (d >= 0.9999) { FragColor = vec4(0.0); return; }
+
+    vec3 viewPos = ReconstructViewPos(vUV, d);
+    vec3 viewN   = DecodeViewNormal(texture(uNormalTex, vUV).rg);
+    vec3 viewV   = normalize(-viewPos);
+
+    if (dot(viewN, viewV) < 0.05) { FragColor = vec4(0.0); return; }
+
+    vec3 viewR = reflect(-viewV, viewN);
+
+    vec3 hitColor   = vec3(0.0);
+    float hitAlpha  = 0.0;
+
+    for (int i = 1; i <= 128; ++i) {
+        if (i > uMaxSteps) break;
+
+        vec3 samplePosVS = viewPos + viewR * (uStepSize * float(i));
+        if (-samplePosVS.z > uMaxDistance) break;
+
+        vec4 sampleClip = uProj * vec4(samplePosVS, 1.0);
+        if (sampleClip.w <= 0.0) break;
+        vec2 sampleUV   = sampleClip.xy / sampleClip.w * 0.5 + 0.5;
+
+        if (sampleUV.x < 0.0 || sampleUV.x > 1.0
+            || sampleUV.y < 0.0 || sampleUV.y > 1.0) break;
+
+        float sampleDepth = texture(uDepthTex, sampleUV).r;
+        if (sampleDepth >= 0.9999) continue;
+        vec3 sampleVS = ReconstructViewPos(sampleUV, sampleDepth);
+
+        float depthDiff = sampleVS.z - samplePosVS.z;
+        if (depthDiff > 0.0 && depthDiff < uThickness) {
+            float fade = smoothstep(0.0, uEdgeFade, sampleUV.x)
+                       * smoothstep(0.0, uEdgeFade, 1.0 - sampleUV.x)
+                       * smoothstep(0.0, uEdgeFade, sampleUV.y)
+                       * smoothstep(0.0, uEdgeFade, 1.0 - sampleUV.y);
+            hitColor = texture(uHDRTex, sampleUV).rgb;
+            hitAlpha = fade;
+            break;
+        }
+    }
+
+    FragColor = vec4(hitColor, hitAlpha);
+}
+)";
+
+// ---- FS_SSR_COMPOSITE (GL 3.3): HDR += reflect.rgb * reflect.a * intensity ----
+static const char* FS_SSR_COMPOSITE_SOURCE = R"(
+#version 330 core
+in  vec2 vUV;
+out vec4 FragColor;
+
+uniform sampler2D uSceneTex;
+uniform sampler2D uReflectTex;
+uniform float     uIntensity;
+
+void main() {
+    vec3 hdr = texture(uSceneTex, vUV).rgb;
+    vec4 ref = texture(uReflectTex, vUV);
+    FragColor = vec4(hdr + ref.rgb * ref.a * uIntensity, 1.0);
 }
 )";
 
@@ -1730,6 +1990,10 @@ class GL33Backend : public RenderBackend {
     GLint  locTonemap_Mode     = -1;   // Phase E.3.4 — uTonemapMode (int)
     // HDR FBO → depth RBO 关系映射 (CreateHDRFBO 写入, DeleteHDRFBO 查询并释放)
     std::unordered_map<uint32_t, uint32_t> hdrFboDepthRB;
+    // Phase E.8.x — HDR FBO → normal RT 关系映射 (MRT G-buffer view-space normal)
+    // CreateHDRFBO 写入 (仅 outNormalTex != null 时), DeleteHDRFBO 查询并释放.
+    // GetHDRNormalTex(fbo) 仅读查找.
+    std::unordered_map<uint32_t, uint32_t> hdrFboNormalTex;
 
     // ---- Phase E.4 — Bloom 后处理 ----
     // 3 个 shader program (共用 vaoTonemap/vboTonemap 全屏 quad, 无独立 VAO)
@@ -1796,6 +2060,7 @@ class GL33Backend : public RenderBackend {
     // SSAO uniform locations cache
     GLint  locSSAO_DepthTex      = -1;
     GLint  locSSAO_NoiseTex      = -1;
+    GLint  locSSAO_NormalTex     = -1;   // Phase E.8.x — G-buffer view-space normal sampler
     GLint  locSSAO_Proj          = -1;
     GLint  locSSAO_InvProj       = -1;
     GLint  locSSAO_Kernel        = -1;   // vec3[16]
@@ -1816,6 +2081,32 @@ class GL33Backend : public RenderBackend {
     GLuint ssaoCompTempTex       = 0;
     int    ssaoCompTempW         = 0;
     int    ssaoCompTempH         = 0;
+
+    // Phase E.9 — SSR (2 shader: raw + composite)
+    // 高质量方案: full-res RGBA16F + 64 步默认 (用户拍板 2026-05-12)
+    GLuint programSSR              = 0;
+    GLuint programSSRComposite     = 0;
+    bool   ssrSupported            = false;
+    // FS_SSR uniform locations
+    GLint  locSSR_DepthTex         = -1;
+    GLint  locSSR_NormalTex        = -1;
+    GLint  locSSR_HDRTex           = -1;
+    GLint  locSSR_Proj             = -1;
+    GLint  locSSR_InvProj          = -1;
+    GLint  locSSR_MaxSteps         = -1;
+    GLint  locSSR_StepSize         = -1;
+    GLint  locSSR_Thickness        = -1;
+    GLint  locSSR_MaxDistance      = -1;
+    GLint  locSSR_EdgeFade         = -1;
+    // FS_SSR_COMPOSITE uniform locations
+    GLint  locSSRComp_SceneTex     = -1;
+    GLint  locSSRComp_ReflectTex   = -1;
+    GLint  locSSRComp_Intensity    = -1;
+    // SSR composite 临时 full-res RGBA16F RT (解 feedback loop, 与 SSAO 同模式)
+    GLuint ssrCompTempFbo          = 0;
+    GLuint ssrCompTempTex          = 0;
+    int    ssrCompTempW            = 0;
+    int    ssrCompTempH            = 0;
 
     // Phase E.2.1 — Lighting2D dirty bit cache
     // 当 state->version 与此值相等时, UploadLighting2D 跳过所有 glUniform*v 调用
@@ -2542,9 +2833,11 @@ public:
             locSSAO_Bias       = glGetUniformLocation(programSSAO, "uBias");
             locSSAO_Power      = glGetUniformLocation(programSSAO, "uPower");
             locSSAO_NoiseScale = glGetUniformLocation(programSSAO, "uNoiseScale");
+            locSSAO_NormalTex  = glGetUniformLocation(programSSAO, "uNormalTex");  // Phase E.8.x
             glUseProgram(programSSAO);
-            if (locSSAO_DepthTex >= 0) glUniform1i(locSSAO_DepthTex, 0);  // slot 0
-            if (locSSAO_NoiseTex >= 0) glUniform1i(locSSAO_NoiseTex, 1);  // slot 1
+            if (locSSAO_DepthTex  >= 0) glUniform1i(locSSAO_DepthTex,  0);  // slot 0
+            if (locSSAO_NoiseTex  >= 0) glUniform1i(locSSAO_NoiseTex,  1);  // slot 1
+            if (locSSAO_NormalTex >= 0) glUniform1i(locSSAO_NormalTex, 2);  // slot 2 (Phase E.8.x)
 
             locSSAOBlur_SSAOTex  = glGetUniformLocation(programSSAOBlur, "uSSAOTex");
             locSSAOBlur_DepthTex = glGetUniformLocation(programSSAOBlur, "uDepthTex");
@@ -2569,15 +2862,52 @@ public:
             ssaoSupported = false;
         }
 
+        // --- Phase E.9 — SSR (2 shader: raw + composite) ---
+        programSSR          = buildProgram(FS_SSR_SOURCE,           "SSR");
+        programSSRComposite = buildProgram(FS_SSR_COMPOSITE_SOURCE, "SSRComposite");
+        if (programSSR && programSSRComposite) {
+            // Cache FS_SSR uniforms
+            locSSR_DepthTex    = glGetUniformLocation(programSSR, "uDepthTex");
+            locSSR_NormalTex   = glGetUniformLocation(programSSR, "uNormalTex");
+            locSSR_HDRTex      = glGetUniformLocation(programSSR, "uHDRTex");
+            locSSR_Proj        = glGetUniformLocation(programSSR, "uProj");
+            locSSR_InvProj     = glGetUniformLocation(programSSR, "uInvProj");
+            locSSR_MaxSteps    = glGetUniformLocation(programSSR, "uMaxSteps");
+            locSSR_StepSize    = glGetUniformLocation(programSSR, "uStepSize");
+            locSSR_Thickness   = glGetUniformLocation(programSSR, "uThickness");
+            locSSR_MaxDistance = glGetUniformLocation(programSSR, "uMaxDistance");
+            locSSR_EdgeFade    = glGetUniformLocation(programSSR, "uEdgeFade");
+            glUseProgram(programSSR);
+            if (locSSR_DepthTex  >= 0) glUniform1i(locSSR_DepthTex,  0);  // slot 0
+            if (locSSR_NormalTex >= 0) glUniform1i(locSSR_NormalTex, 1);  // slot 1
+            if (locSSR_HDRTex    >= 0) glUniform1i(locSSR_HDRTex,    2);  // slot 2
+
+            // Cache FS_SSR_COMPOSITE uniforms
+            locSSRComp_SceneTex   = glGetUniformLocation(programSSRComposite, "uSceneTex");
+            locSSRComp_ReflectTex = glGetUniformLocation(programSSRComposite, "uReflectTex");
+            locSSRComp_Intensity  = glGetUniformLocation(programSSRComposite, "uIntensity");
+            glUseProgram(programSSRComposite);
+            if (locSSRComp_SceneTex   >= 0) glUniform1i(locSSRComp_SceneTex,   0);
+            if (locSSRComp_ReflectTex >= 0) glUniform1i(locSSRComp_ReflectTex, 1);
+            glUseProgram(0);
+
+            // SSR 需要 HDR + G-buffer normal MRT (Phase E.8.x). tonemapSupported 已包含 RGBA16F 探测
+            ssrSupported = tonemapSupported;
+        } else {
+            ssrSupported = false;
+        }
+
         CC::Log(CC::LOG_INFO,
-                "GL33: Phase E.6+E.7+E.8 LensFx/SSAO ready (lensDirt=%s, streak=%s, lensFlare=%s, ssao=%s; programs=[LD=%u, SB=%u, SC=%u, LFG=%u, S=%u, SB=%u, SC=%u])",
+                "GL33: Phase E.6+E.7+E.8+E.9 LensFx/SSAO/SSR ready (lensDirt=%s, streak=%s, lensFlare=%s, ssao=%s, ssr=%s; programs=[LD=%u, SB=%u, SC=%u, LFG=%u, S=%u, SB=%u, SC=%u, SSR=%u, SSRC=%u])",
                 lensDirtSupported ? "yes" : "no",
                 streakSupported   ? "yes" : "no",
                 lensFlareSupported? "yes" : "no",
                 ssaoSupported     ? "yes" : "no",
+                ssrSupported      ? "yes" : "no",
                 programLensDirt, programStreakBlur, programStreakComposite,
                 programLensFlareGhost,
-                programSSAO, programSSAOBlur, programSSAOComposite);
+                programSSAO, programSSAOBlur, programSSAOComposite,
+                programSSR, programSSRComposite);
     }
 
     void Shutdown() override {
@@ -2656,6 +2986,11 @@ public:
             if (kv.second) { GLuint rb = kv.second; glDeleteRenderbuffers(1, &rb); }
         }
         hdrFboDepthRB.clear();
+        // Phase E.8.x — 清理 normal tex 兜底
+        for (auto& kv : hdrFboNormalTex) {
+            if (kv.second) { GLuint t = kv.second; glDeleteTextures(1, &t); }
+        }
+        hdrFboNormalTex.clear();
         tonemapSupported = false;
 
         // Phase E.4 — 释放 Bloom shader (pyramid 资源由 BloomRenderer::Shutdown 配对释放)
@@ -2696,12 +3031,24 @@ public:
         if (ssaoCompTempFbo)      { glDeleteFramebuffers(1, &ssaoCompTempFbo); ssaoCompTempFbo = 0; }
         if (ssaoCompTempTex)      { glDeleteTextures(1, &ssaoCompTempTex);     ssaoCompTempTex = 0; }
         ssaoCompTempW = ssaoCompTempH = 0;
-        locSSAO_DepthTex = locSSAO_NoiseTex = locSSAO_Proj = locSSAO_InvProj = -1;
+        locSSAO_DepthTex = locSSAO_NoiseTex = locSSAO_NormalTex = locSSAO_Proj = locSSAO_InvProj = -1;
         locSSAO_Kernel = locSSAO_KernelSize = locSSAO_Radius = locSSAO_Bias = -1;
         locSSAO_Power = locSSAO_NoiseScale = -1;
         locSSAOBlur_SSAOTex = locSSAOBlur_DepthTex = locSSAOBlur_Texel = locSSAOBlur_Axis = -1;
         locSSAOComp_SceneTex = locSSAOComp_AOTex = locSSAOComp_Intensity = -1;
         ssaoSupported = false;
+
+        // Phase E.9 — 清理 SSR (2 program + composite temp RT; depth/reflect RT 由 SSRRenderer 管)
+        if (programSSR)            { glDeleteProgram(programSSR);            programSSR = 0; }
+        if (programSSRComposite)   { glDeleteProgram(programSSRComposite);   programSSRComposite = 0; }
+        if (ssrCompTempFbo)        { glDeleteFramebuffers(1, &ssrCompTempFbo); ssrCompTempFbo = 0; }
+        if (ssrCompTempTex)        { glDeleteTextures(1, &ssrCompTempTex);     ssrCompTempTex = 0; }
+        ssrCompTempW = ssrCompTempH = 0;
+        locSSR_DepthTex = locSSR_NormalTex = locSSR_HDRTex = -1;
+        locSSR_Proj = locSSR_InvProj = -1;
+        locSSR_MaxSteps = locSSR_StepSize = locSSR_Thickness = locSSR_MaxDistance = locSSR_EdgeFade = -1;
+        locSSRComp_SceneTex = locSSRComp_ReflectTex = locSSRComp_Intensity = -1;
+        ssrSupported = false;
     }
 
     bool SupportsLit2D() const override { return lit2DSupported; }
@@ -2710,8 +3057,9 @@ public:
 
     bool SupportsHDR() const override { return tonemapSupported; }
 
-    /// 创建 HDR FBO: RGBA16F 颜色附件 + Depth24 RBO (hdrFboDepthRB map 关联管理)
-    uint32_t CreateHDRFBO(int w, int h, uint32_t* outTex) override {
+    /// 创建 HDR FBO: RGBA16F 颜色附件 + (可选) RG16F view-normal + Depth24 RBO
+    /// Phase E.8.x: outNormalTex != null 启用 MRT (glDrawBuffers(2, ...))
+    uint32_t CreateHDRFBO(int w, int h, uint32_t* outTex, uint32_t* outNormalTex) override {
         if (!tonemapSupported || w <= 0 || h <= 0 || !outTex) return 0;
 
         // 1. 创建 RGBA16F 颜色纹理 (GL_LINEAR + GL_CLAMP_TO_EDGE)
@@ -2726,51 +3074,95 @@ public:
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
         glBindTexture(GL_TEXTURE_2D, 0);
 
+        // 1.5. Phase E.8.x — (可选) 创建 RG16F view-space normal 纹理
+        GLuint normalTex = 0;
+        if (outNormalTex) {
+            glGenTextures(1, &normalTex);
+            if (!normalTex) { glDeleteTextures(1, &tex); return 0; }
+            glBindTexture(GL_TEXTURE_2D, normalTex);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RG16F, w, h, 0, GL_RG, GL_FLOAT, nullptr);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+            glBindTexture(GL_TEXTURE_2D, 0);
+        }
+
         // 2. 创建 Depth24 RBO
         GLuint depthRB = 0;
         glGenRenderbuffers(1, &depthRB);
-        if (!depthRB) { glDeleteTextures(1, &tex); return 0; }
+        if (!depthRB) {
+            glDeleteTextures(1, &tex);
+            if (normalTex) glDeleteTextures(1, &normalTex);
+            return 0;
+        }
         glBindRenderbuffer(GL_RENDERBUFFER, depthRB);
         glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, w, h);
         glBindRenderbuffer(GL_RENDERBUFFER, 0);
 
-        // 3. 创建 FBO 并附加 color + depth
+        // 3. 创建 FBO 并附加 color + (normal) + depth
         GLuint fbo = 0;
         glGenFramebuffers(1, &fbo);
         if (!fbo) {
             glDeleteTextures(1, &tex);
+            if (normalTex) glDeleteTextures(1, &normalTex);
             glDeleteRenderbuffers(1, &depthRB);
             return 0;
         }
         glBindFramebuffer(GL_FRAMEBUFFER, fbo);
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
+        if (normalTex) {
+            // Phase E.8.x — 附加 normal RT 为 COLOR_ATTACHMENT1
+            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, normalTex, 0);
+            // 启用 MRT 写入 (默认 GL 只写 COLOR_ATTACHMENT0; MRT 需显式声明)
+            const GLenum drawBufs[2] = { GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1 };
+            glDrawBuffers(2, drawBufs);
+        }
         glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, depthRB);
 
         GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
         if (status != GL_FRAMEBUFFER_COMPLETE) {
-            CC::Log(CC::LOG_ERROR, "GL33: HDR FBO incomplete (status=0x%X, %dx%d)",
-                    status, w, h);
+            CC::Log(CC::LOG_ERROR, "GL33: HDR%s FBO incomplete (status=0x%X, %dx%d)",
+                    normalTex ? " MRT" : "", status, w, h);
             glDeleteFramebuffers(1, &fbo);
             glDeleteRenderbuffers(1, &depthRB);
             glDeleteTextures(1, &tex);
+            if (normalTex) glDeleteTextures(1, &normalTex);
             return 0;
         }
 
         hdrFboDepthRB[fbo] = depthRB;
+        if (normalTex) {
+            hdrFboNormalTex[fbo] = normalTex;
+            *outNormalTex = normalTex;
+        }
         *outTex = tex;
         return fbo;
     }
 
-    /// 释放 HDR FBO 资源 (与 CreateHDRFBO 配对; 自动从 map 查 depthRB)
+    /// Phase E.8.x — 查找 HDR FBO 关联的 view-space normal RT id
+    uint32_t GetHDRNormalTex(uint32_t fbo) const override {
+        auto it = hdrFboNormalTex.find(fbo);
+        return (it != hdrFboNormalTex.end()) ? it->second : 0;
+    }
+
+    /// 释放 HDR FBO 资源 (与 CreateHDRFBO 配对; 自动从 map 查 depthRB + normalTex)
     void DeleteHDRFBO(uint32_t fbo, uint32_t tex) override {
         if (fbo) {
-            auto it = hdrFboDepthRB.find(fbo);
-            if (it != hdrFboDepthRB.end()) {
-                GLuint rb = it->second;
+            auto itD = hdrFboDepthRB.find(fbo);
+            if (itD != hdrFboDepthRB.end()) {
+                GLuint rb = itD->second;
                 if (rb) glDeleteRenderbuffers(1, &rb);
-                hdrFboDepthRB.erase(it);
+                hdrFboDepthRB.erase(itD);
+            }
+            // Phase E.8.x — 释放关联 normal tex (如果存在)
+            auto itN = hdrFboNormalTex.find(fbo);
+            if (itN != hdrFboNormalTex.end()) {
+                GLuint t = itN->second;
+                if (t) glDeleteTextures(1, &t);
+                hdrFboNormalTex.erase(itN);
             }
             GLuint f = fbo;
             glDeleteFramebuffers(1, &f);
@@ -3632,13 +4024,14 @@ public:
         if (tex) { GLuint t = (GLuint)tex; glDeleteTextures(1, &t); }
     }
 
-    /// SSAO raw pass: depthTex + noiseTex + uniforms -> dstFbo (R16F)
-    void DrawSSAO(uint32_t depthTex, uint32_t noiseTex, uint32_t dstFbo,
+    /// SSAO raw pass: depthTex + noiseTex + normalTex (Phase E.8.x) -> dstFbo (R16F)
+    void DrawSSAO(uint32_t depthTex, uint32_t noiseTex, uint32_t normalTex,
+                  uint32_t dstFbo,
                   int w, int h,
                   const float* projMat4, const float* invProjMat4,
                   const float* kernel, int kernelSize,
                   float radius, float bias, float power) override {
-        if (!ssaoSupported || !depthTex || !noiseTex || !dstFbo
+        if (!ssaoSupported || !depthTex || !noiseTex || !normalTex || !dstFbo
             || w <= 0 || h <= 0 || !projMat4 || !invProjMat4 || !kernel
             || kernelSize <= 0 || kernelSize > 16) return;
 
@@ -3663,11 +4056,16 @@ public:
         glBindTexture(GL_TEXTURE_2D, (GLuint)depthTex);
         glActiveTexture(GL_TEXTURE1);
         glBindTexture(GL_TEXTURE_2D, (GLuint)noiseTex);
+        glActiveTexture(GL_TEXTURE2);                               // Phase E.8.x — G-buffer normal
+        glBindTexture(GL_TEXTURE_2D, (GLuint)normalTex);
 
         glBindVertexArray(vaoTonemap);
         glDrawArrays(GL_TRIANGLES, 0, 6);
 
         glBindVertexArray(0);
+        // 反向解绑 (slot 2 → 0)
+        glActiveTexture(GL_TEXTURE2);
+        glBindTexture(GL_TEXTURE_2D, 0);
         glActiveTexture(GL_TEXTURE1);
         glBindTexture(GL_TEXTURE_2D, 0);
         glActiveTexture(GL_TEXTURE0);
@@ -3769,6 +4167,222 @@ public:
         glBindTexture(GL_TEXTURE_2D, ssaoCompTempTex);
         glActiveTexture(GL_TEXTURE1);
         glBindTexture(GL_TEXTURE_2D, (GLuint)aoTex);
+
+        glBindVertexArray(vaoTonemap);
+        glDrawArrays(GL_TRIANGLES, 0, 6);
+
+        glBindVertexArray(0);
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        glUseProgram(0);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    }
+
+    // ==================== Phase E.9 — SSR 虚接口实现 ====================
+    //
+    // 设计与 SSAO 平行: 独立 depth tex 旁路 (复用 BlitHDRDepthToSSAO 接口) +
+    // full-res RGBA16F 反射 RT + composite 用临时 RT 解 feedback loop.
+
+    bool SupportsSSR() const override { return ssrSupported; }
+
+    /// 创建 SSR 专用 depth tex + 小 FBO (无 color attachment, full-res, 与 SSAO 同模式)
+    bool CreateSSRDepthRT(int w, int h, uint32_t* outFbo, uint32_t* outTex) override {
+        if (!ssrSupported || w <= 0 || h <= 0 || !outFbo || !outTex) return false;
+
+        // depth texture (NEAREST + CLAMP_TO_EDGE, depth24)
+        GLuint tex = 0;
+        glGenTextures(1, &tex);
+        if (!tex) return false;
+        glBindTexture(GL_TEXTURE_2D, tex);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT24, w, h, 0,
+                     GL_DEPTH_COMPONENT, GL_UNSIGNED_INT, nullptr);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glBindTexture(GL_TEXTURE_2D, 0);
+
+        GLuint fbo = 0;
+        glGenFramebuffers(1, &fbo);
+        if (!fbo) { glDeleteTextures(1, &tex); return false; }
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, tex, 0);
+        // 无 color attachment: 显式禁用 draw/read buffer
+        GLenum drawBufs[1] = { GL_NONE };
+        glDrawBuffers(1, drawBufs);
+        glReadBuffer(GL_NONE);
+        GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+        if (status != GL_FRAMEBUFFER_COMPLETE) {
+            CC::Log(CC::LOG_WARN,
+                    "GL33: Phase E.9 CreateSSRDepthRT incomplete (0x%X, %dx%d)",
+                    (unsigned)status, w, h);
+            glDeleteFramebuffers(1, &fbo);
+            glDeleteTextures(1, &tex);
+            return false;
+        }
+        *outFbo = (uint32_t)fbo;
+        *outTex = (uint32_t)tex;
+        return true;
+    }
+
+    void DeleteSSRDepthRT(uint32_t fbo, uint32_t tex) override {
+        if (fbo) { GLuint f = (GLuint)fbo; glDeleteFramebuffers(1, &f); }
+        if (tex) { GLuint t = (GLuint)tex; glDeleteTextures(1, &t); }
+    }
+
+    /// 创建 SSR 反射 RT: full-res RGBA16F + GL_LINEAR + GL_CLAMP_TO_EDGE, 无 depth
+    bool CreateSSRTargets(int w, int h, uint32_t* outFbo, uint32_t* outTex) override {
+        if (!ssrSupported || w <= 0 || h <= 0 || !outFbo || !outTex) return false;
+
+        GLuint tex = 0;
+        glGenTextures(1, &tex);
+        if (!tex) return false;
+        glBindTexture(GL_TEXTURE_2D, tex);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, w, h, 0, GL_RGBA, GL_HALF_FLOAT, nullptr);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glBindTexture(GL_TEXTURE_2D, 0);
+
+        GLuint fbo = 0;
+        glGenFramebuffers(1, &fbo);
+        if (!fbo) { glDeleteTextures(1, &tex); return false; }
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
+        GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+        if (status != GL_FRAMEBUFFER_COMPLETE) {
+            CC::Log(CC::LOG_WARN,
+                    "GL33: Phase E.9 CreateSSRTargets incomplete (0x%X, %dx%d)",
+                    (unsigned)status, w, h);
+            glDeleteFramebuffers(1, &fbo);
+            glDeleteTextures(1, &tex);
+            return false;
+        }
+        *outFbo = (uint32_t)fbo;
+        *outTex = (uint32_t)tex;
+        return true;
+    }
+
+    void DeleteSSRTargets(uint32_t* fbo, uint32_t* tex) override {
+        if (fbo && *fbo) { GLuint f = (GLuint)*fbo; glDeleteFramebuffers(1, &f); *fbo = 0; }
+        if (tex && *tex) { GLuint t = (GLuint)*tex; glDeleteTextures(1, &t);     *tex = 0; }
+    }
+
+    /// SSR raw pass: depthTex + normalTex + hdrTex -> dstFbo (RGBA16F, full-res)
+    void DrawSSR(uint32_t depthTex, uint32_t normalTex, uint32_t hdrTex,
+                 uint32_t dstFbo,
+                 int w, int h,
+                 const float* projMat4, const float* invProjMat4,
+                 int maxSteps, float stepSize, float thickness,
+                 float maxDist, float edgeFade) override {
+        if (!ssrSupported || !depthTex || !normalTex || !hdrTex || !dstFbo
+            || w <= 0 || h <= 0 || !projMat4 || !invProjMat4 || maxSteps <= 0) return;
+
+        glBindFramebuffer(GL_FRAMEBUFFER, (GLuint)dstFbo);
+        glViewport(0, 0, w, h);
+        glDisable(GL_DEPTH_TEST);
+        glDisable(GL_SCISSOR_TEST);
+        glDisable(GL_BLEND);
+
+        glUseProgram(programSSR);
+        if (locSSR_Proj        >= 0) glUniformMatrix4fv(locSSR_Proj,    1, GL_FALSE, projMat4);
+        if (locSSR_InvProj     >= 0) glUniformMatrix4fv(locSSR_InvProj, 1, GL_FALSE, invProjMat4);
+        if (locSSR_MaxSteps    >= 0) glUniform1i(locSSR_MaxSteps,    maxSteps);
+        if (locSSR_StepSize    >= 0) glUniform1f(locSSR_StepSize,    stepSize);
+        if (locSSR_Thickness   >= 0) glUniform1f(locSSR_Thickness,   thickness);
+        if (locSSR_MaxDistance >= 0) glUniform1f(locSSR_MaxDistance, maxDist);
+        if (locSSR_EdgeFade    >= 0) glUniform1f(locSSR_EdgeFade,    edgeFade);
+
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, (GLuint)depthTex);
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, (GLuint)normalTex);
+        glActiveTexture(GL_TEXTURE2);
+        glBindTexture(GL_TEXTURE_2D, (GLuint)hdrTex);
+
+        glBindVertexArray(vaoTonemap);
+        glDrawArrays(GL_TRIANGLES, 0, 6);
+
+        glBindVertexArray(0);
+        // 反向解绑 (slot 2 → 0)
+        glActiveTexture(GL_TEXTURE2);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        glUseProgram(0);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    }
+
+    /// SSR composite: 解 feedback loop (与 SSAO 同模式)
+    /// 流程: ① glBlitFramebuffer 复制 hdrFbo color -> ssrCompTempTex
+    ///       ② 绑 hdrFbo, shader 读 ssrCompTempTex + reflectTex, 加性写到 hdrFbo
+    void DrawSSRComposite(uint32_t reflectTex, uint32_t hdrFbo,
+                          int w, int h, float intensity) override {
+        if (!ssrSupported || !reflectTex || !hdrFbo || w <= 0 || h <= 0) return;
+
+        // 懒重建 composite temp RT (尺寸变化时)
+        if (ssrCompTempW != w || ssrCompTempH != h || !ssrCompTempTex) {
+            if (ssrCompTempFbo) { glDeleteFramebuffers(1, &ssrCompTempFbo); ssrCompTempFbo = 0; }
+            if (ssrCompTempTex) { glDeleteTextures(1, &ssrCompTempTex);     ssrCompTempTex = 0; }
+
+            glGenTextures(1, &ssrCompTempTex);
+            if (!ssrCompTempTex) return;
+            glBindTexture(GL_TEXTURE_2D, ssrCompTempTex);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, w, h, 0, GL_RGBA, GL_HALF_FLOAT, nullptr);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+            glBindTexture(GL_TEXTURE_2D, 0);
+
+            glGenFramebuffers(1, &ssrCompTempFbo);
+            if (!ssrCompTempFbo) {
+                glDeleteTextures(1, &ssrCompTempTex); ssrCompTempTex = 0;
+                return;
+            }
+            glBindFramebuffer(GL_FRAMEBUFFER, ssrCompTempFbo);
+            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                                    GL_TEXTURE_2D, ssrCompTempTex, 0);
+            GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+            glBindFramebuffer(GL_FRAMEBUFFER, 0);
+            if (status != GL_FRAMEBUFFER_COMPLETE) {
+                glDeleteFramebuffers(1, &ssrCompTempFbo); ssrCompTempFbo = 0;
+                glDeleteTextures(1, &ssrCompTempTex);     ssrCompTempTex = 0;
+                return;
+            }
+            ssrCompTempW = w;
+            ssrCompTempH = h;
+        }
+
+        // ① blit hdrFbo (HDR color) -> ssrCompTempFbo (临时 copy)
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, (GLuint)hdrFbo);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, ssrCompTempFbo);
+        glBlitFramebuffer(0, 0, w, h, 0, 0, w, h,
+                          GL_COLOR_BUFFER_BIT, GL_NEAREST);
+
+        // ② 绑 hdrFbo, shader 读 ssrCompTempTex + reflectTex, 加性写到 hdrFbo
+        glBindFramebuffer(GL_FRAMEBUFFER, (GLuint)hdrFbo);
+        glViewport(0, 0, w, h);
+        glDisable(GL_DEPTH_TEST);
+        glDisable(GL_SCISSOR_TEST);
+        glDisable(GL_BLEND);   // shader 内部 hdr + reflect, 不用硬件 blend
+
+        glUseProgram(programSSRComposite);
+        if (locSSRComp_Intensity >= 0) glUniform1f(locSSRComp_Intensity, intensity);
+
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, ssrCompTempTex);
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, (GLuint)reflectTex);
 
         glBindVertexArray(vaoTonemap);
         glDrawArrays(GL_TRIANGLES, 0, 6);
@@ -4652,6 +5266,23 @@ public:
         if (locEmissive >= 0) glUniform3f(locEmissive, d->emissive[0], d->emissive[1], d->emissive[2]);
         if (locAMode >= 0)    glUniform1i(locAMode, d->alphaMode);
         if (locACutoff >= 0)  glUniform1f(locACutoff, d->alphaCutoff);
+        // Phase E.8.x: 上传 mat3(view) 供 FS 计算 view-space normal MRT.
+        // Mat4 是 column-major; mat3 取前 3 column 的前 3 行.
+        // 未 SetCamera 时 view=identity (符合 Lit2D 等无 view 场景默认行为).
+        GLint locViewM3 = glGetUniformLocation(program, "uViewMat3");
+        if (locViewM3 >= 0) {
+            float v3[9];
+            if (hasView) {
+                v3[0] = viewMatrix.m[0]; v3[1] = viewMatrix.m[1]; v3[2] = viewMatrix.m[2];
+                v3[3] = viewMatrix.m[4]; v3[4] = viewMatrix.m[5]; v3[5] = viewMatrix.m[6];
+                v3[6] = viewMatrix.m[8]; v3[7] = viewMatrix.m[9]; v3[8] = viewMatrix.m[10];
+            } else {
+                v3[0]=1; v3[1]=0; v3[2]=0;
+                v3[3]=0; v3[4]=1; v3[5]=0;
+                v3[6]=0; v3[7]=0; v3[8]=1;
+            }
+            glUniformMatrix3fv(locViewM3, 1, GL_FALSE, v3);
+        }
     }
 
     /// 上传 PBR 专用 lighting + scalar uniforms (摄像机 + 光源 + metallic/roughness/AO)

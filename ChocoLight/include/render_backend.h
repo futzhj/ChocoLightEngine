@@ -505,19 +505,44 @@ public:
      * @return     fbo id (0 = 失败, 通常是后端不支持或 OOM)
      *
      * Depth RBO 内部由后端管理 (与 DeleteHDRFBO 配对释放).
+     *
+     * Phase E.8.x 升级: 可选 outNormalTex 参数启用 MRT (G-buffer view-space normal).
+     *  - outNormalTex == nullptr: 仅创建单 RT (Phase E.3 原行为)
+     *  - outNormalTex != nullptr: 创建 MRT (RGBA16F color + RG16F view-normal),
+     *                              glDrawBuffers(2, [COLOR_0, COLOR_1])
+     * normalTex 同 depthRB 一样由后端内部 map 关联管理, DeleteHDRFBO 释放.
+     * 创建失败时 (RG16F 不支持 / FBO incomplete) 返回 0, 已分配的 GL 对象全释放.
+     *
      * 默认实现 (Legacy): return 0.
      */
-    virtual uint32_t CreateHDRFBO(int /*w*/, int /*h*/, uint32_t* /*outTex*/) { return 0; }
+    virtual uint32_t CreateHDRFBO(int /*w*/, int /*h*/,
+                                   uint32_t* /*outColorTex*/,
+                                   uint32_t* /*outNormalTex*/ = nullptr) { return 0; }
 
     /**
      * @brief 释放 HDR FBO 资源
      *
-     * 释放 fbo + 颜色纹理 + 内部管理的 depth RBO.
+     * 释放 fbo + 颜色纹理 + 内部管理的 depth RBO + (Phase E.8.x) normalTex.
      * 与 CreateHDRFBO 配对调用.
      *
      * 默认实现 (Legacy): no-op.
      */
     virtual void DeleteHDRFBO(uint32_t /*fbo*/, uint32_t /*tex*/) {}
+
+    /**
+     * @brief 取 HDR FBO 关联的 G-buffer view-space normal 纹理 id (Phase E.8.x)
+     *
+     * @param fbo 由 CreateHDRFBO 返回的 fbo id
+     * @return    fbo 关联的 RG16F view-space normal tex id
+     *            (0 = 该 fbo 不带 MRT, 或 fbo 已释放, 或后端不支持)
+     *
+     * 设计意图:
+     *   解耦 SSAORenderer 与 HDR 内部资源管理. SSAO 只持有 hdrFbo,
+     *   不需要也不应该感知 normalTex 的 lifetime.
+     *
+     * 默认实现 (Legacy / 未启用 MRT): return 0.
+     */
+    virtual uint32_t GetHDRNormalTex(uint32_t /*fbo*/) const { return 0; }
 
     /**
      * @brief 用 ACES tonemap shader 把 HDR 纹理全屏 blit 到当前绑定的 framebuffer
@@ -888,10 +913,13 @@ public:
     virtual uint32_t CreateSSAONoiseTex() { return 0; }
     virtual void     DeleteSSAONoiseTex(uint32_t /*tex*/) {}
 
-    /// SSAO raw pass: depthTex -> dstFbo (R16F, 半分辨率)
+    /// SSAO raw pass: depthTex + normalTex -> dstFbo (R16F, 半分辨率)
+    /// @param normalTex  Phase E.8.x G-buffer view-space normal tex (取代 ddx/ddy 重建)
     /// @param kernel     vec3[kernelSize] CPU 侧预生成半球采样方向 (tangent space)
     /// @param kernelSize 8 或 16
-    virtual void DrawSSAO(uint32_t /*depthTex*/, uint32_t /*noiseTex*/, uint32_t /*dstFbo*/,
+    virtual void DrawSSAO(uint32_t /*depthTex*/, uint32_t /*noiseTex*/,
+                          uint32_t /*normalTex*/,
+                          uint32_t /*dstFbo*/,
                           int /*w*/, int /*h*/,
                           const float* /*projMat4*/, const float* /*invProjMat4*/,
                           const float* /*kernel*/, int /*kernelSize*/,
@@ -912,6 +940,67 @@ public:
     /// @param out16 输出 mat4 (列主序 16 floats)
     virtual void GetProjection(float* /*out16*/) const {}
     virtual void GetView(float* /*out16*/) const {}
+
+    // ==================== Phase E.9 — SSR (Screen Space Reflection) ====================
+    //
+    // 屏幕空间反射: linear ray march in view space.
+    // 复用 Phase E.8.x 的 G-buffer view-space normal MRT (GetHDRNormalTex)
+    // + 独立 depth RT 旁路 (与 SSAO 平行设计, 复用 BlitHDRDepthToSSAO 接口语义).
+    //
+    // 管线:
+    //   0. BlitHDRDepthToSSAO(hdrFbo, ssrDepthFbo, w, h)        — 旁路 depth 复制
+    //                                                            (接口名带 SSAO 仅历史命名,
+    //                                                             语义=HDR depth blit 到任意 dst,
+    //                                                             SSR/SSAO 都可调用)
+    //   1. DrawSSR(depthTex, normalTex, hdrTex, ssrFbo, ...)    — raw 反射 (RGBA16F, full-res)
+    //   2. DrawSSRComposite(reflectTex, hdrFbo, ..., intensity) — HDR += reflect.rgb * reflect.a * intensity
+    //                                                            (内部用 temp RT 解 feedback loop)
+    //
+    // Legacy backend 永 no-op (SupportsSSR = false).
+    // 高质量方案 (用户拍板 2026-05-12): full-res RGBA16F + 64 步默认 (clamp [8, 128]).
+
+    /// 是否支持 SSR (shader 编译 + RGBA16F + view-space normal MRT 全可用)
+    virtual bool SupportsSSR() const { return false; }
+
+    /// Phase E.9 旁路: 创建 SSR 专用 depth tex + FBO (无 color attachment, full-res)
+    /// @note 与 SSAO 的 CreateSSAODepthRT 平行; SSR 不复用 SSAO 资源以保持模块独立
+    /// @param w,h    与 HDR RT 同尺寸
+    /// @param outFbo 输出 FBO (仅 GL_DEPTH_ATTACHMENT, glDrawBuffer=GL_NONE)
+    /// @param outTex 输出 depth texture (NEAREST + CLAMP_TO_EDGE)
+    /// @return true=成功; 失败时 outFbo/outTex = 0
+    virtual bool CreateSSRDepthRT(int /*w*/, int /*h*/,
+                                   uint32_t* /*outFbo*/, uint32_t* /*outTex*/) { return false; }
+    virtual void DeleteSSRDepthRT(uint32_t /*fbo*/, uint32_t /*tex*/) {}
+
+    /// 创建 SSR 反射 RT: full-res RGBA16F + GL_LINEAR + GL_CLAMP_TO_EDGE, 无 depth
+    /// @return true=成功; 失败时 outFbo/outTex = 0
+    virtual bool CreateSSRTargets(int /*w*/, int /*h*/,
+                                   uint32_t* /*outFbo*/, uint32_t* /*outTex*/) { return false; }
+    virtual void DeleteSSRTargets(uint32_t* /*fbo*/, uint32_t* /*tex*/) {}
+
+    /// SSR raw pass: 反射结果写入 dstFbo (RGBA16F)
+    /// @param depthTex   HDR depth tex (full-res, 已 blit)
+    /// @param normalTex  HDR G-buffer view-space normal (Phase E.8.x)
+    /// @param hdrTex     HDR color tex (反射采样源)
+    /// @param dstFbo     SSR 反射 RT (本 backend 创建的 ssrFbo)
+    /// @param w,h        full-res
+    /// @param projMat4 / invProjMat4  column-major, 16 floats each
+    /// @param maxSteps   ray march 步数 [8, 128]
+    /// @param stepSize   每步 view-space units
+    /// @param thickness  深度命中容差 (view-space units)
+    /// @param maxDist    距离上限
+    /// @param edgeFade   屏幕边缘 UV 空间 fade 宽度 [0, 0.5]
+    virtual void DrawSSR(uint32_t /*depthTex*/, uint32_t /*normalTex*/, uint32_t /*hdrTex*/,
+                         uint32_t /*dstFbo*/,
+                         int /*w*/, int /*h*/,
+                         const float* /*projMat4*/, const float* /*invProjMat4*/,
+                         int /*maxSteps*/, float /*stepSize*/, float /*thickness*/,
+                         float /*maxDist*/, float /*edgeFade*/) {}
+
+    /// SSR composite: hdrFbo += reflectTex.rgb * reflectTex.a * intensity
+    /// 后端内部用临时 RT 解 feedback loop (HDR 既读又写).
+    virtual void DrawSSRComposite(uint32_t /*reflectTex*/, uint32_t /*hdrFbo*/,
+                                   int /*w*/, int /*h*/, float /*intensity*/) {}
 };
 
 // ==================== 工厂函数 ====================

@@ -286,6 +286,21 @@ void Process(uint32_t hdrFbo, uint32_t hdrTex) {
     if (!g.depthFbo || !g.depthTex || !g.fbos[0] || !g.fbos[1] || !g.noiseTex) return;
     (void)hdrTex;   // composite 内部直接读 dstFbo (HDR RT) 内容; hdrTex 仅校验
 
+    // Phase E.8.x: 拿 HDR FBO 关联的 G-buffer normal tex (MRT slot 1).
+    // backend 不支持 MRT 或 fbo 未带 normal 时返回 0 -> silent fallback (skip Process,
+    // 不绘制 SSAO; HDR 颜色保持原样; 用户视觉上等同 SSAO 未启用).
+    uint32_t normalTex = g.backend->GetHDRNormalTex(hdrFbo);
+    if (!normalTex) {
+        // 仅首次 skip 时打 warning (避免每帧刷屏): 用静态 once flag.
+        static bool warned = false;
+        if (!warned) {
+            CC::Log(CC::LOG_WARN,
+                    "SSAORenderer::Process: HDR FBO 无 G-buffer normal RT, 跳过 SSAO (后端不支持 MRT 或 FBO 旧版本)");
+            warned = true;
+        }
+        return;
+    }
+
     // 0. 旁路核心: 从 HDR FBO 复制 depth 到 SSAO depth tex
     g.backend->BlitHDRDepthToSSAO(hdrFbo, g.depthFbo, g.srcW, g.srcH);
 
@@ -298,8 +313,8 @@ void Process(uint32_t hdrFbo, uint32_t hdrTex) {
         return;
     }
 
-    // 1. raw AO: depthTex + noiseTex -> fbos[0] (R16F, 半分辨率)
-    g.backend->DrawSSAO(g.depthTex, g.noiseTex, g.fbos[0],
+    // 1. raw AO: depthTex + noiseTex + normalTex -> fbos[0] (R16F, 半分辨率)
+    g.backend->DrawSSAO(g.depthTex, g.noiseTex, normalTex, g.fbos[0],
                          g.rtW, g.rtH,
                          proj, invProj, g.kernel, g.kernelSize,
                          g.radius, g.bias, g.power);

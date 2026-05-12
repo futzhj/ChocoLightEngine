@@ -295,6 +295,7 @@ set(LIGHT_SOURCES
     ${CHOCO_SRC}/streak_renderer.cpp
     ${CHOCO_SRC}/lens_flare_renderer.cpp
     ${CHOCO_SRC}/ssao_renderer.cpp
+    ${CHOCO_SRC}/ssr_renderer.cpp
     ${CHOCO_SRC}/render_gl33.cpp
     ${CHOCO_SRC}/light_audio_backend.cpp
     # Phase AT — Audio 3D 空间化 + Mixer + Effects
@@ -501,6 +502,25 @@ set_target_properties(Light PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
 )
+
+# ==================== POST_BUILD: 同步 Light.dll 到 Lumen runtime ====================
+#
+# Lumen 解释器 (light.exe) 默认从自身目录加载 Light.dll. 每次 ChocoLight 重新构建后
+# 必须手动 Copy-Item, 否则 smoke 跑到的是旧 dll. 这里加 POST_BUILD step 自动同步,
+# 避免开发者忘记拷贝导致的 "SSAO subtable missing" 等隐蔽问题.
+#
+# 仅 Windows 桌面构建 + Lumen runtime 目录存在时执行 (Android/iOS/Web 不需要).
+if(WIN32 AND NOT EMSCRIPTEN AND NOT ANDROID AND NOT CHOCO_IOS)
+    set(LUMEN_RUNTIME_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../lumen-master/build/src/light/$<CONFIG>")
+    add_custom_command(TARGET Light POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${LUMEN_RUNTIME_DIR}"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:Light>"
+            "${LUMEN_RUNTIME_DIR}/Light.dll"
+        COMMENT "Sync Light.dll to Lumen runtime: ${LUMEN_RUNTIME_DIR}"
+        VERBATIM
+    )
+endif()
 
 # ==================== 编译器选项 ====================
 
