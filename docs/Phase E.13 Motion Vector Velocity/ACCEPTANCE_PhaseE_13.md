@@ -1,7 +1,7 @@
 # Phase E.13 Motion Vector Velocity — ACCEPTANCE 验收文档
 
 > **任务名**：Phase E.13 Motion Vector Velocity（运动向量速度缓冲）
-> **状态**：🟡 **源码与静态验证完成，等待 GitHub Actions CI 编译/运行时验证**
+> **状态**：✅ **实现完成，CI 6/6 + Windows runtime smoke 通过**
 > **基线**：Phase E.12 Temporal SSR（depth reverse-reprojection，无 velocity buffer）
 > **方案**：HDR FBO RG16F velocity attachment + 全部 3D shader velocity 输出 + Animator/Mesh previous-state 缓存 + SSR Temporal velocity 采样 + 矩阵回退
 
@@ -19,10 +19,10 @@
 | T3 Animator prev pose | `prevJointMatrices` / `prevMorphWeights` / `velocityHistoryValid`，`Update()` 复制当前帧到 prev，时间跳变/状态变更复位 | ✅ |
 | T4 Draw API prev-state wiring | `SetNextPreviousModelMatrix` one-shot；`Mesh:Draw([tex\|material], [prevMat])`；GPU skin/morph backend 接收 prev joint/morph | ✅ |
 | T5 SSR Temporal velocity sampling | `DrawSSRTemporal(..., velocityTex, ...)` + `uVelocityTex` / `uHasVelocityTex`；matrix reprojection 作为 fallback | ✅ |
-| T6 smoke / demo / docs | `material_3d.lua` + `ecs_render.lua` 静态覆盖；ECS `MeshRenderer` previous model cache；本验收/FINAL/TODO 文档 | 🟡 |
-| T7 Static verification + CI | `git diff --check` + `lightc -p` 已通过；CI 未启动 | 🟡 |
+| T6 smoke / demo / docs | `material_3d.lua` + `ecs_render.lua` 静态覆盖；ECS `MeshRenderer` previous model cache；本验收/FINAL/TODO 文档 | ✅ |
+| T7 Static verification + CI | `git diff --check` + `lightc -p` 已通过；CI run `25889613200` 6/6 success | ✅ |
 
-> 🟡 表示静态层已完成，CI 编译 + runtime smoke 与真机视觉验收仍待执行。
+> 真机视觉验收（Temporal SSR + 动态物体）仍待用户在桌面 GL3.3 环境确认。
 
 ---
 
@@ -104,8 +104,8 @@
 | Lua 语法检查 `lightc -p` | ✅ | `scripts/smoke/material_3d.lua`、`scripts/smoke/ecs_render.lua` 均 exit 0 |
 | 本地 CMake build | 🚫 | 按用户偏好不在本地执行 |
 | 本地 `light.exe` runtime smoke | 🚫 | 按用户偏好不在本地执行 |
-| GitHub Actions 6 平台 build | ⏳ | 未提交 / 未触发 |
-| Windows runtime smoke | ⏳ | 待 CI 跑 |
+| GitHub Actions 6 平台 build | ✅ | run `25889613200`，6/6 success，耗时 7m26s |
+| Windows runtime smoke | ✅ | run `25889613200`，`build-windows` success，包含 `material_3d.lua` + `ecs_render.lua` |
 | 真实窗口视觉验收 | ⏳ | 需桌面 GL3.3 环境对比开/关 velocity（含相机/角色快速运动） |
 
 ---
@@ -126,14 +126,10 @@
 
 ## 5. 验收结论
 
-Phase E.13 的生产代码（C++ + GLSL + Lua）与静态验证已完成；当前缺口集中在外部验证：
-
-- **CI 6 平台 build**：未触发
-- **Windows runtime smoke**：待 CI 启用
-- **真实窗口视觉验收**：用户在桌面 GL3.3 环境下确认 Temporal SSR + 动态物体表现
+Phase E.13 的生产代码、Lua API、smoke 覆盖、文档与 CI/runtime 验证已经完成。
 
 **最终完成判据**（与 Phase E.12 对齐）：
 
-- GitHub Actions 6 平台 build success
-- Windows runtime smoke 中 SSR / material / ECS 相关脚本 0 fail
-- 真实窗口环境下，开启 velocity buffer 后动态物体在 Temporal SSR 中无残留拖影且无明显黑帧
+- GitHub Actions 6 平台 build success ✅ run `25889613200`
+- Windows runtime smoke 中 SSR / material / ECS 相关脚本 0 fail ✅ run `25889613200`，含 `material_3d.lua` + `ecs_render.lua`
+- 真实窗口环境下，开启 velocity buffer 后动态物体在 Temporal SSR 中无残留拖影且无明显黑帧 ⏳ 仍需桌面 GL3.3 手测

@@ -2,7 +2,7 @@
 
 > **任务**：Phase E.13 — Motion Vector Velocity（运动向量速度缓冲）
 > **基线**：Phase E.12 Temporal SSR
-> **状态**：🟡 源码 + 静态验证完成，等待 CI 与真机视觉确认
+> **状态**：✅ 源码 + 静态 + CI 验证完成，真机视觉确认仍在用户侧
 > **范围**：HDR velocity RT + 3D 默认 shader velocity 输出 + Animator/Mesh previous-state + SSR Temporal velocity 采样 + 矩阵回退
 
 ---
@@ -156,8 +156,8 @@ Phase E.13 在 Phase E.9~E.12 SSR / HDR 管线之上引入 **Motion Vector Veloc
 | 本地 `light.exe` smoke | 🚫 按用户偏好不执行 |
 | `lightc -p` Lua 语法检查 | ✅ `scripts/smoke/material_3d.lua` + `scripts/smoke/ecs_render.lua` 通过 |
 | `git diff --check` | ✅ 通过 |
-| CI 6 平台 build | ⏳ 未触发（待提交） |
-| Windows runtime smoke | ⏳ 待 CI |
+| CI 6 平台 build | ✅ run `25889613200`，6/6 success，耗时 7m26s |
+| Windows runtime smoke | ✅ run `25889613200`，`build-windows` success |
 | 真实窗口视觉验收 | ⏳ 等待用户在桌面 GL3.3 环境下确认 demo_ssr |
 
 ---
@@ -176,7 +176,7 @@ Phase E.13 在 Phase E.9~E.12 SSR / HDR 管线之上引入 **Motion Vector Veloc
 
 ## 8. 结论
 
-Phase E.13 Motion Vector Velocity 完成了源码、文档、静态/Lua 语法验证；目前差异于 Phase E.12 的部分主要在外部验证：CI 编译 + Windows runtime smoke + 真机视觉。
+Phase E.13 Motion Vector Velocity 完成了源码、文档、静态/Lua 语法验证以及 GitHub Actions 6 平台 build + Windows runtime smoke。剩下仅真机视觉确认。
 
 整体上，velocity buffer 已经成为 ChocoLight 渲染管线的可选基础设施：
 

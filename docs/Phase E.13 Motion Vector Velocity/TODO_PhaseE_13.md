@@ -6,7 +6,7 @@
 
 ## 1. 必须项（合入前应完成）
 
-### 1.1 提交本轮改动并触发 CI
+### 1.1 提交本轮改动并触发 CI — ✅ 完成（commit `04d312a`，run `25889613200`）
 
 - **范围**：以下文件 + Phase E.13 文档目录
   - `ChocoLight/include/hdr_renderer.h`
@@ -31,13 +31,13 @@
   7. `docs: finalize Phase E.13 acceptance`（T7）
 - **推送目标**：仅 `origin`（`https://github.com/futzhj/ChocoLightEngine.git`）
 
-### 1.2 CI 6 平台 build + Windows runtime smoke
+### 1.2 CI 6 平台 build + Windows runtime smoke — ✅ 完成（run `25889613200`，6/6 success，耗时 7m26s）
 
-- 检查 GitHub Actions run：6 平台均 success
-- 重点关注：`material_3d.lua` / `ecs_render.lua` 在 Windows runtime smoke 中通过
-- 失败时按 `gh run view <id> --log-failed` 定位
+- GitHub Actions run：6 平台均 success
+- Windows runtime smoke：`material_3d.lua` / `ecs_render.lua` 0 fail
+- 链接：https://github.com/futzhj/ChocoLightEngine/actions/runs/25889613200
 
-### 1.3 真实窗口视觉验收
+### 1.3 真实窗口视觉验收 — ⏳ 待用户执行
 
 - 在桌面 GL3.3 环境运行
   - `samples/demo_ssr/main.lua`：T/U/I/N 控制 Temporal，对比开/关 velocity（如果 demo 没有显式开关，可临时关闭 HDR 重新启用模拟）
