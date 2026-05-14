@@ -2,7 +2,7 @@
 
 > **任务**：Phase E.14 — Velocity Buffer 底层优化（dilation + RG8 可选）
 > **基线**：Phase E.13 Motion Vector Velocity（commit `9f32401`）
-> **状态**：✅ 源码 + 静态 + Lua 语法验证完成，CI / 真机视觉确认仍在用户侧
+> **状态**：✅ 源码 + 静态 + CI 验证完成，真机视觉确认仍在用户侧
 > **范围**：3x3 max-length dilation（uniform gating）+ RG16F/RG8 双格式（uniform 切 decode 路径）
 
 ---
@@ -87,8 +87,8 @@ Phase E.14 在 Phase E.13 完整 velocity buffer 之上做两项底层优化：
 | 本地 `light.exe` smoke | 🚫 按用户偏好不执行 |
 | `lightc -p` Lua 语法 | ✅ `hdr.lua` + `demo_ssr/main.lua` 通过 |
 | `git diff --check` | ✅ 通过 |
-| CI 6 平台 build | ⏳ 待提交触发 |
-| Windows runtime smoke | ⏳ 待 CI |
+| CI 6 平台 build | ✅ run `25892207578`，6/6 success，耗时 9m17s |
+| Windows runtime smoke | ✅ run `25892207578` build-windows success |
 | 真实窗口视觉验收 | ⏳ 等待用户在桌面 GL3.3 环境下确认 demo_ssr K/L 切换效果 |
 
 ---

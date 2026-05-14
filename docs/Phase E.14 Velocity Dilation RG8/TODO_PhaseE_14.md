@@ -6,7 +6,7 @@
 
 ## 1. 必须项（合入前应完成）
 
-### 1.1 提交本轮改动并触发 CI — ⏳ 待用户拍板
+### 1.1 提交本轮改动并触发 CI — ✅ 完成（commit `f7150c0`，run `25892207578`）
 
 - **范围**：以下文件 + Phase E.14 文档目录
   - `ChocoLight/include/render_backend.h`
@@ -24,13 +24,13 @@
   ```
 - **推送目标**：仅 `origin`（`https://github.com/futzhj/ChocoLightEngine.git`）
 
-### 1.2 CI 6 平台 build + Windows runtime smoke — ⏳ 待 CI
+### 1.2 CI 6 平台 build + Windows runtime smoke — ✅ 完成（run `25892207578`，6/6 success，耗时 9m17s）
 
-- 检查 GitHub Actions run：6 平台均 success
-- 重点关注：`hdr.lua` 16 functions + §8 段 6 检查在 Windows runtime smoke 中通过
-- 失败时按 `gh run view <id> --log-failed` 定位
+- GitHub Actions run：6 平台均 success
+- Windows runtime smoke：`hdr.lua` 16 functions + §8 段 6 检查 0 fail
+- 链接：https://github.com/futzhj/ChocoLightEngine/actions/runs/25892207578
 
-### 1.3 真实窗口视觉验收 — ⏳ 待用户执行
+### 1.3 真实窗口视觉验收 — ⏳ 待用户执行（唯一剩余必须项）
 
 - 在桌面 GL3.3 环境运行 `samples/demo_ssr/main.lua`
   - **K**：切换 dilation ON/OFF，对比几何边缘 SSR 反射的拖影/halo
