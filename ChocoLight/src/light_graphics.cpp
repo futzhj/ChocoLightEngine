@@ -2657,6 +2657,54 @@ static int l_SSR_GetBlurDepthSigma(lua_State* L) {
     return 1;
 }
 
+/// @lua_api Light.Graphics.SSR.SetTemporalEnabled — Phase E.12 Temporal SSR 开关
+/// @param flag boolean true=启用时序累积降噪 (默认, TAA-style 业界标准),
+///                    false=等同 Phase E.11 行为 (raw → blur → composite, 无 history)
+/// @note 状态切换时内部重置 首帧标志, 避免失效的 prev 矩阵让 reproject 出错.
+static int l_SSR_SetTemporalEnabled(lua_State* L) {
+    SSRRenderer::SetTemporalEnabled(lua_toboolean(L, 1) != 0);
+    return 0;
+}
+
+/// @lua_api Light.Graphics.SSR.GetTemporalEnabled — Phase E.12 Temporal 开关读取
+/// @return boolean 当前 temporal 开关
+static int l_SSR_GetTemporalEnabled(lua_State* L) {
+    lua_pushboolean(L, SSRRenderer::GetTemporalEnabled() ? 1 : 0);
+    return 1;
+}
+
+/// @lua_api Light.Graphics.SSR.SetTemporalAlpha — Phase E.12 history blend 权重
+/// @param v number, clamp [0.5, 0.99], 默认 0.9. 越高 history 权重越大、去噪越强、响应越慢.
+/// @note 仅 TemporalEnabled=true 时影响视觉.
+static int l_SSR_SetTemporalAlpha(lua_State* L) {
+    SSRRenderer::SetTemporalAlpha((float)luaL_checknumber(L, 1));
+    return 0;
+}
+
+/// @lua_api Light.Graphics.SSR.GetTemporalAlpha — Phase E.12 history 权重读取
+/// @return number 当前 clamp 后的 alpha
+static int l_SSR_GetTemporalAlpha(lua_State* L) {
+    lua_pushnumber(L, (lua_Number)SSRRenderer::GetTemporalAlpha());
+    return 1;
+}
+
+/// @lua_api Light.Graphics.SSR.SetRejectionMode — Phase E.12 history rejection 模式
+/// @param mode integer, clamp {0, 1}, 默认 1.
+///                       0 = current-depth threshold rejection
+///                       1 = neighborhood AABB clip (9-tap min/max, 抗 ghost)
+/// @note 仅 TemporalEnabled=true 时影响视觉.
+static int l_SSR_SetRejectionMode(lua_State* L) {
+    SSRRenderer::SetRejectionMode((int)luaL_checkinteger(L, 1));
+    return 0;
+}
+
+/// @lua_api Light.Graphics.SSR.GetRejectionMode — Phase E.12 rejection 模式读取
+/// @return integer 0 或 1
+static int l_SSR_GetRejectionMode(lua_State* L) {
+    lua_pushinteger(L, (lua_Integer)SSRRenderer::GetRejectionMode());
+    return 1;
+}
+
 /// @lua_api Light.Graphics.SSR.GetReflectionTexId — Phase E.9 调试接口
 /// @return integer 当前反射 RT (RGBA16F full-res) GL id, 0 = SSR 未启用.
 /// 用途: smoke / sample 可视化反射通路, 不应在生产代码使用.
@@ -2698,6 +2746,13 @@ static const luaL_Reg ssr_funcs[] = {
     {"GetBilateralEnabled", l_SSR_GetBilateralEnabled},
     {"SetBlurDepthSigma",   l_SSR_SetBlurDepthSigma},
     {"GetBlurDepthSigma",   l_SSR_GetBlurDepthSigma},
+    // Phase E.12 — Temporal SSR (3 对 +6)
+    {"SetTemporalEnabled",  l_SSR_SetTemporalEnabled},
+    {"GetTemporalEnabled",  l_SSR_GetTemporalEnabled},
+    {"SetTemporalAlpha",    l_SSR_SetTemporalAlpha},
+    {"GetTemporalAlpha",    l_SSR_GetTemporalAlpha},
+    {"SetRejectionMode",    l_SSR_SetRejectionMode},
+    {"GetRejectionMode",    l_SSR_GetRejectionMode},
     // debug (1)
     {"GetReflectionTexId",  l_SSR_GetReflectionTexId},
     {NULL, NULL}

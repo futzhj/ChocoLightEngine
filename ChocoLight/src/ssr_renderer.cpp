@@ -1,16 +1,20 @@
 /**
  * @file   ssr_renderer.cpp
- * @brief  Phase E.9 — SSRRenderer 实现
+ * @brief  Phase E.9 — SSRRenderer 实现 (Phase E.10/E.11/E.12 增量)
  *
- * 模块结构 (与 SSAORenderer 同风格, 简化为单 reflectRT 无 ping-pong):
+ * 模块结构 (与 SSAORenderer 同风格):
  *   - State (匿名 namespace, 模块单例)
  *   - 生命周期: Init/Shutdown/Enable/Disable/Resize/IsEnabled/IsSupported
  *   - HDR 联动: OnHDREnabled/OnHDRDisabled/OnHDRResized
- *   - 参数 setter/getter (7 对) + AutoEnable + 调试 GetReflectionTexId
- *   - Process: blit depth -> SSR raw -> composite
- *   - 辅助: InvertMat4 (内部, 与 SSAO 同实现)
+ *   - 参数 setter/getter (13 对 — Phase E.9 7 对 + E.10/E.11/E.12) + AutoEnable
+ *   - Process: blit depth -> SSR raw [+jitter] -> [temporal] -> [blur] -> composite
+ *   - 辅助: InvertMat4 / Mat4Mul / Halton-2,3 8-sample 静态表
  *
- * 高质量方案 (用户拍板 2026-05-12): full-res RGBA16F + 64 步 ray march.
+ * Phase E.12 (用户拍板 2026-05-14): TAA-style temporal SSR.
+ *   - full-res RGBA16F history × 2 ping-pong
+ *   - Halton-2,3 8-sample jitter (±0.5 pixel) 默认启用
+ *   - reverse-reprojection from depth (无 G-buffer velocity 改动)
+ *   - neighborhood AABB clip rejection 默认
  */
 
 #include "ssr_renderer.h"
@@ -61,6 +65,33 @@ static bool InvertMat4(const float* m, float* out) {
     return true;
 }
 
+/// Phase E.12 — 列主序 4x4 矩阵乘法 (out = a * b)
+/// 与 Mat4::operator* 保持一致, GL uniform 传 GL_FALSE 不转置.
+static void Mat4Mul(const float* a, const float* b, float* out) {
+    for (int col = 0; col < 4; ++col) {
+        for (int row = 0; row < 4; ++row) {
+            float s = 0.0f;
+            for (int k = 0; k < 4; ++k) {
+                s += a[k * 4 + row] * b[col * 4 + k];
+            }
+            out[col * 4 + row] = s;
+        }
+    }
+}
+
+/// Phase E.12 — Halton(base=2,3) 8-sample, 行业标准 TAA jitter 表
+/// 偏移范围: ±0.5 pixel (调用时 backend 除尺寸转 UV 空间)
+static const float kHaltonJitter[8][2] = {
+    { 0.0000f,  0.0000f},
+    {-0.5000f,  0.3333f},
+    { 0.2500f, -0.3333f},
+    {-0.2500f,  0.1111f},
+    { 0.3750f, -0.1111f},
+    {-0.3750f,  0.4444f},
+    { 0.1250f, -0.4444f},
+    {-0.1250f,  0.2222f},
+};
+
 // ==================== 模块状态 ====================
 
 struct State {
@@ -99,6 +130,17 @@ struct State {
     // Phase E.11 — depth-aware bilateral 选项
     bool     bilateralEnabled = true;   // 默认 true (默认享用最佳质量), false 切回 E.10 Gaussian
     float    blurDepthSigma   = 200.0f; // bilateral 深度权重 σ, clamp [50, 500]
+
+    // Phase E.12 — Temporal SSR (用户拍板 2026-05-14)
+    bool      temporalEnabled    = true;        // 默认 ON (TAA-style 业界标准)
+    float     temporalAlpha      = 0.9f;        // history 权重 clamp [0.5, 0.99]
+    int       rejectionMode      = 1;           // 0=current-depth threshold, 1=neighborhood clip (默认)
+    uint32_t  historyFbos[2]     = {0, 0};      // ping-pong FBO
+    uint32_t  historyTexs[2]     = {0, 0};      // ping-pong tex (与 reflectTex 同尺寸 full-res)
+    int       historyIdx         = 0;           // 当前 write 下标 (下帧为 read)
+    float     prevViewProj[16]   = {0};         // 上一帧 viewProj 缓存 (用于 reprojection)
+    bool      hasPrevViewProj    = false;       // 首帧标志 (false 时 shader 走 cur 路径)
+    uint64_t  frameCounter       = 0;           // jitter 序列索引 (% 8)
 };
 
 static State g;
@@ -120,6 +162,13 @@ static void DestroyResources() {
         g.backend->DeleteSSRBlurRT(g.blurFbos, g.blurTexs);
     }
     g.blurW = g.blurH = 0;
+    // Phase E.12 — history ping-pong
+    if (g.historyFbos[0] || g.historyFbos[1] || g.historyTexs[0] || g.historyTexs[1]) {
+        g.backend->DeleteSSRHistoryRT(g.historyFbos, g.historyTexs);
+    }
+    g.historyIdx       = 0;
+    g.hasPrevViewProj  = false;
+    g.frameCounter     = 0;
     g.srcW = g.srcH = 0;
 }
 
@@ -147,6 +196,18 @@ static bool AllocateResources(int w, int h) {
         g.blurTexs[0] = g.blurTexs[1] = 0;
         g.blurW = g.blurH = 0;
     }
+
+    // Phase E.12 — history ping-pong RT: full-res RGBA16F × 2 (与 reflectTex 同尺寸)
+    // 失败不致命: temporal 自动降级 (Process 检查指针)
+    if (!g.backend->CreateSSRHistoryRT(w, h, g.historyFbos, g.historyTexs)) {
+        g.historyFbos[0] = g.historyFbos[1] = 0;
+        g.historyTexs[0] = g.historyTexs[1] = 0;
+        CC::Log(CC::LOG_INFO,
+                "SSRRenderer: history RT 未分配 (backend 不支持 / OOM), temporal 降级为无累积");
+    }
+    g.historyIdx       = 0;
+    g.hasPrevViewProj  = false;
+    g.frameCounter     = 0;
     g.srcW = w;
     g.srcH = h;
     return true;
@@ -262,6 +323,23 @@ bool GetBilateralEnabled()        { return g.bilateralEnabled; }
 void  SetBlurDepthSigma(float v) { g.blurDepthSigma = clampf(v, 50.0f, 500.0f); }
 float GetBlurDepthSigma()         { return g.blurDepthSigma; }
 
+// Phase E.12 — Temporal SSR 开关 (默认 true, TAA-style 业界标准)
+void SetTemporalEnabled(bool f) {
+    if (g.temporalEnabled == f) return;
+    g.temporalEnabled = f;
+    // 状态切换时重置 首帧标志, 避免失效的 prev 矩阵让 reproject 出错
+    g.hasPrevViewProj = false;
+}
+bool GetTemporalEnabled() { return g.temporalEnabled; }
+
+// Phase E.12 — History blend 权重 clamp [0.5, 0.99]
+void  SetTemporalAlpha(float v) { g.temporalAlpha = clampf(v, 0.5f, 0.99f); }
+float GetTemporalAlpha()         { return g.temporalAlpha; }
+
+// Phase E.12 — Rejection 模式 clamp {0, 1}
+void SetRejectionMode(int m) { g.rejectionMode = (m <= 0) ? 0 : 1; }
+int  GetRejectionMode()       { return g.rejectionMode; }
+
 // ==================== 调试 API ====================
 
 uint32_t GetReflectionTexId() {
@@ -292,30 +370,76 @@ void Process(uint32_t hdrFbo, uint32_t hdrTex) {
     // 0. 旁路核心: 从 HDR FBO 复制 depth 到 SSR depth tex (复用 SSAO blit 接口)
     g.backend->BlitHDRDepthToSSAO(hdrFbo, g.depthFbo, g.srcW, g.srcH);
 
-    // 取当前 projection 矩阵 + 计算逆
-    float proj[16];
+    // 取当前 view + projection + 计算逆 (Phase E.12 需 viewProj 用于 reprojection)
+    float view[16], proj[16];
     float invProj[16];
+    g.backend->GetView(view);
     g.backend->GetProjection(proj);
     if (!InvertMat4(proj, invProj)) {
         // projection 退化 (如纯 2D 全 0 矩阵): 静默 skip
         return;
     }
 
+    // Phase E.12 — jitter 计算 (仅 temporal 启用时生效; 其他时为 0 保持退化后等同于 Phase E.11)
+    float jitterX = 0.0f, jitterY = 0.0f;
+    const bool temporalActive = g.temporalEnabled
+                              && g.historyFbos[0] && g.historyFbos[1]
+                              && g.historyTexs[0] && g.historyTexs[1];
+    if (temporalActive) {
+        const int j = (int)(g.frameCounter & 7u);
+        jitterX = kHaltonJitter[j][0];
+        jitterY = kHaltonJitter[j][1];
+    }
+
     // 1. SSR raw: depthTex + normalTex + hdrTex -> reflectFbo (RGBA16F, full-res)
+    //    Phase E.12: + jitter (±0.5 pixel) 让多帧采样位置分散
     g.backend->DrawSSR(g.depthTex, normalTex, hdrTex, g.reflectFbo,
                        g.srcW, g.srcH, proj, invProj,
                        g.maxSteps, g.stepSize, g.thickness,
-                       g.maxDistance, g.edgeFade);
+                       g.maxDistance, g.edgeFade,
+                       jitterX, jitterY);
+
+    // Phase E.12 — Temporal pass: reproject + clip + blend
+    // 输出: historyTexs[writeIdx] = 本帧 temporal 结果 (也是 blur 的输入)
+    uint32_t srcForBlur = g.reflectTex;
+    if (temporalActive) {
+        const int writeIdx = g.historyIdx;
+        const int readIdx  = 1 - writeIdx;
+
+        // 计算 curViewProj + invCurViewProj + reprojMat
+        float curViewProj[16];
+        Mat4Mul(proj, view, curViewProj);
+
+        float invCurViewProj[16];
+        float reprojMat[16];
+        if (InvertMat4(curViewProj, invCurViewProj)) {
+            Mat4Mul(g.prevViewProj, invCurViewProj, reprojMat);
+
+            g.backend->DrawSSRTemporal(g.reflectTex,
+                                       g.historyTexs[readIdx],
+                                       g.depthTex,
+                                       g.historyFbos[writeIdx],
+                                       g.srcW, g.srcH,
+                                       reprojMat, invProj,
+                                       g.temporalAlpha,
+                                       g.rejectionMode,
+                                       g.hasPrevViewProj ? 1 : 0);
+            srcForBlur = g.historyTexs[writeIdx];
+            memcpy(g.prevViewProj, curViewProj, sizeof(curViewProj));
+            g.hasPrevViewProj = true;
+            g.historyIdx = readIdx;   // swap (下一帧 write 到原 read 的位置)
+        } else {
+            g.hasPrevViewProj = false;
+        }
+    }
 
     // 2. (Phase E.10) 可选 blur: separable Gaussian H+V on half-res ping-pong
-    //    blur 资源未分配 (旧 backend) 时 silent skip, composite 仍用 full-res reflect
-    uint32_t finalReflectTex = g.reflectTex;
+    //    输入源: temporal 启用且成功 -> historyTexs[writeIdx]; 否则 -> reflectTex
+    uint32_t finalReflectTex = srcForBlur;
     if (g.blurEnabled && g.blurFbos[0] && g.blurFbos[1] && g.blurW > 0 && g.blurH > 0) {
-        // H pass: full-res reflectTex -> half-res blurFbos[0]
-        //   (一举完成 downsample + horizontal blur, 由硬件 bilinear filter 隐式 downsample)
-        // Phase E.11: 额外传入 depthTex + bilateralEnabled + blurDepthSigma,
-        //             shader runtime 选择 Gaussian/Bilateral 路径
-        g.backend->DrawSSRBlur(g.reflectTex, g.depthTex,
+        // H pass: full-res srcForBlur -> half-res blurFbos[0]
+        // Phase E.11: 额外传入 depthTex + bilateralEnabled + blurDepthSigma
+        g.backend->DrawSSRBlur(srcForBlur, g.depthTex,
                                 g.blurFbos[0], g.blurW, g.blurH,
                                 0, g.blurRadius,
                                 g.bilateralEnabled, g.blurDepthSigma);
@@ -330,6 +454,9 @@ void Process(uint32_t hdrFbo, uint32_t hdrTex) {
     // 3. composite: HDR += reflect.rgb * reflect.a * intensity (加性)
     //    backend 内部用临时 RT 解 feedback loop
     g.backend->DrawSSRComposite(finalReflectTex, hdrFbo, g.srcW, g.srcH, g.intensity);
+
+    // Phase E.12 — 帧计数器推进 (仅 Halton 索引用, 不重置)
+    ++g.frameCounter;
 }
 
 } // namespace SSRRenderer

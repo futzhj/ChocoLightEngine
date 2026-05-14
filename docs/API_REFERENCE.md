@@ -43,7 +43,7 @@
 | Streak | `Light.Graphics.Streak` | ~10 | E.6 | 同上 |
 | Lens Flare | `Light.Graphics.LensFlare` | ~12 | E.7 | `docs/Phase E.7 Lens Flare/FINAL_*.md` |
 | **SSAO** | `Light.Graphics.SSAO` | **20**（含 `GetNormalTexId`）| E.8 + E.8.x | `docs/Phase E.8 SSAO/FINAL_*.md`、`docs/Phase E.8.x G-buffer normal/FINAL_PhaseE_8x.md` |
-| **SSR** | `Light.Graphics.SSR` | **28**（含 `GetReflectionTexId` + E.10 `Set/GetBlurRadius` + E.11 `Set/GetBilateralEnabled` `Set/GetBlurDepthSigma`）| **E.9 + E.10 + E.11** | `docs/Phase E.9 SSR/`、`docs/Phase E.10 SSR Blur/`、**`docs/Phase E.11 Bilateral SSR Blur/FINAL_PhaseE_11.md`** |
+| **SSR** | `Light.Graphics.SSR` | **34**（含 `GetReflectionTexId` + E.10 Blur + E.11 Bilateral + E.12 Temporal）| **E.9 + E.10 + E.11 + E.12** | `docs/Phase E.9 SSR/`、`docs/Phase E.10 SSR Blur/`、`docs/Phase E.11 Bilateral SSR Blur/`、**`docs/Phase E.12 Temporal SSR/FINAL_PhaseE_12.md`** |
 
 ### Light.Graphics.SSAO 关键 API 速查（Phase E.8 + E.8.x）
 
@@ -75,9 +75,9 @@ Light.Graphics.SSAO.GetNormalTexId() -> integer
 
 **Phase E.8.x 升级说明**：SSAO 内部法线重建由 `ddx/dFdy derivative` 升级为 **真实 G-buffer view-space normal RT (MRT)**，质量显著提升（消除边缘条纹、改善细节 AO）。用户侧 Lua 代码无需变更，**完全向后兼容**。
 
-### Light.Graphics.SSR 关键 API 速查（Phase E.9 + E.10 + E.11）
+### Light.Graphics.SSR 关键 API 速查（Phase E.9 + E.10 + E.11 + E.12）
 
-> 屏幕空间反射 — 高质量方案（full-res RGBA16F + 64 步 linear ray march + 可选 half-res Gaussian/Bilateral blur）
+> 屏幕空间反射 — 高质量方案（full-res RGBA16F + 64 步 linear ray march + Temporal accumulation + 可选 half-res Gaussian/Bilateral blur）
 
 ```lua
 -- 生命周期
@@ -90,7 +90,7 @@ Light.Graphics.SSR.Resize(w, h) -> boolean
 -- 自动启用（HDR 启动时联动）
 Light.Graphics.SSR.SetAutoEnable(bool) / GetAutoEnable() -> bool
 
--- 10 对参数（带 clamp）
+-- 13 对参数（带 clamp）
 Light.Graphics.SSR.SetMaxSteps(int [8, 128])         / GetMaxSteps() -> int       -- default 64
 Light.Graphics.SSR.SetStepSize(float [0.01, 1.0])    / GetStepSize() -> float     -- default 0.1
 Light.Graphics.SSR.SetThickness(float [0.01, 5.0])   / GetThickness() -> float    -- default 0.5
@@ -101,6 +101,9 @@ Light.Graphics.SSR.SetBlurEnabled(bool)              / GetBlurEnabled() -> bool 
 Light.Graphics.SSR.SetBlurRadius(float [0.5, 4.0])   / GetBlurRadius() -> float   -- default 1.5 (Phase E.10)
 Light.Graphics.SSR.SetBilateralEnabled(bool)         / GetBilateralEnabled() -> bool  -- default true  (Phase E.11)
 Light.Graphics.SSR.SetBlurDepthSigma(float [50, 500]) / GetBlurDepthSigma() -> float  -- default 200  (Phase E.11)
+Light.Graphics.SSR.SetTemporalEnabled(bool)          / GetTemporalEnabled() -> bool   -- default true  (Phase E.12)
+Light.Graphics.SSR.SetTemporalAlpha(float [0.5, 0.99]) / GetTemporalAlpha() -> float  -- default 0.9  (Phase E.12)
+Light.Graphics.SSR.SetRejectionMode(int {0, 1})      / GetRejectionMode() -> int      -- default 1; 0=current-depth, 1=neighborhood (Phase E.12)
 
 -- Phase E.9 — 调试接口
 Light.Graphics.SSR.GetReflectionTexId() -> integer
@@ -115,6 +118,7 @@ Light.Graphics.SSR.GetReflectionTexId() -> integer
 - 缺 G-buffer normal 时 once-warn + silent skip（不影响其他后处理）
 - Legacy backend 自动 no-op（`SupportsSSR()` 默认 false）
 - 性能调优：`SetMaxSteps(32)` 适合中端 GPU，`SetMaxSteps(16) + SetMaxDistance(20)` 适合移动端
+- Phase E.12 默认开启 Temporal SSR：Halton-2,3 jitter + reverse reprojection + neighborhood clip，history RT 分配失败时自动降级为 Phase E.11 行为
 
 ---
 

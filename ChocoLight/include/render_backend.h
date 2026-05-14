@@ -947,13 +947,15 @@ public:
     // 复用 Phase E.8.x 的 G-buffer view-space normal MRT (GetHDRNormalTex)
     // + 独立 depth RT 旁路 (与 SSAO 平行设计, 复用 BlitHDRDepthToSSAO 接口语义).
     //
-    // 管线:
+    // 管线 (Phase E.12 完整路径):
     //   0. BlitHDRDepthToSSAO(hdrFbo, ssrDepthFbo, w, h)        — 旁路 depth 复制
     //                                                            (接口名带 SSAO 仅历史命名,
     //                                                             语义=HDR depth blit 到任意 dst,
     //                                                             SSR/SSAO 都可调用)
-    //   1. DrawSSR(depthTex, normalTex, hdrTex, ssrFbo, ...)    — raw 反射 (RGBA16F, full-res)
-    //   2. DrawSSRComposite(reflectTex, hdrFbo, ..., intensity) — HDR += reflect.rgb * reflect.a * intensity
+    //   1. DrawSSR(depthTex, normalTex, hdrTex, ssrFbo, ...)    — raw 反射 (RGBA16F, full-res, 可带 jitter)
+    //   2. DrawSSRTemporal(cur, history, depth, ...)            — optional temporal accumulation
+    //   3. DrawSSRBlur(src, depth, ...)                         — optional Gaussian / Bilateral blur
+    //   4. DrawSSRComposite(reflectTex, hdrFbo, ..., intensity) — HDR += reflect.rgb * reflect.a * intensity
     //                                                            (内部用 temp RT 解 feedback loop)
     //
     // Legacy backend 永 no-op (SupportsSSR = false).
@@ -990,12 +992,15 @@ public:
     /// @param thickness  深度命中容差 (view-space units)
     /// @param maxDist    距离上限
     /// @param edgeFade   屏幕边缘 UV 空间 fade 宽度 [0, 0.5]
+    /// @param jitterX,jitterY  Phase E.12: ray march 起点像素单位偏移 (±0.5 pixel 范围)
+    ///                  TemporalEnabled=false 时调用方传 0.0 即旧行为
     virtual void DrawSSR(uint32_t /*depthTex*/, uint32_t /*normalTex*/, uint32_t /*hdrTex*/,
                          uint32_t /*dstFbo*/,
                          int /*w*/, int /*h*/,
                          const float* /*projMat4*/, const float* /*invProjMat4*/,
                          int /*maxSteps*/, float /*stepSize*/, float /*thickness*/,
-                         float /*maxDist*/, float /*edgeFade*/) {}
+                         float /*maxDist*/, float /*edgeFade*/,
+                         float /*jitterX*/, float /*jitterY*/) {}
 
     /// SSR composite: hdrFbo += reflectTex.rgb * reflectTex.a * intensity
     /// 后端内部用临时 RT 解 feedback loop (HDR 既读又写).
@@ -1043,6 +1048,56 @@ public:
                               uint32_t /*dstFbo*/, int /*dstW*/, int /*dstH*/,
                               int /*axis*/, float /*radius*/,
                               bool /*bilateralEnabled*/, float /*depthSigma*/) {}
+
+    // ==================== Phase E.12 — Temporal SSR (时序累积降噪) ====================
+    //
+    // 用户拍板 (2026-05-14): full-res RGBA16F history × 2 ping-pong + Halton-2,3 8-sample
+    // jitter + neighborhood clip rejection. 业界标准 TAA-style temporal SSR.
+    //
+    // 管线插入位置: DrawSSR -> DrawSSRTemporal -> DrawSSRBlur -> DrawSSRComposite
+    // 仅当 SSRRenderer.temporalEnabled=true 且 history RT 分配成功才执行.
+    //
+    // Reverse Reprojection 算法 (无 G-buffer velocity 改动):
+    //   - 当前帧像素 (vUV, depth) -> NDC -> uReprojectMat -> 上一帧 NDC -> prevUV
+    //   - uReprojectMat = prevViewProj * invCurViewProj (CPU 预乘)
+    //   - 越界 / 首帧 -> 强制 cur (不混合 history)
+    //   - rejectionMode=0: current-depth threshold; rejectionMode=1: 9-tap neighborhood AABB clip
+
+    /// 创建 SSR temporal history ping-pong RT (full-res RGBA16F × 2)
+    /// @note 与 reflectTex 同尺寸; 永远 full-res (不复用 blur 的 half-res)
+    /// @param w, h        full-res 尺寸
+    /// @param outFbos[2]  输出 FBO 数组 (仅 color attachment, 无 depth)
+    /// @param outTexs[2]  输出 tex 数组 (GL_LINEAR + GL_CLAMP_TO_EDGE)
+    /// @return true=成功, 失败时 outFbos/outTexs 全清零
+    virtual bool CreateSSRHistoryRT(int /*w*/, int /*h*/,
+                                     uint32_t* /*outFbos2*/,
+                                     uint32_t* /*outTexs2*/) { return false; }
+    virtual void DeleteSSRHistoryRT(uint32_t* /*fbos2*/, uint32_t* /*texs2*/) {}
+
+    /// Temporal pass: reproject + reject + blend
+    /// 输入: 当前帧 SSR raw + 上一帧 SSR temporal + depth
+    /// 输出: dstFbo (即下一帧的 history read 源)
+    ///
+    /// @param curReflectTex  当前帧 SSR raw (slot 0)
+    /// @param historyTex     上一帧 SSR temporal 输出 (slot 1)
+    /// @param depthTex       SSR depth tex (slot 2, full-res, NEAREST)
+    /// @param dstFbo         目标 FBO (history ping-pong write 目标)
+    /// @param w, h           full-res 尺寸
+    /// @param reprojectMat4  prevViewProj * invCurViewProj (column-major 16 floats, CPU 预乘)
+    /// @param invProjMat4    invProj (重建 view pos 备用, 当前 shader 内可不用)
+    /// @param blendAlpha     history 权重 [0.5, 0.99]
+    /// @param rejectionMode  0 = current-depth threshold, 1 = neighborhood AABB clip
+    /// @param hasHistory     0 = 首帧禁用 temporal (输出=cur), 1 = 正常累积
+    virtual void DrawSSRTemporal(uint32_t /*curReflectTex*/,
+                                  uint32_t /*historyTex*/,
+                                  uint32_t /*depthTex*/,
+                                  uint32_t /*dstFbo*/,
+                                  int /*w*/, int /*h*/,
+                                  const float* /*reprojectMat4*/,
+                                  const float* /*invProjMat4*/,
+                                  float /*blendAlpha*/,
+                                  int   /*rejectionMode*/,
+                                  int   /*hasHistory*/) {}
 };
 
 // ==================== 工厂函数 ====================

@@ -21,6 +21,9 @@
 --   9 / 0    : BlurRadius    -/+  (步长 0.25, 范围 [0.5, 4.0])  (Phase E.10)
 --   V        : 切换 Bilateral on/off           (Phase E.11; off = E.10 Gaussian)
 --   , / .    : BlurDepthSigma -/+ (步长 25,   范围 [50, 500])    (Phase E.11)
+--   T        : 切换 Temporal on/off           (Phase E.12; off = E.11 行为)
+--   U / I    : TemporalAlpha -/+ (步长 0.02, 范围 [0.5, 0.99])  (Phase E.12)
+--   N        : 切换 RejectionMode 0/1         (Phase E.12; 1=neighborhood clip)
 --   R        : reset 所有参数到默认
 --   ESC      : 退出
 -- ============================================================================
@@ -289,12 +292,40 @@ while win:IsOpen() do
         print('[demo] BlurDepthSigma = ' .. string.format('%.0f', SSR.GetBlurDepthSigma()))
     end
 
+    -- Phase E.12 — T: 切换 Temporal
+    if keyTap('t') then
+        local te = not SSR.GetTemporalEnabled()
+        SSR.SetTemporalEnabled(te)
+        print('[demo] SSR Temporal ' .. (te and 'ON' or 'OFF') ..
+              ' (alpha=' .. string.format('%.2f', SSR.GetTemporalAlpha()) ..
+              ', reject=' .. tostring(SSR.GetRejectionMode()) .. ')')
+    end
+
+    -- Phase E.12 — U/I: TemporalAlpha
+    if keyTap('u') then
+        SSR.SetTemporalAlpha(clampNum(SSR.GetTemporalAlpha() - 0.02, 0.5, 0.99))
+        print('[demo] TemporalAlpha = ' .. string.format('%.3f', SSR.GetTemporalAlpha()))
+    end
+    if keyTap('i') then
+        SSR.SetTemporalAlpha(clampNum(SSR.GetTemporalAlpha() + 0.02, 0.5, 0.99))
+        print('[demo] TemporalAlpha = ' .. string.format('%.3f', SSR.GetTemporalAlpha()))
+    end
+
+    -- Phase E.12 — N: 切换 RejectionMode (0=current-depth, 1=neighborhood)
+    if keyTap('n') then
+        local rm = 1 - SSR.GetRejectionMode()
+        SSR.SetRejectionMode(rm)
+        print('[demo] RejectionMode = ' .. tostring(rm) ..
+              ' (' .. (rm == 1 and 'neighborhood-clip' or 'current-depth') .. ')')
+    end
+
     -- R: reset 默认
     if keyTap('r') then
         SSR.SetMaxSteps(64); SSR.SetStepSize(0.1); SSR.SetThickness(0.5)
         SSR.SetMaxDistance(50.0); SSR.SetIntensity(0.7); SSR.SetEdgeFade(0.1)
         SSR.SetBlurEnabled(false); SSR.SetBlurRadius(1.5)         -- Phase E.10
         SSR.SetBilateralEnabled(true); SSR.SetBlurDepthSigma(200.0)  -- Phase E.11
+        SSR.SetTemporalEnabled(true); SSR.SetTemporalAlpha(0.9); SSR.SetRejectionMode(1)  -- Phase E.12
         print('[demo] reset defaults')
     end
 
@@ -344,7 +375,12 @@ while win:IsOpen() do
             SSR.GetBlurRadius(),
             SSR.GetBilateralEnabled() and 'ON' or 'OFF',
             SSR.GetBlurDepthSigma()))
-        line('Keys: F=SSR B=Blur V=Bilateral 1/2=steps 9/0=radius ,/.=sigma -/=dist [/]=edge R=reset ESC')
+        line(string.format('Temporal: %s | alpha=%.2f | reject=%d (%s)',
+            SSR.GetTemporalEnabled() and 'ON' or 'OFF',
+            SSR.GetTemporalAlpha(),
+            SSR.GetRejectionMode(),
+            SSR.GetRejectionMode() == 1 and 'neighborhood' or 'depth'))
+        line('Keys: F=SSR B=Blur V=Bilateral T=Temporal 9/0=radius ,/.=sigma U/I=alpha N=reject R=reset ESC')
     end
 
     win:EndFrame()

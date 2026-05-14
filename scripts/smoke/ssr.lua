@@ -1,9 +1,9 @@
--- Phase E.9+E.10+E.11 smoke: Light.Graphics.SSR
+-- Phase E.9+E.10+E.11+E.12 smoke: Light.Graphics.SSR
 --
--- API coverage (28):
+-- API coverage (34):
 --   Lifecycle 5:  Enable(w,h) / Disable / IsEnabled / IsSupported / Resize(w,h)
 --   AutoEnable 2: SetAutoEnable / GetAutoEnable
---   Params 20 (10 pairs):
+--   Params 26 (13 pairs):
 --     SetMaxSteps / GetMaxSteps              (int   [8, 128],     default 64)
 --     SetStepSize / GetStepSize              (float [0.01, 1.0],  default 0.1)
 --     SetThickness / GetThickness            (float [0.01, 5.0],  default 0.5)
@@ -14,6 +14,9 @@
 --     SetBlurRadius / GetBlurRadius          (float [0.5, 4.0],   default 1.5; Phase E.10)
 --     SetBilateralEnabled / GetBilateralEnabled (bool,            default true; Phase E.11)
 --     SetBlurDepthSigma / GetBlurDepthSigma  (float [50, 500],    default 200; Phase E.11)
+--     SetTemporalEnabled / GetTemporalEnabled (bool,              default true; Phase E.12)
+--     SetTemporalAlpha / GetTemporalAlpha    (float [0.5, 0.99],  default 0.9; Phase E.12)
+--     SetRejectionMode / GetRejectionMode    (int   {0, 1},       default 1; Phase E.12)
 --   Debug 1: GetReflectionTexId
 --
 -- Headless tolerant; ASCII-only.
@@ -29,7 +32,7 @@ if type(S) ~= "table" then fail("SSR subtable missing (got " .. type(S) .. ")") 
 pass("Light.Graphics.SSR subtable present")
 
 -- ============================================================
--- A) Surface (28 functions, Phase E.11 adds 2 pairs: Bilateral, BlurDepthSigma)
+-- A) Surface (34 functions, Phase E.12 adds 3 pairs: Temporal, Alpha, RejectionMode)
 -- ============================================================
 
 local fns = {
@@ -45,6 +48,9 @@ local fns = {
     "SetBlurRadius", "GetBlurRadius",   -- Phase E.10
     "SetBilateralEnabled", "GetBilateralEnabled",   -- Phase E.11
     "SetBlurDepthSigma", "GetBlurDepthSigma",       -- Phase E.11
+    "SetTemporalEnabled", "GetTemporalEnabled",     -- Phase E.12
+    "SetTemporalAlpha", "GetTemporalAlpha",         -- Phase E.12
+    "SetRejectionMode", "GetRejectionMode",         -- Phase E.12
     "GetReflectionTexId",
 }
 for _, k in ipairs(fns) do
@@ -125,6 +131,19 @@ local bs = S.GetBlurDepthSigma()
 if math.abs(bs - 200.0) > 1e-3 then fail("Default BlurDepthSigma != 200 (got " .. tostring(bs) .. ")") end
 pass("Default BlurDepthSigma == 200 (Phase E.11)")
 
+-- Phase E.12 — TemporalEnabled default (= true, TAA-style 业界标准)
+if S.GetTemporalEnabled() ~= true then fail("Default TemporalEnabled != true (Phase E.12)") end
+pass("Default TemporalEnabled == true (Phase E.12)")
+
+-- Phase E.12 — TemporalAlpha default
+local ta = S.GetTemporalAlpha()
+if math.abs(ta - 0.9) > 1e-4 then fail("Default TemporalAlpha != 0.9 (got " .. tostring(ta) .. ")") end
+pass("Default TemporalAlpha == 0.9 (Phase E.12)")
+
+-- Phase E.12 — RejectionMode default (= 1, neighborhood clip)
+if S.GetRejectionMode() ~= 1 then fail("Default RejectionMode != 1 (got " .. tostring(S.GetRejectionMode()) .. ")") end
+pass("Default RejectionMode == 1 (Phase E.12)")
+
 -- ============================================================
 -- E) Param Set/Get round-trip
 -- ============================================================
@@ -178,6 +197,27 @@ pass("SetBilateralEnabled(true) round-trip ok")
 S.SetBlurDepthSigma(150.0)
 if math.abs(S.GetBlurDepthSigma() - 150.0) > 1e-3 then fail("SetBlurDepthSigma round-trip") end
 pass("SetBlurDepthSigma(150) round-trip ok")
+
+-- Phase E.12 — TemporalEnabled round-trip
+S.SetTemporalEnabled(false)
+if S.GetTemporalEnabled() ~= false then fail("SetTemporalEnabled(false) round-trip") end
+pass("SetTemporalEnabled(false) round-trip ok")
+S.SetTemporalEnabled(true)
+if S.GetTemporalEnabled() ~= true then fail("SetTemporalEnabled(true) round-trip") end
+pass("SetTemporalEnabled(true) round-trip ok")
+
+-- Phase E.12 — TemporalAlpha round-trip
+S.SetTemporalAlpha(0.75)
+if math.abs(S.GetTemporalAlpha() - 0.75) > 1e-4 then fail("SetTemporalAlpha round-trip") end
+pass("SetTemporalAlpha(0.75) round-trip ok")
+
+-- Phase E.12 — RejectionMode round-trip
+S.SetRejectionMode(0)
+if S.GetRejectionMode() ~= 0 then fail("SetRejectionMode(0) round-trip") end
+pass("SetRejectionMode(0) round-trip ok")
+S.SetRejectionMode(1)
+if S.GetRejectionMode() ~= 1 then fail("SetRejectionMode(1) round-trip") end
+pass("SetRejectionMode(1) round-trip ok")
 
 -- ============================================================
 -- F) Param clamping
@@ -254,6 +294,24 @@ S.SetBlurDepthSigma(-100.0)
 if not near(S.GetBlurDepthSigma(), 50.0) then fail("SetBlurDepthSigma(-100) clamp to 50, got " .. tostring(S.GetBlurDepthSigma())) end
 pass("SetBlurDepthSigma(-100) -> clamp 50")
 
+-- Phase E.12 — TemporalAlpha clamp [0.5, 0.99]
+S.SetTemporalAlpha(-0.5)
+if not near(S.GetTemporalAlpha(), 0.5) then fail("SetTemporalAlpha(-0.5) clamp to 0.5, got " .. tostring(S.GetTemporalAlpha())) end
+pass("SetTemporalAlpha(-0.5) -> clamp 0.5")
+
+S.SetTemporalAlpha(2.0)
+if not near(S.GetTemporalAlpha(), 0.99) then fail("SetTemporalAlpha(2.0) clamp to 0.99, got " .. tostring(S.GetTemporalAlpha())) end
+pass("SetTemporalAlpha(2.0) -> clamp 0.99")
+
+-- Phase E.12 — RejectionMode clamp {0, 1}
+S.SetRejectionMode(-5)
+if S.GetRejectionMode() ~= 0 then fail("SetRejectionMode(-5) clamp to 0, got " .. tostring(S.GetRejectionMode())) end
+pass("SetRejectionMode(-5) -> clamp 0")
+
+S.SetRejectionMode(99)
+if S.GetRejectionMode() ~= 1 then fail("SetRejectionMode(99) clamp to 1, got " .. tostring(S.GetRejectionMode())) end
+pass("SetRejectionMode(99) -> clamp 1")
+
 S.SetBlurDepthSigma(9999.0)
 if not near(S.GetBlurDepthSigma(), 500.0) then fail("SetBlurDepthSigma(9999) clamp to 500, got " .. tostring(S.GetBlurDepthSigma())) end
 pass("SetBlurDepthSigma(9999) -> clamp 500")
@@ -272,6 +330,9 @@ S.SetBlurEnabled(false)
 S.SetBlurRadius(1.5)   -- Phase E.10
 S.SetBilateralEnabled(true)   -- Phase E.11
 S.SetBlurDepthSigma(200.0)    -- Phase E.11
+S.SetTemporalEnabled(true)    -- Phase E.12
+S.SetTemporalAlpha(0.9)       -- Phase E.12
+S.SetRejectionMode(1)         -- Phase E.12
 pass("All params restored to defaults")
 
 -- ============================================================
@@ -455,5 +516,63 @@ S.SetMaxSteps(64)
 S.SetIntensity(0.7)
 S.SetBilateralEnabled(true)
 S.SetBlurDepthSigma(200.0)
+S.SetTemporalEnabled(true)
+S.SetTemporalAlpha(0.9)
+S.SetRejectionMode(1)
 
-print("[OK] Phase E.9+E.10+E.11 smoke (Light.Graphics.SSR): all checks passed")
+-- ============================================================
+-- M) Phase E.12 — Temporal × Bilateral × Blur 联动行为
+-- ============================================================
+
+-- 1. Temporal=on + Blur=off + Bilateral=on （默认高质量预设）
+S.SetTemporalEnabled(true)
+S.SetBlurEnabled(false)
+S.SetBilateralEnabled(true)
+if not (S.GetTemporalEnabled() == true and S.GetBlurEnabled() == false
+        and S.GetBilateralEnabled() == true) then
+    fail("Phase E.12 默认组合 (temporal=on, blur=off, bilateral=on) 不一致")
+end
+pass("Phase E.12 默认组合 (temporal=on, blur=off, bilateral=on) 保持")
+
+-- 2. Temporal=on + Blur=on + Bilateral=on （最高质量预设）
+S.SetBlurEnabled(true)
+if not (S.GetTemporalEnabled() == true and S.GetBlurEnabled() == true
+        and S.GetBilateralEnabled() == true) then
+    fail("Phase E.12 最高质量预设 (temporal+blur+bilateral) 不一致")
+end
+pass("Phase E.12 最高质量预设 (temporal+blur+bilateral) 保持")
+
+-- 3. Temporal=off 向后兼容 (Phase E.11 行为, temporal 不变变其他参数)
+S.SetTemporalEnabled(false)
+if S.GetTemporalEnabled() ~= false or S.GetBlurEnabled() ~= true
+        or S.GetBilateralEnabled() ~= true then
+    fail("Temporal=off 后其他参数变动（不独立）")
+end
+pass("Temporal=off 不影响 Blur/Bilateral (独立状态位)")
+
+-- 4. Alpha 调节独立于 RejectionMode
+S.SetTemporalAlpha(0.6)
+S.SetRejectionMode(0)
+if math.abs(S.GetTemporalAlpha() - 0.6) > 1e-4 or S.GetRejectionMode() ~= 0 then
+    fail("TemporalAlpha / RejectionMode 独立设置失败")
+end
+S.SetTemporalAlpha(0.95)
+if math.abs(S.GetTemporalAlpha() - 0.95) > 1e-4 or S.GetRejectionMode() ~= 0 then
+    fail("调整 alpha 后 RejectionMode 被覆盖")
+end
+pass("TemporalAlpha / RejectionMode 独立 (互不干扰)")
+
+-- 5. 默认预设 round-trip完整恢复
+S.SetTemporalEnabled(true)
+S.SetTemporalAlpha(0.9)
+S.SetRejectionMode(1)
+S.SetBlurEnabled(false)
+if not (S.GetTemporalEnabled() == true
+        and math.abs(S.GetTemporalAlpha() - 0.9) < 1e-4
+        and S.GetRejectionMode() == 1
+        and S.GetBlurEnabled() == false) then
+    fail("默认预设 round-trip 完整恢复失败")
+end
+pass("Phase E.12 默认预设 round-trip 完整恢复")
+
+print("[OK] Phase E.9+E.10+E.11+E.12 smoke (Light.Graphics.SSR): all checks passed")

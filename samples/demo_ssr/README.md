@@ -1,7 +1,7 @@
-# demo_ssr — Phase E.9 + E.10 + E.11 Screen-Space Reflection (含 Bilateral Blur)
+# demo_ssr — Phase E.9 + E.10 + E.11 + E.12 Screen-Space Reflection (含 Bilateral Blur + Temporal)
 
-ChocoLight Phase E.9 SSR + Phase E.10 SSR Blur + Phase E.11 Bilateral demo，演示金属反射场景，
-含可选 half-res Gaussian / depth-aware Bilateral 模糊（A/B 对比）。
+ChocoLight Phase E.9 SSR + Phase E.10 SSR Blur + Phase E.11 Bilateral + Phase E.12 Temporal demo，
+演示金属反射场景，含可选 Gaussian / Bilateral 模糊 × TAA-style 时序累积降噪。
 
 ## 场景
 
@@ -22,7 +22,8 @@ HDR Pipeline EndScene:
    ├── LensDirt
    ├── Streak
    ├── SSAO              (基于 G-buffer normal)
-   ├── SSR raw          (Phase E.9 — ray march 写入 reflection RT)
+   ├── SSR raw          (Phase E.9 — ray march + Halton-2,3 jitter★)
+   ├── SSR Temporal ★    (Phase E.12 — reverse-reproject + neighborhood clip)
    ├── SSR Blur ★       (Phase E.10 — 5-tap separable; Phase E.11 位可选 Bilateral)
    │  └─ mode: BlurEnabled=true × BilateralEnabled 选 Gaussian / Bilateral
    ├── SSR Composite    (additive 入 HDR color)
@@ -31,6 +32,11 @@ HDR Pipeline EndScene:
    ├── Bloom
    └── Tonemap → 显示
 ```
+
+Phase E.12 插入点详解:
+- **SSR raw 中的 jitter** 仅在 TemporalEnabled=true 时启用（8 帧 Halton 循环）
+- **SSR Temporal** 输出为下帧的 history 输入, 也是本帧 Blur 的输入
+- TemporalEnabled=false 时跳过中间两点, 行为完全等同 Phase E.11
 
 ## 操作
 
@@ -47,6 +53,9 @@ HDR Pipeline EndScene:
 | `9` / `0`   | BlurRadius -/+（步长 0.25） *(E.10)* | [0.5, 4.0]          |
 | `V`         | 切换 Bilateral on/off  *(Phase E.11)*  | —                   |
 | `,` / `.`   | BlurDepthSigma -/+（步长 25） *(E.11)*| [50, 500]           |
+| `T`         | 切换 Temporal on/off   *(Phase E.12)*  | —                   |
+| `U` / `I`   | TemporalAlpha -/+（步长 0.02） *(E.12)*| [0.5, 0.99]         |
+| `N`         | 切换 RejectionMode 0/1 *(Phase E.12)*  | —                   |
 | `R`         | reset 所有参数到默认                  | —                   |
 | `ESC`       | 退出                                  | —                   |
 
@@ -63,14 +72,18 @@ BlurEnabled = false     Phase E.10 默认关（保持向后兼容）
 BlurRadius  = 1.5       Phase E.10　Gaussian 半径 [0.5, 4.0]
 BilateralEnabled = true Phase E.11 默认开（高质量默认，BlurEnabled=true 时生效）
 BlurDepthSigma = 200    Phase E.11　bilateral 深度权重 σ [50, 500]
+TemporalEnabled = true  Phase E.12 默认开（TAA-style 业界标准）
+TemporalAlpha = 0.9     Phase E.12 history 混合权重 [0.5, 0.99]
+RejectionMode = 1       Phase E.12 1=neighborhood AABB clip (默认), 0=current-depth threshold
 ```
 
 ## 性能调优建议
 
-- **高端 PC**：默认 64 步 + Blur on (radius=2.0)，~3.3 ms（1080p）
-- **中端 GPU**：32 步 + Blur on (radius=1.5)，~2.3 ms
-- **低端 / 移动**：16 步 + Blur off + MaxDistance 调到 20，~1 ms
+- **高端 PC**：默认 64 步 + Blur on (radius=2.0) + Temporal on，~3.5 ms（1080p）
+- **中端 GPU**：32 步 + Blur on (radius=1.5) + Temporal on，~2.5 ms
+- **低端 / 移动**：16 步 + Blur off + Temporal off + MaxDistance 调到 20，~1 ms
 - **Blur 额外成本**：~0.3 ms（1080p, half-res H+V pass + composite读取）
+- **Temporal 额外成本**：~0.2-0.4 ms（1080p, full-screen reproject + 9-tap clip）
 
 ## 运行
 
@@ -87,6 +100,11 @@ headless（无窗口/无 GL）下：自动 fallback 到 API probe，
 - 自反射剔除阈值 `dot(viewN, viewV) < 0.05` 时跳过
 - **Phase E.10 Blur**：统一模糊半径（未采用 PBR roughness-aware blur）；half-res 上采样有少量边缘锁步闪烁
 - **Phase E.11 Bilateral**：仅 depth-aware （未采用 normal-aware）；跨超大深度跨 (>uDepthSigma 上限) 可能权重过低导致突变
+- **Phase E.12 Temporal**：仅 reverse-reproject from depth（无 G-buffer velocity）→ **动态物体反射可能 ghost**
+  - 静态几何 + 镜头转动：reproject 准确，无 ghost
+  - 底下的几何移动（如车辆 / 角色）：反射中会拖影，需 Phase E.13+ 引入 G-buffer velocity
+  - 首帧强制输出 cur，避免 1-frame 黑帧
+  - Resize 后从头累积，需约 8 帧 (140ms @ 60fps) 收敛主体
 - 半透明物体不写 depth/normal，因此不会被 SSR 反射
 - 后端不支持 G-buffer MRT 时 silent skip + 首次 warn（不崩溃）
 
@@ -94,6 +112,7 @@ headless（无窗口/无 GL）下：自动 fallback 到 API probe，
 
 - Phase E.9 设计文档：`docs/Phase E.9 SSR/`
 - Phase E.10 设计文档：`docs/Phase E.10 SSR Blur/`
-- **Phase E.11 设计文档**：`docs/Phase E.11 Bilateral SSR Blur/`
+- Phase E.11 设计文档：`docs/Phase E.11 Bilateral SSR Blur/`
+- **Phase E.12 设计文档**：`docs/Phase E.12 Temporal SSR/`
 - API 参考：`docs/API_REFERENCE.md` → Light.Graphics.SSR
 - smoke 测试：`scripts/smoke/ssr.lua`

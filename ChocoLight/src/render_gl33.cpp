@@ -1581,6 +1581,7 @@ uniform float uStepSize;         // 每步 view-space units
 uniform float uThickness;        // 深度命中容差 (view-space units)
 uniform float uMaxDistance;      // ray march 距离上限
 uniform float uEdgeFade;         // 屏幕边缘 fade 区域宽度 [0, 0.5]
+uniform vec2  uJitterOffset;     // Phase E.12: UV 空间 jitter (±0.5/W, ±0.5/H), TAA-style
 
 // 与 SSAO 同算法: NDC -> view space (perspective divide)
 vec3 ReconstructViewPos(vec2 uv, float d) {
@@ -1597,12 +1598,14 @@ vec3 DecodeViewNormal(vec2 enc) {
 }
 
 void main() {
-    float d = texture(uDepthTex, vUV).r;
+    // Phase E.12: ray march 起点 jitter (±0.5 pixel), Temporal accumulation 配套
+    vec2 uvJ = vUV + uJitterOffset;
+    float d = texture(uDepthTex, uvJ).r;
     // 天空盒不反射 (depth >= 1 表示无几何)
     if (d >= 0.9999) { FragColor = vec4(0.0); return; }
 
-    vec3 viewPos = ReconstructViewPos(vUV, d);
-    vec3 viewN   = DecodeViewNormal(texture(uNormalTex, vUV).rg);
+    vec3 viewPos = ReconstructViewPos(uvJ, d);
+    vec3 viewN   = DecodeViewNormal(texture(uNormalTex, uvJ).rg);
     vec3 viewV   = normalize(-viewPos);   // 视点方向 (camera 在原点)
 
     // 自反射剔除: 法线背向相机 (本不该可见, 防御)
@@ -1746,6 +1749,77 @@ void main() {
 }
 )";
 
+// ---- FS_SSR_TEMPORAL (GLES 3.0): Phase E.12 reverse-reprojection + neighborhood clip ----
+//   uHasHistory=0 首帧 -> 输出 cur (不混合)
+//   uRejectionMode=0 -> current-depth threshold rejection; 1 -> 9-tap neighborhood AABB clip
+//   uReprojectMat = prevViewProj * invCurViewProj (CPU 预乘)
+static const char* FS_SSR_TEMPORAL_SOURCE = R"(#version 300 es
+precision highp float;
+precision highp sampler2D;
+in  vec2 vUV;
+out vec4 FragColor;
+
+uniform sampler2D uCurReflectTex;  // 当前帧 SSR raw (slot 0)
+uniform sampler2D uHistoryTex;     // 上一帧 temporal 输出 (slot 1)
+uniform sampler2D uDepthTex;       // SSR depth (slot 2)
+uniform mat4  uReprojectMat;       // prevViewProj * invCurViewProj
+uniform mat4  uInvProj;            // 备用 (当前 shader 内可不用)
+uniform vec2  uTexel;              // 1.0 / RT 尺寸
+uniform float uBlendAlpha;         // history 权重 [0.5, 0.99]
+uniform int   uRejectionMode;      // 0 = current-depth threshold, 1 = neighborhood clip
+uniform int   uHasHistory;         // 0 = 首帧, 1 = 累积
+
+void main() {
+    vec4 cur = texture(uCurReflectTex, vUV);
+
+    if (uHasHistory == 0) { FragColor = cur; return; }
+
+    // ① reproject: 当前像素 NDC -> 上一帧 NDC
+    float depth = texture(uDepthTex, vUV).r;
+    vec4 ndc = vec4(vUV * 2.0 - 1.0, depth * 2.0 - 1.0, 1.0);
+    vec4 prevClip = uReprojectMat * ndc;
+    float w = max(prevClip.w, 1e-6);
+    vec2 prevUV = (prevClip.xy / w) * 0.5 + 0.5;
+
+    // 越界 reject
+    if (prevUV.x < 0.0 || prevUV.x > 1.0 ||
+        prevUV.y < 0.0 || prevUV.y > 1.0) {
+        FragColor = cur;
+        return;
+    }
+
+    if (uRejectionMode == 0) {
+        float prevDepth = texture(uDepthTex, prevUV).r;
+        if (abs(prevDepth - depth) > 0.002) {
+            FragColor = cur;
+            return;
+        }
+    }
+
+    vec4 hist = texture(uHistoryTex, prevUV);
+
+    // ② neighborhood AABB clip (mode=1)
+    if (uRejectionMode == 1) {
+        vec3 mn = cur.rgb;
+        vec3 mx = cur.rgb;
+        vec3 s;
+        s = texture(uCurReflectTex, vUV + uTexel * vec2(-1.0, -1.0)).rgb; mn = min(mn, s); mx = max(mx, s);
+        s = texture(uCurReflectTex, vUV + uTexel * vec2( 0.0, -1.0)).rgb; mn = min(mn, s); mx = max(mx, s);
+        s = texture(uCurReflectTex, vUV + uTexel * vec2( 1.0, -1.0)).rgb; mn = min(mn, s); mx = max(mx, s);
+        s = texture(uCurReflectTex, vUV + uTexel * vec2(-1.0,  0.0)).rgb; mn = min(mn, s); mx = max(mx, s);
+        s = texture(uCurReflectTex, vUV + uTexel * vec2( 1.0,  0.0)).rgb; mn = min(mn, s); mx = max(mx, s);
+        s = texture(uCurReflectTex, vUV + uTexel * vec2(-1.0,  1.0)).rgb; mn = min(mn, s); mx = max(mx, s);
+        s = texture(uCurReflectTex, vUV + uTexel * vec2( 0.0,  1.0)).rgb; mn = min(mn, s); mx = max(mx, s);
+        s = texture(uCurReflectTex, vUV + uTexel * vec2( 1.0,  1.0)).rgb; mn = min(mn, s); mx = max(mx, s);
+        hist.rgb = clamp(hist.rgb, mn, mx);
+    }
+
+    // ③ blend
+    float alpha = clamp(uBlendAlpha, 0.0, 1.0);
+    FragColor = mix(cur, hist, alpha);
+}
+)";
+
 #else  // 桌面 GL 3.3 Core
 
 // ---- FS_SSAO (GL 3.3): 同 GLES3 算法 ----
@@ -1877,6 +1951,7 @@ uniform float uStepSize;
 uniform float uThickness;
 uniform float uMaxDistance;
 uniform float uEdgeFade;
+uniform vec2  uJitterOffset;     // Phase E.12: UV 空间 jitter (±0.5/W, ±0.5/H), TAA-style
 
 vec3 ReconstructViewPos(vec2 uv, float d) {
     vec4 clip = vec4(uv * 2.0 - 1.0, d * 2.0 - 1.0, 1.0);
@@ -1891,11 +1966,13 @@ vec3 DecodeViewNormal(vec2 enc) {
 }
 
 void main() {
-    float d = texture(uDepthTex, vUV).r;
+    // Phase E.12: ray march 起点 jitter (±0.5 pixel), Temporal accumulation 配套
+    vec2 uvJ = vUV + uJitterOffset;
+    float d = texture(uDepthTex, uvJ).r;
     if (d >= 0.9999) { FragColor = vec4(0.0); return; }
 
-    vec3 viewPos = ReconstructViewPos(vUV, d);
-    vec3 viewN   = DecodeViewNormal(texture(uNormalTex, vUV).rg);
+    vec3 viewPos = ReconstructViewPos(uvJ, d);
+    vec3 viewN   = DecodeViewNormal(texture(uNormalTex, uvJ).rg);
     vec3 viewV   = normalize(-viewPos);
 
     if (dot(viewN, viewV) < 0.05) { FragColor = vec4(0.0); return; }
@@ -2020,6 +2097,72 @@ void main() {
     sum += texture(uSrcTex, uv) * w; wsum += w;
 
     FragColor = sum / max(wsum, 1e-4);
+}
+)";
+
+// ---- FS_SSR_TEMPORAL (GL 3.3): Phase E.12 reverse-reprojection + neighborhood clip ----
+//   uHasHistory=0 首帧 -> 输出 cur (不混合)
+//   uRejectionMode=0 -> current-depth threshold rejection; 1 -> 9-tap neighborhood AABB clip
+//   uReprojectMat = prevViewProj * invCurViewProj (CPU 预乘)
+static const char* FS_SSR_TEMPORAL_SOURCE = R"(
+#version 330 core
+in  vec2 vUV;
+out vec4 FragColor;
+
+uniform sampler2D uCurReflectTex;
+uniform sampler2D uHistoryTex;
+uniform sampler2D uDepthTex;
+uniform mat4  uReprojectMat;
+uniform mat4  uInvProj;
+uniform vec2  uTexel;
+uniform float uBlendAlpha;
+uniform int   uRejectionMode;
+uniform int   uHasHistory;
+
+void main() {
+    vec4 cur = texture(uCurReflectTex, vUV);
+
+    if (uHasHistory == 0) { FragColor = cur; return; }
+
+    float depth = texture(uDepthTex, vUV).r;
+    vec4 ndc = vec4(vUV * 2.0 - 1.0, depth * 2.0 - 1.0, 1.0);
+    vec4 prevClip = uReprojectMat * ndc;
+    float w = max(prevClip.w, 1e-6);
+    vec2 prevUV = (prevClip.xy / w) * 0.5 + 0.5;
+
+    if (prevUV.x < 0.0 || prevUV.x > 1.0 ||
+        prevUV.y < 0.0 || prevUV.y > 1.0) {
+        FragColor = cur;
+        return;
+    }
+
+    if (uRejectionMode == 0) {
+        float prevDepth = texture(uDepthTex, prevUV).r;
+        if (abs(prevDepth - depth) > 0.002) {
+            FragColor = cur;
+            return;
+        }
+    }
+
+    vec4 hist = texture(uHistoryTex, prevUV);
+
+    if (uRejectionMode == 1) {
+        vec3 mn = cur.rgb;
+        vec3 mx = cur.rgb;
+        vec3 s;
+        s = texture(uCurReflectTex, vUV + uTexel * vec2(-1.0, -1.0)).rgb; mn = min(mn, s); mx = max(mx, s);
+        s = texture(uCurReflectTex, vUV + uTexel * vec2( 0.0, -1.0)).rgb; mn = min(mn, s); mx = max(mx, s);
+        s = texture(uCurReflectTex, vUV + uTexel * vec2( 1.0, -1.0)).rgb; mn = min(mn, s); mx = max(mx, s);
+        s = texture(uCurReflectTex, vUV + uTexel * vec2(-1.0,  0.0)).rgb; mn = min(mn, s); mx = max(mx, s);
+        s = texture(uCurReflectTex, vUV + uTexel * vec2( 1.0,  0.0)).rgb; mn = min(mn, s); mx = max(mx, s);
+        s = texture(uCurReflectTex, vUV + uTexel * vec2(-1.0,  1.0)).rgb; mn = min(mn, s); mx = max(mx, s);
+        s = texture(uCurReflectTex, vUV + uTexel * vec2( 0.0,  1.0)).rgb; mn = min(mn, s); mx = max(mx, s);
+        s = texture(uCurReflectTex, vUV + uTexel * vec2( 1.0,  1.0)).rgb; mn = min(mn, s); mx = max(mx, s);
+        hist.rgb = clamp(hist.rgb, mn, mx);
+    }
+
+    float alpha = clamp(uBlendAlpha, 0.0, 1.0);
+    FragColor = mix(cur, hist, alpha);
 }
 )";
 
@@ -2260,6 +2403,22 @@ class GL33Backend : public RenderBackend {
     GLint  locSSRBlur_Radius       = -1;
     GLint  locSSRBlur_Bilateral    = -1;   // Phase E.11
     GLint  locSSRBlur_DepthSigma   = -1;   // Phase E.11
+
+    // Phase E.12 — Temporal SSR (时序累积降噪, 用户拍板 2026-05-14)
+    GLuint programSSRTemporal           = 0;
+    bool   ssrTemporalSupported         = false;
+    // FS_SSR 的 jitter uniform (在 Phase E.9 program 内, 新增缓存)
+    GLint  locSSR_JitterOffset          = -1;
+    // FS_SSR_TEMPORAL uniform locations
+    GLint  locSSRTemporal_CurReflectTex = -1;
+    GLint  locSSRTemporal_HistoryTex    = -1;
+    GLint  locSSRTemporal_DepthTex      = -1;
+    GLint  locSSRTemporal_ReprojectMat  = -1;
+    GLint  locSSRTemporal_InvProj       = -1;
+    GLint  locSSRTemporal_Texel         = -1;
+    GLint  locSSRTemporal_BlendAlpha    = -1;
+    GLint  locSSRTemporal_RejectionMode = -1;
+    GLint  locSSRTemporal_HasHistory    = -1;
 
     // Phase E.2.1 — Lighting2D dirty bit cache
     // 当 state->version 与此值相等时, UploadLighting2D 跳过所有 glUniform*v 调用
@@ -3030,10 +3189,13 @@ public:
             locSSR_Thickness   = glGetUniformLocation(programSSR, "uThickness");
             locSSR_MaxDistance = glGetUniformLocation(programSSR, "uMaxDistance");
             locSSR_EdgeFade    = glGetUniformLocation(programSSR, "uEdgeFade");
+            locSSR_JitterOffset = glGetUniformLocation(programSSR, "uJitterOffset");  // Phase E.12
             glUseProgram(programSSR);
             if (locSSR_DepthTex  >= 0) glUniform1i(locSSR_DepthTex,  0);  // slot 0
             if (locSSR_NormalTex >= 0) glUniform1i(locSSR_NormalTex, 1);  // slot 1
             if (locSSR_HDRTex    >= 0) glUniform1i(locSSR_HDRTex,    2);  // slot 2
+            // Phase E.12 默认 jitter=0 (= Phase E.11 行为, 调用方未传时可预期)
+            if (locSSR_JitterOffset >= 0) glUniform2f(locSSR_JitterOffset, 0.0f, 0.0f);
 
             // Cache FS_SSR_COMPOSITE uniforms
             locSSRComp_SceneTex   = glGetUniformLocation(programSSRComposite, "uSceneTex");
@@ -3070,18 +3232,42 @@ public:
             ssrBlurSupported = false;
         }
 
+        // --- Phase E.12 — Temporal SSR (reverse-reprojection + neighborhood clip) ---
+        // 用户拍板 2026-05-14: full-res RGBA16F history × 2 + Halton-2,3 8-sample + neighborhood clip
+        programSSRTemporal = buildProgram(FS_SSR_TEMPORAL_SOURCE, "SSRTemporal");
+        if (programSSRTemporal && ssrSupported) {
+            locSSRTemporal_CurReflectTex = glGetUniformLocation(programSSRTemporal, "uCurReflectTex");
+            locSSRTemporal_HistoryTex    = glGetUniformLocation(programSSRTemporal, "uHistoryTex");
+            locSSRTemporal_DepthTex      = glGetUniformLocation(programSSRTemporal, "uDepthTex");
+            locSSRTemporal_ReprojectMat  = glGetUniformLocation(programSSRTemporal, "uReprojectMat");
+            locSSRTemporal_InvProj       = glGetUniformLocation(programSSRTemporal, "uInvProj");
+            locSSRTemporal_Texel         = glGetUniformLocation(programSSRTemporal, "uTexel");
+            locSSRTemporal_BlendAlpha    = glGetUniformLocation(programSSRTemporal, "uBlendAlpha");
+            locSSRTemporal_RejectionMode = glGetUniformLocation(programSSRTemporal, "uRejectionMode");
+            locSSRTemporal_HasHistory    = glGetUniformLocation(programSSRTemporal, "uHasHistory");
+            glUseProgram(programSSRTemporal);
+            if (locSSRTemporal_CurReflectTex >= 0) glUniform1i(locSSRTemporal_CurReflectTex, 0);  // slot 0
+            if (locSSRTemporal_HistoryTex    >= 0) glUniform1i(locSSRTemporal_HistoryTex,    1);  // slot 1
+            if (locSSRTemporal_DepthTex      >= 0) glUniform1i(locSSRTemporal_DepthTex,      2);  // slot 2
+            glUseProgram(0);
+            ssrTemporalSupported = true;
+        } else {
+            ssrTemporalSupported = false;
+        }
+
         CC::Log(CC::LOG_INFO,
-                "GL33: Phase E.6+E.7+E.8+E.9+E.10 LensFx/SSAO/SSR ready (lensDirt=%s, streak=%s, lensFlare=%s, ssao=%s, ssr=%s, ssrBlur=%s; programs=[LD=%u, SB=%u, SC=%u, LFG=%u, S=%u, SB=%u, SC=%u, SSR=%u, SSRC=%u, SSRB=%u])",
+                "GL33: Phase E.6+E.7+E.8+E.9+E.10+E.11+E.12 LensFx/SSAO/SSR ready (lensDirt=%s, streak=%s, lensFlare=%s, ssao=%s, ssr=%s, ssrBlur=%s, ssrTemporal=%s; programs=[LD=%u, SB=%u, SC=%u, LFG=%u, S=%u, SB=%u, SC=%u, SSR=%u, SSRC=%u, SSRB=%u, SSRT=%u])",
                 lensDirtSupported ? "yes" : "no",
                 streakSupported   ? "yes" : "no",
                 lensFlareSupported? "yes" : "no",
                 ssaoSupported     ? "yes" : "no",
                 ssrSupported      ? "yes" : "no",
                 ssrBlurSupported  ? "yes" : "no",
+                ssrTemporalSupported ? "yes" : "no",
                 programLensDirt, programStreakBlur, programStreakComposite,
                 programLensFlareGhost,
                 programSSAO, programSSAOBlur, programSSAOComposite,
-                programSSR, programSSRComposite, programSSRBlur);
+                programSSR, programSSRComposite, programSSRBlur, programSSRTemporal);
     }
 
     void Shutdown() override {
@@ -3226,6 +3412,16 @@ public:
         locSSRBlur_SrcTex     = locSSRBlur_DepthTex = -1;
         locSSRBlur_Texel      = locSSRBlur_Axis = locSSRBlur_Radius = -1;
         locSSRBlur_Bilateral  = locSSRBlur_DepthSigma = -1;
+
+        // Phase E.12 — 清理 SSR Temporal (1 program; history RT 由 SSRRenderer 管 DeleteSSRHistoryRT)
+        if (programSSRTemporal) { glDeleteProgram(programSSRTemporal); programSSRTemporal = 0; }
+        ssrTemporalSupported = false;
+        locSSR_JitterOffset          = -1;
+        locSSRTemporal_CurReflectTex = locSSRTemporal_HistoryTex    = -1;
+        locSSRTemporal_DepthTex      = locSSRTemporal_ReprojectMat  = -1;
+        locSSRTemporal_InvProj       = locSSRTemporal_Texel         = -1;
+        locSSRTemporal_BlendAlpha    = locSSRTemporal_RejectionMode = -1;
+        locSSRTemporal_HasHistory    = -1;
     }
 
     bool SupportsLit2D() const override { return lit2DSupported; }
@@ -4453,12 +4649,14 @@ public:
     }
 
     /// SSR raw pass: depthTex + normalTex + hdrTex -> dstFbo (RGBA16F, full-res)
+    /// Phase E.12: jitterX/jitterY 是像素单位偏移 (±0.5 范围), backend 内除尺寸转 UV 空间
     void DrawSSR(uint32_t depthTex, uint32_t normalTex, uint32_t hdrTex,
                  uint32_t dstFbo,
                  int w, int h,
                  const float* projMat4, const float* invProjMat4,
                  int maxSteps, float stepSize, float thickness,
-                 float maxDist, float edgeFade) override {
+                 float maxDist, float edgeFade,
+                 float jitterX, float jitterY) override {
         if (!ssrSupported || !depthTex || !normalTex || !hdrTex || !dstFbo
             || w <= 0 || h <= 0 || !projMat4 || !invProjMat4 || maxSteps <= 0) return;
 
@@ -4476,6 +4674,11 @@ public:
         if (locSSR_Thickness   >= 0) glUniform1f(locSSR_Thickness,   thickness);
         if (locSSR_MaxDistance >= 0) glUniform1f(locSSR_MaxDistance, maxDist);
         if (locSSR_EdgeFade    >= 0) glUniform1f(locSSR_EdgeFade,    edgeFade);
+        // Phase E.12 — jitter (pixel 转 UV): jitter / size
+        if (locSSR_JitterOffset >= 0) {
+            glUniform2f(locSSR_JitterOffset,
+                        jitterX / (float)w, jitterY / (float)h);
+        }
 
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, (GLuint)depthTex);
@@ -4679,6 +4882,128 @@ public:
         glBindVertexArray(0);
         // 反向解绑 (slot 1 → 0), 与 DrawSSAO / DrawSSAOBlur 同模式
         glActiveTexture(GL_TEXTURE1);                              // Phase E.11
+        glBindTexture(GL_TEXTURE_2D, 0);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        glUseProgram(0);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    }
+
+    // ==================== Phase E.12 — Temporal SSR 虚接口实现 ====================
+    //
+    // 设计与 SSR Blur 平行: history ping-pong RGBA16F (与 SSR raw 同尺寸, full-res) +
+    // temporal pass (reproject + neighborhood clip + history blend).
+    // 用户拍板 2026-05-14: 全 A 组合 (TAA-style 业界标准).
+
+    /// Phase E.12 — 创建 SSR temporal history ping-pong RT (full-res RGBA16F × 2)
+    /// 与 CreateSSRTargets 同模式, 但一次创建两个 (ping-pong).
+    bool CreateSSRHistoryRT(int w, int h,
+                             uint32_t* outFbos, uint32_t* outTexs) override {
+        if (outFbos) outFbos[0] = outFbos[1] = 0;
+        if (outTexs) outTexs[0] = outTexs[1] = 0;
+        if (!ssrTemporalSupported || w <= 0 || h <= 0 || !outFbos || !outTexs) return false;
+
+        for (int i = 0; i < 2; ++i) {
+            GLuint tex = 0;
+            glGenTextures(1, &tex);
+            if (!tex) { DeleteSSRHistoryRT(outFbos, outTexs); return false; }
+            glBindTexture(GL_TEXTURE_2D, tex);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, w, h, 0, GL_RGBA, GL_HALF_FLOAT, nullptr);
+            // LINEAR: temporal reproject UV 取样 (可能非对齐) 需双线性
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+            glBindTexture(GL_TEXTURE_2D, 0);
+
+            GLuint fbo = 0;
+            glGenFramebuffers(1, &fbo);
+            if (!fbo) {
+                glDeleteTextures(1, &tex);
+                DeleteSSRHistoryRT(outFbos, outTexs);
+                return false;
+            }
+            glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
+            GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+            glBindFramebuffer(GL_FRAMEBUFFER, 0);
+            if (status != GL_FRAMEBUFFER_COMPLETE) {
+                CC::Log(CC::LOG_WARN,
+                        "GL33: Phase E.12 CreateSSRHistoryRT incomplete (0x%X, %dx%d, idx=%d)",
+                        (unsigned)status, w, h, i);
+                glDeleteFramebuffers(1, &fbo);
+                glDeleteTextures(1, &tex);
+                DeleteSSRHistoryRT(outFbos, outTexs);
+                return false;
+            }
+            outFbos[i] = (uint32_t)fbo;
+            outTexs[i] = (uint32_t)tex;
+        }
+        return true;
+    }
+
+    void DeleteSSRHistoryRT(uint32_t* fbos, uint32_t* texs) override {
+        if (fbos) {
+            for (int i = 0; i < 2; ++i) {
+                if (fbos[i]) { GLuint f = (GLuint)fbos[i]; glDeleteFramebuffers(1, &f); fbos[i] = 0; }
+            }
+        }
+        if (texs) {
+            for (int i = 0; i < 2; ++i) {
+                if (texs[i]) { GLuint t = (GLuint)texs[i]; glDeleteTextures(1, &t); texs[i] = 0; }
+            }
+        }
+    }
+
+    /// Phase E.12 — Temporal pass: reproject + neighborhood clip + history blend
+    /// shader 内部的 hasHistory=0 (首帧) 路径会强制输出 cur, 避免 1-frame 黑帧.
+    void DrawSSRTemporal(uint32_t curReflectTex,
+                          uint32_t historyTex,
+                          uint32_t depthTex,
+                          uint32_t dstFbo,
+                          int w, int h,
+                          const float* reprojectMat4,
+                          const float* invProjMat4,
+                          float blendAlpha,
+                          int   rejectionMode,
+                          int   hasHistory) override {
+        if (!ssrTemporalSupported || !programSSRTemporal
+            || !curReflectTex || !depthTex || !dstFbo
+            || w <= 0 || h <= 0 || !reprojectMat4 || !invProjMat4) return;
+
+        glBindFramebuffer(GL_FRAMEBUFFER, (GLuint)dstFbo);
+        glViewport(0, 0, w, h);
+        glDisable(GL_DEPTH_TEST);
+        glDisable(GL_SCISSOR_TEST);
+        glDisable(GL_BLEND);
+        glDisable(GL_CULL_FACE);
+
+        glUseProgram(programSSRTemporal);
+        if (locSSRTemporal_ReprojectMat  >= 0) glUniformMatrix4fv(locSSRTemporal_ReprojectMat,  1, GL_FALSE, reprojectMat4);
+        if (locSSRTemporal_InvProj       >= 0) glUniformMatrix4fv(locSSRTemporal_InvProj,       1, GL_FALSE, invProjMat4);
+        if (locSSRTemporal_Texel         >= 0) glUniform2f(locSSRTemporal_Texel, 1.0f / (float)w, 1.0f / (float)h);
+        if (locSSRTemporal_BlendAlpha    >= 0) glUniform1f(locSSRTemporal_BlendAlpha,    blendAlpha);
+        if (locSSRTemporal_RejectionMode >= 0) glUniform1i(locSSRTemporal_RejectionMode, rejectionMode);
+        if (locSSRTemporal_HasHistory    >= 0) glUniform1i(locSSRTemporal_HasHistory,    hasHistory);
+
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, (GLuint)curReflectTex);
+        glActiveTexture(GL_TEXTURE1);
+        // historyTex 可能为 0 (首帧); shader 内 hasHistory==0 不采样, 但 driver 需有有效 binding.
+        // 首帧场景下传 0 可能报 GL_INVALID_OPERATION, 回退用 curReflectTex 作占位
+        glBindTexture(GL_TEXTURE_2D, historyTex ? (GLuint)historyTex : (GLuint)curReflectTex);
+        glActiveTexture(GL_TEXTURE2);
+        glBindTexture(GL_TEXTURE_2D, (GLuint)depthTex);
+
+        // 复用 tonemap fullscreen VAO
+        glBindVertexArray(vaoTonemap);
+        glDrawArrays(GL_TRIANGLES, 0, 6);
+
+        glBindVertexArray(0);
+        // 反向解绑 (slot 2 → 0)
+        glActiveTexture(GL_TEXTURE2);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        glActiveTexture(GL_TEXTURE1);
         glBindTexture(GL_TEXTURE_2D, 0);
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, 0);

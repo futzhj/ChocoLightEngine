@@ -1,16 +1,19 @@
 #pragma once
 /**
  * @file   ssr_renderer.h
- * @brief  Phase E.9 — SSR (Screen-Space Reflection) 模块
+ * @brief  Phase E.9 — SSR (Screen-Space Reflection) 模块（Phase E.10/E.11/E.12 增量）
  *
  * 设计原则 (与 SSAORenderer / BloomRenderer 同风格):
  *   - 后端无关: 所有 GL 操作经 RenderBackend 虚接口.
  *   - 联动 HDR: 默认 autoEnable=false; HDR.Enable/Disable/Resize 可选自动拉起/关闭.
- *   - 高质量方案 (用户拍板 2026-05-12): full-res RGBA16F + 64 步 ray march
+ *   - 高质量方案 (用户拍板 2026-05-12 起): full-res RGBA16F + 64 步 ray march
  *       * SSR 自管独立 depth texture + 小 FBO (full-res, 仅 GL_DEPTH_ATTACHMENT)
  *       * 每帧 Process() 入口先用 glBlitFramebuffer 从 HDR FBO 复制 depth (复用 BlitHDRDepthToSSAO 接口)
  *       * 反射 RT 单 RGBA16F (full-res, 与 HDR RT 同尺寸)
  *       * Composite 用内部临时 RT 解 feedback loop (读 HDR + 加性写 HDR)
+ *       * Phase E.10: 可选 half-res Gaussian blur
+ *       * Phase E.11: 可选 depth-aware bilateral blur
+ *       * Phase E.12: 可选 Temporal SSR (jitter + reverse reprojection + history ping-pong)
  *   - Legacy 后端不支持: Enable 返 false (SupportsSSR 默认 no-op).
  *
  * 复用 Phase E.8.x G-buffer view-space normal:
@@ -23,15 +26,17 @@
  *     1. GetHDRNormalTex(hdrFbo) -> normalTex  (缺则 silent skip)
  *     2. DrawSSR(depthTex, normalTex, hdrTex, reflectFbo, w, h,
  *                 proj, invProj, maxSteps, stepSize, thickness,
- *                 maxDist, edgeFade)                              ← raw reflection (RGBA16F)
- *     3. DrawSSRComposite(reflectTex, hdrFbo, w, h, intensity)    ← HDR += reflect.rgb * reflect.a * intensity
+ *                 maxDist, edgeFade, jitterX, jitterY)             ← raw reflection (RGBA16F)
+ *     3. DrawSSRTemporal(reflectTex, historyTex, depthTex, ...)    ← optional temporal accumulation
+ *     4. DrawSSRBlur(srcForBlur, depthTex, ...)                    ← optional blur
+ *     5. DrawSSRComposite(finalReflectTex, hdrFbo, w, h, intensity)← HDR += reflect.rgb * reflect.a * intensity
  *
  * 适用范围:
  *   仅 3D mesh + 显式 SetDepthTest(true) 场景生效.
  *   纯 2D 场景 (z=0 平面) 反射全 0, 不影响画面.
  *
  * 作者: ChocoLight Engine
- * 版本: Phase E.9
+ * 版本: Phase E.12
  */
 
 #include <cstdint>
@@ -108,6 +113,27 @@ bool GetBilateralEnabled();
 /// 仅在 BilateralEnabled=true && BlurEnabled=true 时影响视觉.
 void  SetBlurDepthSigma(float v);
 float GetBlurDepthSigma();
+
+/// Phase E.12 — Temporal SSR 时序累积降噪, 默认 true (TAA-style 业界标准).
+/// 关闭后行为完全等同 Phase E.11 (raw → blur → composite, 无 history).
+/// 开启时: SSR raw 增加 Halton-2,3 8-sample jitter, 配合 reverse-reprojection
+///         history 累积 + neighborhood AABB clip rejection.
+void SetTemporalEnabled(bool flag);
+bool GetTemporalEnabled();
+
+/// Phase E.12 — History blend 权重 (history 占比) clamp [0.5, 0.99], 默认 0.9.
+/// 越高 → 历史权重大, 去噪强但响应慢
+/// 越低 → 响应快, 但去噪弱
+/// 仅在 TemporalEnabled=true 时影响视觉.
+void  SetTemporalAlpha(float v);
+float GetTemporalAlpha();
+
+/// Phase E.12 — Rejection 模式 clamp {0, 1}, 默认 1.
+/// 0 = current-depth threshold rejection
+/// 1 = neighborhood AABB clip (9-tap min/max history clip, 抗 ghost)
+/// 仅在 TemporalEnabled=true 时影响视觉.
+void SetRejectionMode(int mode);
+int  GetRejectionMode();
 
 // ==================== 调试 API ====================
 
