@@ -1080,7 +1080,7 @@ function ECSWorld:_DrawSprite(tf, s, gfx)
 end
 
 -- 绘制单个 mesh (3D)
-function ECSWorld:_DrawMesh(tf, mr, gfx)
+function ECSWorld:_DrawMesh(entity, tf, mr, gfx)
     gfx.Push()
     gfx.Translate(tf.x or 0, tf.y or 0, tf.z or 0)
     if (tf.rx or 0) ~= 0 then gfx.Rotate(tf.rx, 1, 0, 0) end
@@ -1092,13 +1092,17 @@ function ECSWorld:_DrawMesh(tf, mr, gfx)
     if sx ~= 1 or sy ~= 1 or sz ~= 1 then gfx.Scale(sx, sy, sz) end
 
     local mesh = mr.mesh
+    local currentModel = self:_BuildModelMatrix3D(entity)
+    self._mesh_prev_model_cache = self._mesh_prev_model_cache or {}
+    local prevModel = self._mesh_prev_model_cache[entity._id]
     if mesh and type(mesh.Draw) == 'function' then
         if mr.material then
-            mesh:Draw(mr.material)
+            mesh:Draw(mr.material, prevModel)
         else
-            mesh:Draw(0)
+            mesh:Draw(0, prevModel)
         end
     end
+    self._mesh_prev_model_cache[entity._id] = currentModel
     gfx.Pop()
 end
 
@@ -1214,10 +1218,12 @@ function ECSWorld:Render()
         for _, e in ipairs(self._entities) do
             local tf = e._comps.Transform3D
             local mr = e._comps.MeshRenderer
-            if tf and mr and mr.visible ~= false and mr.mesh then
+            if tf and mr and (mr.visible == false or not mr.mesh) then
+                if self._mesh_prev_model_cache then self._mesh_prev_model_cache[e._id] = nil end
+            elseif tf and mr and mr.mesh then
                 -- Phase D.x.1.2: parent chain push (gfx stack 模式)
                 local pushCount = self:_PushParentChain3D(e, gfx)
-                self:_DrawMesh(tf, mr, gfx)
+                self:_DrawMesh(e, tf, mr, gfx)
                 for k = 1, pushCount do gfx.Pop() end
             end
         end

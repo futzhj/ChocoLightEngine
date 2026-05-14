@@ -169,12 +169,15 @@ struct Animator {
     // Step 2: 关节矩阵缓存 (Update 时填充, GetJointMatrices 直接读)
     // 布局: 每关节 16 floats (列主序 mat4), 共 N×16 floats
     std::vector<float> jointMatrices;
+    std::vector<float> prevJointMatrices;
 
     // Phase AX: morph target 权重运行时状态
     //   morphWeights[i]       = 当前生效权重 (动画评估值或手动覆盖值; 写到 GPU 的就是这个)
     //   morphWeightsManual[i] = 手动覆盖值; NaN 表示"未覆盖, 用动画值"
     std::vector<float> morphWeights;          // size = mesh.morphTargetCount
+    std::vector<float> prevMorphWeights;
     std::vector<float> morphWeightsManual;    // size = mesh.morphTargetCount
+    bool velocityHistoryValid = false;
 
     bool alive = true;
 };
@@ -664,7 +667,33 @@ static void EvaluateMorphWeights(Animator* an) {
     }
 }
 
-// ==================== Step 3: CPU 蒙皮 ====================
+static void ResetAnimatorVelocityHistory(Animator* an) {
+    if (!an) return;
+    an->prevJointMatrices.clear();
+    an->prevMorphWeights.clear();
+    an->velocityHistoryValid = false;
+}
+
+static const float* PrepareJointPalette(const float* modelMat,
+                                        const std::vector<float>& sourceJoints,
+                                        int jointCount,
+                                        bool isIdentity,
+                                        std::vector<float>& bakedJoints) {
+    if (sourceJoints.empty()) return nullptr;
+    if (isIdentity) return sourceJoints.data();
+    bakedJoints.resize((size_t)jointCount * 16);
+    Mat4 model;
+    std::memcpy(model.m, modelMat, sizeof(model.m));
+    for (int j = 0; j < jointCount; ++j) {
+        Mat4 joint;
+        std::memcpy(joint.m, &sourceJoints[j * 16], sizeof(joint.m));
+        Mat4 result = model * joint;
+        std::memcpy(&bakedJoints[j * 16], result.m, sizeof(result.m));
+    }
+    return bakedJoints.data();
+}
+
+// ==================== Step 4: Transition / Event 辅助 ====================
 
 // 把 mat4 (列主序) 应用到点 (w=1) 或向量 (w=0)
 inline void Mat4ApplyPoint(const float* m, const float* in3, float* out3) {
@@ -2226,6 +2255,9 @@ static int l_Animator_Update(lua_State* L) {
 
     an->transitionedThisFrame = false;
     an->prevTime              = an->currentTime;
+    an->prevJointMatrices     = an->jointMatrices;
+    an->prevMorphWeights      = an->morphWeights;
+    an->velocityHistoryValid  = !an->prevJointMatrices.empty();
 
     // 推进 active clip 时间
     if (!an->paused) {
@@ -2274,6 +2306,7 @@ static int l_Animator_Update(lua_State* L) {
                 an->activeClip   = it->second;
                 an->currentTime  = 0.0f;
                 an->prevTime     = 0.0f;
+                ResetAnimatorVelocityHistory(an);
             } else {
                 an->crossfadeTarget   = tr.toState;
                 an->crossfadeClip     = it->second;
@@ -2331,6 +2364,7 @@ static int l_Animator_GetCurrentTime(lua_State* L) {
 static int l_Animator_SetCurrentTime(lua_State* L) {
     Animator* an = CheckAnimator(L, 1);
     an->currentTime = (float)luaL_checknumber(L, 2);
+    ResetAnimatorVelocityHistory(an);
     return 0;
 }
 
@@ -2389,6 +2423,7 @@ static int l_Animator_SetMorphWeight(lua_State* L) {
     }
     an->morphWeightsManual[idx_0based] = val;
     an->morphWeights[idx_0based]       = val;     // 即时生效, 不等下一帧 Update
+    ResetAnimatorVelocityHistory(an);
     lua_pushboolean(L, 1);
     return 1;
 }
@@ -2419,6 +2454,7 @@ static int l_Animator_ClearMorphWeights(lua_State* L) {
     for (size_t i = 0; i < an->morphWeightsManual.size(); ++i) {
         an->morphWeightsManual[i] = std::nanf("");
     }
+    ResetAnimatorVelocityHistory(an);
     return 0;
 }
 
@@ -2507,6 +2543,7 @@ static int l_Animator_Play(lua_State* L) {
     an->currentState = nm;
     an->activeClip   = it->second;
     an->currentTime  = 0.0f;
+    ResetAnimatorVelocityHistory(an);
 
     // 立即计算一帧关节矩阵 (允许用户 Play() 后立即 GetJointMatrices)
     if (an->skeletonPtr && an->skeletonPtr->alive) {
@@ -2523,6 +2560,7 @@ static int l_Animator_Stop(lua_State* L) {
     an->activeClip = nullptr;
     an->currentTime = 0.0f;
     an->prevTime    = 0.0f;     // Step 4: 重置, 防止后续 Update 触发跨周期 event
+    ResetAnimatorVelocityHistory(an);
     // Step 4: 清 crossfade
     an->crossfadeTarget.clear();
     an->crossfadeClip     = nullptr;
@@ -2650,6 +2688,7 @@ static int l_Animator_Crossfade(lua_State* L) {
         an->activeClip   = it->second;
         an->currentTime  = 0.0f;
         an->prevTime     = 0.0f;
+        ResetAnimatorVelocityHistory(an);
         an->crossfadeTarget.clear();
         an->crossfadeClip = nullptr;
         an->crossfadeProgress = 0.0f;
@@ -3326,21 +3365,14 @@ static int DrawSkinnedMorphMeshGPU(lua_State* L, SkinnedMeshAsset* sm, Animator*
                       && modelMat[8]==0 && modelMat[9]==0 && modelMat[11]==0
                       && modelMat[12]==0 && modelMat[13]==0 && modelMat[14]==0);
 
-    const float* jointPtr;
     std::vector<float> finalJoints;
-    if (isIdentity) {
-        jointPtr = an->jointMatrices.data();
-    } else {
-        finalJoints.resize((size_t)jCnt * 16);
-        Mat4 model;
-        std::memcpy(model.m, modelMat, sizeof(model.m));
-        for (int j = 0; j < jCnt; ++j) {
-            Mat4 J;
-            std::memcpy(J.m, &an->jointMatrices[j * 16], sizeof(J.m));
-            Mat4 R = model * J;
-            std::memcpy(&finalJoints[j * 16], R.m, sizeof(R.m));
-        }
-        jointPtr = finalJoints.data();
+    std::vector<float> prevFinalJoints;
+    const float* jointPtr = PrepareJointPalette(modelMat, an->jointMatrices, jCnt, isIdentity, finalJoints);
+    const float* prevJointPtr = nullptr;
+    int prevJCnt = 0;
+    if (an->velocityHistoryValid && (int)(an->prevJointMatrices.size() / 16) >= jCnt) {
+        prevJointPtr = PrepareJointPalette(modelMat, an->prevJointMatrices, jCnt, isIdentity, prevFinalJoints);
+        prevJCnt = prevJointPtr ? jCnt : 0;
     }
 
     // 3. morph weights (lazy init: 若 Update 还未填充, 用 0)
@@ -3360,7 +3392,10 @@ static int DrawSkinnedMorphMeshGPU(lua_State* L, SkinnedMeshAsset* sm, Animator*
 
     g_render->DrawSkinnedMorphMeshMaterial(sm->gpuSkinnedMorphMeshId, matDesc,
                                               jointPtr, jCnt,
-                                              morphW, effMorphN);
+                                              morphW, effMorphN,
+                                              prevJointPtr, prevJCnt,
+                                              an->velocityHistoryValid ? an->prevMorphWeights.data() : nullptr,
+                                              an->velocityHistoryValid ? (int)an->prevMorphWeights.size() : 0);
     lua_pushboolean(L, 1);
     return 1;
 }
@@ -3476,25 +3511,19 @@ static int DrawSkinnedMeshGPU(lua_State* L, SkinnedMeshAsset* sm, Animator* an,
                       && modelMat[8]==0 && modelMat[9]==0 && modelMat[11]==0
                       && modelMat[12]==0 && modelMat[13]==0 && modelMat[14]==0);
 
-    const float* jointPtr;
     std::vector<float> finalJoints;
-    if (isIdentity) {
-        jointPtr = an->jointMatrices.data();
-    } else {
-        finalJoints.resize((size_t)jCnt * 16);
-        Mat4 model;
-        std::memcpy(model.m, modelMat, sizeof(model.m));
-        for (int j = 0; j < jCnt; ++j) {
-            Mat4 J;
-            std::memcpy(J.m, &an->jointMatrices[j * 16], sizeof(J.m));
-            Mat4 R = model * J;     // result = modelMat × jointMat
-            std::memcpy(&finalJoints[j * 16], R.m, sizeof(R.m));
-        }
-        jointPtr = finalJoints.data();
+    std::vector<float> prevFinalJoints;
+    const float* jointPtr = PrepareJointPalette(modelMat, an->jointMatrices, jCnt, isIdentity, finalJoints);
+    const float* prevJointPtr = nullptr;
+    int prevJCnt = 0;
+    if (an->velocityHistoryValid && (int)(an->prevJointMatrices.size() / 16) >= jCnt) {
+        prevJointPtr = PrepareJointPalette(modelMat, an->prevJointMatrices, jCnt, isIdentity, prevFinalJoints);
+        prevJCnt = prevJointPtr ? jCnt : 0;
     }
 
     // 3. 调用 backend 渲染
-    g_render->DrawSkinnedMeshMaterial(sm->gpuSkinnedMeshId, matDesc, jointPtr, jCnt);
+    g_render->DrawSkinnedMeshMaterial(sm->gpuSkinnedMeshId, matDesc, jointPtr, jCnt,
+                                      prevJointPtr, prevJCnt);
     lua_pushboolean(L, 1);
     return 1;
 }

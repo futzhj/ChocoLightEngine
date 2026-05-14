@@ -10,10 +10,10 @@
  *   - Process: blit depth -> SSR raw [+jitter] -> [temporal] -> [blur] -> composite
  *   - 辅助: InvertMat4 / Mat4Mul / Halton-2,3 8-sample 静态表
  *
- * Phase E.12 (用户拍板 2026-05-14): TAA-style temporal SSR.
+ * Phase E.12/E.13: TAA-style temporal SSR.
  *   - full-res RGBA16F history × 2 ping-pong
  *   - Halton-2,3 8-sample jitter (±0.5 pixel) 默认启用
- *   - reverse-reprojection from depth (无 G-buffer velocity 改动)
+ *   - velocity buffer reprojection; missing velocity 时 fallback 到 depth reverse-reprojection
  *   - neighborhood AABB clip rejection 默认
  */
 
@@ -418,6 +418,7 @@ void Process(uint32_t hdrFbo, uint32_t hdrTex) {
             g.backend->DrawSSRTemporal(g.reflectTex,
                                        g.historyTexs[readIdx],
                                        g.depthTex,
+                                       g.backend->GetHDRVelocityTex(hdrFbo),
                                        g.historyFbos[writeIdx],
                                        g.srcW, g.srcH,
                                        reprojMat, invProj,

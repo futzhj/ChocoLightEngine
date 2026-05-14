@@ -54,6 +54,7 @@ void ReleaseRT() {
     g.sceneTex = 0;
     g.width = 0;
     g.height = 0;
+    if (g.backend) g.backend->ResetVelocityHistory();
 }
 
 // 内部辅助: 创建 RT 资源 (失败返回 false 并清理)
@@ -64,7 +65,8 @@ bool CreateRT(int w, int h) {
     if (w <= 0 || h <= 0) return false;
     uint32_t tex = 0;
     uint32_t normalTex = 0;
-    uint32_t fbo = g.backend->CreateHDRFBO(w, h, &tex, &normalTex);
+    uint32_t velocityTex = 0;
+    uint32_t fbo = g.backend->CreateHDRFBO(w, h, &tex, &normalTex, &velocityTex);
     if (!fbo || !tex) {
         if (fbo || tex) g.backend->DeleteHDRFBO(fbo, tex);  // 部分失败兜底
         return false;
@@ -73,7 +75,8 @@ bool CreateRT(int w, int h) {
     g.sceneTex = tex;
     g.width = w;
     g.height = h;
-    // normalTex 由 backend 内部 map 管理 + GetHDRNormalTex 暴露给 SSAO; 此处不需 cache.
+    // normalTex / velocityTex 由 backend 内部 map 管理; 此处不需 cache.
+    g.backend->ResetVelocityHistory();
     return true;
 }
 
@@ -292,6 +295,7 @@ void EndScene() {
 
     // Tonemap + sRGB encode → default fb (E.3.4 多 operator; 输入已含 bloom + lensDirt + streak + lensFlare 的 HDR RT)
     g.backend->DrawTonemapFullscreen(g.sceneTex, exposure, g.gamma, g.tonemap);
+    g.backend->CommitVelocityHistory();
 }
 
 // ==================== 曝光 / Gamma ====================
@@ -319,6 +323,9 @@ int GetTonemapper() { return g.tonemap; }
 
 uint32_t GetSceneTexture() { return g.sceneTex; }
 uint32_t GetFBO()          { return g.fbo; }    // Phase E.8.x — SSAO 拿 normal tex 用
+uint32_t GetVelocityTexture() {
+    return (g.backend && g.fbo) ? g.backend->GetHDRVelocityTex(g.fbo) : 0;
+}
 int      GetWidth()        { return g.width; }
 int      GetHeight()       { return g.height; }
 

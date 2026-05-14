@@ -13,7 +13,7 @@
  *       * Composite 用内部临时 RT 解 feedback loop (读 HDR + 加性写 HDR)
  *       * Phase E.10: 可选 half-res Gaussian blur
  *       * Phase E.11: 可选 depth-aware bilateral blur
- *       * Phase E.12: 可选 Temporal SSR (jitter + reverse reprojection + history ping-pong)
+ *       * Phase E.12/E.13: 可选 Temporal SSR (jitter + velocity/fallback reprojection + history ping-pong)
  *   - Legacy 后端不支持: Enable 返 false (SupportsSSR 默认 no-op).
  *
  * 复用 Phase E.8.x G-buffer view-space normal:
@@ -27,7 +27,8 @@
  *     2. DrawSSR(depthTex, normalTex, hdrTex, reflectFbo, w, h,
  *                 proj, invProj, maxSteps, stepSize, thickness,
  *                 maxDist, edgeFade, jitterX, jitterY)             ← raw reflection (RGBA16F)
- *     3. DrawSSRTemporal(reflectTex, historyTex, depthTex, ...)    ← optional temporal accumulation
+ *     3. DrawSSRTemporal(reflectTex, historyTex, depthTex, velocityTex, ...)
+ *                                                                    ← optional temporal accumulation
  *     4. DrawSSRBlur(srcForBlur, depthTex, ...)                    ← optional blur
  *     5. DrawSSRComposite(finalReflectTex, hdrFbo, w, h, intensity)← HDR += reflect.rgb * reflect.a * intensity
  *

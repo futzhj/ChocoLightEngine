@@ -359,6 +359,39 @@ do
 end
 
 -- ============================================================
+-- D-T5+: MeshRenderer 第二帧把上一帧 model matrix 传给 mesh:Draw
+-- ============================================================
+do
+    local gfx, calls = makeMockGraphics()
+    installMockLight(gfx)
+
+    local drawCalls = {}
+    local w = World.new()
+    local mockMesh = {}
+    function mockMesh:Draw(a, prev)
+        drawCalls[#drawCalls+1] = {a=a, prev=prev}
+        calls[#calls+1] = {fn="mesh:Draw", args={a, prev}}
+    end
+
+    w:CreateEntity():Add("Transform3D", {})
+                    :Add("Camera3D",    {active=true})
+    local e = w:CreateEntity():Add("Transform3D", {x=1, y=2, z=3})
+                            :Add("MeshRenderer", {mesh=mockMesh})
+
+    w:Render()
+    e._comps.Transform3D.x = 4
+    w:Render()
+
+    eq(#drawCalls, 2, "D-T5+: mesh should draw in both frames")
+    if drawCalls[1].prev ~= nil then fail("D-T5+: first frame should not pass previous model") end
+    if type(drawCalls[2].prev) ~= "table" then fail("D-T5+: second frame should pass previous model") end
+    eq(drawCalls[2].prev[13], 1, "D-T5+: previous model keeps first-frame x")
+    eq(drawCalls[2].prev[14], 2, "D-T5+: previous model keeps first-frame y")
+    eq(drawCalls[2].prev[15], 3, "D-T5+: previous model keeps first-frame z")
+    pass("D-T5+: MeshRenderer forwards previous model matrix")
+end
+
+-- ============================================================
 -- D-T7: MarkRenderNetworked 把内置 component 标 networked
 -- ============================================================
 do

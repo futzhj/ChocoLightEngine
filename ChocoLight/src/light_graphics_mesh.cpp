@@ -54,6 +54,31 @@ static MeshUserdata* CheckMesh(lua_State* L, int idx) {
     return (MeshUserdata*)luaL_checkudata(L, idx, MESH_MT);
 }
 
+static bool ReadMat4FromTable(lua_State* L, int idx, float* outMat) {
+    if (lua_type(L, idx) != LUA_TTABLE) return false;
+    for (int i = 0; i < 16; ++i) {
+        lua_rawgeti(L, idx, i + 1);
+        if (lua_type(L, -1) != LUA_TNUMBER) {
+            lua_pop(L, 1);
+            return false;
+        }
+        outMat[i] = (float)lua_tonumber(L, -1);
+        lua_pop(L, 1);
+    }
+    return true;
+}
+
+static bool TrySetPreviousModelMatrix(lua_State* L, int idx) {
+    if (!g_render || lua_type(L, idx) != LUA_TTABLE) return false;
+    float prevModel[16];
+    if (!ReadMat4FromTable(L, idx, prevModel)) {
+        luaL_error(L, "previous model matrix must be a 16-element table");
+        return false;
+    }
+    g_render->SetNextPreviousModelMatrix(prevModel);
+    return true;
+}
+
 // ==================== Mesh.New(vertices, indices) ====================
 // 失败: 返回 nil + err
 static int l_Mesh_New(lua_State* L) {
@@ -598,10 +623,14 @@ static int l_Mesh_Draw(lua_State* L) {
     if (!g_render || !ud->meshId) return 0;
 
     int t = lua_type(L, 2);
-    if (t == LUA_TUSERDATA) {
+    if (t == LUA_TTABLE) {
+        TrySetPreviousModelMatrix(L, 2);
+        g_render->DrawMesh(ud->meshId, 0);
+    } else if (t == LUA_TUSERDATA) {
         // 新路径: material 路径
         const MaterialDesc* desc = CheckMaterialUserdata(L, 2);
         if (desc) {
+            TrySetPreviousModelMatrix(L, 3);
             g_render->DrawMeshMaterial(ud->meshId, desc);
         } else {
             // 不是 Material userdata, 报错
@@ -609,7 +638,8 @@ static int l_Mesh_Draw(lua_State* L) {
         }
     } else {
         // 老路径: integer / nil
-        uint32_t texId = (uint32_t)luaL_optinteger(L, 2, 0);
+        TrySetPreviousModelMatrix(L, 3);
+        uint32_t texId = (t == LUA_TNUMBER || t == LUA_TSTRING) ? (uint32_t)lua_tointeger(L, 2) : 0;
         g_render->DrawMesh(ud->meshId, texId);
     }
     return 0;

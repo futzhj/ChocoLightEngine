@@ -194,6 +194,17 @@ if mesh then
     mesh:Draw(m)
     pass("mesh:Draw(material) new API ok")
 
+    local prevMat = {
+        1,0,0,0,
+        0,1,0,0,
+        0,0,1,0,
+        -1,0,0,1,
+    }
+    mesh:Draw(prevMat)
+    mesh:Draw(0, prevMat)
+    mesh:Draw(m, prevMat)
+    pass("mesh:Draw previous model matrix overloads ok")
+
     -- 错误参数: string
     local ok_bad = pcall(function() mesh:Draw("invalid") end)
     -- string 是 LUA_TSTRING, 不是 USERDATA 也不是 NUMBER, 走老路径 luaL_optinteger 默认 0 → ok

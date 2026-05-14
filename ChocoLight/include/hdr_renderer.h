@@ -135,6 +135,9 @@ uint32_t GetSceneTexture();
 /// 当前 HDR RT 的 FBO id (Enable 未调时 = 0); Phase E.8.x — SSAO/调试拿 normal tex
 uint32_t GetFBO();
 
+/// 当前 HDR RT 的 velocity 纹理 id (Enable 未调或后端不支持时 = 0)
+uint32_t GetVelocityTexture();
+
 /// 当前 HDR RT 宽度 / 高度 (未 Enable 时 = 0)
 int GetWidth();
 int GetHeight();

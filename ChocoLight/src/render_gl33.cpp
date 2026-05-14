@@ -124,16 +124,22 @@ layout(location=2) in vec2 aUV;
 layout(location=3) in vec4 aColor;
 uniform mat4 uMVP;
 uniform mat4 uModel;
+uniform mat4 uPrevViewProj;
+uniform mat4 uPrevModel;
 out vec3 vNormalW;
 out vec3 vWorldPos;
 out vec2 vTexCoord;
 out vec4 vColor;
+out vec4 vCurClip;
+out vec4 vPrevClip;
 void main() {
     gl_Position = uMVP * vec4(aPos, 1.0);
     vNormalW = mat3(uModel) * aNormal;
     vWorldPos = (uModel * vec4(aPos, 1.0)).xyz;
     vTexCoord = aUV;
     vColor = aColor;
+    vCurClip = gl_Position;
+    vPrevClip = uPrevViewProj * (uPrevModel * vec4(aPos, 1.0));
 }
 )";
 
@@ -149,25 +155,39 @@ layout(location=4) in uvec4 aJoints;
 layout(location=5) in vec4  aWeights;
 uniform mat4 uMVP;
 uniform mat4 uModel;
+uniform mat4 uPrevViewProj;
+uniform mat4 uPrevModel;
 layout(std140) uniform JointBlock {
     mat4 uJointMats[64];
+};
+layout(std140) uniform PrevJointBlock {
+    mat4 uPrevJointMats[64];
 };
 out vec3 vNormalW;
 out vec3 vWorldPos;
 out vec2 vTexCoord;
 out vec4 vColor;
+out vec4 vCurClip;
+out vec4 vPrevClip;
 void main() {
     mat4 blend = aWeights.x * uJointMats[aJoints.x]
                + aWeights.y * uJointMats[aJoints.y]
                + aWeights.z * uJointMats[aJoints.z]
                + aWeights.w * uJointMats[aJoints.w];
+    mat4 prevBlend = aWeights.x * uPrevJointMats[aJoints.x]
+                   + aWeights.y * uPrevJointMats[aJoints.y]
+                   + aWeights.z * uPrevJointMats[aJoints.z]
+                   + aWeights.w * uPrevJointMats[aJoints.w];
     vec4 skinnedPos    = blend * vec4(aPos, 1.0);
+    vec4 prevSkinnedPos = prevBlend * vec4(aPos, 1.0);
     vec3 skinnedNormal = mat3(blend) * aNormal;
     gl_Position = uMVP * skinnedPos;
     vNormalW    = mat3(uModel) * skinnedNormal;
     vWorldPos   = (uModel * skinnedPos).xyz;
     vTexCoord   = aUV;
     vColor      = aColor;
+    vCurClip    = gl_Position;
+    vPrevClip   = uPrevViewProj * (uPrevModel * prevSkinnedPos);
 }
 )";
 
@@ -187,11 +207,17 @@ layout(location=4) in uvec4 aJoints;
 layout(location=5) in vec4  aWeights;
 uniform mat4 uMVP;
 uniform mat4 uModel;
+uniform mat4 uPrevViewProj;
+uniform mat4 uPrevModel;
 layout(std140) uniform JointBlock {
     mat4 uJointMats[64];
 };
+layout(std140) uniform PrevJointBlock {
+    mat4 uPrevJointMats[64];
+};
 const int MORPH_MAX = 8;
 uniform float     uMorphWeights[MORPH_MAX];
+uniform float     uPrevMorphWeights[MORPH_MAX];
 uniform int       uMorphCount;
 uniform int       uHasMorphNormal;
 uniform sampler2D uMorphPosDelta;
@@ -200,15 +226,20 @@ out vec3 vNormalW;
 out vec3 vWorldPos;
 out vec2 vTexCoord;
 out vec4 vColor;
+out vec4 vCurClip;
+out vec4 vPrevClip;
 void main() {
     // 1. Morph: base + Σ (weight × delta)
     vec3 morphedPos    = aPos;
+    vec3 prevMorphedPos = aPos;
     vec3 morphedNormal = aNormal;
     for (int i = 0; i < MORPH_MAX; ++i) {
         if (i >= uMorphCount) break;
         float w = uMorphWeights[i];
-        if (w == 0.0) continue;
-        morphedPos += w * texelFetch(uMorphPosDelta, ivec2(gl_VertexID, i), 0).xyz;
+        float pw = uPrevMorphWeights[i];
+        vec3 dPos = texelFetch(uMorphPosDelta, ivec2(gl_VertexID, i), 0).xyz;
+        morphedPos += w * dPos;
+        prevMorphedPos += pw * dPos;
         if (uHasMorphNormal == 1) {
             morphedNormal += w * texelFetch(uMorphNrmDelta, ivec2(gl_VertexID, i), 0).xyz;
         }
@@ -218,13 +249,20 @@ void main() {
                + aWeights.y * uJointMats[aJoints.y]
                + aWeights.z * uJointMats[aJoints.z]
                + aWeights.w * uJointMats[aJoints.w];
+    mat4 prevBlend = aWeights.x * uPrevJointMats[aJoints.x]
+                   + aWeights.y * uPrevJointMats[aJoints.y]
+                   + aWeights.z * uPrevJointMats[aJoints.z]
+                   + aWeights.w * uPrevJointMats[aJoints.w];
     vec4 skinnedPos    = blend * vec4(morphedPos, 1.0);
+    vec4 prevSkinnedPos = prevBlend * vec4(prevMorphedPos, 1.0);
     vec3 skinnedNormal = mat3(blend) * morphedNormal;
     gl_Position = uMVP * skinnedPos;
     vNormalW    = mat3(uModel) * skinnedNormal;
     vWorldPos   = (uModel * skinnedPos).xyz;
     vTexCoord   = aUV;
     vColor      = aColor;
+    vCurClip    = gl_Position;
+    vPrevClip   = uPrevViewProj * (uPrevModel * prevSkinnedPos);
 }
 )";
 
@@ -234,6 +272,8 @@ precision mediump float;
 in vec2 vTexCoord;
 in vec4 vColor;
 in vec3 vNormalW;                // Phase E.8.x: 供 MRT normal 输出
+in vec4 vCurClip;
+in vec4 vPrevClip;
 uniform vec4 uColor;
 uniform vec3 uEmissive;
 uniform sampler2D uTexBaseColor;
@@ -243,8 +283,10 @@ uniform int uHasEmissiveTex;
 uniform int uAlphaMode;       // 0=opaque, 1=blend, 2=mask
 uniform float uAlphaCutoff;
 uniform mat3 uViewMat3;          // Phase E.8.x: world->view 3x3
+uniform int uHasVelocityHistory;
 layout(location=0) out vec4 FragColor;
 layout(location=1) out vec2 FragNormal;   // Phase E.8.x: view-space normal MRT
+layout(location=2) out vec2 FragVelocity;
 void main() {
     vec4 base = uColor * vColor;
     if (uHasBaseColorTex == 1) base *= texture(uTexBaseColor, vTexCoord);
@@ -256,6 +298,13 @@ void main() {
     // Phase E.8.x: encode view-space normal 到 MRT slot 1
     vec3 nView = normalize(uViewMat3 * vNormalW);
     FragNormal = nView.xy * 0.5 + 0.5;
+    if (uHasVelocityHistory == 1) {
+        vec2 curUV = (vCurClip.xy / max(vCurClip.w, 1e-6)) * 0.5 + 0.5;
+        vec2 prevUV = (vPrevClip.xy / max(vPrevClip.w, 1e-6)) * 0.5 + 0.5;
+        FragVelocity = curUV - prevUV;
+    } else {
+        FragVelocity = vec2(0.0);
+    }
 }
 )";
 
@@ -266,6 +315,8 @@ in vec3 vNormalW;
 in vec3 vWorldPos;
 in vec2 vTexCoord;
 in vec4 vColor;
+in vec4 vCurClip;
+in vec4 vPrevClip;
 uniform vec4 uColor;
 uniform vec3 uEmissive;
 uniform float uMetallic;
@@ -294,8 +345,10 @@ uniform vec3  uPointLightPos[4];
 uniform vec3  uPointLightColor[4];
 uniform float uPointLightRange[4];
 uniform mat3  uViewMat3;        // Phase E.8.x: world->view 3x3 (为 G-buffer normal MRT 用)
+uniform int   uHasVelocityHistory;
 layout(location=0) out vec4 FragColor;
 layout(location=1) out vec2 FragNormal;   // Phase E.8.x: view-space normal MRT (encode xy [0,1])
+layout(location=2) out vec2 FragVelocity;
 const float PI = 3.14159265;
 
 vec3 BRDF(vec3 N, vec3 V, vec3 L, vec3 baseColor, float metallic, float roughness, vec3 F0) {
@@ -381,6 +434,13 @@ void main() {
     // Phase E.8.x: 世界法线 -> view-space 法线, encode 到 RG16F (xy [-1,1] -> [0,1])
     vec3 nView = normalize(uViewMat3 * N);
     FragNormal = nView.xy * 0.5 + 0.5;
+    if (uHasVelocityHistory == 1) {
+        vec2 curUV = (vCurClip.xy / max(vCurClip.w, 1e-6)) * 0.5 + 0.5;
+        vec2 prevUV = (vPrevClip.xy / max(vPrevClip.w, 1e-6)) * 0.5 + 0.5;
+        FragVelocity = curUV - prevUV;
+    } else {
+        FragVelocity = vec2(0.0);
+    }
 }
 )";
 
@@ -395,16 +455,22 @@ layout(location=2) in vec2 aUV;
 layout(location=3) in vec4 aColor;
 uniform mat4 uMVP;
 uniform mat4 uModel;
+uniform mat4 uPrevViewProj;
+uniform mat4 uPrevModel;
 out vec3 vNormalW;
 out vec3 vWorldPos;
 out vec2 vTexCoord;
 out vec4 vColor;
+out vec4 vCurClip;
+out vec4 vPrevClip;
 void main() {
     gl_Position = uMVP * vec4(aPos, 1.0);
     vNormalW = mat3(uModel) * aNormal;
     vWorldPos = (uModel * vec4(aPos, 1.0)).xyz;
     vTexCoord = aUV;
     vColor = aColor;
+    vCurClip = gl_Position;
+    vPrevClip = uPrevViewProj * (uPrevModel * vec4(aPos, 1.0));
 }
 )";
 
@@ -420,25 +486,39 @@ layout(location=4) in uvec4 aJoints;
 layout(location=5) in vec4  aWeights;
 uniform mat4 uMVP;
 uniform mat4 uModel;
+uniform mat4 uPrevViewProj;
+uniform mat4 uPrevModel;
 layout(std140) uniform JointBlock {
     mat4 uJointMats[64];
+};
+layout(std140) uniform PrevJointBlock {
+    mat4 uPrevJointMats[64];
 };
 out vec3 vNormalW;
 out vec3 vWorldPos;
 out vec2 vTexCoord;
 out vec4 vColor;
+out vec4 vCurClip;
+out vec4 vPrevClip;
 void main() {
     mat4 blend = aWeights.x * uJointMats[aJoints.x]
                + aWeights.y * uJointMats[aJoints.y]
                + aWeights.z * uJointMats[aJoints.z]
                + aWeights.w * uJointMats[aJoints.w];
+    mat4 prevBlend = aWeights.x * uPrevJointMats[aJoints.x]
+                   + aWeights.y * uPrevJointMats[aJoints.y]
+                   + aWeights.z * uPrevJointMats[aJoints.z]
+                   + aWeights.w * uPrevJointMats[aJoints.w];
     vec4 skinnedPos    = blend * vec4(aPos, 1.0);
+    vec4 prevSkinnedPos = prevBlend * vec4(aPos, 1.0);
     vec3 skinnedNormal = mat3(blend) * aNormal;
     gl_Position = uMVP * skinnedPos;
     vNormalW    = mat3(uModel) * skinnedNormal;
     vWorldPos   = (uModel * skinnedPos).xyz;
     vTexCoord   = aUV;
     vColor      = aColor;
+    vCurClip    = gl_Position;
+    vPrevClip   = uPrevViewProj * (uPrevModel * prevSkinnedPos);
 }
 )";
 
@@ -455,11 +535,17 @@ layout(location=4) in uvec4 aJoints;
 layout(location=5) in vec4  aWeights;
 uniform mat4 uMVP;
 uniform mat4 uModel;
+uniform mat4 uPrevViewProj;
+uniform mat4 uPrevModel;
 layout(std140) uniform JointBlock {
     mat4 uJointMats[64];
 };
+layout(std140) uniform PrevJointBlock {
+    mat4 uPrevJointMats[64];
+};
 const int MORPH_MAX = 8;
 uniform float     uMorphWeights[MORPH_MAX];
+uniform float     uPrevMorphWeights[MORPH_MAX];
 uniform int       uMorphCount;
 uniform int       uHasMorphNormal;
 uniform sampler2D uMorphPosDelta;
@@ -468,14 +554,19 @@ out vec3 vNormalW;
 out vec3 vWorldPos;
 out vec2 vTexCoord;
 out vec4 vColor;
+out vec4 vCurClip;
+out vec4 vPrevClip;
 void main() {
     vec3 morphedPos    = aPos;
+    vec3 prevMorphedPos = aPos;
     vec3 morphedNormal = aNormal;
     for (int i = 0; i < MORPH_MAX; ++i) {
         if (i >= uMorphCount) break;
         float w = uMorphWeights[i];
-        if (w == 0.0) continue;
-        morphedPos += w * texelFetch(uMorphPosDelta, ivec2(gl_VertexID, i), 0).xyz;
+        float pw = uPrevMorphWeights[i];
+        vec3 dPos = texelFetch(uMorphPosDelta, ivec2(gl_VertexID, i), 0).xyz;
+        morphedPos += w * dPos;
+        prevMorphedPos += pw * dPos;
         if (uHasMorphNormal == 1) {
             morphedNormal += w * texelFetch(uMorphNrmDelta, ivec2(gl_VertexID, i), 0).xyz;
         }
@@ -484,13 +575,20 @@ void main() {
                + aWeights.y * uJointMats[aJoints.y]
                + aWeights.z * uJointMats[aJoints.z]
                + aWeights.w * uJointMats[aJoints.w];
+    mat4 prevBlend = aWeights.x * uPrevJointMats[aJoints.x]
+                   + aWeights.y * uPrevJointMats[aJoints.y]
+                   + aWeights.z * uPrevJointMats[aJoints.z]
+                   + aWeights.w * uPrevJointMats[aJoints.w];
     vec4 skinnedPos    = blend * vec4(morphedPos, 1.0);
+    vec4 prevSkinnedPos = prevBlend * vec4(prevMorphedPos, 1.0);
     vec3 skinnedNormal = mat3(blend) * morphedNormal;
     gl_Position = uMVP * skinnedPos;
     vNormalW    = mat3(uModel) * skinnedNormal;
     vWorldPos   = (uModel * skinnedPos).xyz;
     vTexCoord   = aUV;
     vColor      = aColor;
+    vCurClip    = gl_Position;
+    vPrevClip   = uPrevViewProj * (uPrevModel * prevSkinnedPos);
 }
 )";
 
@@ -500,6 +598,8 @@ static const char* FS_UNLIT_SOURCE = R"(
 in vec2 vTexCoord;
 in vec4 vColor;
 in vec3 vNormalW;                // Phase E.8.x
+in vec4 vCurClip;
+in vec4 vPrevClip;
 uniform vec4 uColor;
 uniform vec3 uEmissive;
 uniform sampler2D uTexBaseColor;
@@ -509,8 +609,10 @@ uniform int uHasEmissiveTex;
 uniform int uAlphaMode;
 uniform float uAlphaCutoff;
 uniform mat3 uViewMat3;          // Phase E.8.x: world->view 3x3
+uniform int uHasVelocityHistory;
 layout(location=0) out vec4 FragColor;
 layout(location=1) out vec2 FragNormal;   // Phase E.8.x: view-space normal MRT
+layout(location=2) out vec2 FragVelocity;
 void main() {
     vec4 base = uColor * vColor;
     if (uHasBaseColorTex == 1) base *= texture(uTexBaseColor, vTexCoord);
@@ -521,6 +623,13 @@ void main() {
     FragColor = vec4(base.rgb + emissive, outAlpha);
     vec3 nView = normalize(uViewMat3 * vNormalW);
     FragNormal = nView.xy * 0.5 + 0.5;
+    if (uHasVelocityHistory == 1) {
+        vec2 curUV = (vCurClip.xy / max(vCurClip.w, 1e-6)) * 0.5 + 0.5;
+        vec2 prevUV = (vPrevClip.xy / max(vPrevClip.w, 1e-6)) * 0.5 + 0.5;
+        FragVelocity = curUV - prevUV;
+    } else {
+        FragVelocity = vec2(0.0);
+    }
 }
 )";
 
@@ -531,6 +640,8 @@ in vec3 vNormalW;
 in vec3 vWorldPos;
 in vec2 vTexCoord;
 in vec4 vColor;
+in vec4 vCurClip;
+in vec4 vPrevClip;
 uniform vec4 uColor;
 uniform vec3 uEmissive;
 uniform float uMetallic;
@@ -559,8 +670,10 @@ uniform vec3  uPointLightPos[4];
 uniform vec3  uPointLightColor[4];
 uniform float uPointLightRange[4];
 uniform mat3  uViewMat3;        // Phase E.8.x: world->view 3x3
+uniform int   uHasVelocityHistory;
 layout(location=0) out vec4 FragColor;
 layout(location=1) out vec2 FragNormal;   // Phase E.8.x: view-space normal MRT
+layout(location=2) out vec2 FragVelocity;
 const float PI = 3.14159265;
 
 vec3 BRDF(vec3 N, vec3 V, vec3 L, vec3 baseColor, float metallic, float roughness, vec3 F0) {
@@ -645,6 +758,13 @@ void main() {
     // Phase E.8.x: 世界法线 -> view-space 法线, encode 到 RG16F
     vec3 nView = normalize(uViewMat3 * N);
     FragNormal = nView.xy * 0.5 + 0.5;
+    if (uHasVelocityHistory == 1) {
+        vec2 curUV = (vCurClip.xy / max(vCurClip.w, 1e-6)) * 0.5 + 0.5;
+        vec2 prevUV = (vPrevClip.xy / max(vPrevClip.w, 1e-6)) * 0.5 + 0.5;
+        FragVelocity = curUV - prevUV;
+    } else {
+        FragVelocity = vec2(0.0);
+    }
 }
 )";
 #endif
@@ -1762,24 +1882,31 @@ out vec4 FragColor;
 uniform sampler2D uCurReflectTex;  // 当前帧 SSR raw (slot 0)
 uniform sampler2D uHistoryTex;     // 上一帧 temporal 输出 (slot 1)
 uniform sampler2D uDepthTex;       // SSR depth (slot 2)
+uniform sampler2D uVelocityTex;    // HDR velocity buffer (slot 3), currentUV - previousUV
 uniform mat4  uReprojectMat;       // prevViewProj * invCurViewProj
 uniform mat4  uInvProj;            // 备用 (当前 shader 内可不用)
 uniform vec2  uTexel;              // 1.0 / RT 尺寸
 uniform float uBlendAlpha;         // history 权重 [0.5, 0.99]
 uniform int   uRejectionMode;      // 0 = current-depth threshold, 1 = neighborhood clip
 uniform int   uHasHistory;         // 0 = 首帧, 1 = 累积
+uniform int   uHasVelocityTex;     // 1 = 用 velocityTex, 0 = E.12 matrix fallback
 
 void main() {
     vec4 cur = texture(uCurReflectTex, vUV);
 
     if (uHasHistory == 0) { FragColor = cur; return; }
 
-    // ① reproject: 当前像素 NDC -> 上一帧 NDC
+    // ① reproject: velocity buffer 优先; 无 velocity 时沿用 E.12 matrix fallback
     float depth = texture(uDepthTex, vUV).r;
-    vec4 ndc = vec4(vUV * 2.0 - 1.0, depth * 2.0 - 1.0, 1.0);
-    vec4 prevClip = uReprojectMat * ndc;
-    float w = max(prevClip.w, 1e-6);
-    vec2 prevUV = (prevClip.xy / w) * 0.5 + 0.5;
+    vec2 prevUV;
+    if (uHasVelocityTex == 1) {
+        prevUV = vUV - texture(uVelocityTex, vUV).rg;
+    } else {
+        vec4 ndc = vec4(vUV * 2.0 - 1.0, depth * 2.0 - 1.0, 1.0);
+        vec4 prevClip = uReprojectMat * ndc;
+        float w = max(prevClip.w, 1e-6);
+        prevUV = (prevClip.xy / w) * 0.5 + 0.5;
+    }
 
     // 越界 reject
     if (prevUV.x < 0.0 || prevUV.x > 1.0 ||
@@ -2112,12 +2239,14 @@ out vec4 FragColor;
 uniform sampler2D uCurReflectTex;
 uniform sampler2D uHistoryTex;
 uniform sampler2D uDepthTex;
+uniform sampler2D uVelocityTex;
 uniform mat4  uReprojectMat;
 uniform mat4  uInvProj;
 uniform vec2  uTexel;
 uniform float uBlendAlpha;
 uniform int   uRejectionMode;
 uniform int   uHasHistory;
+uniform int   uHasVelocityTex;
 
 void main() {
     vec4 cur = texture(uCurReflectTex, vUV);
@@ -2125,10 +2254,15 @@ void main() {
     if (uHasHistory == 0) { FragColor = cur; return; }
 
     float depth = texture(uDepthTex, vUV).r;
-    vec4 ndc = vec4(vUV * 2.0 - 1.0, depth * 2.0 - 1.0, 1.0);
-    vec4 prevClip = uReprojectMat * ndc;
-    float w = max(prevClip.w, 1e-6);
-    vec2 prevUV = (prevClip.xy / w) * 0.5 + 0.5;
+    vec2 prevUV;
+    if (uHasVelocityTex == 1) {
+        prevUV = vUV - texture(uVelocityTex, vUV).rg;
+    } else {
+        vec4 ndc = vec4(vUV * 2.0 - 1.0, depth * 2.0 - 1.0, 1.0);
+        vec4 prevClip = uReprojectMat * ndc;
+        float w = max(prevClip.w, 1e-6);
+        prevUV = (prevClip.xy / w) * 0.5 + 0.5;
+    }
 
     if (prevUV.x < 0.0 || prevUV.x > 1.0 ||
         prevUV.y < 0.0 || prevUV.y > 1.0) {
@@ -2216,6 +2350,10 @@ class GL33Backend : public RenderBackend {
     bool   depthTestEnabled = false;  // 当前深度测试状态 (默认关, 与 2D 兼容)
     Mat4   viewMatrix;                // Phase AS.2 — 视图矩阵 (LookAt 结果)
     bool   hasView          = false;  // 是否已 LoadView (false 表示用 modelview 直接)
+    Mat4   prevViewProj;
+    bool   hasPrevViewProjForVelocity = false;
+    bool   hasNextPrevModel = false;
+    Mat4   nextPrevModel;
 
     // Phase AS.4 — Lighting 状态 (CPU 镜像; DrawMeshMaterial 时上传 uniform)
     float dirLightDir[3]   = { 0.408f, 0.816f, 0.408f };
@@ -2237,8 +2375,10 @@ class GL33Backend : public RenderBackend {
     GLuint  programUnlitSkin = 0;
     GLuint  programPBRSkin   = 0;
     GLuint  uboJointMatrices = 0;
+    GLuint  uboPrevJointMatrices = 0;
     bool    gpuSkinningSupported = false;
     static constexpr GLuint UBO_BINDING_POINT = 0;     // 固定 binding point
+    static constexpr GLuint PREV_UBO_BINDING_POINT = 1;
     static constexpr int    SKIN_MAX_JOINTS   = 64;     // shader 内 uJointMats[64]
     // SkinnedMesh 资源池: ID 高位 0x80000000 区分普通 mesh
     std::unordered_map<uint32_t, MeshGPU> skinnedMeshes;
@@ -2278,6 +2418,7 @@ class GL33Backend : public RenderBackend {
     // CreateHDRFBO 写入 (仅 outNormalTex != null 时), DeleteHDRFBO 查询并释放.
     // GetHDRNormalTex(fbo) 仅读查找.
     std::unordered_map<uint32_t, uint32_t> hdrFboNormalTex;
+    std::unordered_map<uint32_t, uint32_t> hdrFboVelocityTex;
 
     // ---- Phase E.4 — Bloom 后处理 ----
     // 3 个 shader program (共用 vaoTonemap/vboTonemap 全屏 quad, 无独立 VAO)
@@ -2413,12 +2554,14 @@ class GL33Backend : public RenderBackend {
     GLint  locSSRTemporal_CurReflectTex = -1;
     GLint  locSSRTemporal_HistoryTex    = -1;
     GLint  locSSRTemporal_DepthTex      = -1;
+    GLint  locSSRTemporal_VelocityTex   = -1;
     GLint  locSSRTemporal_ReprojectMat  = -1;
     GLint  locSSRTemporal_InvProj       = -1;
     GLint  locSSRTemporal_Texel         = -1;
     GLint  locSSRTemporal_BlendAlpha    = -1;
     GLint  locSSRTemporal_RejectionMode = -1;
     GLint  locSSRTemporal_HasHistory    = -1;
+    GLint  locSSRTemporal_HasVelocityTex = -1;
 
     // Phase E.2.1 — Lighting2D dirty bit cache
     // 当 state->version 与此值相等时, UploadLighting2D 跳过所有 glUniform*v 调用
@@ -2503,6 +2646,24 @@ class GL33Backend : public RenderBackend {
     Mat4 ComputeMVP3D() const {
         Mat4 vm = hasView ? (viewMatrix * modelview) : modelview;
         return projection * vm;
+    }
+
+    Mat4 ComputeViewProj3D() const {
+        return projection * (hasView ? viewMatrix : Mat4::Identity());
+    }
+
+    void UploadVelocityUniforms(GLuint program3D, const Mat4& curModel, const Mat4* prevModelOverride) {
+        if (!program3D) return;
+        Mat4 curViewProj = ComputeViewProj3D();
+        Mat4 prevModel = prevModelOverride ? *prevModelOverride : curModel;
+        GLint locCurVP = glGetUniformLocation(program3D, "uCurViewProj");
+        GLint locPrevVP = glGetUniformLocation(program3D, "uPrevViewProj");
+        GLint locPrevM = glGetUniformLocation(program3D, "uPrevModel");
+        GLint locHas = glGetUniformLocation(program3D, "uHasVelocityHistory");
+        if (locCurVP >= 0) glUniformMatrix4fv(locCurVP, 1, GL_FALSE, curViewProj.m);
+        if (locPrevVP >= 0) glUniformMatrix4fv(locPrevVP, 1, GL_FALSE, prevViewProj.m);
+        if (locPrevM >= 0) glUniformMatrix4fv(locPrevM, 1, GL_FALSE, prevModel.m);
+        if (locHas >= 0) glUniform1i(locHas, hasPrevViewProjForVelocity ? 1 : 0);
     }
 
     // 确保 VBO 容量足够
@@ -2645,14 +2806,21 @@ public:
         glBindBuffer(GL_UNIFORM_BUFFER, uboJointMatrices);
         glBufferData(GL_UNIFORM_BUFFER, kRequiredUboBytes, nullptr, GL_DYNAMIC_DRAW);
         glBindBuffer(GL_UNIFORM_BUFFER, 0);
-        if (!uboJointMatrices) {
+        glGenBuffers(1, &uboPrevJointMatrices);
+        glBindBuffer(GL_UNIFORM_BUFFER, uboPrevJointMatrices);
+        glBufferData(GL_UNIFORM_BUFFER, kRequiredUboBytes, nullptr, GL_DYNAMIC_DRAW);
+        glBindBuffer(GL_UNIFORM_BUFFER, 0);
+        if (!uboJointMatrices || !uboPrevJointMatrices) {
             CC::Log(CC::LOG_WARN, "GL33: UBO creation failed");
             if (programUnlitSkin) { glDeleteProgram(programUnlitSkin); programUnlitSkin = 0; }
             if (programPBRSkin)   { glDeleteProgram(programPBRSkin);   programPBRSkin   = 0; }
+            if (uboJointMatrices) { glDeleteBuffers(1, &uboJointMatrices); uboJointMatrices = 0; }
+            if (uboPrevJointMatrices) { glDeleteBuffers(1, &uboPrevJointMatrices); uboPrevJointMatrices = 0; }
             return;
         }
         // 绑定 UBO 到固定 binding point 0
         glBindBufferBase(GL_UNIFORM_BUFFER, UBO_BINDING_POINT, uboJointMatrices);
+        glBindBufferBase(GL_UNIFORM_BUFFER, PREV_UBO_BINDING_POINT, uboPrevJointMatrices);
 
         // 4. 把 program 中的 "JointBlock" uniform block 关联到 binding point 0
         auto bindBlock = [&](GLuint prog) {
@@ -2662,8 +2830,17 @@ public:
                 glUniformBlockBinding(prog, blockIdx, UBO_BINDING_POINT);
             }
         };
+        auto bindPrevBlock = [&](GLuint prog) {
+            if (!prog) return;
+            GLuint blockIdx = glGetUniformBlockIndex(prog, "PrevJointBlock");
+            if (blockIdx != GL_INVALID_INDEX) {
+                glUniformBlockBinding(prog, blockIdx, PREV_UBO_BINDING_POINT);
+            }
+        };
         bindBlock(programUnlitSkin);
         bindBlock(programPBRSkin);
+        bindPrevBlock(programUnlitSkin);
+        bindPrevBlock(programPBRSkin);
 
         gpuSkinningSupported = true;
 
@@ -2687,6 +2864,8 @@ public:
             // morph program 也要绑定 JointBlock (与 skin 共享 UBO)
             bindBlock(programUnlitSkinMorph);
             bindBlock(programPBRSkinMorph);
+            bindPrevBlock(programUnlitSkinMorph);
+            bindPrevBlock(programPBRSkinMorph);
             morphTargetsSupported = true;
             CC::Log(CC::LOG_INFO, "GL33: Phase AX Morph Target shader compiled successfully");
         } else {
@@ -3239,16 +3418,19 @@ public:
             locSSRTemporal_CurReflectTex = glGetUniformLocation(programSSRTemporal, "uCurReflectTex");
             locSSRTemporal_HistoryTex    = glGetUniformLocation(programSSRTemporal, "uHistoryTex");
             locSSRTemporal_DepthTex      = glGetUniformLocation(programSSRTemporal, "uDepthTex");
+            locSSRTemporal_VelocityTex   = glGetUniformLocation(programSSRTemporal, "uVelocityTex");
             locSSRTemporal_ReprojectMat  = glGetUniformLocation(programSSRTemporal, "uReprojectMat");
             locSSRTemporal_InvProj       = glGetUniformLocation(programSSRTemporal, "uInvProj");
             locSSRTemporal_Texel         = glGetUniformLocation(programSSRTemporal, "uTexel");
             locSSRTemporal_BlendAlpha    = glGetUniformLocation(programSSRTemporal, "uBlendAlpha");
             locSSRTemporal_RejectionMode = glGetUniformLocation(programSSRTemporal, "uRejectionMode");
             locSSRTemporal_HasHistory    = glGetUniformLocation(programSSRTemporal, "uHasHistory");
+            locSSRTemporal_HasVelocityTex = glGetUniformLocation(programSSRTemporal, "uHasVelocityTex");
             glUseProgram(programSSRTemporal);
             if (locSSRTemporal_CurReflectTex >= 0) glUniform1i(locSSRTemporal_CurReflectTex, 0);  // slot 0
             if (locSSRTemporal_HistoryTex    >= 0) glUniform1i(locSSRTemporal_HistoryTex,    1);  // slot 1
             if (locSSRTemporal_DepthTex      >= 0) glUniform1i(locSSRTemporal_DepthTex,      2);  // slot 2
+            if (locSSRTemporal_VelocityTex   >= 0) glUniform1i(locSSRTemporal_VelocityTex,   3);
             glUseProgram(0);
             ssrTemporalSupported = true;
         } else {
@@ -3418,10 +3600,11 @@ public:
         ssrTemporalSupported = false;
         locSSR_JitterOffset          = -1;
         locSSRTemporal_CurReflectTex = locSSRTemporal_HistoryTex    = -1;
-        locSSRTemporal_DepthTex      = locSSRTemporal_ReprojectMat  = -1;
+        locSSRTemporal_DepthTex      = locSSRTemporal_VelocityTex   = -1;
+        locSSRTemporal_ReprojectMat  = -1;
         locSSRTemporal_InvProj       = locSSRTemporal_Texel         = -1;
         locSSRTemporal_BlendAlpha    = locSSRTemporal_RejectionMode = -1;
-        locSSRTemporal_HasHistory    = -1;
+        locSSRTemporal_HasHistory    = locSSRTemporal_HasVelocityTex = -1;
     }
 
     bool SupportsLit2D() const override { return lit2DSupported; }
@@ -3430,9 +3613,10 @@ public:
 
     bool SupportsHDR() const override { return tonemapSupported; }
 
-    /// 创建 HDR FBO: RGBA16F 颜色附件 + (可选) RG16F view-normal + Depth24 RBO
-    /// Phase E.8.x: outNormalTex != null 启用 MRT (glDrawBuffers(2, ...))
-    uint32_t CreateHDRFBO(int w, int h, uint32_t* outTex, uint32_t* outNormalTex) override {
+    /// 创建 HDR FBO: RGBA16F 颜色附件 + (可选) RG16F view-normal/velocity + Depth24 RBO
+    uint32_t CreateHDRFBO(int w, int h, uint32_t* outTex,
+                          uint32_t* outNormalTex,
+                          uint32_t* outVelocityTex) override {
         if (!tonemapSupported || w <= 0 || h <= 0 || !outTex) return 0;
 
         // 1. 创建 RGBA16F 颜色纹理 (GL_LINEAR + GL_CLAMP_TO_EDGE)
@@ -3461,12 +3645,30 @@ public:
             glBindTexture(GL_TEXTURE_2D, 0);
         }
 
+        GLuint velocityTex = 0;
+        if (outVelocityTex) {
+            glGenTextures(1, &velocityTex);
+            if (!velocityTex) {
+                glDeleteTextures(1, &tex);
+                if (normalTex) glDeleteTextures(1, &normalTex);
+                return 0;
+            }
+            glBindTexture(GL_TEXTURE_2D, velocityTex);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RG16F, w, h, 0, GL_RG, GL_FLOAT, nullptr);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+            glBindTexture(GL_TEXTURE_2D, 0);
+        }
+
         // 2. 创建 Depth24 RBO
         GLuint depthRB = 0;
         glGenRenderbuffers(1, &depthRB);
         if (!depthRB) {
             glDeleteTextures(1, &tex);
             if (normalTex) glDeleteTextures(1, &normalTex);
+            if (velocityTex) glDeleteTextures(1, &velocityTex);
             return 0;
         }
         glBindRenderbuffer(GL_RENDERBUFFER, depthRB);
@@ -3479,6 +3681,7 @@ public:
         if (!fbo) {
             glDeleteTextures(1, &tex);
             if (normalTex) glDeleteTextures(1, &normalTex);
+            if (velocityTex) glDeleteTextures(1, &velocityTex);
             glDeleteRenderbuffers(1, &depthRB);
             return 0;
         }
@@ -3487,9 +3690,22 @@ public:
         if (normalTex) {
             // Phase E.8.x — 附加 normal RT 为 COLOR_ATTACHMENT1
             glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, normalTex, 0);
-            // 启用 MRT 写入 (默认 GL 只写 COLOR_ATTACHMENT0; MRT 需显式声明)
+        }
+        if (velocityTex) {
+            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT2, GL_TEXTURE_2D, velocityTex, 0);
+        }
+        if (normalTex && velocityTex) {
+            const GLenum drawBufs[3] = { GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1, GL_COLOR_ATTACHMENT2 };
+            glDrawBuffers(3, drawBufs);
+        } else if (normalTex) {
             const GLenum drawBufs[2] = { GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1 };
             glDrawBuffers(2, drawBufs);
+        } else if (velocityTex) {
+            const GLenum drawBufs[3] = { GL_COLOR_ATTACHMENT0, GL_NONE, GL_COLOR_ATTACHMENT2 };
+            glDrawBuffers(3, drawBufs);
+        } else {
+            const GLenum drawBufs[1] = { GL_COLOR_ATTACHMENT0 };
+            glDrawBuffers(1, drawBufs);
         }
         glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, depthRB);
 
@@ -3503,6 +3719,7 @@ public:
             glDeleteRenderbuffers(1, &depthRB);
             glDeleteTextures(1, &tex);
             if (normalTex) glDeleteTextures(1, &normalTex);
+            if (velocityTex) glDeleteTextures(1, &velocityTex);
             return 0;
         }
 
@@ -3510,6 +3727,10 @@ public:
         if (normalTex) {
             hdrFboNormalTex[fbo] = normalTex;
             *outNormalTex = normalTex;
+        }
+        if (velocityTex) {
+            hdrFboVelocityTex[fbo] = velocityTex;
+            *outVelocityTex = velocityTex;
         }
         *outTex = tex;
         return fbo;
@@ -3519,6 +3740,11 @@ public:
     uint32_t GetHDRNormalTex(uint32_t fbo) const override {
         auto it = hdrFboNormalTex.find(fbo);
         return (it != hdrFboNormalTex.end()) ? it->second : 0;
+    }
+
+    uint32_t GetHDRVelocityTex(uint32_t fbo) const override {
+        auto it = hdrFboVelocityTex.find(fbo);
+        return (it != hdrFboVelocityTex.end()) ? it->second : 0;
     }
 
     /// 释放 HDR FBO 资源 (与 CreateHDRFBO 配对; 自动从 map 查 depthRB + normalTex)
@@ -3536,6 +3762,12 @@ public:
                 GLuint t = itN->second;
                 if (t) glDeleteTextures(1, &t);
                 hdrFboNormalTex.erase(itN);
+            }
+            auto itV = hdrFboVelocityTex.find(fbo);
+            if (itV != hdrFboVelocityTex.end()) {
+                GLuint t = itV->second;
+                if (t) glDeleteTextures(1, &t);
+                hdrFboVelocityTex.erase(itV);
             }
             GLuint f = fbo;
             glDeleteFramebuffers(1, &f);
@@ -4960,6 +5192,7 @@ public:
     void DrawSSRTemporal(uint32_t curReflectTex,
                           uint32_t historyTex,
                           uint32_t depthTex,
+                          uint32_t velocityTex,
                           uint32_t dstFbo,
                           int w, int h,
                           const float* reprojectMat4,
@@ -4985,6 +5218,7 @@ public:
         if (locSSRTemporal_BlendAlpha    >= 0) glUniform1f(locSSRTemporal_BlendAlpha,    blendAlpha);
         if (locSSRTemporal_RejectionMode >= 0) glUniform1i(locSSRTemporal_RejectionMode, rejectionMode);
         if (locSSRTemporal_HasHistory    >= 0) glUniform1i(locSSRTemporal_HasHistory,    hasHistory);
+        if (locSSRTemporal_HasVelocityTex >= 0) glUniform1i(locSSRTemporal_HasVelocityTex, velocityTex ? 1 : 0);
 
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, (GLuint)curReflectTex);
@@ -4994,13 +5228,17 @@ public:
         glBindTexture(GL_TEXTURE_2D, historyTex ? (GLuint)historyTex : (GLuint)curReflectTex);
         glActiveTexture(GL_TEXTURE2);
         glBindTexture(GL_TEXTURE_2D, (GLuint)depthTex);
+        glActiveTexture(GL_TEXTURE3);
+        glBindTexture(GL_TEXTURE_2D, velocityTex ? (GLuint)velocityTex : (GLuint)curReflectTex);
 
         // 复用 tonemap fullscreen VAO
         glBindVertexArray(vaoTonemap);
         glDrawArrays(GL_TRIANGLES, 0, 6);
 
         glBindVertexArray(0);
-        // 反向解绑 (slot 2 → 0)
+        // 反向解绑 (slot 3 → 0)
+        glActiveTexture(GL_TEXTURE3);
+        glBindTexture(GL_TEXTURE_2D, 0);
         glActiveTexture(GL_TEXTURE2);
         glBindTexture(GL_TEXTURE_2D, 0);
         glActiveTexture(GL_TEXTURE1);
@@ -5728,6 +5966,26 @@ public:
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     }
 
+    void ResetVelocityHistory() override {
+        prevViewProj = ComputeViewProj3D();
+        hasPrevViewProjForVelocity = false;
+        hasNextPrevModel = false;
+    }
+
+    void CommitVelocityHistory() override {
+        prevViewProj = ComputeViewProj3D();
+        hasPrevViewProjForVelocity = true;
+    }
+
+    void SetNextPreviousModelMatrix(const float* prevModelMat4) override {
+        if (!prevModelMat4) {
+            hasNextPrevModel = false;
+            return;
+        }
+        memcpy(nextPrevModel.m, prevModelMat4, sizeof(float) * 16);
+        hasNextPrevModel = true;
+    }
+
     // ==================== Phase AS.2 — 3D mesh + 深度测试 + camera ====================
 
     bool Supports3D() const override { return programPBR != 0 || programUnlit != 0; }
@@ -5978,6 +6236,14 @@ public:
             GLint locModel = glGetUniformLocation(program3D, "uModel");
             if (locMVP   >= 0) glUniformMatrix4fv(locMVP,   1, GL_FALSE, mvp.m);
             if (locModel >= 0) glUniformMatrix4fv(locModel, 1, GL_FALSE, modelview.m);
+            Mat4 prevModel;
+            const Mat4* prevModelPtr = nullptr;
+            if (hasNextPrevModel) {
+                prevModel = nextPrevModel;
+                prevModelPtr = &prevModel;
+            }
+            UploadVelocityUniforms(program3D, modelview, prevModelPtr);
+            hasNextPrevModel = false;
 
             // 共用 uniforms (color/emissive/alpha)
             UploadCommonMatUniforms(program3D, desc);
@@ -6000,6 +6266,7 @@ public:
                 glBindTexture(GL_TEXTURE_2D, desc->texBaseColor);
             }
         }
+        if (userShaderActive || !program3D) hasNextPrevModel = false;
 
         // 临时启用深度测试 (如果用户没启用)
         bool tempDepth = !depthTestEnabled;
@@ -6154,7 +6421,9 @@ public:
     }
 
     void DrawSkinnedMeshMaterial(uint32_t meshId, const MaterialDesc* desc,
-                                  const float* jointMatrices, int jointCount) override {
+                                  const float* jointMatrices, int jointCount,
+                                  const float* prevJointMatrices,
+                                  int prevJointCount) override {
         if (!desc || !jointMatrices || jointCount <= 0) return;
         if (!gpuSkinningSupported) return;
         auto it = skinnedMeshes.find(meshId);
@@ -6172,6 +6441,12 @@ public:
         glBindBuffer(GL_UNIFORM_BUFFER, uboJointMatrices);
         glBufferSubData(GL_UNIFORM_BUFFER, 0, n * 16 * (GLsizeiptr)sizeof(float), jointMatrices);
         glBindBuffer(GL_UNIFORM_BUFFER, 0);
+        const float* prevJointsUpload = (prevJointMatrices && prevJointCount >= n)
+                                            ? prevJointMatrices
+                                            : jointMatrices;
+        glBindBuffer(GL_UNIFORM_BUFFER, uboPrevJointMatrices);
+        glBufferSubData(GL_UNIFORM_BUFFER, 0, n * 16 * (GLsizeiptr)sizeof(float), prevJointsUpload);
+        glBindBuffer(GL_UNIFORM_BUFFER, 0);
 
         // ---- MVP / Model uniforms (与 DrawMeshMaterial 一致) ----
         Mat4 mvp = ComputeMVP3D();
@@ -6179,6 +6454,14 @@ public:
         GLint locModel = glGetUniformLocation(program3D, "uModel");
         if (locMVP   >= 0) glUniformMatrix4fv(locMVP,   1, GL_FALSE, mvp.m);
         if (locModel >= 0) glUniformMatrix4fv(locModel, 1, GL_FALSE, modelview.m);
+        Mat4 prevModel;
+        const Mat4* prevModelPtr = nullptr;
+        if (hasNextPrevModel) {
+            prevModel = nextPrevModel;
+            prevModelPtr = &prevModel;
+        }
+        UploadVelocityUniforms(program3D, modelview, prevModelPtr);
+        hasNextPrevModel = false;
 
         // ---- 共用 uniforms ----
         UploadCommonMatUniforms(program3D, desc);
@@ -6313,7 +6596,11 @@ public:
 
     void DrawSkinnedMorphMeshMaterial(uint32_t meshId, const MaterialDesc* desc,
                                          const float* jointMatrices, int jointCount,
-                                         const float* morphWeights, int morphTargetCount) override {
+                                         const float* morphWeights, int morphTargetCount,
+                                         const float* prevJointMatrices,
+                                         int prevJointCount,
+                                         const float* prevMorphWeights,
+                                         int prevMorphTargetCount) override {
         if (!desc || !jointMatrices || jointCount <= 0) return;
         if (!morphWeights || morphTargetCount <= 0) return;
         if (!morphTargetsSupported) return;
@@ -6332,6 +6619,12 @@ public:
         glBindBuffer(GL_UNIFORM_BUFFER, uboJointMatrices);
         glBufferSubData(GL_UNIFORM_BUFFER, 0, n * 16 * (GLsizeiptr)sizeof(float), jointMatrices);
         glBindBuffer(GL_UNIFORM_BUFFER, 0);
+        const float* prevJointsUpload = (prevJointMatrices && prevJointCount >= n)
+                                            ? prevJointMatrices
+                                            : jointMatrices;
+        glBindBuffer(GL_UNIFORM_BUFFER, uboPrevJointMatrices);
+        glBufferSubData(GL_UNIFORM_BUFFER, 0, n * 16 * (GLsizeiptr)sizeof(float), prevJointsUpload);
+        glBindBuffer(GL_UNIFORM_BUFFER, 0);
 
         // MVP / Model uniforms
         Mat4 mvp = ComputeMVP3D();
@@ -6339,14 +6632,29 @@ public:
         GLint locModel = glGetUniformLocation(program3D, "uModel");
         if (locMVP   >= 0) glUniformMatrix4fv(locMVP,   1, GL_FALSE, mvp.m);
         if (locModel >= 0) glUniformMatrix4fv(locModel, 1, GL_FALSE, modelview.m);
+        Mat4 prevModel;
+        const Mat4* prevModelPtr = nullptr;
+        if (hasNextPrevModel) {
+            prevModel = nextPrevModel;
+            prevModelPtr = &prevModel;
+        }
+        UploadVelocityUniforms(program3D, modelview, prevModelPtr);
+        hasNextPrevModel = false;
 
         // ---- Phase AX: morph weights uniform array + delta textures ----
         int mn = (morphTargetCount > 8) ? 8 : morphTargetCount;
         if (mn > m.morphCount) mn = m.morphCount;
         GLint locMW    = glGetUniformLocation(program3D, "uMorphWeights");
+        GLint locPMW   = glGetUniformLocation(program3D, "uPrevMorphWeights");
         GLint locMC    = glGetUniformLocation(program3D, "uMorphCount");
         GLint locHasN  = glGetUniformLocation(program3D, "uHasMorphNormal");
         if (locMW   >= 0) glUniform1fv(locMW, mn, morphWeights);
+        if (locPMW  >= 0) {
+            const float* prevMorphUpload = (prevMorphWeights && prevMorphTargetCount >= mn)
+                                               ? prevMorphWeights
+                                               : morphWeights;
+            glUniform1fv(locPMW, mn, prevMorphUpload);
+        }
         if (locMC   >= 0) glUniform1i(locMC, mn);
         if (locHasN >= 0) glUniform1i(locHasN, m.hasMorphNormal ? 1 : 0);
 

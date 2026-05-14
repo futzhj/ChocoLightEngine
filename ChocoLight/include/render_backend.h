@@ -245,6 +245,8 @@ public:
     virtual void GenerateMipmap(uint32_t texId) {}
     /// 清空当前绑定的 FBO/默认目标 (Canvas:Clear 用)
     virtual void ClearCurrent(float r, float g, float b, float a) {}
+    virtual void ResetVelocityHistory() {}
+    virtual void CommitVelocityHistory() {}
 
     // ---- Phase AS.2 新增 3D mesh 接口 (GL33 真实现, Legacy 默认 no-op) ----
     /// 是否支持 3D mesh + 深度测试 + perspective 投影
@@ -268,6 +270,7 @@ public:
     // ---- Phase AS.4 新增材质系统 (GL33 真实现, Legacy 默认 no-op) ----
     /// 用 material 描述符绘制 mesh, 替代 DrawMesh(meshId, textureId)
     virtual void DrawMeshMaterial(uint32_t meshId, const MaterialDesc* desc) {}
+    virtual void SetNextPreviousModelMatrix(const float* prevModelMat4) {}
     /// 设置主方向光 (世界坐标方向, 已归一化指向光源)
     virtual void SetDirectionalLight(const float* dir, const float* color, float intensity, bool enabled) {}
     /// 设置环境光 (单色 ambient)
@@ -325,7 +328,9 @@ public:
      *   5. 切回默认 2D shader
      */
     virtual void DrawSkinnedMeshMaterial(uint32_t meshId, const MaterialDesc* desc,
-                                          const float* jointMatrices, int jointCount) {}
+                                          const float* jointMatrices, int jointCount,
+                                          const float* prevJointMatrices = nullptr,
+                                          int prevJointCount = 0) {}
 
     // ---- Phase AX 新增 GPU Morph Target 接口 (GL33 实现, Legacy 默认 no-op) ----
     /**
@@ -375,7 +380,11 @@ public:
      */
     virtual void DrawSkinnedMorphMeshMaterial(uint32_t meshId, const MaterialDesc* desc,
                                                  const float* jointMatrices, int jointCount,
-                                                 const float* morphWeights, int morphTargetCount) {}
+                                                 const float* morphWeights, int morphTargetCount,
+                                                 const float* prevJointMatrices = nullptr,
+                                                 int prevJointCount = 0,
+                                                 const float* prevMorphWeights = nullptr,
+                                                 int prevMorphTargetCount = 0) {}
 
     // ---- Phase E.1 — 2D Lit (forward 多光 + Normal Map) ----
     /**
@@ -517,7 +526,8 @@ public:
      */
     virtual uint32_t CreateHDRFBO(int /*w*/, int /*h*/,
                                    uint32_t* /*outColorTex*/,
-                                   uint32_t* /*outNormalTex*/ = nullptr) { return 0; }
+                                   uint32_t* /*outNormalTex*/ = nullptr,
+                                   uint32_t* /*outVelocityTex*/ = nullptr) { return 0; }
 
     /**
      * @brief 释放 HDR FBO 资源
@@ -543,6 +553,7 @@ public:
      * 默认实现 (Legacy / 未启用 MRT): return 0.
      */
     virtual uint32_t GetHDRNormalTex(uint32_t /*fbo*/) const { return 0; }
+    virtual uint32_t GetHDRVelocityTex(uint32_t /*fbo*/) const { return 0; }
 
     /**
      * @brief 用 ACES tonemap shader 把 HDR 纹理全屏 blit 到当前绑定的 framebuffer
@@ -953,7 +964,7 @@ public:
     //                                                             语义=HDR depth blit 到任意 dst,
     //                                                             SSR/SSAO 都可调用)
     //   1. DrawSSR(depthTex, normalTex, hdrTex, ssrFbo, ...)    — raw 反射 (RGBA16F, full-res, 可带 jitter)
-    //   2. DrawSSRTemporal(cur, history, depth, ...)            — optional temporal accumulation
+    //   2. DrawSSRTemporal(cur, history, depth, velocity, ...)  — optional temporal accumulation
     //   3. DrawSSRBlur(src, depth, ...)                         — optional Gaussian / Bilateral blur
     //   4. DrawSSRComposite(reflectTex, hdrFbo, ..., intensity) — HDR += reflect.rgb * reflect.a * intensity
     //                                                            (内部用 temp RT 解 feedback loop)
@@ -1057,9 +1068,10 @@ public:
     // 管线插入位置: DrawSSR -> DrawSSRTemporal -> DrawSSRBlur -> DrawSSRComposite
     // 仅当 SSRRenderer.temporalEnabled=true 且 history RT 分配成功才执行.
     //
-    // Reverse Reprojection 算法 (无 G-buffer velocity 改动):
-    //   - 当前帧像素 (vUV, depth) -> NDC -> uReprojectMat -> 上一帧 NDC -> prevUV
-    //   - uReprojectMat = prevViewProj * invCurViewProj (CPU 预乘)
+    // Reprojection 算法:
+    //   - 有 velocityTex: prevUV = vUV - velocityTex.rg
+    //   - 无 velocityTex: 当前帧像素 (vUV, depth) -> NDC -> uReprojectMat -> prevUV
+    //   - uReprojectMat = prevViewProj * invCurViewProj (CPU 预乘, fallback 路径)
     //   - 越界 / 首帧 -> 强制 cur (不混合 history)
     //   - rejectionMode=0: current-depth threshold; rejectionMode=1: 9-tap neighborhood AABB clip
 
@@ -1075,12 +1087,13 @@ public:
     virtual void DeleteSSRHistoryRT(uint32_t* /*fbos2*/, uint32_t* /*texs2*/) {}
 
     /// Temporal pass: reproject + reject + blend
-    /// 输入: 当前帧 SSR raw + 上一帧 SSR temporal + depth
+    /// 输入: 当前帧 SSR raw + 上一帧 SSR temporal + depth + 可选 velocity
     /// 输出: dstFbo (即下一帧的 history read 源)
     ///
     /// @param curReflectTex  当前帧 SSR raw (slot 0)
     /// @param historyTex     上一帧 SSR temporal 输出 (slot 1)
     /// @param depthTex       SSR depth tex (slot 2, full-res, NEAREST)
+    /// @param velocityTex    HDR velocity tex (slot 3, RG16F; 0 时使用矩阵 fallback)
     /// @param dstFbo         目标 FBO (history ping-pong write 目标)
     /// @param w, h           full-res 尺寸
     /// @param reprojectMat4  prevViewProj * invCurViewProj (column-major 16 floats, CPU 预乘)
@@ -1091,6 +1104,7 @@ public:
     virtual void DrawSSRTemporal(uint32_t /*curReflectTex*/,
                                   uint32_t /*historyTex*/,
                                   uint32_t /*depthTex*/,
+                                  uint32_t /*velocityTex*/,
                                   uint32_t /*dstFbo*/,
                                   int /*w*/, int /*h*/,
                                   const float* /*reprojectMat4*/,
