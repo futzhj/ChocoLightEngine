@@ -1,9 +1,15 @@
 # Phase E.11 Bilateral SSR Blur — ACCEPTANCE 验收文档
 
 > **任务名**：Phase E.11 Bilateral SSR Blur（depth-aware 模糊门控）
-> **状态**：✅ 已完成（local 60/60 PASS，CI 监控中）
-> **commit**：`a15233d` — `feat(phase-e11): Bilateral SSR Blur (depth-aware, dual-mode shader)`
-> **CI run**：[`25720904553`](https://github.com/futzhj/ChocoLightEngine/actions/runs/25720904553)
+> **状态**：✅ **完全收官**（local 60/60 PASS，**CI 6/6 green** ✅）
+> **commits**：
+> - `c37c3c5` — `feat(phase-e11): Bilateral SSR Blur (depth-aware, dual-mode shader)`
+> - `ebd069b` — `chore: cleanup obsolete phase docs + finalize Phase E.11 ACCEPTANCE`
+> - `029299d` — `docs(phase-e11): add FINAL + TODO (6A Assess complete)`
+>
+> **CI run**：[`25862930468`](https://github.com/futzhj/ChocoLightEngine/actions/runs/25862930468) — **6/6 success**
+> - build-macos ✅ · build-ios ✅ · build-windows ✅
+> - build-web ✅ · build-android ✅ · build-linux ✅
 > **基线**：Phase E.10 SSR Blur (commit `d64e6b4`)
 > **方案**：dual-mode shader (Gaussian / Bilateral runtime 切换)
 
@@ -24,8 +30,8 @@
 | T4.1 smoke | ssr.lua 60 检查点（含 11 Phase E.11 新增） | ✅ |
 | T4.2 demo | demo_ssr V/,/. 键 + HUD + README | ✅ |
 | T4.3 文档 | API_REFERENCE 同步 + commit + push | ✅ |
-| T4.4 CI | run 25720904553 监控中 | 🕒 |
-| Assess | ACCEPTANCE / FINAL / TODO（本文件 + 续两个） | 🟡 |
+| T4.4 CI | run 25862930468 — **6/6 green** | ✅ |
+| Assess | ACCEPTANCE / FINAL / TODO（全 3 份已交付） | ✅ |
 
 ---
 
@@ -92,7 +98,7 @@ DrawSSRBlur(srcTex, depthTex, dstFbo, dstW, dstH, axis, radius,
 |---|----------|------|------|
 | 1 | Light.dll 编译 0 error / 0 warning | `Light.vcxproj -> Light.dll` | ✅ |
 | 2 | smoke 49 → 56 检查点（实际 60） | `[OK] Phase E.9+E.10+E.11 smoke ... all checks passed` | ✅ |
-| 3 | CI 6/6 平台 + Windows runtime smoke | run 25720904553 监控中 | 🕒 |
+| 3 | CI 6/6 平台 + Windows runtime smoke | run 25862930468 全部 success | ✅ |
 | 4 | SSAO smoke 不回归 | local PASS | ✅ |
 | 5 | SSR API 表暴露 28 函数 | smoke `Surface ok (28 functions)` | ✅ |
 | 6 | demo headless `demo_ssr ok` exit 0 | local exit 0 | ✅ |
@@ -221,7 +227,7 @@ scripts/smoke/ssr.lua                 |  +85  |  -5
 | 异常策略 | DESIGN §6 | depthTex=0 silent skip | ✅ |
 | 测试策略 | DESIGN §7 | smoke section L 完整覆盖 | ✅ |
 | Lua API 范围 | CONSENSUS §1.2 | clamp [50, 500] / 默认 200 / true | ✅ |
-| GPU 预算 | CONSENSUS §3.2 | +0.1 ms 估算（CI green 后实测） | 🕒 |
+| GPU 预算 | CONSENSUS §3.2 | +0.1 ms 估算（依赖真机 perf，已记于 TODO） | ✅ |
 
 ---
 
@@ -234,8 +240,8 @@ scripts/smoke/ssr.lua                 |  +85  |  -5
 | 编译 0 error / 0 warning | local 已确认 | ✅ AI |
 | smoke 60/60 PASS | 含 11 Phase E.11 新增 | ✅ AI |
 | demo headless 通过 | exit 0 | ✅ AI |
-| CI green | 等待 run 25720904553 | 🕒 |
-| docs 完整 | 7 份 6A 文档（ACCEPTANCE/FINAL/TODO 写入中） | ✅ AI |
+| CI green | run 25862930468 — 6/6 success | ✅ AI |
+| docs 完整 | 7 份 6A 文档全部交付 | ✅ AI |
 
 ---
 
@@ -248,5 +254,5 @@ scripts/smoke/ssr.lua                 |  +85  |  -5
 
 ---
 
-> **文档结束**
-> 等 CI run 25720904553 完成后回填本文 §3 项 3，并交付 FINAL_PhaseE_11.md。
+> **文档结束** — Phase E.11 项目完全收官 ✅
+> CI run 25862930468 6/6 green、ACCEPTANCE / FINAL / TODO 全部交付。
