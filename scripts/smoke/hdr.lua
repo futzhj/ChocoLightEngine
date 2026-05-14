@@ -34,6 +34,9 @@ local fn_names = {
     "GetSceneTexture",
     -- Phase E.3.4
     "SetTonemapper", "GetTonemapper",
+    -- Phase E.14 — Velocity dilation + format
+    "SetVelocityDilation", "GetVelocityDilation",
+    "SetVelocityFormat",   "GetVelocityFormat",
 }
 for _, k in ipairs(fn_names) do
     if type(HDR[k]) ~= "function" then
@@ -248,7 +251,89 @@ pass("SetTonemapper arg validation ok (nil arg errors; number stringified)")
 HDR.SetTonemapper("aces")
 
 -- ============================================================
+-- 8) Phase E.14 — velocity dilation + format
+-- ============================================================
+--
+-- API: SetVelocityDilation(bool), GetVelocityDilation(), SetVelocityFormat(str), GetVelocityFormat()
+-- Headless: smoke 运行时 HDR 未 Enable，但 API 设计接受未 Enable 状态
+--   - GetVelocityDilation 返默认 true
+--   - GetVelocityFormat 返默认 "rg16f"
+--   - SetVelocityFormat 仅更新 state，下次 Enable 生效
+
+-- 8.1 默认状态
+local vd0 = HDR.GetVelocityDilation()
+if type(vd0) ~= "boolean" then
+    fail("GetVelocityDilation should return boolean, got " .. type(vd0))
+end
+if vd0 ~= true then
+    fail("GetVelocityDilation() default must be true, got " .. tostring(vd0))
+end
+pass("GetVelocityDilation() default = true")
+
+local vf0 = HDR.GetVelocityFormat()
+if type(vf0) ~= "string" then
+    fail("GetVelocityFormat should return string, got " .. type(vf0))
+end
+if vf0 ~= "rg16f" then
+    fail("GetVelocityFormat() default must be 'rg16f', got '" .. tostring(vf0) .. "'")
+end
+pass("GetVelocityFormat() default = 'rg16f'")
+
+-- 8.2 SetVelocityDilation round-trip
+local ok_sd, err_sd = HDR.SetVelocityDilation(false)
+if HDR.GetVelocityDilation() ~= false then
+    fail("SetVelocityDilation(false) round-trip failed")
+end
+HDR.SetVelocityDilation(true)
+if HDR.GetVelocityDilation() ~= true then
+    fail("SetVelocityDilation(true) round-trip failed")
+end
+pass("SetVelocityDilation true/false round-trip ok")
+
+-- 8.3 SetVelocityDilation bad arg → nil + err
+local ok_bd, err_bd = HDR.SetVelocityDilation("yes")
+if ok_bd ~= nil then
+    fail("SetVelocityDilation('yes') should return nil, got " .. tostring(ok_bd))
+end
+if type(err_bd) ~= "string" then
+    fail("SetVelocityDilation bad-arg err must be string, got " .. type(err_bd))
+end
+pass("SetVelocityDilation bad-arg returns nil + err string")
+
+-- 8.4 SetVelocityFormat round-trip (未 Enable，仅更新 state)
+-- 需求: 切到 rg8 后 GetVelocityFormat == "rg8"。后端未 Enable 时切换仅更新下次 RT 创建参数。
+HDR.SetVelocityFormat("rg8")
+if HDR.GetVelocityFormat() ~= "rg8" then
+    fail("SetVelocityFormat('rg8') round-trip failed: got '" .. tostring(HDR.GetVelocityFormat()) .. "'")
+end
+HDR.SetVelocityFormat("rg16f")
+if HDR.GetVelocityFormat() ~= "rg16f" then
+    fail("SetVelocityFormat('rg16f') round-trip failed")
+end
+pass("SetVelocityFormat rg8/rg16f round-trip ok")
+
+-- 8.5 SetVelocityFormat 未知名 → nil + err (不仔大小写敏感)
+local ok_bf, err_bf = HDR.SetVelocityFormat("rg32f")
+if ok_bf ~= nil then
+    fail("SetVelocityFormat('rg32f') should return nil, got " .. tostring(ok_bf))
+end
+if type(err_bf) ~= "string" then
+    fail("SetVelocityFormat bad-name err must be string, got " .. type(err_bf))
+end
+pass("SetVelocityFormat unknown name returns nil + err string")
+
+-- 8.6 大写 "RG8" 应拒绝 (严格大小写敏感)
+local ok_bf2 = HDR.SetVelocityFormat("RG8")
+if ok_bf2 ~= nil then
+    fail("SetVelocityFormat('RG8') should reject uppercase, got " .. tostring(ok_bf2))
+end
+if HDR.GetVelocityFormat() ~= "rg16f" then
+    fail("After rejected 'RG8' format must remain 'rg16f'")
+end
+pass("SetVelocityFormat case-sensitive ('RG8' rejected)")
+
+-- ============================================================
 -- Done
 -- ============================================================
 
-print("[Phase E.3] Light.Graphics.HDR smoke PASS (12 functions)")
+print("[Phase E.3 + E.14] Light.Graphics.HDR smoke PASS (16 functions)")

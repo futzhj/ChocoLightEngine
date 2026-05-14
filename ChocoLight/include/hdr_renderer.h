@@ -31,6 +31,8 @@
 #include <cstdint>
 
 class RenderBackend;
+// Phase E.14 — 前向声明，避免拉 render_backend.h 进 header (依赖面)
+enum class VelocityFormat : uint8_t;
 
 namespace HDRRenderer {
 
@@ -137,6 +139,20 @@ uint32_t GetFBO();
 
 /// 当前 HDR RT 的 velocity 纹理 id (Enable 未调或后端不支持时 = 0)
 uint32_t GetVelocityTexture();
+
+// ==================== Phase E.14 — Velocity dilation + 存储格式切换 ====================
+
+/// dilation 开关：SSRTemporal 采样 velocity 时是否用 3x3 max-length 邻域（默认 ON）
+/// @return true = 设置成功; false = backend 未初始化。
+/// 切换不重建 RT，仅修改后端状态 + 下一帧 SSRTemporal draw 会读取。
+bool          SetVelocityDilation(bool on);
+bool          GetVelocityDilation();
+
+/// Velocity 存储格式切换（RG16F 默认 vs RG8 低精度节 VRAM）
+/// @return true = 切换成功（含 RT 重建）; false = 后端未启 / 重建失败。
+/// HDR 未 Enable 时仅更新 state，下次 Enable 时生效。切换会隐含重置 velocity history。
+bool           SetVelocityFormat(VelocityFormat fmt);
+VelocityFormat GetVelocityFormat();
 
 /// 当前 HDR RT 宽度 / 高度 (未 Enable 时 = 0)
 int GetWidth();

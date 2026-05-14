@@ -319,6 +319,22 @@ while win:IsOpen() do
               ' (' .. (rm == 1 and 'neighborhood-clip' or 'current-depth') .. ')')
     end
 
+    -- Phase E.14 — K: 切 velocity dilation
+    if keyTap('k') then
+        local d = not HDR.GetVelocityDilation()
+        HDR.SetVelocityDilation(d)
+        print('[demo] Velocity Dilation ' .. (d and 'ON' or 'OFF'))
+    end
+
+    -- Phase E.14 — L: 切 velocity 格式 rg16f <-> rg8 (会重建 HDR RT)
+    if keyTap('l') then
+        local cur = HDR.GetVelocityFormat()
+        local nxt = (cur == 'rg16f') and 'rg8' or 'rg16f'
+        local ok = HDR.SetVelocityFormat(nxt)
+        print('[demo] Velocity Format ' .. cur .. ' -> ' .. nxt ..
+              ' (' .. (ok and 'ok' or 'failed') .. ')')
+    end
+
     -- R: reset 默认
     if keyTap('r') then
         SSR.SetMaxSteps(64); SSR.SetStepSize(0.1); SSR.SetThickness(0.5)
@@ -380,10 +396,12 @@ while win:IsOpen() do
             SSR.GetTemporalAlpha(),
             SSR.GetRejectionMode(),
             SSR.GetRejectionMode() == 1 and 'neighborhood' or 'depth'))
-        -- Phase E.13: velocity buffer 与 Temporal SSR 联动；Temporal=ON 时优先采样，OFF 时仅作 G-buffer
-        line(string.format('Velocity buffer: integrated (Phase E.13) | reprojection=%s',
+        -- Phase E.13/E.14: velocity buffer 与 Temporal SSR 联动；显示 dilation/format 状态
+        line(string.format('Velocity: %s | dilation=%s | reproj=%s',
+            HDR.GetVelocityFormat(),
+            HDR.GetVelocityDilation() and 'ON' or 'OFF',
             SSR.GetTemporalEnabled() and 'velocity-first' or 'idle (Temporal OFF)'))
-        line('Keys: F=SSR B=Blur V=Bilateral T=Temporal 9/0=radius ,/.=sigma U/I=alpha N=reject R=reset ESC')
+        line('Keys: F=SSR B=Blur V=Bilateral T=Temporal 9/0=radius ,/.=sigma U/I=alpha N=reject K=Dilation L=Format R=reset ESC')
     end
 
     win:EndFrame()

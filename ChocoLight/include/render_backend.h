@@ -136,6 +136,15 @@ struct PointLight {
     float intensity;   // 强度 multiplier
 };
 
+// ==================== Phase E.14 — Velocity Buffer Format ====================
+
+/// Phase E.14 — HDR FBO velocity attachment 的存储格式
+/// RG16F（8MB/1080p）默认；RG8（2MB/1080p）可选低精度，需 shader 配合 uVelocityScale 编码
+enum class VelocityFormat : uint8_t {
+    RG16F = 0,   // 默认: 16-bit float, 直接存 currentUV - prevUV
+    RG8   = 1    // 可选: 8-bit UNORM, [-uVelocityScale, +uVelocityScale] 编码为 [0, 1]
+};
+
 // ==================== 渲染后端接口 ====================
 
 class RenderBackend {
@@ -247,6 +256,19 @@ public:
     virtual void ClearCurrent(float r, float g, float b, float a) {}
     virtual void ResetVelocityHistory() {}
     virtual void CommitVelocityHistory() {}
+
+    // ---- Phase E.14 — Velocity dilation 与编码 scale ----
+    /// dilation 开关 (默认 ON：SSRTemporal shader 会用 3x3 max-length 邻域)
+    virtual void  SetVelocityDilation(bool /*enabled*/) {}
+    virtual bool  GetVelocityDilation() const { return true; }
+    /// RG8 模式下 shader 编/解码 velocity 用的尺度因子
+    /// raw_velocity = clamp(uv_delta / (2*scale) + 0.5, 0, 1)
+    /// decoded = (raw - 0.5) * 2 * scale
+    /// 返回 0.25 = ±0.25 UV / frame, 1080p 下±540 pixels, 足以覆盖 >90% 实际运动
+    virtual float GetVelocityScale() const { return 0.25f; }
+    /// 当前 HDR FBO 的 velocity 存储格式 (SSRTemporal draw 时供 shader 选解码路径)
+    /// HDRRenderer 同时只会有 1 张 HDR FBO，由最近一次 CreateHDRFBO 设定。
+    virtual VelocityFormat GetActiveVelocityFormat() const { return VelocityFormat::RG16F; }
 
     // ---- Phase AS.2 新增 3D mesh 接口 (GL33 真实现, Legacy 默认 no-op) ----
     /// 是否支持 3D mesh + 深度测试 + perspective 投影
@@ -527,7 +549,8 @@ public:
     virtual uint32_t CreateHDRFBO(int /*w*/, int /*h*/,
                                    uint32_t* /*outColorTex*/,
                                    uint32_t* /*outNormalTex*/ = nullptr,
-                                   uint32_t* /*outVelocityTex*/ = nullptr) { return 0; }
+                                   uint32_t* /*outVelocityTex*/ = nullptr,
+                                   VelocityFormat /*velocityFormat*/ = VelocityFormat::RG16F) { return 0; }
 
     /**
      * @brief 释放 HDR FBO 资源
@@ -1111,7 +1134,10 @@ public:
                                   const float* /*invProjMat4*/,
                                   float /*blendAlpha*/,
                                   int   /*rejectionMode*/,
-                                  int   /*hasHistory*/) {}
+                                  int   /*hasHistory*/,
+                                  bool           /*velocityDilation*/ = true,
+                                  float          /*velocityScale*/    = 0.25f,
+                                  VelocityFormat /*velocityFormat*/   = VelocityFormat::RG16F) {}
 };
 
 // ==================== 工厂函数 ====================

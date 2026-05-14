@@ -6,6 +6,7 @@
  */
 
 #include "hdr_renderer.h"
+#include "render_backend.h"             // Phase E.14 — 需 VelocityFormat 完整定义 (header 仅 fwd decl)
 #include "bloom_renderer.h"             // Phase E.4.2 — HDR Enable/Disable/Resize 联动回调
 #include "auto_exposure_renderer.h"     // Phase E.5.2 — HDR Enable/Disable/Resize 联动回调 + EndScene exposure 覆盖
 #include "lens_dirt_renderer.h"         // Phase E.6.2 — Lens Dirt 后处理联动
@@ -13,7 +14,6 @@
 #include "lens_flare_renderer.h"        // Phase E.7.2 — Lens Flare (ghost + halo + chromatic) 联动
 #include "ssao_renderer.h"               // Phase E.8.2 — SSAO (屏幕空间环境光遮蔽) 联动
 #include "ssr_renderer.h"                // Phase E.9 — SSR (屏幕空间反射) 联动
-#include "render_backend.h"
 #include "light.h"         // CC::Log
 
 #include <chrono>
@@ -41,6 +41,11 @@ struct State {
     float          exposure  = 1.0f;
     float          gamma     = 2.2f;
     int            tonemap   = 0;       // Phase E.3.4 — 0=ACES default
+
+    // Phase E.14 — Velocity dilation / format
+    // dilation 默认 ON；backend 实际状态在 backend.velocityDilation_，本缓存供 Get 使用
+    bool           velocityDilation = true;
+    VelocityFormat velocityFormat   = VelocityFormat::RG16F;
 };
 
 static State g;
@@ -66,7 +71,9 @@ bool CreateRT(int w, int h) {
     uint32_t tex = 0;
     uint32_t normalTex = 0;
     uint32_t velocityTex = 0;
-    uint32_t fbo = g.backend->CreateHDRFBO(w, h, &tex, &normalTex, &velocityTex);
+    // Phase E.14: 透传当前 velocity format (默认 RG16F)
+    uint32_t fbo = g.backend->CreateHDRFBO(w, h, &tex, &normalTex, &velocityTex,
+                                            g.velocityFormat);
     if (!fbo || !tex) {
         if (fbo || tex) g.backend->DeleteHDRFBO(fbo, tex);  // 部分失败兜底
         return false;
@@ -77,6 +84,8 @@ bool CreateRT(int w, int h) {
     g.height = h;
     // normalTex / velocityTex 由 backend 内部 map 管理; 此处不需 cache.
     g.backend->ResetVelocityHistory();
+    // Phase E.14: 同步 dilation 状态到 backend (Init 之后可能被用户 Set 过)
+    g.backend->SetVelocityDilation(g.velocityDilation);
     return true;
 }
 
@@ -97,6 +106,8 @@ bool Init(RenderBackend* backend) {
     g.backend   = backend;
     g.supported = backend->SupportsHDR();
     g.inited    = true;
+    // Phase E.14: backend 默认 dilation ON，与 g.velocityDilation 初值一致
+    g.backend->SetVelocityDilation(g.velocityDilation);
 
     if (g.supported) {
         CC::Log(CC::LOG_INFO, "HDRRenderer: ready (backend supports HDR)");
@@ -328,6 +339,36 @@ uint32_t GetVelocityTexture() {
 }
 int      GetWidth()        { return g.width; }
 int      GetHeight()       { return g.height; }
+
+// ==================== Phase E.14 — Velocity dilation / format 切换 ====================
+
+bool SetVelocityDilation(bool on) {
+    g.velocityDilation = on;
+    // backend 未初始化时仅更新 state，下次 Init 后 Enable 时会同步
+    if (!g.backend) return false;
+    g.backend->SetVelocityDilation(on);
+    return true;
+}
+
+bool GetVelocityDilation() { return g.velocityDilation; }
+
+bool SetVelocityFormat(VelocityFormat fmt) {
+    if (fmt == g.velocityFormat) return true;   // no-op
+    g.velocityFormat = fmt;
+    if (!g.enabled) return true;                 // 未 Enable，仅更新 state，下次 Enable 生效
+    // 重建 RT：ReleaseRT + CreateRT (与 Enable 同模式)
+    int w = g.width, h = g.height;
+    ReleaseRT();
+    if (!CreateRT(w, h)) {
+        CC::Log(CC::LOG_ERROR, "HDRRenderer::SetVelocityFormat: CreateRT failed after format switch");
+        g.enabled = false;
+        return false;
+    }
+    // Velocity history 在 ReleaseRT 里已重置；这里不再重复
+    return true;
+}
+
+VelocityFormat GetVelocityFormat() { return g.velocityFormat; }
 
 // ==================== SetCanvas 兼容 ====================
 

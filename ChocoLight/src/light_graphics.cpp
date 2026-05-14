@@ -1641,6 +1641,61 @@ static int l_HDR_GetTonemapper(lua_State* L) {
     return 1;
 }
 
+// ==================== Phase E.14 — Velocity dilation / format ====================
+
+/// @lua_api Light.Graphics.HDR.SetVelocityDilation
+/// @brief 控制 SSRTemporal 是否对 velocity buffer 做 3x3 max-length 邻域采样 (抗几何边缘伪影)
+/// @param on boolean 默认 true; 设 false 退化为单点采样 (省 8 次 texture fetch / pixel)
+/// @return boolean true = 设置成功; nil, string = 入参非 boolean
+static int l_HDR_SetVelocityDilation(lua_State* L) {
+    if (!lua_isboolean(L, 1)) {
+        lua_pushnil(L);
+        lua_pushstring(L, "SetVelocityDilation: expect boolean");
+        return 2;
+    }
+    bool on = lua_toboolean(L, 1) != 0;
+    HDRRenderer::SetVelocityDilation(on);
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+/// @lua_api Light.Graphics.HDR.GetVelocityDilation
+/// @return boolean 当前 dilation 开关状态 (默认 true)
+static int l_HDR_GetVelocityDilation(lua_State* L) {
+    lua_pushboolean(L, HDRRenderer::GetVelocityDilation() ? 1 : 0);
+    return 1;
+}
+
+/// @lua_api Light.Graphics.HDR.SetVelocityFormat
+/// @brief 切换 velocity buffer 存储格式 (RG16F 默认 / RG8 节省 4x VRAM)
+/// @param fmt string "rg16f" | "rg8" (大小写敏感)
+/// @return boolean true = 切换成功 (含 RT 重建); false = 重建失败; nil, string = 入参非法
+/// @note HDR 未 Enable 时仅更新 state，下次 Enable 生效；切换会隐含重置 velocity history
+static int l_HDR_SetVelocityFormat(lua_State* L) {
+    const char* s = luaL_checkstring(L, 1);
+    VelocityFormat fmt;
+    if (strcmp(s, "rg16f") == 0) {
+        fmt = VelocityFormat::RG16F;
+    } else if (strcmp(s, "rg8") == 0) {
+        fmt = VelocityFormat::RG8;
+    } else {
+        lua_pushnil(L);
+        lua_pushfstring(L, "SetVelocityFormat: expect 'rg16f' or 'rg8', got '%s'", s);
+        return 2;
+    }
+    bool ok = HDRRenderer::SetVelocityFormat(fmt);
+    lua_pushboolean(L, ok ? 1 : 0);
+    return 1;
+}
+
+/// @lua_api Light.Graphics.HDR.GetVelocityFormat
+/// @return string 当前格式名 (规范小写: "rg16f" | "rg8")
+static int l_HDR_GetVelocityFormat(lua_State* L) {
+    VelocityFormat fmt = HDRRenderer::GetVelocityFormat();
+    lua_pushstring(L, (fmt == VelocityFormat::RG8) ? "rg8" : "rg16f");
+    return 1;
+}
+
 static const luaL_Reg hdr_funcs[] = {
     {"Enable",          l_HDR_Enable},
     {"Disable",         l_HDR_Disable},
@@ -1655,6 +1710,11 @@ static const luaL_Reg hdr_funcs[] = {
     // Phase E.3.4
     {"SetTonemapper",   l_HDR_SetTonemapper},
     {"GetTonemapper",   l_HDR_GetTonemapper},
+    // Phase E.14 — velocity dilation + 双格式存储
+    {"SetVelocityDilation", l_HDR_SetVelocityDilation},
+    {"GetVelocityDilation", l_HDR_GetVelocityDilation},
+    {"SetVelocityFormat",   l_HDR_SetVelocityFormat},
+    {"GetVelocityFormat",   l_HDR_GetVelocityFormat},
     {NULL, NULL}
 };
 

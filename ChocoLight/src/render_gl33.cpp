@@ -284,6 +284,9 @@ uniform int uAlphaMode;       // 0=opaque, 1=blend, 2=mask
 uniform float uAlphaCutoff;
 uniform mat3 uViewMat3;          // Phase E.8.x: world->view 3x3
 uniform int uHasVelocityHistory;
+// Phase E.14 — velocity 编码双格式支持
+uniform int   uVelocityFormat;     // 0 = RG16F (raw); 1 = RG8 (encoded with uVelocityScale)
+uniform float uVelocityScale;      // RG8 模式下的编码尺度; 默认 0.25
 layout(location=0) out vec4 FragColor;
 layout(location=1) out vec2 FragNormal;   // Phase E.8.x: view-space normal MRT
 layout(location=2) out vec2 FragVelocity;
@@ -301,9 +304,17 @@ void main() {
     if (uHasVelocityHistory == 1) {
         vec2 curUV = (vCurClip.xy / max(vCurClip.w, 1e-6)) * 0.5 + 0.5;
         vec2 prevUV = (vPrevClip.xy / max(vPrevClip.w, 1e-6)) * 0.5 + 0.5;
-        FragVelocity = curUV - prevUV;
+        vec2 raw = curUV - prevUV;
+        // Phase E.14 — 按 velocity format 选编码路径
+        //   RG16F 直接存 UV delta; RG8 用 bias/scale 压缩到 [0, 1] UNORM
+        if (uVelocityFormat == 1) {
+            FragVelocity = clamp(raw / (2.0 * uVelocityScale) + 0.5, 0.0, 1.0);
+        } else {
+            FragVelocity = raw;
+        }
     } else {
-        FragVelocity = vec2(0.0);
+        // RG8 模式下 0.5 表示零速度 (UNORM 中点); RG16F 模式下零速度即 0
+        FragVelocity = (uVelocityFormat == 1) ? vec2(0.5) : vec2(0.0);
     }
 }
 )";
@@ -346,6 +357,9 @@ uniform vec3  uPointLightColor[4];
 uniform float uPointLightRange[4];
 uniform mat3  uViewMat3;        // Phase E.8.x: world->view 3x3 (为 G-buffer normal MRT 用)
 uniform int   uHasVelocityHistory;
+// Phase E.14 — velocity 编码双格式支持
+uniform int   uVelocityFormat;     // 0 = RG16F (raw); 1 = RG8 (encoded with uVelocityScale)
+uniform float uVelocityScale;      // RG8 模式下的编码尺度; 默认 0.25
 layout(location=0) out vec4 FragColor;
 layout(location=1) out vec2 FragNormal;   // Phase E.8.x: view-space normal MRT (encode xy [0,1])
 layout(location=2) out vec2 FragVelocity;
@@ -437,9 +451,17 @@ void main() {
     if (uHasVelocityHistory == 1) {
         vec2 curUV = (vCurClip.xy / max(vCurClip.w, 1e-6)) * 0.5 + 0.5;
         vec2 prevUV = (vPrevClip.xy / max(vPrevClip.w, 1e-6)) * 0.5 + 0.5;
-        FragVelocity = curUV - prevUV;
+        vec2 raw = curUV - prevUV;
+        // Phase E.14 — 按 velocity format 选编码路径
+        //   RG16F 直接存 UV delta; RG8 用 bias/scale 压缩到 [0, 1] UNORM
+        if (uVelocityFormat == 1) {
+            FragVelocity = clamp(raw / (2.0 * uVelocityScale) + 0.5, 0.0, 1.0);
+        } else {
+            FragVelocity = raw;
+        }
     } else {
-        FragVelocity = vec2(0.0);
+        // RG8 模式下 0.5 表示零速度 (UNORM 中点); RG16F 模式下零速度即 0
+        FragVelocity = (uVelocityFormat == 1) ? vec2(0.5) : vec2(0.0);
     }
 }
 )";
@@ -610,6 +632,9 @@ uniform int uAlphaMode;
 uniform float uAlphaCutoff;
 uniform mat3 uViewMat3;          // Phase E.8.x: world->view 3x3
 uniform int uHasVelocityHistory;
+// Phase E.14 — velocity 编码双格式支持
+uniform int   uVelocityFormat;     // 0 = RG16F (raw); 1 = RG8 (encoded with uVelocityScale)
+uniform float uVelocityScale;      // RG8 模式下的编码尺度; 默认 0.25
 layout(location=0) out vec4 FragColor;
 layout(location=1) out vec2 FragNormal;   // Phase E.8.x: view-space normal MRT
 layout(location=2) out vec2 FragVelocity;
@@ -626,9 +651,17 @@ void main() {
     if (uHasVelocityHistory == 1) {
         vec2 curUV = (vCurClip.xy / max(vCurClip.w, 1e-6)) * 0.5 + 0.5;
         vec2 prevUV = (vPrevClip.xy / max(vPrevClip.w, 1e-6)) * 0.5 + 0.5;
-        FragVelocity = curUV - prevUV;
+        vec2 raw = curUV - prevUV;
+        // Phase E.14 — 按 velocity format 选编码路径
+        //   RG16F 直接存 UV delta; RG8 用 bias/scale 压缩到 [0, 1] UNORM
+        if (uVelocityFormat == 1) {
+            FragVelocity = clamp(raw / (2.0 * uVelocityScale) + 0.5, 0.0, 1.0);
+        } else {
+            FragVelocity = raw;
+        }
     } else {
-        FragVelocity = vec2(0.0);
+        // RG8 模式下 0.5 表示零速度 (UNORM 中点); RG16F 模式下零速度即 0
+        FragVelocity = (uVelocityFormat == 1) ? vec2(0.5) : vec2(0.0);
     }
 }
 )";
@@ -671,6 +704,9 @@ uniform vec3  uPointLightColor[4];
 uniform float uPointLightRange[4];
 uniform mat3  uViewMat3;        // Phase E.8.x: world->view 3x3
 uniform int   uHasVelocityHistory;
+// Phase E.14 — velocity 编码双格式支持
+uniform int   uVelocityFormat;     // 0 = RG16F (raw); 1 = RG8 (encoded with uVelocityScale)
+uniform float uVelocityScale;      // RG8 模式下的编码尺度; 默认 0.25
 layout(location=0) out vec4 FragColor;
 layout(location=1) out vec2 FragNormal;   // Phase E.8.x: view-space normal MRT
 layout(location=2) out vec2 FragVelocity;
@@ -761,9 +797,17 @@ void main() {
     if (uHasVelocityHistory == 1) {
         vec2 curUV = (vCurClip.xy / max(vCurClip.w, 1e-6)) * 0.5 + 0.5;
         vec2 prevUV = (vPrevClip.xy / max(vPrevClip.w, 1e-6)) * 0.5 + 0.5;
-        FragVelocity = curUV - prevUV;
+        vec2 raw = curUV - prevUV;
+        // Phase E.14 — 按 velocity format 选编码路径
+        //   RG16F 直接存 UV delta; RG8 用 bias/scale 压缩到 [0, 1] UNORM
+        if (uVelocityFormat == 1) {
+            FragVelocity = clamp(raw / (2.0 * uVelocityScale) + 0.5, 0.0, 1.0);
+        } else {
+            FragVelocity = raw;
+        }
     } else {
-        FragVelocity = vec2(0.0);
+        // RG8 模式下 0.5 表示零速度 (UNORM 中点); RG16F 模式下零速度即 0
+        FragVelocity = (uVelocityFormat == 1) ? vec2(0.5) : vec2(0.0);
     }
 }
 )";
@@ -1890,17 +1934,41 @@ uniform float uBlendAlpha;         // history 权重 [0.5, 0.99]
 uniform int   uRejectionMode;      // 0 = current-depth threshold, 1 = neighborhood clip
 uniform int   uHasHistory;         // 0 = 首帧, 1 = 累积
 uniform int   uHasVelocityTex;     // 1 = 用 velocityTex, 0 = E.12 matrix fallback
+// Phase E.14 — dilation + dual-format decode
+uniform int   uVelocityDilation;   // 0 = 单点采样; 1 = 3x3 max-length 邻域 (几何边缘抗锯齿)
+uniform int   uVelocityFormat;     // 0 = RG16F (raw); 1 = RG8 (encoded with uVelocityScale)
+uniform float uVelocityScale;      // RG8 模式下的编码尺度; 默认 0.25
+
+// Phase E.14 — 解码 velocity (RG16F 直返, RG8 还原回 [-scale, +scale])
+vec2 DecodeVelocity(vec2 raw) {
+    return (uVelocityFormat == 1) ? ((raw - 0.5) * (2.0 * uVelocityScale)) : raw;
+}
+
+// Phase E.14 — 3x3 max-length dilation: 几何边缘取邻域最大速度, 抑制 1-px 错配伪影
+vec2 SampleVelocityDilated(vec2 uv) {
+    if (uVelocityDilation == 0) return DecodeVelocity(texture(uVelocityTex, uv).rg);
+    vec2 bestV = vec2(0.0);
+    float bestLen = -1.0;
+    for (int dy = -1; dy <= 1; ++dy) {
+        for (int dx = -1; dx <= 1; ++dx) {
+            vec2 v = DecodeVelocity(texture(uVelocityTex, uv + vec2(float(dx), float(dy)) * uTexel).rg);
+            float l = dot(v, v);
+            if (l > bestLen) { bestLen = l; bestV = v; }
+        }
+    }
+    return bestV;
+}
 
 void main() {
     vec4 cur = texture(uCurReflectTex, vUV);
 
     if (uHasHistory == 0) { FragColor = cur; return; }
 
-    // ① reproject: velocity buffer 优先; 无 velocity 时沿用 E.12 matrix fallback
+    // ① reproject: velocity buffer 优先 (E.14: dilation 进场); 无 velocity 时沿用 E.12 matrix fallback
     float depth = texture(uDepthTex, vUV).r;
     vec2 prevUV;
     if (uHasVelocityTex == 1) {
-        prevUV = vUV - texture(uVelocityTex, vUV).rg;
+        prevUV = vUV - SampleVelocityDilated(vUV);
     } else {
         vec4 ndc = vec4(vUV * 2.0 - 1.0, depth * 2.0 - 1.0, 1.0);
         vec4 prevClip = uReprojectMat * ndc;
@@ -2247,6 +2315,28 @@ uniform float uBlendAlpha;
 uniform int   uRejectionMode;
 uniform int   uHasHistory;
 uniform int   uHasVelocityTex;
+// Phase E.14 — dilation + dual-format decode
+uniform int   uVelocityDilation;   // 0 = 单点采样; 1 = 3x3 max-length 邻域
+uniform int   uVelocityFormat;     // 0 = RG16F (raw); 1 = RG8 (encoded with uVelocityScale)
+uniform float uVelocityScale;      // RG8 模式编码尺度; 默认 0.25
+
+vec2 DecodeVelocity(vec2 raw) {
+    return (uVelocityFormat == 1) ? ((raw - 0.5) * (2.0 * uVelocityScale)) : raw;
+}
+
+vec2 SampleVelocityDilated(vec2 uv) {
+    if (uVelocityDilation == 0) return DecodeVelocity(texture(uVelocityTex, uv).rg);
+    vec2 bestV = vec2(0.0);
+    float bestLen = -1.0;
+    for (int dy = -1; dy <= 1; ++dy) {
+        for (int dx = -1; dx <= 1; ++dx) {
+            vec2 v = DecodeVelocity(texture(uVelocityTex, uv + vec2(float(dx), float(dy)) * uTexel).rg);
+            float l = dot(v, v);
+            if (l > bestLen) { bestLen = l; bestV = v; }
+        }
+    }
+    return bestV;
+}
 
 void main() {
     vec4 cur = texture(uCurReflectTex, vUV);
@@ -2256,7 +2346,7 @@ void main() {
     float depth = texture(uDepthTex, vUV).r;
     vec2 prevUV;
     if (uHasVelocityTex == 1) {
-        prevUV = vUV - texture(uVelocityTex, vUV).rg;
+        prevUV = vUV - SampleVelocityDilated(vUV);
     } else {
         vec4 ndc = vec4(vUV * 2.0 - 1.0, depth * 2.0 - 1.0, 1.0);
         vec4 prevClip = uReprojectMat * ndc;
@@ -2419,6 +2509,17 @@ class GL33Backend : public RenderBackend {
     // GetHDRNormalTex(fbo) 仅读查找.
     std::unordered_map<uint32_t, uint32_t> hdrFboNormalTex;
     std::unordered_map<uint32_t, uint32_t> hdrFboVelocityTex;
+    // Phase E.14 — 记录每个 fbo 创建时使用的 velocity 存储格式，
+    // 供 SSRTemporal/3D shader 将来选择对应 program (RG16F vs RG8 双路径)。
+    std::unordered_map<uint32_t, VelocityFormat> hdrFboVelocityFormat;
+    // Phase E.14 — velocity dilation 全局开关 (默认 ON)。
+    bool                                    velocityDilation_ = true;
+    // Phase E.14 — RG8 模式下 shader 编/解码 velocity 用的尺度因子。
+    // 本 phase 定为常量 0.25，后续 phase 可推动态调节。
+    static constexpr float kVelocityScaleDefault = 0.25f;
+    // Phase E.14 — 当前活跃 velocity format (供 3D shader 绘制时上传编码 uniform 用)。
+    // 随最近一次 CreateHDRFBO 设定; HDRRenderer 同时只会有 1 张 HDR FBO，足以安全共享。
+    VelocityFormat                          activeVelocityFormat_ = VelocityFormat::RG16F;
 
     // ---- Phase E.4 — Bloom 后处理 ----
     // 3 个 shader program (共用 vaoTonemap/vboTonemap 全屏 quad, 无独立 VAO)
@@ -2562,6 +2663,10 @@ class GL33Backend : public RenderBackend {
     GLint  locSSRTemporal_RejectionMode = -1;
     GLint  locSSRTemporal_HasHistory    = -1;
     GLint  locSSRTemporal_HasVelocityTex = -1;
+    // Phase E.14 — dilation + dual-format decode uniforms
+    GLint  locSSRTemporal_VelocityDilation = -1;
+    GLint  locSSRTemporal_VelocityFormat   = -1;
+    GLint  locSSRTemporal_VelocityScale    = -1;
 
     // Phase E.2.1 — Lighting2D dirty bit cache
     // 当 state->version 与此值相等时, UploadLighting2D 跳过所有 glUniform*v 调用
@@ -2664,6 +2769,13 @@ class GL33Backend : public RenderBackend {
         if (locPrevVP >= 0) glUniformMatrix4fv(locPrevVP, 1, GL_FALSE, prevViewProj.m);
         if (locPrevM >= 0) glUniformMatrix4fv(locPrevM, 1, GL_FALSE, prevModel.m);
         if (locHas >= 0) glUniform1i(locHas, hasPrevViewProjForVelocity ? 1 : 0);
+        // Phase E.14 — 上传 velocity 编码双格式 uniform。
+        // 这两个 uniform 是 Phase E.14 新增; 旧 program (Phase E.13 编译于未重启后端的
+        // 后端实例) 拿不到 location 会返 -1，这里源码统一重新编译不会出现。
+        GLint locVelFmt   = glGetUniformLocation(program3D, "uVelocityFormat");
+        GLint locVelScale = glGetUniformLocation(program3D, "uVelocityScale");
+        if (locVelFmt   >= 0) glUniform1i(locVelFmt,   (activeVelocityFormat_ == VelocityFormat::RG8) ? 1 : 0);
+        if (locVelScale >= 0) glUniform1f(locVelScale, kVelocityScaleDefault);
     }
 
     // 确保 VBO 容量足够
@@ -3426,6 +3538,10 @@ public:
             locSSRTemporal_RejectionMode = glGetUniformLocation(programSSRTemporal, "uRejectionMode");
             locSSRTemporal_HasHistory    = glGetUniformLocation(programSSRTemporal, "uHasHistory");
             locSSRTemporal_HasVelocityTex = glGetUniformLocation(programSSRTemporal, "uHasVelocityTex");
+            // Phase E.14 — dilation/format/scale uniform location
+            locSSRTemporal_VelocityDilation = glGetUniformLocation(programSSRTemporal, "uVelocityDilation");
+            locSSRTemporal_VelocityFormat   = glGetUniformLocation(programSSRTemporal, "uVelocityFormat");
+            locSSRTemporal_VelocityScale    = glGetUniformLocation(programSSRTemporal, "uVelocityScale");
             glUseProgram(programSSRTemporal);
             if (locSSRTemporal_CurReflectTex >= 0) glUniform1i(locSSRTemporal_CurReflectTex, 0);  // slot 0
             if (locSSRTemporal_HistoryTex    >= 0) glUniform1i(locSSRTemporal_HistoryTex,    1);  // slot 1
@@ -3533,6 +3649,13 @@ public:
             if (kv.second) { GLuint t = kv.second; glDeleteTextures(1, &t); }
         }
         hdrFboNormalTex.clear();
+        // Phase E.13 — 清理 velocity tex 兜底 (HDRRenderer::Shutdown 未配对 DeleteHDRFBO 时)
+        for (auto& kv : hdrFboVelocityTex) {
+            if (kv.second) { GLuint t = kv.second; glDeleteTextures(1, &t); }
+        }
+        hdrFboVelocityTex.clear();
+        // Phase E.14 — 同步清理 velocity format 跟踪
+        hdrFboVelocityFormat.clear();
         tonemapSupported = false;
 
         // Phase E.4 — 释放 Bloom shader (pyramid 资源由 BloomRenderer::Shutdown 配对释放)
@@ -3605,6 +3728,10 @@ public:
         locSSRTemporal_InvProj       = locSSRTemporal_Texel         = -1;
         locSSRTemporal_BlendAlpha    = locSSRTemporal_RejectionMode = -1;
         locSSRTemporal_HasHistory    = locSSRTemporal_HasVelocityTex = -1;
+        // Phase E.14 — dilation/format/scale location 重置
+        locSSRTemporal_VelocityDilation = -1;
+        locSSRTemporal_VelocityFormat   = -1;
+        locSSRTemporal_VelocityScale    = -1;
     }
 
     bool SupportsLit2D() const override { return lit2DSupported; }
@@ -3614,9 +3741,11 @@ public:
     bool SupportsHDR() const override { return tonemapSupported; }
 
     /// 创建 HDR FBO: RGBA16F 颜色附件 + (可选) RG16F view-normal/velocity + Depth24 RBO
+    /// Phase E.14: velocityFormat 控制可选 velocity 附件使用 RG16F (默认) 或 RG8 (低精度节 VRAM)
     uint32_t CreateHDRFBO(int w, int h, uint32_t* outTex,
                           uint32_t* outNormalTex,
-                          uint32_t* outVelocityTex) override {
+                          uint32_t* outVelocityTex,
+                          VelocityFormat velocityFormat) override {
         if (!tonemapSupported || w <= 0 || h <= 0 || !outTex) return 0;
 
         // 1. 创建 RGBA16F 颜色纹理 (GL_LINEAR + GL_CLAMP_TO_EDGE)
@@ -3654,7 +3783,14 @@ public:
                 return 0;
             }
             glBindTexture(GL_TEXTURE_2D, velocityTex);
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RG16F, w, h, 0, GL_RG, GL_FLOAT, nullptr);
+            // Phase E.14: 按 velocityFormat 选 internalFormat
+            //   RG16F: 高精度浮点，直接存 currentUV - prevUV (与 Phase E.13 一致)
+            //   RG8:   8-bit UNORM，shader 侧用 uVelocityScale 编码为 [0, 1]，节省 VRAM 4x
+            if (velocityFormat == VelocityFormat::RG8) {
+                glTexImage2D(GL_TEXTURE_2D, 0, GL_RG8, w, h, 0, GL_RG, GL_UNSIGNED_BYTE, nullptr);
+            } else {
+                glTexImage2D(GL_TEXTURE_2D, 0, GL_RG16F, w, h, 0, GL_RG, GL_FLOAT, nullptr);
+            }
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -3730,8 +3866,11 @@ public:
         }
         if (velocityTex) {
             hdrFboVelocityTex[fbo] = velocityTex;
+            hdrFboVelocityFormat[fbo] = velocityFormat;     // Phase E.14: 跟踪格式
             *outVelocityTex = velocityTex;
         }
+        // Phase E.14: 同步活跃 format，供 3D shader UploadVelocityUniforms 上传使用
+        activeVelocityFormat_ = velocityFormat;
         *outTex = tex;
         return fbo;
     }
@@ -3769,6 +3908,8 @@ public:
                 if (t) glDeleteTextures(1, &t);
                 hdrFboVelocityTex.erase(itV);
             }
+            // Phase E.14: 同步清理 velocity format 记录
+            hdrFboVelocityFormat.erase(fbo);
             GLuint f = fbo;
             glDeleteFramebuffers(1, &f);
         }
@@ -5188,6 +5329,7 @@ public:
     }
 
     /// Phase E.12 — Temporal pass: reproject + neighborhood clip + history blend
+    /// Phase E.14 — 末尾增 3 个 trailing 参数：dilation、velocityScale、velocityFormat
     /// shader 内部的 hasHistory=0 (首帧) 路径会强制输出 cur, 避免 1-frame 黑帧.
     void DrawSSRTemporal(uint32_t curReflectTex,
                           uint32_t historyTex,
@@ -5199,7 +5341,10 @@ public:
                           const float* invProjMat4,
                           float blendAlpha,
                           int   rejectionMode,
-                          int   hasHistory) override {
+                          int   hasHistory,
+                          bool           velocityDilation,
+                          float          velocityScale,
+                          VelocityFormat velocityFormat) override {
         if (!ssrTemporalSupported || !programSSRTemporal
             || !curReflectTex || !depthTex || !dstFbo
             || w <= 0 || h <= 0 || !reprojectMat4 || !invProjMat4) return;
@@ -5219,6 +5364,10 @@ public:
         if (locSSRTemporal_RejectionMode >= 0) glUniform1i(locSSRTemporal_RejectionMode, rejectionMode);
         if (locSSRTemporal_HasHistory    >= 0) glUniform1i(locSSRTemporal_HasHistory,    hasHistory);
         if (locSSRTemporal_HasVelocityTex >= 0) glUniform1i(locSSRTemporal_HasVelocityTex, velocityTex ? 1 : 0);
+        // Phase E.14 — dilation / format / scale uniform 上传
+        if (locSSRTemporal_VelocityDilation >= 0) glUniform1i(locSSRTemporal_VelocityDilation, velocityDilation ? 1 : 0);
+        if (locSSRTemporal_VelocityFormat   >= 0) glUniform1i(locSSRTemporal_VelocityFormat,   (velocityFormat == VelocityFormat::RG8) ? 1 : 0);
+        if (locSSRTemporal_VelocityScale    >= 0) glUniform1f(locSSRTemporal_VelocityScale,    velocityScale);
 
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, (GLuint)curReflectTex);
@@ -5976,6 +6125,12 @@ public:
         prevViewProj = ComputeViewProj3D();
         hasPrevViewProjForVelocity = true;
     }
+
+    // ---- Phase E.14 — velocity dilation 开关 + 编码 scale + 活跃 format ----
+    void  SetVelocityDilation(bool enabled) override { velocityDilation_ = enabled; }
+    bool  GetVelocityDilation() const override { return velocityDilation_; }
+    float GetVelocityScale() const override { return kVelocityScaleDefault; }
+    VelocityFormat GetActiveVelocityFormat() const override { return activeVelocityFormat_; }
 
     void SetNextPreviousModelMatrix(const float* prevModelMat4) override {
         if (!prevModelMat4) {

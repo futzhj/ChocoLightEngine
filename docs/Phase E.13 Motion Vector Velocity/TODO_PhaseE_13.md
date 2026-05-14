@@ -74,6 +74,6 @@
 | Velocity 驱动 motion blur | 利用现有 RG16F velocity 做后处理 | 在 HDR 后处理链中插入 directional blur |
 | Velocity 驱动 TAA | 取代 Phase E.12 reverse depth 作为整帧 TAA | 需要新的 history color RT + dilation pass |
 | Roughness-aware Temporal | 高 roughness 像素用 velocity，低 roughness 像素用 matrix | 需要把 roughness 透传到 Temporal shader |
-| Velocity dilation | 几何边缘 motion vector 抗错 | 1-pixel max filter |
-| 半精度 velocity 格式 | 移动端 VRAM | RG16F → RG8 + scale，需做精度评估 |
+| Velocity dilation | 几何边缘 motion vector 抗错 | 1-pixel max filter | ✅ → Phase E.14（3x3 max-length, shader inline） |
+| 半精度 velocity 格式 | 移动端 VRAM | RG16F → RG8 + scale，需做精度评估 | ✅ → Phase E.14（uniform 切 decode 分支, scale=0.25） |
 | Headless GL CI 视觉 diff | 自动回归 | 引入虚拟 framebuffer + 截图 diff |

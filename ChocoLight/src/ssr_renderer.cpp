@@ -415,6 +415,7 @@ void Process(uint32_t hdrFbo, uint32_t hdrTex) {
         if (InvertMat4(curViewProj, invCurViewProj)) {
             Mat4Mul(g.prevViewProj, invCurViewProj, reprojMat);
 
+            // Phase E.14: 透传 dilation / scale / format，让 SSRTemporal shader 选解码 + 邻域路径
             g.backend->DrawSSRTemporal(g.reflectTex,
                                        g.historyTexs[readIdx],
                                        g.depthTex,
@@ -424,7 +425,10 @@ void Process(uint32_t hdrFbo, uint32_t hdrTex) {
                                        reprojMat, invProj,
                                        g.temporalAlpha,
                                        g.rejectionMode,
-                                       g.hasPrevViewProj ? 1 : 0);
+                                       g.hasPrevViewProj ? 1 : 0,
+                                       g.backend->GetVelocityDilation(),
+                                       g.backend->GetVelocityScale(),
+                                       g.backend->GetActiveVelocityFormat());
             srcForBlur = g.historyTexs[writeIdx];
             memcpy(g.prevViewProj, curViewProj, sizeof(curViewProj));
             g.hasPrevViewProj = true;
