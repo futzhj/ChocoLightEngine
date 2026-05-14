@@ -2,7 +2,7 @@
 
 > **任务**：Phase E.12 — Temporal SSR（跨帧累积降噪）
 > **基线**：Phase E.11 Bilateral SSR Blur
-> **状态**：🟡 实现完成，待 CI / runtime smoke 最终确认
+> **状态**：✅ 实现完成，CI / runtime smoke 已通过
 > **范围**：Backend + GL33 shader + SSRRenderer + Lua API + smoke + demo + docs
 
 ---
@@ -130,8 +130,8 @@ SSR Composite 写回 HDR
 | 本地 `light.exe` smoke | 🚫 按用户偏好不执行 |
 | `lightc -p` Lua 语法检查 | ✅ `scripts/smoke/ssr.lua` + `samples/demo_ssr/main.lua` 通过 |
 | `git diff --check` | ✅ 通过 |
-| CI 6 平台 build | ⏳ push 后确认 |
-| Windows runtime smoke | ⏳ CI / runtime 环境确认 |
+| CI 6 平台 build | ✅ run `25871544298`，6/6 success |
+| Windows runtime smoke | ✅ run `25871544298`，`build-windows` success |
 
 ---
 
@@ -140,7 +140,7 @@ SSR Composite 写回 HDR
 | 限制 | 影响 | 后续方向 |
 |------|------|----------|
 | 无 velocity buffer | 动态物体 / 相机快速运动下可能 ghost | Phase E.x 可引入 motion vectors |
-| mode=0 depth-only 仍为预留 | 当前主要有效模式为 neighborhood clip | 后续实现 depth threshold rejection |
+| mode=0 为 current-depth threshold 启发式 | 抗 ghost 弱于 neighborhood clip | 如需更严格 depth-only，可后续增加 history depth |
 | 视觉无 CI 自动回归 | 只能靠 smoke + 手动观察 | 后续可引入截图 diff |
 | full-res history VRAM 增加 | 1080p 约 +16MB | 移动端可考虑 half-res 或 dynamic disable |
 
@@ -148,4 +148,4 @@ SSR Composite 写回 HDR
 
 ## 8. 结论
 
-Phase E.12 Temporal SSR 已完成源码与文档层交付，形成完整可配置的时序 SSR 管线。当前只剩项目既定流程中的 CI / runtime smoke / 真实窗口视觉确认。
+Phase E.12 Temporal SSR 已完成源码、文档、CI 与 Windows runtime smoke 验证，形成完整可配置的时序 SSR 管线。当前只剩真实窗口视觉确认。

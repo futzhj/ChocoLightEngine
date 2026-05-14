@@ -13,20 +13,20 @@
 - **说明**：按项目偏好，本地只做 Lua 语法检查与补丁静态检查，不执行 CMake build / runtime smoke
 - **结果**：`lightc -p` 两个 Lua 脚本通过，`git diff --check` 通过
 
-### 1.2 🟡 提交并等待 CI
+### 1.2 ✅ CI 结果
 
-- **目标**：GitHub Actions 6 平台 build success
-- **期望平台**：Windows / Linux / macOS / Android / iOS / Web
+- **结果**：GitHub Actions run `25871544298`，6/6 平台 success
+- **平台**：Windows / Linux / macOS / Android / iOS / Web
 - **关注点**：
-  - `RenderBackend::DrawSSR` 签名变更是否全调用点同步
-  - GLES3 / GL33 两份 `FS_SSR_TEMPORAL` shader 是否编译通过
-  - Windows runtime smoke 是否识别 SSR API 34/34
+  - `RenderBackend::DrawSSR` 签名变更是否全调用点同步 ✅
+  - GLES3 / GL33 两份 `FS_SSR_TEMPORAL` shader 是否编译通过 ✅
+  - Windows runtime smoke 是否识别 SSR API 34/34 ✅
 
-### 1.3 🟡 Windows runtime smoke
+### 1.3 ✅ Windows runtime smoke
 
 - **脚本**：`scripts/smoke/ssr.lua`
 - **期望**：SSR surface 34 functions；Temporal 默认值、round-trip、clamp、联动测试全部 PASS
-- **备注**：不在本地执行，按既定流程由 CI / runtime 环境验证
+- **结果**：run `25871544298` 的 `build-windows` success
 
 ---
 
@@ -118,7 +118,6 @@
 
 ## 6. 用户下一步建议
 
-1. **提交并触发 CI**：确认 6 平台 build 与 Windows runtime smoke。
-2. **真实窗口打开 demo_ssr**：重点比较 `T` 开关前后噪声与 ghost。
-3. **若 CI green + 视觉可接受**：Phase E.12 可标记完成。
-4. **若视觉 ghost 明显**：优先考虑 Phase E.13 motion vector / velocity buffer。
+1. **真实窗口打开 demo_ssr**：重点比较 `T` 开关前后噪声与 ghost。
+2. **若视觉可接受**：Phase E.12 可标记完成。
+3. **若视觉 ghost 明显**：优先考虑 Phase E.13 motion vector / velocity buffer。

@@ -1,7 +1,7 @@
 # Phase E.12 Temporal SSR — ACCEPTANCE 验收文档
 
 > **任务名**：Phase E.12 Temporal SSR（时序 SSR 累积降噪）
-> **状态**：🟡 **实现完成，等待 CI / Windows runtime smoke 验证**
+> **状态**：✅ **实现完成，CI 6/6 + Windows runtime smoke 通过**
 > **基线**：Phase E.11 Bilateral SSR Blur（SSR API 28，Windows runtime smoke 60/60 PASS）
 > **方案**：TAA-style reverse reprojection from depth + Halton jitter + full-res history ping-pong + neighborhood clip
 
@@ -21,7 +21,7 @@
 | T4.1 smoke | `scripts/smoke/ssr.lua` 扩展至 34 API 覆盖和 E.12 参数测试 | ✅ |
 | T4.2 demo | `samples/demo_ssr` 增加 T/U/I/N 控制与 HUD | ✅ |
 | T4.3 docs | `API_REFERENCE.md` + demo README + 本验收文档 | ✅ |
-| CI / runtime | GitHub Actions 6 平台 + Windows runtime smoke | ⏳ 待执行 |
+| CI / runtime | GitHub Actions 6 平台 + Windows runtime smoke | ✅ |
 
 ---
 
@@ -73,8 +73,8 @@
 | Lua 语法检查 `lightc -p` | ✅ | `scripts/smoke/ssr.lua` 与 `samples/demo_ssr/main.lua` 语法检查通过；未跑 runtime smoke |
 | 本地 CMake build | 🚫 | 按用户偏好不在本地执行 |
 | 本地 `light.exe` smoke | 🚫 | 按用户偏好不在本地执行 |
-| GitHub Actions 6 平台 | ⏳ | push 后由 CI 验证 |
-| Windows runtime smoke | ⏳ | CI / runtime 环境验证 `scripts/smoke/ssr.lua` |
+| GitHub Actions 6 平台 | ✅ | run `25871544298`，6/6 success |
+| Windows runtime smoke | ✅ | run `25871544298`，`build-windows` success，包含 `scripts/smoke/ssr.lua` |
 | 真实窗口视觉验收 | ⏳ | 需桌面 GL3.3 环境手测 demo_ssr |
 
 ---
@@ -92,9 +92,9 @@
 
 ## 5. 验收结论
 
-Phase E.12 的生产代码、Lua API、smoke 覆盖、demo 和文档已经完成源码层收尾。
+Phase E.12 的生产代码、Lua API、smoke 覆盖、demo、文档和 CI/runtime 验证已经完成。
 
 **最终完成判据**：
-- GitHub Actions 6 平台 build success
-- Windows runtime smoke 中 SSR 脚本 0 fail
+- GitHub Actions 6 平台 build success ✅ run `25871544298`
+- Windows runtime smoke 中 SSR 脚本 0 fail ✅ run `25871544298`
 - 真实窗口 demo 中 T/U/I/N 控制可用，Temporal 开启后反射噪声下降且无明显黑帧/闪烁
