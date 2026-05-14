@@ -48,17 +48,21 @@
 
 ## 2. 建议项
 
-### 2.1 demo 与文档增量
+### 2.1 demo 与文档增量 — ✅ 主要项已完成
 
-- `samples/demo_ssr/main.lua`：HUD 增加 `velocity tex present` / `velocity buffer used` 提示
-- `docs/api/Light_Graphics.md`：补充 `Mesh:Draw([textureId|material], [prevModelMat4])` 段落
-- `docs/api/Light_Animation.md`：说明 Animator previous pose 由内部维护，无 Lua API 改动
-- `docs/API_REFERENCE.md`：在 SSR 段标注 Temporal 已切换为 velocity-first（fallback 到 matrix）
+- ✅ `samples/demo_ssr/main.lua`：HUD 新增 Velocity buffer 状态行（含 Temporal ON/OFF 联动文案）
+- ✅ `docs/api/Light_Graphics.md`：新增 `Mesh.New` + `mesh:Draw([textureOrMaterial], [prevModelMat4])` 段（含 Phase E.13 prev model 参数、ECS 集成、示例）
+- ✅ `docs/api/Light_Animation.md`：`DrawSkinnedMesh` 段下新增 "Phase E.13 — Velocity buffer 与 previous pose 自动管理" 小节，覆盖内部缓存字段与复位触发清单
+- ⏳ `docs/API_REFERENCE.md`：未改动；当前 SSR Temporal 段仍按 Phase E.12 描述（fallback 路径仍可用）。后续若做 API surface 增量再统一同步
 
-### 2.2 smoke 增强
+### 2.2 smoke 增强 — ✅ 完成
 
-- 在 `ssr.lua` 添加：headless 路径下 `Set/GetTemporalEnabled` 与 velocity buffer 行为相互独立（velocity 缺失时 Temporal 仍可启用）
-- 在 `animation.lua` 或新增 `velocity.lua` 中验证：`Animator:Update(dt)` 连续调用后 prev pose 存在；`SetCurrentTime` 后 prev 被复位（间接验证 `velocityHistoryValid`）
+- ✅ `scripts/smoke/animation.lua` 新增 [18] 段，间接验证 Phase E.13 velocity history 复位路径：
+  - `Animator:Update(dt)` 连续累积 prev pose（产出合法 jointMatrices）
+  - `SetCurrentTime` / `Play` / `Stop` / 立即 transition (`duration=0`) / `SetMorphWeight` / `ClearMorphWeights` 均触发内部复位且不崩
+  - 大时间跳变后 jointMatrices 仍合法
+- C++ 侧 6 处 `ResetAnimatorVelocityHistory` 调用与 smoke 断言一一对应（已 grep 验证）
+- `ssr.lua` 暂未追加 velocity 行为隔离断言（Lua 端无 `HDR.HasVelocityTexture()` getter；纯 Lua 不易精确验证）
 
 ---
 

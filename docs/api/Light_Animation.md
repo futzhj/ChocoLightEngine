@@ -129,6 +129,34 @@ print(pack.skeleton:GetJointCount(), #pack.clipNames)
 
 **API 签名 100% 不变**。详见下文 [GPU Skinning 模式](#phase-aw--gpu-skinning-模式)。
 
+#### Phase E.13 — Velocity buffer 与 previous pose 自动管理
+
+> 启用 HDR + Temporal SSR 后参与 motion vector velocity buffer 计算。详见 `docs/Phase E.13 Motion Vector Velocity/FINAL_PhaseE_13.md`。
+
+`Animator` 在 C++ 侧内部维护以下 previous-frame 缓存（Lua 不可直接访问）：
+
+| 字段 | 含义 |
+|------|------|
+| `prevJointMatrices` | 上一帧 joint palette（与 `GetJointMatrices()` 同布局） |
+| `prevMorphWeights` | 上一帧 morph 权重数组 |
+| `velocityHistoryValid` | 当前缓存是否可作为 velocity 历史 |
+
+**自动复制**：每次 `Animator:Update(dt)` 在推进 `currentTime` 前会把当前 pose 复制到 prev，下一帧 GPU draw 即可计算 GPU velocity。
+
+**自动复位**（避免时间跳变产生错误大速度）：
+
+| 触发 | 原因 |
+|------|------|
+| `Animator:SetCurrentTime(t)` | 时间任意跳跃 |
+| `Animator:Play(state)` | 状态切换并重置 currentTime |
+| `Animator:Stop()` | 清空 currentState |
+| 立即 transition（`duration=0`） | 状态瞬切，pose 不连续 |
+| `Animator:SetMorphWeight(idx, val)` / `ClearMorphWeights()` | morph 权重瞬变 |
+
+复位后第一帧 GPU 端 `uHasVelocityHistory=0`，velocity 输出强制 `(0,0)`，下一帧自动恢复。
+
+**用户 API 不变**：`DrawSkinnedMesh` 签名、`Animator:Update` 签名都不需要改动；prev pose 完全由 Animator 自管理。
+
 ---
 
 ## Skeleton 方法

@@ -481,3 +481,81 @@ Light.Graphics.Print("Hello World", font, 10, 10)
 - 懒加载: 首次绘制时将 pixels 上传为纹理, 缓存在 frame.__texId spriteData.frames[frameIdx] = { x, y, w, h, pixels(userdata) } 懒加载: 首次绘制时将 pixels 上传为 GL 纹理, 缓存在 frame.__texId
 
 ---
+
+## `Light.Graphics.Mesh.New`
+
+创建静态 3D mesh。
+
+### 参数
+
+| 名称 | 类型 | 说明 |
+|------|------|------|
+| `vertices` | `table` | 顶点数组（位置 + UV + normal + 可选 tangent，依后端布局） |
+| `indices`  | `table` | 三角索引数组（0-based） |
+
+### 返回值
+
+| 状态 | 返回 |
+|------|------|
+| 成功 | `Mesh` userdata |
+| 失败 | `nil, err_string` |
+
+---
+
+## `mesh:Draw([textureOrMaterial], [prevModelMat4])`
+
+绘制 Mesh 到当前 3D 场景。所有参数都是可选的，自动按参数类型分发：
+
+| 调用形式 | 分发到 |
+|----------|--------|
+| `mesh:Draw()` / `mesh:Draw(nil)` / `mesh:Draw(0)` | 默认贴图路径（`DrawMesh(meshId, 0)`） |
+| `mesh:Draw(textureId:int)` | 指定贴图 id（`DrawMesh(meshId, texId)`） |
+| `mesh:Draw(material:Material)` | 走 Phase AS 材质路径（`DrawMeshMaterial`） |
+| `mesh:Draw(prevModelMat4:table[16])` | 默认贴图路径 + Phase E.13 prev model |
+| `mesh:Draw(textureId:int, prevModelMat4:table[16])` | 贴图路径 + Phase E.13 prev model |
+| `mesh:Draw(material:Material, prevModelMat4:table[16])` | 材质路径 + Phase E.13 prev model |
+
+### Phase E.13 — `prevModelMat4` 参数
+
+> 启用后参与 motion vector velocity buffer 计算，配合 Temporal SSR 提供更准确的反射时序累积。详见 `docs/Phase E.13 Motion Vector Velocity/FINAL_PhaseE_13.md`。
+
+| 项 | 说明 |
+|----|------|
+| 类型 | `table` 长度 16，列主序 mat4 |
+| 语义 | 该 mesh 在**上一帧**的世界模型矩阵（含 parent chain） |
+| 作用 | shader 中计算 `prevClip = uPrevViewProj * prevModel * vec4(localPos, 1)`，velocity = `(curUV - prevUV)` 写入 MRT slot 2 (RG16F) |
+| 一次性 | 仅对**紧接着的一次** `mesh:Draw` 生效；下次 draw 不会复用 |
+| 缺省行为 | 不传则 `prevModel = curModel`，相当于物体认为自己上一帧没动；shader 仍能输出 velocity（值为 0，纯相机运动） |
+| 错误参数 | 非 16 元素 table 抛 Lua 错误 |
+
+### 与 ECS 集成
+
+`Light.ECS` 的 `MeshRenderer` 系统已内置 `_mesh_prev_model_cache`：
+
+- 每个 entity 第一帧无 prev → 走「不传 prevModel」分支
+- 第二帧起把上一帧 world matrix 作为 `prevModel` 自动传入 `mesh:Draw`
+- `MeshRenderer.visible == false` 或 `mr.mesh == nil` 时清除该 entity 的缓存，避免重新可见时产生伪 velocity
+
+使用 ECS 的脚本无需主动管理 prev model；只需在自定义渲染路径（手写 `mesh:Draw` 调用）需要 velocity buffer 支持时显式传入。
+
+### 示例
+
+```lua
+-- 旧调用，保持兼容
+mesh:Draw()
+mesh:Draw(0)
+mesh:Draw(textureId)
+mesh:Draw(material)
+
+-- Phase E.13：传入上一帧世界矩阵以参与 velocity buffer
+local prevModel = computePrevWorldMatrix(entity)  -- 列主序 mat4
+mesh:Draw(prevModel)
+mesh:Draw(0,        prevModel)
+mesh:Draw(material, prevModel)
+```
+
+### 返回值
+
+`void`
+
+---

@@ -380,6 +380,9 @@ while win:IsOpen() do
             SSR.GetTemporalAlpha(),
             SSR.GetRejectionMode(),
             SSR.GetRejectionMode() == 1 and 'neighborhood' or 'depth'))
+        -- Phase E.13: velocity buffer 与 Temporal SSR 联动；Temporal=ON 时优先采样，OFF 时仅作 G-buffer
+        line(string.format('Velocity buffer: integrated (Phase E.13) | reprojection=%s',
+            SSR.GetTemporalEnabled() and 'velocity-first' or 'idle (Temporal OFF)'))
         line('Keys: F=SSR B=Blur V=Bilateral T=Temporal 9/0=radius ,/.=sigma U/I=alpha N=reject R=reset ESC')
     end
 

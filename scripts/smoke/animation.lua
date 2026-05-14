@@ -753,9 +753,85 @@ do
     CHECK(true, 'LoadSkinnedGLTF 异常路径 fallback 不破坏后续 smoke 流程')
 end
 
+-- ==================== [18] Phase E.13: velocity history 复位路径 ====================
+-- 目标: 间接验证 Phase E.13 Animator 内部 prev pose / velocityHistoryValid
+-- 在以下时间跳变/状态切换路径下不崩, 并且 Update 仍能产出合法 jointMatrices.
+-- Lua 端没有直接 query velocityHistoryValid, 所以只覆盖 "动作不崩 + 状态自洽".
+
+print('[18] Phase E.13: velocity history 复位路径 (间接验证)')
+
+do
+    -- 复用 [13] 的最小 skeleton + clip 套件, 避免依赖外部资产
+    local sk = Anim.NewEmptySkeleton(1)
+    sk:SetJointName(1, 'root')
+
+    local idle = Anim.NewEmptyClip('idle', 1.0)
+    idle:AddSampler(1, 'translation', 'LINEAR', {0.0, 1.0}, {0,0,0, 0,0,0})
+
+    local walk = Anim.NewEmptyClip('walk', 1.0)
+    walk:AddSampler(1, 'translation', 'LINEAR', {0.0, 1.0}, {0,0,0, 10,0,0})
+
+    local an = Anim.NewAnimator(sk)
+    an:AddState('idle', idle)
+    an:AddState('walk', walk)
+
+    -- 18.1 连续 Update 后 prev pose 应该被自然累积 (内部行为, 仅验证不崩)
+    an:Play('walk')
+    for i = 1, 3 do an:Update(1/60) end
+    local mats1 = an:GetJointMatrices()
+    CHECK(type(mats1) == 'table' and #mats1 == 16, '[E.13] 连续 Update 后 jointMatrices 形态正确')
+
+    -- 18.2 SetCurrentTime 触发 velocity history 复位; 后续 Update 不崩
+    an:SetCurrentTime(0.5)
+    an:Update(1/60)
+    CHECK(true, '[E.13] SetCurrentTime + Update 不崩 (内部 prev pose 复位)')
+
+    -- 18.3 Play 切换 state 触发复位
+    an:Play('idle')
+    an:Update(1/60)
+    CHECK(an:GetCurrentState() == 'idle',
+          '[E.13] Play 切换 state 后 currentState 正确, prev pose 由内部复位')
+
+    -- 18.4 Stop 清空 currentState 触发复位
+    an:Stop()
+    CHECK(an:GetCurrentState() == nil or an:GetCurrentState() == '',
+          '[E.13] Stop 后 currentState 为空, prev pose 由内部复位')
+
+    -- 18.5 立即 transition (duration=0) 触发复位
+    an:Play('idle')
+    an:AddTransition('idle', 'walk', function() return true end, 0.0)
+    an:Update(1/60)
+    CHECK(an:GetCurrentState() == 'walk',
+          '[E.13] 立即 transition (duration=0) 后切换到 walk, prev pose 复位')
+    an:ClearTransitions()
+
+    -- 18.6 手动 morph weight 覆盖触发复位
+    local ok_mw = pcall(function() an:SetMorphWeight(1, 0.5) end)
+    CHECK(ok_mw, '[E.13] SetMorphWeight 不崩 (触发内部 prev morph 复位)')
+    an:Update(1/60)
+    CHECK(true, '[E.13] SetMorphWeight 后 Update 不崩')
+
+    -- 18.7 ClearMorphWeights 触发复位
+    an:ClearMorphWeights()
+    an:Update(1/60)
+    CHECK(true, '[E.13] ClearMorphWeights 后 Update 不崩')
+
+    -- 18.8 极端时间跳变后仍能产生合法关节矩阵
+    an:Play('walk')
+    an:SetCurrentTime(0.0)
+    an:Update(1/60)
+    an:SetCurrentTime(0.9)  -- 大跳变
+    an:Update(1/60)
+    local mats2 = an:GetJointMatrices()
+    CHECK(type(mats2) == 'table' and #mats2 == 16,
+          '[E.13] 大时间跳变后 jointMatrices 仍合法')
+
+    an:Delete()
+end
+
 -- ==================== 汇总 ====================
 
-print(string.format('[Phase AV Step 1+2+3+4 + Phase AV.x + Phase AW + Phase AX + Phase AY] 通过 %d / 失败 %d', PASS, FAIL))
+print(string.format('[Phase AV Step 1+2+3+4 + Phase AV.x + Phase AW + Phase AX + Phase AY + Phase E.13] 通过 %d / 失败 %d', PASS, FAIL))
 if FAIL > 0 then
     error(string.format('animation smoke 失败: %d 个断言不通过', FAIL))
 end
