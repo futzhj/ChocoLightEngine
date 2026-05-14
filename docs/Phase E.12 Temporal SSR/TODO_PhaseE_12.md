@@ -93,7 +93,7 @@
 |------|------|--------|
 | 无 velocity buffer | 动态物体 ghost 风险 | 中 |
 | full-res history 固定开启 | 移动端 VRAM 压力 | 中 |
-| `RejectionMode=0` 仍偏预留 | A/B 模式语义不够完整 | 低 |
+| `RejectionMode=0` 仅为 current-depth threshold 启发式 | 抗 ghost 弱于默认 neighborhood clip | 低 |
 | TemporalAlpha 全局统一 | 不同材质响应无法差异化 | 低 |
 | 无视觉自动化测试 | 画质回归依赖人工 | 低 |
 
