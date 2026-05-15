@@ -7,16 +7,19 @@
 
 ## 1. 必须项（阻塞 Phase E.16 完成）
 
-### 1.1 GitHub Actions CI 6/6 ✅
+### 1.1 GitHub Actions CI 6/6 ✅ 完成
 
-- **目的**：跨 6 平台编译 + Windows runtime smoke 验证零回归
-- **操作**：
-  1. 等待 commit + push 后 `gh run watch <run id>`
-  2. 6/6 平台全 success
-  3. Windows runtime smoke 通过 ≥ 21 PASS（16 原 + 5 mode 新）
-  4. 现有 16 个 phase smoke 0 fail
-- **预期耗时**：~8~10 分钟
-- **触发**：T7-2 push 后自动启动
+- **CI run**: [`25896826324`](https://github.com/futzhj/ChocoLightEngine/actions/runs/25896826324)
+- **Commit**: `46cd329`
+- **状态**: ✅ 6/6 平台全 success
+  - ✅ build-windows（含 runtime smoke phaseE16Smoke 21 PASS）
+  - ✅ build-linux
+  - ✅ build-macos
+  - ✅ build-android
+  - ✅ build-ios
+  - ✅ build-web
+- **Phase E.16 motion_blur.lua**: 21 PASS（16 原 + 5 mode 新）
+- **现有 16 个 phase smoke**: 零回归确认
 
 ### 1.2 真机视觉验收（桌面 GL3.3 真窗口） 🧑‍💻
 

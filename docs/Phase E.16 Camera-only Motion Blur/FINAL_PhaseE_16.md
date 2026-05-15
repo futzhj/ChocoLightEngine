@@ -154,13 +154,19 @@ Phase E.16 Camera-only Motion Blur  → 双路 velocity，mode-aware blur ★
 
 ## 9. CI 状态
 
-待 T7 commit + push 后填入：
-
 ```
-GitHub Actions run id: <TBD>
-Status: <TBD>
-Duration: <TBD>
-Phase E.16 motion_blur.lua: ≥ 21 PASS (16 原 + 5 mode 新)
+GitHub Actions run id: 25896826324
+Commit: 46cd329
+Status: ✅ SUCCESS (6/6 平台)
+Jobs:
+  ✅ build-windows    (含 runtime smoke phaseE16Smoke 21 PASS)
+  ✅ build-linux
+  ✅ build-macos
+  ✅ build-android
+  ✅ build-ios
+  ✅ build-web
+  ⏭️ release         (skipped — 非 tag push)
+Phase E.16 motion_blur.lua: 21 PASS (16 原 + 5 mode 新)
 其他 16 个 phase smoke: 全部通过零回归
 ```
 

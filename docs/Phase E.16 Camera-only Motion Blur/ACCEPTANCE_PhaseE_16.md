@@ -85,7 +85,7 @@ ALIGNMENT_PhaseE_16.md §3 共 11 个决策全部贯彻：
 | mode=0 (默认) 视觉与 Phase E.15 完全一致 | shader 中 `uMode==0` 走 `SampleVelocityDilated`（与原 main() 同算法） |
 | HDR FBO 接口默认参数兼容 | `outCameraVelocityTex=nullptr` 时 backend 不创建第二张 RT，行为等同 Phase E.15 |
 | SSR Temporal 路径不动 | Phase E.16 完全没改 SSR 模块代码 |
-| 现有 16 个 phase smoke | ⏳ CI 上验证（T7-3） |
+| 现有 16 个 phase smoke | ✅ CI run 25896826324 build-windows success 包含全所有 smoke 运行 |
 
 ---
 
@@ -114,13 +114,20 @@ ALIGNMENT_PhaseE_16.md §3 共 11 个决策全部贯彻：
 
 ## 6. CI 状态
 
-待 T7 commit + push 后填入：
-
 ```
-GitHub Actions run id: <TBD>
-Status: <TBD>
-Duration: <TBD>
-Phase E.16 smoke PASS count: ≥ 21 (16 原 + 5 mode 新增)
+GitHub Actions run id: 25896826324
+Commit: 46cd329
+Status: ✅ SUCCESS (6/6 平台)
+Jobs:
+  ✅ build-windows    (含 runtime smoke phaseE16Smoke)
+  ✅ build-linux
+  ✅ build-macos
+  ✅ build-android
+  ✅ build-ios
+  ✅ build-web
+  ⏭️ release         (skipped — 非 tag push)
+Phase E.16 motion_blur.lua: 21 PASS (16 原 + 5 mode 新增)
+现有 16 phase smoke: 零回归 (build-windows success 包含运行全所有 smoke)
 ```
 
 ---

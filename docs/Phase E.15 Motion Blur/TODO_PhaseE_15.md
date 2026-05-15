@@ -53,11 +53,12 @@
 - **HDR.SetVelocityScale Lua API**：Phase E.14 TODO §2.2 同款建议项，受益 SSR Temporal + Phase E.15
 - 增加 `kVelocityScaleMin / kVelocityScaleMax` 常量；clamp [0.05, 1.0]
 
-### 3.2 Phase E.16 候选（中期，1-2 天）
+### 3.2 Phase E.16 候选（中期，1-2 天）— ✅ 已完成
 
-- **Camera-only motion blur 模式**
-- 需要 G-buffer 拆分 camera velocity 与 object velocity（两张 RT 或两通道单 RT）
-- 工作量翻倍：3D shader 写入路径要分两路；DecodeVelocity 要分两次
+- **Camera-only motion blur 模式** — ✅ Phase E.16 已完成（CI run [25896826324](https://github.com/futzhj/ChocoLightEngine/actions/runs/25896826324) 6/6 green，commit `46cd329`）
+- 实施回顾：双 RT 方案（A1），HDR FBO MRT slot 3 = cameraVelocityTex，3D shader VS 同时写两路；MotionBlur shader 内 mode 切换，object_only = combined − camera
+- API：`Light.Graphics.MotionBlur.SetMode(0/1/2)` / `GetMode()`，默认 0 = combined 完全兼容
+- 详见 `@e:/jinyiNew/Light/docs/Phase E.16 Camera-only Motion Blur/FINAL_PhaseE_16.md`
 
 ### 3.3 Phase E.17 候选（中期，1 天）
 
