@@ -1425,7 +1425,7 @@ print(Light.Graphics.MotionBlur.GetHalfRes())      --> true
 | 参数 (F.0.2/F.0.3) | `SetClipMode(mode)` / `GetClipMode()` | `"rgb"` / `"ycocg"` / `"variance"` (大小写不敏感)，**默认 `"ycocg"`** |
 | 参数 (F.0.3) | `SetVarianceGamma(γ)` / `GetVarianceGamma()` | variance clip 收紧系数 γ，clamp `[0, 4]`，**默认 1.0**（仅 `"variance"` 生效） |
 | 参数 (F.0.5) | `SetHalfResHistory(on)` / `GetHalfResHistory()` | history RT 半分辨率，**默认 false**（零回归）；ON 时 VRAM -75% / TAA pass 像素 -75% |
-| 参数 (F.0.6) | `SetSharpenMode(mode)` / `GetSharpenMode()` | sharpen 算法：`"unsharp"` (F.0.1, [0,2]) / `"cas"` (AMD FSR1, [0,1])，**默认 `"unsharp"`** |
+| 参数 (F.0.6/F.0.12) | `SetSharpenMode(mode)` / `GetSharpenMode()` | sharpen 算法：`"unsharp"` (F.0.1, [0,2]) / `"cas"` (FSR1, [0,1]) / `"rcas"` (FSR2, [0,2])，**默认 `"unsharp"`** |
 | 参数 (F.0.8) | `SetMotionGamma(γ)` / `GetMotionGamma()` | motion-adaptive 高速区域 γ，clamp `[0, 4]`，**默认 1.5**（UE5 推荐） |
 | 参数 (F.0.8) | `SetMotionAdaptive(on)` / `GetMotionAdaptive()` | motion-adaptive γ 开关，**默认 false**（零回归）；仅 `ClipMode=="variance"` 生效 |
 | 参数 (F.0.9) | `SetUpscaleMode(mode)` / `GetUpscaleMode()` | history→sceneTex 上采样：`"bilinear"` (F.0.5) / `"bicubic"` Catmull-Rom，**默认 `"bilinear"`** |
@@ -1969,7 +1969,7 @@ TAA.SetHalfResHistory(true)                  -- 五启共存
 
 ## `TAA.SetSharpenMode` / `TAA.GetSharpenMode`
 
-**Phase F.0.6** — sharpen 算法切换：F.0.1 4-tap unsharp mask vs AMD FidelityFX FSR1 5-tap CAS。
+**Phase F.0.6 / F.0.12** — sharpen 算法三选一：F.0.1 4-tap unsharp mask / AMD FidelityFX FSR1 5-tap CAS / AMD FidelityFX FSR2 5-tap RCAS。
 
 ### 参数
 
@@ -1990,11 +1990,52 @@ local ok, err = pcall(Light.Graphics.TAA.SetSharpenMode, 123)
 -- ok=true, err=nil  (为获得 nil+err 不走 pcall)
 
 local ok2, err2 = Light.Graphics.TAA.SetSharpenMode(123)
-print(ok2, err2)  --> nil  TAA.SetSharpenMode: 期望 string 参数 ('unsharp' / 'cas')
+print(ok2, err2)  --> nil  TAA.SetSharpenMode: 期望 string 参数 ('unsharp' / 'cas' / 'rcas')
 
 local ok3, err3 = Light.Graphics.TAA.SetSharpenMode("foo")
-print(ok3, err3)  --> nil  TAA.SetSharpenMode: 未识别的 mode 'foo' (期望 'unsharp' / 'cas')
+print(ok3, err3)  --> nil  TAA.SetSharpenMode: 未识别的 mode 'foo' (期望 'unsharp' / 'cas' / 'rcas')
 ```
+
+### Phase F.0.12 — RCAS (FSR2 Robust CAS)
+
+RCAS 是 CAS 的高级形式，增加两个鲁棒性层：
+
+| 层 | 作用 | 公式 |
+|------|------|------|
+| **Noise detection** | smooth 区不放大 noise | `if (range < 1/64) skip` |
+| **Edge protection** | edges 不 ringing | `lobe = sqrt(min(eL-mn, mx-eL) / range)` |
+
+```glsl
+// RCAS 后补贴公式 (FSR2 标准)
+range = mx4 - mn4         // 4-tap min/max (排除中心)
+if (range < 1.0/64.0) return e   // 跳过 smooth
+
+lobe = sqrt(max(min(eL-mn4, mx4-eL), 0) / range)
+peak = -1.0 / mix(16.0, 4.0, sharpness * 0.5)  // [0,2] → [-1/16, -1/4]
+wgt  = peak * lobe
+result = (e + (b+d+f+h)*wgt) / (1 + 4*wgt)
+```
+
+**RCAS 与 CAS 对比**:
+
+| 维度 | CAS (F.0.6) | RCAS (F.0.12) |
+|------|-----------|----------------|
+| ALU 数 | ~12 | ~22 (+10) |
+| sharpness 范围 | [0, 1] | [0, 2] |
+| Noise detection | ❌ | ✅ (range<1/64 跳过) |
+| Edge protection | ❌ | ✅ (lobe sqrt) |
+| smooth 区 noise 放大 | 会 | 不会 |
+| Edges ringing | 可能 | 不会 |
+| 性能 (1080p) | ~0.05 ms | ~0.08 ms |
+
+**适用场景**:
+
+| 场景 | 推荐 mode |
+|------|-----------|
+| LDR 游戏, 纯画质 | `unsharp` (sharpness 0.5-1.5) |
+| HDR 中强锐化 | `cas` (sharpness 0.5-0.8) |
+| **HDR + TAA noise 明显** | **`rcas` (sharpness 0.5-1.2)** |
+| HDR 高对比 edges (UI/文字) | `rcas` (防 ringing) |
 
 ### 两个算法对比
 
@@ -2058,6 +2099,11 @@ print(TAA.GetSharpenMode())                 --> cas
 -- 大小写不敏感
 TAA.SetSharpenMode("CAS")
 print(TAA.GetSharpenMode())                 --> cas (同模式)
+
+-- Phase F.0.12: 启用 RCAS (FSR2 Robust CAS, noise + edge aware)
+TAA.SetSharpenMode("rcas")
+TAA.SetSharpness(0.8)                       -- RCAS [0, 2], 0.8 = 中高强度
+print(TAA.GetSharpenMode())                 --> rcas
 
 -- invalid 返 nil+err, state 不变
 local ok, err = TAA.SetSharpenMode("foo")

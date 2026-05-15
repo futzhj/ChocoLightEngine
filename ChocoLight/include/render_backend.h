@@ -1372,6 +1372,17 @@ public:
     virtual void DrawTAACASPass(uint32_t /*srcTex*/, uint32_t /*dstFbo*/,
                                 int /*w*/, int /*h*/, float /*sharpness*/) {}
 
+    /// Phase F.0.12 — TAA RCAS pass: 5-tap robust contrast-adaptive sharpening (AMD FidelityFX FSR2)
+    /// FSR1 CAS 的高级形式: noise detection (range<1/64 跳过) + edge protection (lobe sqrt 限制).
+    /// 与 F.0.1 unsharp / F.0.6 cas 共存, 用户通过 SetSharpenMode("rcas") 切换.
+    /// shader 编译失败时此函数空实现, 调用方需 fallback 到 BlitTAAToHDR.
+    /// @param srcTex     TAA 输出 tex (= history 新 slot tex)
+    /// @param dstFbo     HDR FBO
+    /// @param w, h       尺寸 (full-res)
+    /// @param sharpness  RCAS [0, 2] (FSR2 标准): 0→peak=-1/16 弱, 2→peak=-1/4 强; 已由调用方 clamp
+    virtual void DrawTAARCASPass(uint32_t /*srcTex*/, uint32_t /*dstFbo*/,
+                                 int /*w*/, int /*h*/, float /*sharpness*/) {}
+
     /// Phase F.0.9 — TAA Custom Upscale pass: Catmull-Rom 9-tap bicubic (Sigggraph 2018 Filmic SMAA)
     /// 仅 halfRes=true && sharpness=0 && upscaleMode==1 路径使用, 替代 BlitTAAToHDR 的 GL_LINEAR stretch.
     /// 视觉收益: -50% blur vs bilinear; 性能: ~+0.025 ms @ 1080p.

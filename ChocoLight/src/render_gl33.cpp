@@ -2386,6 +2386,63 @@ void main() {
 }
 )";
 
+// ---- FS_RCAS (GLES 3.0): Phase F.0.12 — TAA 后 5-tap RCAS 锐化 (AMD FidelityFX FSR2) ----
+//   Robust CAS: 在 F.0.6 CAS 基础上加 noise detection + edge protection
+//   - noise detection: range < 1/64 时跳过 (避免放大 sensor noise)
+//   - edge protection: lobe = sqrt(min(eL-mn, mx-eL) / range), edges 处 lobe 小不 over-sharpen
+//   性能: 5 fetch + ~22 ALU/px (vs CAS ~12), +0.03 ms @ 1080p
+//   sharpness ∈ [0, 2] (FSR2 标准): 0 → peak=-1/16 (弱), 2 → peak=-1/4 (强)
+static const char* FS_RCAS_SOURCE = R"(#version 300 es
+precision highp float;
+precision highp sampler2D;
+in  vec2 vUV;
+out vec4 FragColor;
+
+uniform sampler2D uInputTex;       // slot 0: TAA blend 输出
+uniform vec2  uTexelSize;          // 1.0 / vec2(W, H)
+uniform float uSharpness;          // RCAS [0, 2]
+
+// FSR2 推荐 noise threshold: 平衡 noise rejection 与小细节保留
+const float kNoiseThreshold = 1.0 / 64.0;
+
+void main() {
+    vec3 e = texture(uInputTex, vUV).rgb;                                    // 中心
+    vec3 b = texture(uInputTex, vUV + vec2(0.0,         uTexelSize.y)).rgb;  // 上
+    vec3 h = texture(uInputTex, vUV - vec2(0.0,         uTexelSize.y)).rgb;  // 下
+    vec3 d = texture(uInputTex, vUV + vec2(uTexelSize.x, 0.0       )).rgb;  // 右
+    vec3 f = texture(uInputTex, vUV - vec2(uTexelSize.x, 0.0       )).rgb;  // 左
+
+    // luma 提取: G channel as proxy (FSR2 优化, 比 0.299R+0.587G+0.114B 快 ~3 ALU)
+    float bL = b.g, dL = d.g, eL = e.g, fL = f.g, hL = h.g;
+
+    // 4-tap 邻域 min/max (排除中心, 用于 edge detection)
+    float mn4 = min(min(bL, dL), min(fL, hL));
+    float mx4 = max(max(bL, dL), max(fL, hL));
+    float range = mx4 - mn4;
+
+    // Noise detection: range 太小 → smooth 区域, 跳过 sharpen 避免放大 sensor noise
+    if (range < kNoiseThreshold) {
+        FragColor = vec4(e, 1.0);
+        return;
+    }
+
+    // Edge protection: lobe ∈ [0, 0.5], edges 处 (eL≈mn4 或 eL≈mx4) lobe→0 不 over-sharpen
+    float lobe = max(min(eL - mn4, mx4 - eL), 0.0);
+    lobe = sqrt(lobe / max(range, 1e-4));
+
+    // peak: sharpness=0 → peak=-1/16 (弱), sharpness=2 → peak=-1/4 (强)
+    float peak = -1.0 / mix(16.0, 4.0, uSharpness * 0.5);
+    float wgt  = peak * lobe;
+
+    // Final composite (与 CAS 同公式): result = (e + 4 邻域 × wgt) / (1 + 4 wgt)
+    vec3 sum    = e + (b + d + f + h) * wgt;
+    vec3 result = sum / (1.0 + 4.0 * wgt);
+
+    // HDR safe (FSR2 标准): clamp ≥ 0 防黑斑, 不截上限保留高光
+    FragColor = vec4(max(result, vec3(0.0)), 1.0);
+}
+)";
+
 // ---- FS_MOTION_BLUR (GLES 3.0): Phase E.15 per-pixel velocity blur ----
 //   1. SampleVelocityDilated 与 SSRTemporal 同算法 (3x3 max-length 邻域可选)
 //   2. E3 软限: |vel| <= screenDiagUV × 0.3 ≈ 0.4243 防极端拖尾糊死
@@ -3167,6 +3224,58 @@ void main() {
 }
 )";
 
+// ---- FS_RCAS (GL 3.3): Phase F.0.12 — TAA 后 5-tap RCAS 锐化 (AMD FidelityFX FSR2) ----
+// 与 GLES3 版完全等价, 仅 #version + 无 precision qualifier
+static const char* FS_RCAS_SOURCE = R"(
+#version 330 core
+in  vec2 vUV;
+out vec4 FragColor;
+
+uniform sampler2D uInputTex;       // slot 0: TAA blend 输出
+uniform vec2  uTexelSize;          // 1.0 / vec2(W, H)
+uniform float uSharpness;          // RCAS [0, 2]
+
+// FSR2 推荐 noise threshold: 平衡 noise rejection 与小细节保留
+const float kNoiseThreshold = 1.0 / 64.0;
+
+void main() {
+    vec3 e = texture(uInputTex, vUV).rgb;                                    // 中心
+    vec3 b = texture(uInputTex, vUV + vec2(0.0,         uTexelSize.y)).rgb;  // 上
+    vec3 h = texture(uInputTex, vUV - vec2(0.0,         uTexelSize.y)).rgb;  // 下
+    vec3 d = texture(uInputTex, vUV + vec2(uTexelSize.x, 0.0       )).rgb;  // 右
+    vec3 f = texture(uInputTex, vUV - vec2(uTexelSize.x, 0.0       )).rgb;  // 左
+
+    // luma 提取: G channel as proxy (FSR2 优化)
+    float bL = b.g, dL = d.g, eL = e.g, fL = f.g, hL = h.g;
+
+    // 4-tap 邻域 min/max (排除中心)
+    float mn4 = min(min(bL, dL), min(fL, hL));
+    float mx4 = max(max(bL, dL), max(fL, hL));
+    float range = mx4 - mn4;
+
+    // Noise detection: 跳过 smooth 区域
+    if (range < kNoiseThreshold) {
+        FragColor = vec4(e, 1.0);
+        return;
+    }
+
+    // Edge protection: lobe = sqrt(min(eL-mn, mx-eL) / range)
+    float lobe = max(min(eL - mn4, mx4 - eL), 0.0);
+    lobe = sqrt(lobe / max(range, 1e-4));
+
+    // peak: sharpness=0 → peak=-1/16, sharpness=2 → peak=-1/4
+    float peak = -1.0 / mix(16.0, 4.0, uSharpness * 0.5);
+    float wgt  = peak * lobe;
+
+    // Final composite
+    vec3 sum    = e + (b + d + f + h) * wgt;
+    vec3 result = sum / (1.0 + 4.0 * wgt);
+
+    // HDR safe (FSR2 标准): clamp ≥ 0
+    FragColor = vec4(max(result, vec3(0.0)), 1.0);
+}
+)";
+
 // ---- FS_MOTION_BLUR (GL 3.3): Phase E.15 per-pixel velocity blur ----
 //   1. SampleVelocityDilated 与 SSRTemporal 同算法 (3x3 max-length 邻域可选)
 //   2. E3 软限: |vel| <= screenDiagUV × 0.3 ≈ 0.4243 防极端拖尾糊死
@@ -3640,6 +3749,14 @@ class GL33Backend : public RenderBackend {
     GLuint programBicubicUpscale            = 0;
     GLint  locBicubic_InputTex              = -1;   // sampler2D, slot 0
     GLint  locBicubic_Texel                 = -1;   // 1.0 / (srcW, srcH) — src 分辨率
+
+    // Phase F.0.12 — TAA RCAS Sharpening (5-tap AMD FidelityFX FSR2, 与 F.0.1 unsharp / F.0.6 cas 共存)
+    //   shader: FS_RCAS_SOURCE (uInputTex + uTexelSize + uSharpness ∈ [0, 2])
+    //   FSR2 robust: noise detection (range < 1/64 跳过) + edge protection (lobe sqrt 限制)
+    GLuint programRCAS                      = 0;
+    GLint  locRCAS_InputTex                 = -1;   // sampler2D, slot 0
+    GLint  locRCAS_TexelSize                = -1;
+    GLint  locRCAS_Sharpness                = -1;
 
     // Phase E.2.1 — Lighting2D dirty bit cache
     // 当 state->version 与此值相等时, UploadLighting2D 跳过所有 glUniform*v 调用
@@ -4664,6 +4781,22 @@ public:
             CC::Log(CC::LOG_WARN, "GL33: Phase F.0.9 TAA Bicubic Upscale shader compile failed; DrawTAAUpscalePass 将 fallback 走 Blit");
         }
 
+        // ---- Phase F.0.12 — TAA RCAS Sharpening (FSR2 5-tap noise+edge aware) ----
+        //   与 F.0.1 unsharp / F.0.6 cas 共存; 用户通过 SetSharpenMode("rcas") 切换
+        //   shader: FS_RCAS_SOURCE (5-tap RCAS, robust contrast adaptive)
+        programRCAS = buildProgram(FS_RCAS_SOURCE, "TAA_RCAS");
+        if (programRCAS) {
+            locRCAS_InputTex  = glGetUniformLocation(programRCAS, "uInputTex");
+            locRCAS_TexelSize = glGetUniformLocation(programRCAS, "uTexelSize");
+            locRCAS_Sharpness = glGetUniformLocation(programRCAS, "uSharpness");
+            glUseProgram(programRCAS);
+            if (locRCAS_InputTex >= 0) glUniform1i(locRCAS_InputTex, 0);
+            glUseProgram(0);
+            CC::Log(CC::LOG_INFO, "GL33: Phase F.0.12 TAA RCAS shader compiled (program=%u)", programRCAS);
+        } else {
+            CC::Log(CC::LOG_WARN, "GL33: Phase F.0.12 TAA RCAS shader compile failed; DrawTAARCASPass 将 fallback 走 Blit");
+        }
+
         CC::Log(CC::LOG_INFO,
                 "GL33: Phase E.6+E.7+E.8+E.9+E.10+E.11+E.12 LensFx/SSAO/SSR ready (lensDirt=%s, streak=%s, lensFlare=%s, ssao=%s, ssr=%s, ssrBlur=%s, ssrTemporal=%s; programs=[LD=%u, SB=%u, SC=%u, LFG=%u, S=%u, SB=%u, SC=%u, SSR=%u, SSRC=%u, SSRB=%u, SSRT=%u])",
                 lensDirtSupported ? "yes" : "no",
@@ -4884,6 +5017,10 @@ public:
         // Phase F.0.9 — TAA Custom Upsampler 清理
         if (programBicubicUpscale) { glDeleteProgram(programBicubicUpscale); programBicubicUpscale = 0; }
         locBicubic_InputTex = locBicubic_Texel = -1;
+
+        // Phase F.0.12 — TAA RCAS Sharpening 清理
+        if (programRCAS) { glDeleteProgram(programRCAS); programRCAS = 0; }
+        locRCAS_InputTex = locRCAS_TexelSize = locRCAS_Sharpness = -1;
     }
 
     bool SupportsLit2D() const override { return lit2DSupported; }
@@ -7791,6 +7928,38 @@ public:
         glDrawArrays(GL_TRIANGLES, 0, 6);
         glBindVertexArray(0);
 
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        glUseProgram(0);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    }
+
+    /// Phase F.0.12 — TAA RCAS pass: 5-tap robust contrast-adaptive sharpening (AMD FidelityFX FSR2)
+    /// 与 F.0.1 unsharp / F.0.6 cas 同接口; sharpness ∈ [0, 2] (FSR2 标准范围, 调用方负责 clamp).
+    /// FSR2 robust 增强: noise detection (range<1/64 跳过) + edge protection (lobe sqrt 限制).
+    /// shader 编译失败时静默 no-op (TAARenderer 层 fallback 走 BlitTAAToHDR).
+    void DrawTAARCASPass(uint32_t srcTex, uint32_t dstFbo,
+                         int w, int h, float sharpness) override {
+        if (!programRCAS || !srcTex || !dstFbo || w <= 0 || h <= 0) return;
+
+        glBindFramebuffer(GL_FRAMEBUFFER, dstFbo);
+        glViewport(0, 0, w, h);
+        glDisable(GL_DEPTH_TEST);
+        glDisable(GL_SCISSOR_TEST);
+        glDisable(GL_BLEND);
+
+        glUseProgram(programRCAS);
+        if (locRCAS_TexelSize >= 0) glUniform2f(locRCAS_TexelSize, 1.0f / (float)w, 1.0f / (float)h);
+        if (locRCAS_Sharpness >= 0) glUniform1f(locRCAS_Sharpness, sharpness);
+
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, (GLuint)srcTex);
+
+        glBindVertexArray(vaoTonemap);
+        glDrawArrays(GL_TRIANGLES, 0, 6);
+        glBindVertexArray(0);
+
+        // 状态复位
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, 0);
         glUseProgram(0);

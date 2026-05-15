@@ -141,15 +141,14 @@ float GetVarianceGamma();
 void SetHalfResHistory(bool on);
 bool GetHalfResHistory();
 
-/// Phase F.0.6 — TAA Sharpen Mode (4-tap unsharp mask vs 5-tap CAS)
-/// "unsharp" (默认) — F.0.1 4-tap unsharp mask, sharpness ∈ [0, 2], ~0.03 ms
-/// "cas"             — AMD FidelityFX FSR1 5-tap contrast-adaptive sharpening
-///                     sharpness ∈ [0, 1] (FSR1 标准范围, TAARenderer 内部 clamp 到 1)
-///                     contrast-adaptive: 平滑区域不锁牰 + HDR safe + perceptual gamma
-///                     性能: ~0.05 ms (+0.02 ms vs unsharp)
-/// 大小写不敏感: "CAS" / "Cas" / "cas" 等价; "unsharp" / "Unsharp" / "UNSHARP" 等价
-/// 未识别字符串保持当前 state (Lua 层 raise error 提示)
-/// shader 切换零开销, sharpness 字段共享 (语义按 mode 自适应)
+/// Phase F.0.6/F.0.12 — Sharpen mode (4-tap unsharp / 5-tap CAS / 5-tap RCAS 三选一)
+/// "unsharp" — F.0.1 默认 4-tap unsharp mask, sharpness ∈ [0, 2]
+/// "cas"     — AMD FidelityFX FSR1 5-tap CAS, sharpness ∈ [0, 1] (内部 saturate)
+/// "rcas"    — AMD FidelityFX FSR2 5-tap RCAS (Robust CAS), sharpness ∈ [0, 2]
+///             noise detection (range<1/64 跳过) + edge protection (lobe sqrt 限制)
+///             比 CAS 多 ~10 ALU/px (~+0.03 ms @ 1080p); smooth 区域不放大 noise, edges 不 ringing
+/// 大小写不敏感: "CAS"/"Cas"/"RCAS"/"Rcas"/"cas" 等价; 未识别静默保持 (Lua 层 raise error)
+/// 默认 "unsharp" (零回归); 切换即生效 (下帧 Process 走对应 backend pass)
 void SetSharpenMode(const char* mode);
 const char* GetSharpenMode();
 

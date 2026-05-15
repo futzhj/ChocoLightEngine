@@ -1,6 +1,6 @@
--- Phase F.0 + F.0.1 + F.0.2 + F.0.3 + F.0.4 + F.0.5 + F.0.6 + F.0.8 + F.0.9 smoke: Light.Graphics.TAA (Temporal Anti-Aliasing master pipeline surface)
+-- Phase F.0 + F.0.1 + F.0.2 + F.0.3 + F.0.4 + F.0.5 + F.0.6 + F.0.8 + F.0.9 + F.0.12 smoke: Light.Graphics.TAA (Temporal Anti-Aliasing master pipeline surface)
 --
--- API coverage (31 functions = F.0 13 + F.0.1 2 + F.0.2 2 + F.0.3 2 + F.0.4 2 + F.0.5 2 + F.0.6 2 + F.0.8 4 + F.0.9 2):
+-- API coverage (31 functions = F.0 13 + F.0.1 2 + F.0.2 2 + F.0.3 2 + F.0.4 2 + F.0.5 2 + F.0.6/F.0.12 2 + F.0.8 4 + F.0.9 2):
 --   Lifecycle 5: Enable / Disable / IsEnabled / IsSupported / Resize
 --   Params     6: SetBlendAlpha / GetBlendAlpha (clamp [0, 1], default 0.92)
 --                 SetNeighborhoodClip / GetNeighborhoodClip (default true)
@@ -16,9 +16,10 @@
 --                                       仅 ClipMode=="variance" 生效; γ 越小 clip 越严
 --   Phase F.0.5 — Half-res 2: SetHalfResHistory / GetHalfResHistory (boolean, default false)
 --                              true: history RT (w/2, h/2), VRAM -75%; 零回归 (默认 OFF)
---   Phase F.0.6 — Sharpen mode 2: SetSharpenMode / GetSharpenMode ("unsharp"/"cas", default "unsharp")
+--   Phase F.0.6/F.0.12 — Sharpen mode 2: SetSharpenMode / GetSharpenMode ("unsharp"/"cas"/"rcas", default "unsharp")
 --                                    "unsharp" = F.0.1 4-tap unsharp mask (sharpness [0,2])
 --                                    "cas"     = AMD FidelityFX FSR1 5-tap CAS (sharpness [0,1] internal clamp)
+--                                    "rcas"    = AMD FidelityFX FSR2 5-tap RCAS (Robust CAS, sharpness [0,2])
 --   Phase F.0.8 — Motion-adaptive γ 4: SetMotionGamma / GetMotionGamma (clamp [0, 4], default 1.5)
 --                                       SetMotionAdaptive / GetMotionAdaptive (boolean, default false)
 --                                       UE5 高级形式: 静止区域 γ=varianceGamma, 高速区域 lerp 到 motionGamma
@@ -605,7 +606,16 @@ if TAA.GetSharpenMode() ~= "unsharp" then
 end
 pass("SharpenMode round-trip 'unsharp' ok")
 
--- 大小写不敏感 ("CAS" / "Cas" / "UNSHARP" / "Unsharp" 均应接受)
+-- Phase F.0.12: round-trip rcas
+local sm_set2 = TAA.SetSharpenMode("rcas")
+if sm_set2 ~= true then fail("SetSharpenMode('rcas') should return true, got " .. tostring(sm_set2)) end
+if TAA.GetSharpenMode() ~= "rcas" then
+    fail("Round-trip 'rcas' failed, got '" .. TAA.GetSharpenMode() .. "'")
+end
+pass("SharpenMode round-trip 'rcas' ok (Phase F.0.12 FSR2 Robust CAS)")
+TAA.SetSharpenMode("unsharp")  -- 复位
+
+-- 大小写不敏感 ("CAS" / "Cas" / "UNSHARP" / "Unsharp" / "RCAS" / "Rcas" 均应接受)
 TAA.SetSharpenMode("CAS")
 if TAA.GetSharpenMode() ~= "cas" then
     fail("Case-insensitive 'CAS' failed, got '" .. TAA.GetSharpenMode() .. "'")
@@ -619,6 +629,19 @@ pass("SharpenMode case-insensitive 'Cas' → 'cas' ok")
 TAA.SetSharpenMode("UNSHARP")
 if TAA.GetSharpenMode() ~= "unsharp" then fail("Case-insensitive 'UNSHARP' failed") end
 pass("SharpenMode case-insensitive 'UNSHARP' → 'unsharp' ok")
+
+-- Phase F.0.12: rcas 大小写不敏感
+TAA.SetSharpenMode("RCAS")
+if TAA.GetSharpenMode() ~= "rcas" then fail("Case-insensitive 'RCAS' failed") end
+pass("SharpenMode case-insensitive 'RCAS' → 'rcas' ok")
+
+TAA.SetSharpenMode("Rcas")
+if TAA.GetSharpenMode() ~= "rcas" then fail("Case-insensitive 'Rcas' failed") end
+pass("SharpenMode case-insensitive 'Rcas' → 'rcas' ok")
+
+TAA.SetSharpenMode("RCAs")
+if TAA.GetSharpenMode() ~= "rcas" then fail("Case-insensitive 'RCAs' failed") end
+pass("SharpenMode case-insensitive 'RCAs' → 'rcas' ok")
 
 -- invalid 字符串 → 返 nil + err (与 SetClipMode 同模式), state 不变
 TAA.SetSharpenMode("unsharp")          -- 重置
@@ -653,6 +676,8 @@ local hr_before = TAA.GetHalfResHistory()
 TAA.SetSharpenMode("cas")
 TAA.SetSharpenMode("unsharp")
 TAA.SetSharpenMode("cas")
+TAA.SetSharpenMode("rcas")   -- Phase F.0.12 加入三轮循环
+TAA.SetSharpenMode("unsharp")
 
 if math.abs(TAA.GetBlendAlpha()  - a_before)  > 1e-4
    or TAA.GetClipMode()           ~= cm_before
@@ -661,7 +686,7 @@ if math.abs(TAA.GetBlendAlpha()  - a_before)  > 1e-4
    or TAA.GetHalfResHistory()     ~= hr_before then
     fail("SharpenMode toggle should not affect alpha/clipMode/sharpness/antiFlicker/halfRes")
 end
-pass("SharpenMode 切换不影响其他参数 (状态独立)")
+pass("SharpenMode 切换 (unsharp↔cas↔rcas) 不影响其他参数 (状态独立)")
 
 -- F.0.1 + F.0.2 + F.0.3 + F.0.4 + F.0.5 + F.0.6 六启共存验证
 TAA.SetSharpness(0.5)
@@ -1008,8 +1033,8 @@ else
 end
 
 print("")
-print("=== Phase F.0 + F.0.1 + F.0.2 + F.0.3 + F.0.4 + F.0.5 + F.0.6 + F.0.8 + F.0.9 TAA smoke: ALL TESTS PASSED ===")
-print("Functions covered: " .. #fn_names .. " / 31")
+print("=== Phase F.0 + F.0.1 + F.0.2 + F.0.3 + F.0.4 + F.0.5 + F.0.6 + F.0.8 + F.0.9 + F.0.12 TAA smoke: ALL TESTS PASSED ===")
+print("Functions covered: " .. #fn_names .. " / 31 (F.0.12 仅扩展 sharpenMode 主体 'rcas', 不增函数)")
 print("Highlights:")
 print("  - default OFF, alpha=0.92, neighborhoodClip=true, jitterEnabled=true, sharpness=0.5, antiFlicker=true, clipMode='ycocg', varianceGamma=1.0, halfResHistory=false, sharpenMode='unsharp', motionGamma=1.5, motionAdaptive=false")
 print("  - clamp: BlendAlpha [0, 1], Sharpness [0, 2], VarianceGamma [0, 4], MotionGamma [0, 4]")
@@ -1017,6 +1042,7 @@ print("  - type-error: SetNeighborhoodClip / SetJitterEnabled / SetAntiFlicker /
 print("  - Phase F.0.6: 5-tap CAS (AMD FSR1) vs 4-tap unsharp; CAS contrast-adaptive + HDR safe; sharpenMode='cas' -> peak ∈ [-1/8, -1/5] @ sharpness ∈ [0, 1]")
 print("  - Phase F.0.8: motion-adaptive γ (UE5 高级), 静止区域=varianceGamma严防ghost / 高速区域lerp到motionGamma宽容防trail; 仅 ClipMode='variance' 生效")
 print("  - Phase F.0.9: Catmull-Rom 9-tap bicubic 上采样 (Sigggraph 2018 Filmic SMAA), -50% blur vs bilinear; 仅 sharpness=0 && halfRes=true 生效")
+print("  - Phase F.0.12: FSR2 5-tap RCAS (Robust CAS), noise detection (range<1/64 跳过) + edge protection (lobe sqrt 限制); ~+0.03 ms vs unsharp")
 print("  - status: GetFrameCounter [0, 7], GetCurrentJitter in ±0.5 px range")
 print("  - coexistence: TAA toggle does not affect SSR Temporal state")
 print("  - Phase F.0.1: 4-tap unsharp mask, sharpness=0 走 blit fallback (零 ALU)")

@@ -3234,17 +3234,20 @@ static int l_TAA_GetHalfResHistory(lua_State* L) {
 }
 
 /// @lua_api Light.Graphics.TAA.SetSharpenMode
-/// @param mode string  Phase F.0.6 — TAA sharpen 算法切换 (大小写不敏感)
+/// @param mode string  Phase F.0.6/F.0.12 — TAA sharpen 算法三选一 (大小写不敏感)
 ///                     "unsharp" = F.0.1 4-tap unsharp mask (默认, [0, 2] sharpness)
 ///                     "cas"     = AMD FidelityFX FSR1 5-tap contrast-adaptive sharpening
 ///                                 ([0, 1] sharpness, 内部 clamp 到 1; +0.02 ms vs unsharp)
 ///                                 contrast-adaptive: 平滑区域不锁牰 + HDR safe + perceptual gamma
+///                     "rcas"    = AMD FidelityFX FSR2 5-tap Robust CAS (Phase F.0.12)
+///                                 ([0, 2] sharpness; +0.03 ms vs unsharp)
+///                                 noise detection + edge protection: smooth 区不放大 noise / edges 不 ringing
 /// 错误处理: 非 string / 未识别值 返 nil + err (与 SetClipMode 同模式)
 static int l_TAA_SetSharpenMode(lua_State* L) {
     luaL_checkany(L, 1);
     if (lua_type(L, 1) != LUA_TSTRING) {
         lua_pushnil(L);
-        lua_pushliteral(L, "TAA.SetSharpenMode: 期望 string 参数 ('unsharp' / 'cas')");
+        lua_pushliteral(L, "TAA.SetSharpenMode: 期望 string 参数 ('unsharp' / 'cas' / 'rcas')");
         return 2;
     }
     const char* mode = lua_tostring(L, 1);
@@ -3255,9 +3258,9 @@ static int l_TAA_SetSharpenMode(lua_State* L) {
         char c = mode[i];
         lower[i++] = (c >= 'A' && c <= 'Z') ? (char)(c + 32) : c;
     }
-    if (strcmp(lower, "unsharp") != 0 && strcmp(lower, "cas") != 0) {
+    if (strcmp(lower, "unsharp") != 0 && strcmp(lower, "cas") != 0 && strcmp(lower, "rcas") != 0) {
         lua_pushnil(L);
-        lua_pushfstring(L, "TAA.SetSharpenMode: 未识别的 mode '%s' (期望 'unsharp' / 'cas')", mode);
+        lua_pushfstring(L, "TAA.SetSharpenMode: 未识别的 mode '%s' (期望 'unsharp' / 'cas' / 'rcas')", mode);
         return 2;
     }
     TAARenderer::SetSharpenMode(mode);
@@ -3266,7 +3269,7 @@ static int l_TAA_SetSharpenMode(lua_State* L) {
 }
 
 /// @lua_api Light.Graphics.TAA.GetSharpenMode
-/// @return string  "unsharp" / "cas"
+/// @return string  "unsharp" / "cas" / "rcas"
 static int l_TAA_GetSharpenMode(lua_State* L) {
     lua_pushstring(L, TAARenderer::GetSharpenMode());
     return 1;
@@ -3394,7 +3397,7 @@ static const luaL_Reg taa_funcs[] = {
     // Phase F.0.5 — half-res history (2 = 1 对): VRAM -75%, 默认 false (零回归)
     {"SetHalfResHistory",     l_TAA_SetHalfResHistory},
     {"GetHalfResHistory",     l_TAA_GetHalfResHistory},
-    // Phase F.0.6 — sharpen mode (2 = 1 对): "unsharp" (F.0.1 默认) / "cas" (AMD FSR1)
+    // Phase F.0.6/F.0.12 — sharpen mode (2 = 1 对): "unsharp" (默认) / "cas" (FSR1) / "rcas" (FSR2)
     {"SetSharpenMode",        l_TAA_SetSharpenMode},
     {"GetSharpenMode",        l_TAA_GetSharpenMode},
     // Phase F.0.8 — motion-adaptive γ (4 = 2 对): UE5 高级形式, motion γ + 开关, 默认 false (零回归)

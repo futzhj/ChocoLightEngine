@@ -449,17 +449,22 @@ while win:IsOpen() do
             TAA.GetHalfResHistory() and '-75%' or 'baseline'))
     end
 
-    -- Phase F.0.6 — Z: 在 'unsharp' (F.0.1 4-tap) / 'cas' (AMD FSR1 5-tap) 之间切换
-    --   unsharp → sharpness 语义 [0, 2], 平滑区域也被锐化 (可能出现噪点)
-    --   cas     → sharpness 语义 [0, 1] (内部 clamp), contrast-adaptive 低对比区域不锐化
+    -- Phase F.0.6/F.0.12 — Z: 三轮循环 'unsharp' → 'cas' → 'rcas' → 'unsharp'
+    --   unsharp → F.0.1 4-tap, sharpness [0, 2], 平滑区域也被锐化 (可能出现噪点)
+    --   cas     → F.0.6 FSR1 5-tap, sharpness [0, 1], contrast-adaptive 低对比区域不锐化
+    --   rcas    → F.0.12 FSR2 5-tap, sharpness [0, 2], 加 noise detection + edge protection
     if TAA and TAA.IsEnabled() and TAA.SetSharpenMode and keyTap('z') then
         local cur = TAA.GetSharpenMode()
-        local nxt = (cur == 'unsharp') and 'cas' or 'unsharp'
+        -- 三轮循环表
+        local cycle = { unsharp = 'cas', cas = 'rcas', rcas = 'unsharp' }
+        local nxt = cycle[cur] or 'unsharp'
         TAA.SetSharpenMode(nxt)
-        print(string.format('[demo] TAA SharpenMode: %s -> %s (%s)',
-            cur, nxt,
-            (nxt == 'cas') and 'AMD FSR1 5-tap CAS, HDR safe + contrast-adaptive'
-                            or 'F.0.1 4-tap unsharp mask (默认)'))
+        local desc
+        if     nxt == 'cas'  then desc = 'AMD FSR1 5-tap CAS, contrast-adaptive + HDR safe'
+        elseif nxt == 'rcas' then desc = 'AMD FSR2 5-tap RCAS (Robust CAS), noise + edge aware'
+        else                      desc = 'F.0.1 4-tap unsharp mask (默认)'
+        end
+        print(string.format('[demo] TAA SharpenMode: %s -> %s (%s)', cur, nxt, desc))
     end
 
     -- Phase F.0.8 — Q: motion-adaptive γ ON/OFF (UE5 高级形式, 仅 ClipMode='variance' 生效)
