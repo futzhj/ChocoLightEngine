@@ -156,7 +156,7 @@ virtual void BlitTAAToHDR(uint32_t srcTex, uint32_t dstFbo,
 PASS: Default HalfResHistory = false (Phase F.0.5 零回归)
 PASS: HalfResHistory round-trip true ok
 PASS: HalfResHistory round-trip false ok
-PASS: SetHalfResHistory type-error rejected (string) [...]
+PASS: SetHalfResHistory type-error rejected (string)
 PASS: SetHalfResHistory type-error rejected (number)
 PASS: SetHalfResHistory type-error rejected (nil)
 PASS: HalfResHistory 切换不影响其他参数 (状态独立)
@@ -164,6 +164,22 @@ PASS: Sharpness=0.5 + AntiFlicker=true + ClipMode='variance' + VarianceGamma=1.5
 === Phase F.0 + F.0.1 + F.0.2 + F.0.3 + F.0.4 + F.0.5 TAA smoke: ALL TESTS PASSED ===
 Functions covered: 23 / 23
 ```
+
+### CI 状态 (✅ 全部通过)
+
+| 平台 | 状态 | 备注 |
+|------|------|------|
+| build-windows | ✅ success | runtime smoke 23/23 fn + halfRes 9 PASS + 五启共存 |
+| build-linux | ✅ success | 纯构建 |
+| build-macos | ✅ success | 纯构建 |
+| build-android | ✅ success | 纯构建 |
+| build-ios | ✅ success | 纯构建 |
+| build-web | ✅ success | Emscripten WASM |
+
+GitHub Run ID: [25929530934](https://github.com/futzhj/ChocoLightEngine/actions/runs/25929530934)
+Commit hash: `34dc473`
+Date: `2026-05-15`
+Total duration: `7m15s` (16:38:35 → 16:45:50 UTC)
 
 ---
 
@@ -182,21 +198,21 @@ Functions covered: 23 / 23
 
 ---
 
-## 8. CI 状态（待回填）
+## 8. CI 状态 (✅ 全部通过)
 
 | 平台 | 状态 | 备注 |
 |------|------|------|
-| build-windows | ⏳ | runtime smoke 含 taa.lua 23 fn + halfRes 9 PASS |
-| build-linux | ⏳ | 纯构建 |
-| build-macos | ⏳ | 纯构建 |
-| build-android | ⏳ | 纯构建 |
-| build-ios | ⏳ | 纯构建 |
-| build-web | ⏳ | Emscripten WASM |
+| build-windows | ✅ success | runtime smoke 23/23 fn + halfRes 9 PASS + 五启共存 |
+| build-linux | ✅ success | 纯构建 |
+| build-macos | ✅ success | 纯构建 |
+| build-android | ✅ success | 纯构建 |
+| build-ios | ✅ success | 纯构建 |
+| build-web | ✅ success | Emscripten WASM |
 
-GitHub Run ID: `<pending>`
-Commit hash: `<pending>`
-Date: `<pending>`
-Total duration: `<pending>`
+GitHub Run ID: [25929530934](https://github.com/futzhj/ChocoLightEngine/actions/runs/25929530934)
+Commit hash: `34dc473`
+Date: `2026-05-15`
+Total duration: `7m15s` (16:38:35 → 16:45:50 UTC)
 
 ---
 

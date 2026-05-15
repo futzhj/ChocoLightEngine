@@ -7,11 +7,11 @@
 
 ## 1. 必做（阻塞性，本 Phase 内）
 
-| 任务 | 操作 | 优先级 |
-|------|------|--------|
-| commit + push 代码到 main | git add + commit + push origin main | 🔴 高 |
-| 监控 GitHub Actions CI 6/6 平台 success | gh run view | 🔴 高 |
-| CI 状态回填 ACCEPTANCE / FINAL / TODO | 编辑 3 份文档 §CI 状态 | 🔴 高 |
+| 任务 | 操作 | 状态 |
+|------|------|------|
+| commit + push 代码到 main | git add + commit + push origin main | ✅ 完成 (commit `34dc473`) |
+| 监控 GitHub Actions CI 6/6 平台 success | gh run view 25929530934 | ✅ 完成 (Run 25929530934, 7m15s) |
+| CI 状态回填 ACCEPTANCE / FINAL / TODO | 编辑 3 份文档 §CI 状态 | ✅ 完成 |
 
 ---
 
@@ -90,19 +90,19 @@ end
 
 ---
 
-## 6. CI 回填（待 T6 完成后填）
+## 6. CI 回填 (✅ 全部完成)
 
 | 字段 | 值 |
 |------|---|
-| GitHub Run ID | `<pending>` |
-| Commit hash | `<pending>` |
-| 6/6 平台状态 | `<pending>` |
-| Total duration | `<pending>` |
-| Date | `<pending>` |
+| GitHub Run ID | [25929530934](https://github.com/futzhj/ChocoLightEngine/actions/runs/25929530934) |
+| Commit hash | `34dc473` |
+| 6/6 平台状态 | ✅ 全部 success |
+| Total duration | `7m15s` (16:38:35 → 16:45:50 UTC) |
+| Date | `2026-05-15` |
 
-回填后同步更新：
-- `ACCEPTANCE_PhaseF_0_5.md` 第 7 章
-- `FINAL_PhaseF_0_5.md` 第 8 章
+回填完成 ✅：
+- `ACCEPTANCE_PhaseF_0_5.md` 第 7 章 已更新
+- `FINAL_PhaseF_0_5.md` 第 8 章 已更新
 
 ---
 
@@ -120,4 +120,4 @@ Phase F.0.5 实施完整，**无阻塞性遗留**。主要交付：
 - shader 完全不变（FS_TAA / FS_SHARPEN 零修改）
 - smoke 23 fn / demo X 键切换 + HUD 字段 / docs 同步更新
 
-**下一步**：T6 commit + push + CI 验证 6/6 平台 success。
+**状态**: ✅ 全部交付完成，CI 6/6 平台验证通过。

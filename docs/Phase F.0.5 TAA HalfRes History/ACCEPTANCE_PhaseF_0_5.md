@@ -82,9 +82,9 @@
 - [x] `TODO_PhaseF_0_5.md` (下一文件)
 
 ### T6 CI
-- [ ] GitHub Actions 6/6 平台 success
-- [ ] Windows runtime smoke 9 个 F.0.5 PASS + Functions covered 23/23
-- [ ] CI 状态回填 ACCEPTANCE + FINAL + TODO
+- [x] GitHub Actions 6/6 平台 success (Run 25929530934, 7m15s)
+- [x] Windows runtime smoke 9 个 F.0.5 PASS + Functions covered 23/23
+- [x] CI 状态回填 ACCEPTANCE + FINAL + TODO
 
 ---
 
@@ -174,15 +174,24 @@ Note: 4K half-res VRAM = 1080p full-res VRAM
 | Sharpen pass (sharpness > 0) | 0.03 ms | 0.03 ms (full-res, 不变) | 0 |
 | **总体 TAA 开销** | **~0.13 ms** | **~0.09 ms** | **-30%** |
 
-### CI runtime smoke 验证（pending T6）
+### CI runtime smoke 验证（✅ 实测通过）
+
+GitHub Run [25929530934](https://github.com/futzhj/ChocoLightEngine/actions/runs/25929530934) Windows runtime smoke 输出节选：
 
 ```
+PASS: Default HalfResHistory = false (Phase F.0.5 零回归)
+PASS: HalfResHistory round-trip true ok
+PASS: HalfResHistory round-trip false ok
+PASS: SetHalfResHistory type-error rejected (string) [bad argument #1 to '?' (boolean expected, got string)...]
+PASS: SetHalfResHistory type-error rejected (number)
+PASS: SetHalfResHistory type-error rejected (nil)
+PASS: HalfResHistory 切换不影响其他参数 (状态独立)
+PASS: Sharpness=0.5 + AntiFlicker=true + ClipMode='variance' + VarianceGamma=1.5 + HalfResHistory=true 五启共存 ok
 === Phase F.0 + F.0.1 + F.0.2 + F.0.3 + F.0.4 + F.0.5 TAA smoke: ALL TESTS PASSED ===
 Functions covered: 23 / 23
-Highlights:
-  - default OFF, alpha=0.92, neighborhoodClip=true, jitterEnabled=true, sharpness=0.5, antiFlicker=true, clipMode='ycocg', varianceGamma=1.0, halfResHistory=false
-  - Phase F.0.5: half-res history RT (w/2,h/2), VRAM -75% (1080p 33.2MB→8.3MB; 4K 132.7MB→33.2MB), 默认 OFF
 ```
+
+F.0/F.0.1/F.0.2/F.0.3/F.0.4 零回归验证：原有 SSR / HDR / MotionBlur / Bloom / Tonemap / TAA 主管线超43 个 smoke 全部保留 PASS。
 
 ---
 
@@ -196,18 +205,18 @@ Highlights:
 
 ---
 
-## 7. CI 状态（待回填）
+## 7. CI 状态 (✅ 全部通过)
 
 | 平台 | 状态 | 状态详情 |
 |------|------|---------|
-| build-windows | ⏳ | runtime smoke 含 taa.lua 23 fn + halfRes 9 PASS + 五启共存 |
-| build-linux | ⏳ | 纯构建 |
-| build-macos | ⏳ | 纯构建 |
-| build-android | ⏳ | 纯构建 |
-| build-ios | ⏳ | 纯构建 |
-| build-web | ⏳ | Emscripten WASM |
+| build-windows | ✅ success | runtime smoke 23/23 fn + halfRes 9 PASS + 五启共存 |
+| build-linux | ✅ success | 纯构建 |
+| build-macos | ✅ success | 纯构建 |
+| build-android | ✅ success | 纯构建 |
+| build-ios | ✅ success | 纯构建 |
+| build-web | ✅ success | Emscripten WASM |
 
-GitHub Run ID: `<pending>`
-Commit hash: `<pending>`
-Total duration: `<pending>`
-Date: `<pending>`
+GitHub Run ID: [25929530934](https://github.com/futzhj/ChocoLightEngine/actions/runs/25929530934)
+Commit hash: `34dc473`
+Total duration: `7m15s` (16:38:35 → 16:45:50 UTC)
+Date: `2026-05-15`
