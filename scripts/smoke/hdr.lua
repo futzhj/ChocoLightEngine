@@ -39,6 +39,8 @@ local fn_names = {
     "SetVelocityFormat",   "GetVelocityFormat",
     -- Phase E.18.1 — dilation pass 半分辨率
     "SetVelocityDilationHalfRes", "GetVelocityDilationHalfRes",
+    -- Phase E.18.2 — dilation pass 自动跳过单消费者
+    "SetVelocityDilationAutoSkip", "GetVelocityDilationAutoSkip",
 }
 for _, k in ipairs(fn_names) do
     if type(HDR[k]) ~= "function" then
@@ -383,7 +385,55 @@ end
 pass("SetVelocityDilationHalfRes idempotent (no-op same value)")
 
 -- ============================================================
+-- 10) Phase E.18.2 — dilation pass auto-skip single consumer
+-- ============================================================
+--
+-- API: SetVelocityDilationAutoSkip(bool), GetVelocityDilationAutoSkip()
+-- 默认 false (Phase E.18.1 行为, 始终运行 dilation pass)
+-- autoSkip=true 时仅 "SSR Temporal 单消费者 + MB 未启" 场景自动跳过 dilation pass
+-- 受益: 单 SSR 场景省 1 fetch/px; 其他场景 (仅 MB / SSR+MB / 都不启) 不跳过
+
+-- 10.1 默认状态
+local das0 = HDR.GetVelocityDilationAutoSkip()
+if type(das0) ~= "boolean" then
+    fail("GetVelocityDilationAutoSkip should return boolean, got " .. type(das0))
+end
+if das0 ~= false then
+    fail("GetVelocityDilationAutoSkip() default must be false, got " .. tostring(das0))
+end
+pass("GetVelocityDilationAutoSkip() default = false")
+
+-- 10.2 SetVelocityDilationAutoSkip round-trip
+HDR.SetVelocityDilationAutoSkip(true)
+if HDR.GetVelocityDilationAutoSkip() ~= true then
+    fail("SetVelocityDilationAutoSkip(true) round-trip failed")
+end
+HDR.SetVelocityDilationAutoSkip(false)
+if HDR.GetVelocityDilationAutoSkip() ~= false then
+    fail("SetVelocityDilationAutoSkip(false) round-trip failed")
+end
+pass("SetVelocityDilationAutoSkip true/false round-trip ok")
+
+-- 10.3 SetVelocityDilationAutoSkip bad arg → nil + err
+local ok_bdas, err_bdas = HDR.SetVelocityDilationAutoSkip("yes")
+if ok_bdas ~= nil then
+    fail("SetVelocityDilationAutoSkip('yes') should return nil, got " .. tostring(ok_bdas))
+end
+if type(err_bdas) ~= "string" then
+    fail("SetVelocityDilationAutoSkip bad-arg err must be string, got " .. type(err_bdas))
+end
+pass("SetVelocityDilationAutoSkip bad-arg returns nil + err string")
+
+-- 10.4 no-op 同值不报错
+HDR.SetVelocityDilationAutoSkip(false)
+HDR.SetVelocityDilationAutoSkip(false)
+if HDR.GetVelocityDilationAutoSkip() ~= false then
+    fail("SetVelocityDilationAutoSkip(false) twice should remain false")
+end
+pass("SetVelocityDilationAutoSkip idempotent (no-op same value)")
+
+-- ============================================================
 -- Done
 -- ============================================================
 
-print("[Phase E.3 + E.14 + E.18.1] Light.Graphics.HDR smoke PASS (18 functions)")
+print("[Phase E.3 + E.14 + E.18.1 + E.18.2] Light.Graphics.HDR smoke PASS (20 functions)")

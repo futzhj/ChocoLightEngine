@@ -376,6 +376,15 @@ while win:IsOpen() do
             (not cur) and '+4x' or 'baseline'))
     end
 
+    -- Phase E.18.2 — \: 切 dilation pass autoSkip ON/OFF (单消费者 SSR Temporal 场景自动跳过)
+    if HDR.SetVelocityDilationAutoSkip and keyTap('\\') then
+        local cur = HDR.GetVelocityDilationAutoSkip()
+        HDR.SetVelocityDilationAutoSkip(not cur)
+        print(string.format('[demo] Velocity Dilation AutoSkip: %s -> %s (%s)',
+            cur and 'ON' or 'OFF', (not cur) and 'ON' or 'OFF',
+            (not cur) and 'SSR-only single consumer auto-skipped' or 'always run dilation pass'))
+    end
+
     -- R: reset 默认
     if keyTap('r') then
         SSR.SetMaxSteps(64); SSR.SetStepSize(0.1); SSR.SetThickness(0.5)
@@ -440,11 +449,14 @@ while win:IsOpen() do
         -- Phase E.13/E.14: velocity buffer 与 Temporal SSR 联动；显示 dilation/format 状态
         -- Phase E.18: dilation=ON 时 HDR EndScene 内做独立 9-tap pass，SSR/MB 共享 dilatedTex
         -- Phase E.18.1: dilation pass 可半分辨率 (VRAM -75%, perf +4x)
+        -- Phase E.18.2: autoSkip 单消费者 SSR Temporal 场景跳过 dilation pass
         local dilateHalfRes = HDR.GetVelocityDilationHalfRes and HDR.GetVelocityDilationHalfRes() or false
-        line(string.format('Velocity: %s | dilation=%s (E.18 shared pass, halfRes=%s) | reproj=%s',
+        local dilateAutoSkip = HDR.GetVelocityDilationAutoSkip and HDR.GetVelocityDilationAutoSkip() or false
+        line(string.format('Velocity: %s | dilation=%s (E.18 shared, halfRes=%s, autoSkip=%s) | reproj=%s',
             HDR.GetVelocityFormat(),
             HDR.GetVelocityDilation() and 'ON' or 'OFF',
             dilateHalfRes and 'ON' or 'OFF',
+            dilateAutoSkip and 'ON' or 'OFF',
             SSR.GetTemporalEnabled() and 'velocity-first' or 'idle (Temporal OFF)'))
         -- Phase E.15+E.16+E.17: MotionBlur 状态 (可选模块)
         if MotionBlur then
@@ -458,7 +470,7 @@ while win:IsOpen() do
                 MotionBlur.GetStrength(),
                 MotionBlur.GetSampleCount()))
         end
-        line('Keys: F=SSR B=Blur V=Bilateral T=Temporal 9/0=radius ,/.=sigma U/I=alpha N=reject K=Dilation L=Format M=MotionBlur ;=Mode [=MBHalfRes ]=DilHalfRes R=reset ESC')
+        line('Keys: F=SSR B=Blur V=Bilateral T=Temporal 9/0=radius ,/.=sigma U/I=alpha N=reject K=Dilation L=Format M=MotionBlur ;=Mode [=MBHalfRes ]=DilHalfRes \\=AutoSkip R=reset ESC')
     end
 
     win:EndFrame()

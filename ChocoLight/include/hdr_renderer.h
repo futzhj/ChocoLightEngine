@@ -173,6 +173,16 @@ bool          GetVelocityDilation();
 bool          SetVelocityDilationHalfRes(bool on);
 bool          GetVelocityDilationHalfRes();
 
+/// Phase E.18.2 — dilation pass 自动跳过单消费者场景（默认 OFF）
+/// autoSkip=true: HDR EndScene 内检测 "仅 SSR Temporal 启用且 Motion Blur 未启用" 时,
+///                本帧跳过 DrawVelocityDilate (consumer fallback inline 9-tap, 省 1 fetch/px)
+/// autoSkip=false: 维持 Phase E.18.1 行为, 无视 consumer 数量始终运行 dilation pass
+/// 受益场景: 仅 SSR Temporal 单消费者; 其他场景 (仅 MB / SSR+MB / 都不启) autoSkip 不会跳过
+/// 切换不重建 RT (仅本帧执行决策, RT 与 SetVelocityDilation 生命周期一致)
+/// @return true = 设置成功 (含 no-op 同值)
+bool          SetVelocityDilationAutoSkip(bool on);
+bool          GetVelocityDilationAutoSkip();
+
 /// Velocity 存储格式切换（RG16F 默认 vs RG8 低精度节 VRAM）
 /// @return true = 切换成功（含 RT 重建）; false = 后端未启 / 重建失败。
 /// HDR 未 Enable 时仅更新 state，下次 Enable 时生效。切换会隐含重置 velocity history。

@@ -1692,6 +1692,31 @@ static int l_HDR_GetVelocityDilationHalfRes(lua_State* L) {
     return 1;
 }
 
+/// @lua_api Light.Graphics.HDR.SetVelocityDilationAutoSkip
+/// @brief Phase E.18.2 — dilation pass 自动跳过单消费者场景 (默认 OFF)
+/// @param on boolean true=自动检测仅 SSR Temporal 单消费者时跳过 / false=始终运行 dilation pass
+/// @return boolean true = 设置成功; nil, string = 入参非 boolean
+/// @note 仅 SSR Temporal 单消费者场景受益 (省 1 fetch/px);
+///       MB only / SSR+MB / 都不启 时不会跳过 (avoid net loss)
+static int l_HDR_SetVelocityDilationAutoSkip(lua_State* L) {
+    if (!lua_isboolean(L, 1)) {
+        lua_pushnil(L);
+        lua_pushstring(L, "SetVelocityDilationAutoSkip: expect boolean");
+        return 2;
+    }
+    bool on = lua_toboolean(L, 1) != 0;
+    HDRRenderer::SetVelocityDilationAutoSkip(on);
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+/// @lua_api Light.Graphics.HDR.GetVelocityDilationAutoSkip
+/// @return boolean 当前 dilation 自动跳过状态 (默认 false)
+static int l_HDR_GetVelocityDilationAutoSkip(lua_State* L) {
+    lua_pushboolean(L, HDRRenderer::GetVelocityDilationAutoSkip() ? 1 : 0);
+    return 1;
+}
+
 /// @lua_api Light.Graphics.HDR.SetVelocityFormat
 /// @brief 切换 velocity buffer 存储格式 (RG16F 默认 / RG8 节省 4x VRAM)
 /// @param fmt string "rg16f" | "rg8" (大小写敏感)
@@ -1744,6 +1769,9 @@ static const luaL_Reg hdr_funcs[] = {
     // Phase E.18.1 — dilation pass 半分辨率开关
     {"SetVelocityDilationHalfRes", l_HDR_SetVelocityDilationHalfRes},
     {"GetVelocityDilationHalfRes", l_HDR_GetVelocityDilationHalfRes},
+    // Phase E.18.2 — dilation pass 自动跳过单消费者场景
+    {"SetVelocityDilationAutoSkip", l_HDR_SetVelocityDilationAutoSkip},
+    {"GetVelocityDilationAutoSkip", l_HDR_GetVelocityDilationAutoSkip},
     {NULL, NULL}
 };
 

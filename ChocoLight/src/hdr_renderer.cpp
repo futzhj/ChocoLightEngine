@@ -62,6 +62,15 @@ struct State {
     //   仅在 dilation pass 启用时有意义 (否则 dilatedFbo 未创建, 字段被保存但不生效)
     //   切换时若已 Enable → ReleaseDilationRT + RebuildDilationRT (双 RT 同步)
     bool           dilationHalfRes          = false;
+
+    // Phase E.18.2 — dilation pass 自动跳过单消费者场景开关 (默认 false = Phase E.18.1 行为)
+    //   true: EndScene 检测仅 SSR Temporal 启用 + MB 未启用 → 本帧跳过 DrawVelocityDilate
+    //         (consumer fallback inline 9-tap, 单消费者 SSR 场景省 1 fetch/px)
+    //   受益场景: 仅 SSR Temporal 单消费者;
+    //   其他场景 (仅 MB / SSR+MB / 都不启) autoSkip 不会跳过
+    bool           dilationAutoSkip         = false;
+    // 内部: once-log 状态追踪 (避免每帧 spam, 仅 active↔skip 转变时打一次日志)
+    bool           lastDilationActiveLog    = true;
 };
 
 static State g;
@@ -436,19 +445,43 @@ void EndScene() {
     // Phase E.18.1: 预先计算 dilation storage 尺寸 (full-res 或 half-res), 给 DrawVelocityDilate
     bool dilationActive = false;
     if (g.velocityDilation && g.backend->SupportsVelocityDilation()) {
-        int dsw = 0, dsh = 0;
-        ComputeDilationStorageSize(g.width, g.height, dsw, dsh);
-
-        const uint32_t rawCombined = g.backend->GetHDRVelocityTex(g.fbo);
-        if (rawCombined && g.dilatedVelocityFbo) {
-            g.backend->DrawVelocityDilate(rawCombined, g.dilatedVelocityFbo, dsw, dsh);
-            dilationActive = true;
+        // Phase E.18.2: autoSkip 模式下检测单消费者场景, 仅在 "仅 SSR Temporal + 无 MB" 时跳过
+        //   SSR Temporal: 10 fetch (dilation) > 9 fetch (inline) → 跳过省 1 fetch ?
+        //   MB only(N=8): 17 fetch (dilation) < 72 fetch (inline) → 不跳过
+        //   SSR + MB:     18 fetch (dilation) < 81 fetch (inline) → 不跳过
+        bool shouldRun = true;
+        if (g.dilationAutoSkip) {
+            const bool ssrTemporal = SSRRenderer::IsEnabled() && SSRRenderer::GetTemporalEnabled();
+            const bool mbEnabled   = MotionBlurRenderer::IsEnabled();
+            const bool ssrOnly     = ssrTemporal && !mbEnabled;
+            shouldRun = !ssrOnly;
+            // once-log: 仅在 active↔skip 状态转变时打一次
+            if (g.lastDilationActiveLog && !shouldRun) {
+                CC::Log(CC::LOG_INFO,
+                        "HDRRenderer: Phase E.18.2 dilation pass auto-skipped (SSR-only, consumer fallback inline 9-tap)");
+                g.lastDilationActiveLog = false;
+            } else if (!g.lastDilationActiveLog && shouldRun) {
+                CC::Log(CC::LOG_INFO,
+                        "HDRRenderer: Phase E.18.2 dilation pass active (multi-consumer or non-SSR-only)");
+                g.lastDilationActiveLog = true;
+            }
         }
-        // camera-only dilation 与 cameraVelocityTex 同条件 (MotionBlur mode=1/2 才用)
-        const uint32_t rawCamera = g.backend->GetHDRCameraVelocityTex(g.fbo);
-        if (rawCamera && g.dilatedCameraVelocityFbo) {
-            g.backend->DrawVelocityDilate(rawCamera, g.dilatedCameraVelocityFbo, dsw, dsh);
-            // dilationActive 已在 combined 时置 true; camera-only 单独失败不影响
+
+        if (shouldRun) {
+            int dsw = 0, dsh = 0;
+            ComputeDilationStorageSize(g.width, g.height, dsw, dsh);
+
+            const uint32_t rawCombined = g.backend->GetHDRVelocityTex(g.fbo);
+            if (rawCombined && g.dilatedVelocityFbo) {
+                g.backend->DrawVelocityDilate(rawCombined, g.dilatedVelocityFbo, dsw, dsh);
+                dilationActive = true;
+            }
+            // camera-only dilation 与 cameraVelocityTex 同条件 (MotionBlur mode=1/2 才用)
+            const uint32_t rawCamera = g.backend->GetHDRCameraVelocityTex(g.fbo);
+            if (rawCamera && g.dilatedCameraVelocityFbo) {
+                g.backend->DrawVelocityDilate(rawCamera, g.dilatedCameraVelocityFbo, dsw, dsh);
+                // dilationActive 已在 combined 时置 true; camera-only 单独失败不影响
+            }
         }
     }
     // 通知 backend: dilation pass 当前帧是否激活 → 影响 SSRTemporal/MotionBlur uVelocityDilation 上传
@@ -555,6 +588,18 @@ bool SetVelocityDilationHalfRes(bool on) {
     return true;
 }
 bool GetVelocityDilationHalfRes() { return g.dilationHalfRes; }
+
+// Phase E.18.2 — dilation pass 自动跳过单消费者场景开关
+// no-op 短路: 同值不重置
+// 仅修改 state, 不重建 RT (decision 在 EndScene 每帧重新判)
+// 切换时重置 once-log 状态，让下次状态转变能出日志
+bool SetVelocityDilationAutoSkip(bool on) {
+    if (g.dilationAutoSkip == on) return true;   // no-op (同值)
+    g.dilationAutoSkip = on;
+    g.lastDilationActiveLog = true;              // 重置为“active”, 下次转 skip 才会出日志
+    return true;
+}
+bool GetVelocityDilationAutoSkip() { return g.dilationAutoSkip; }
 
 bool GetVelocityDilation() { return g.velocityDilation; }
 

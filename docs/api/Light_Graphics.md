@@ -592,6 +592,7 @@ EndFrame
 | Tonemap operator | `SetTonemapper / GetTonemapper` | E.3.4 |
 | Velocity dilation | `SetVelocityDilation / GetVelocityDilation` | E.14 |
 | Velocity dilation 半分辨率 | `SetVelocityDilationHalfRes / GetVelocityDilationHalfRes` | E.18.1 |
+| Velocity dilation 自动跳过 | `SetVelocityDilationAutoSkip / GetVelocityDilationAutoSkip` | E.18.2 |
 | Velocity 格式 | `SetVelocityFormat / GetVelocityFormat` | E.14 |
 
 ---
@@ -942,6 +943,94 @@ if not ok then print("err: " .. err) end  -- "SetVelocityDilationHalfRes: expect
 ```lua
 if Light.Graphics.HDR.GetVelocityDilationHalfRes() then
     print("dilation pass running at half-res")
+end
+```
+
+---
+
+## `HDR.SetVelocityDilationAutoSkip`
+
+**Phase E.18.2** —— 控制 HDR EndScene 是否在**单消费者**场景下自动跳过 dilation pass，让 consumer 走 inline 9-tap 旧路径。**默认 OFF**（与 Phase E.18.1 行为完全等价）。
+
+> **跳过判定规则**
+>
+> 仅在以下场景跳过：
+>
+> ```
+> autoSkip=true && SSR.IsEnabled() && SSR.GetTemporalEnabled() && !MotionBlur.IsEnabled()
+> ```
+>
+> 即 **"仅 SSR Temporal 启用 + Motion Blur 未启用"** 的单消费者场景。
+
+> **跳过收益分析（fetch / pixel）**
+>
+> | 场景 | dilation pass | inline 9-tap | autoSkip 决定 |
+> |------|---------------|--------------|---------------|
+> | 仅 SSR Temporal | 9 dilate + 1 sample = 10 | 9 | **跳过省 1 fetch** ✅ |
+> | 仅 Motion Blur(N=8) | 9 + 8 = 17 | 9 × 8 = 72 | 不跳过（dilation 节省 55 fetch）❌ |
+> | SSR + Motion Blur(N=8) | 9 + 1 + 8 = 18 | 9 + 9 × 8 = 81 | 不跳过（dilation 节省 63 fetch）❌ |
+>
+> 故 autoSkip 真正受益场景**仅在单 SSR Temporal**；其他场景无视 autoSkip 状态始终运行 dilation pass。
+
+### 参数
+
+| 名称 | 类型 | 说明 |
+|------|------|------|
+| `on` | `boolean` | true = 自动跳过单 SSR 场景；false = 始终运行 dilation pass（默认）|
+
+### 返回值
+
+| 状态 | 返回 |
+|------|------|
+| 成功 | `boolean true` |
+| 入参非 boolean | `nil, string err`（多返回值）|
+
+### 行为
+
+- **不重建 RT**（与 `SetVelocityDilation`/`SetVelocityDilationHalfRes` 不同）：决策每帧 EndScene 时重新评估
+- once-log：active ↔ skip 状态转变时打印一次日志（避免每帧 spam）
+- 与 `SetVelocityDilation` 正交：dilation OFF 时本字段无效（dilation pass 整体不运行）
+- 与 `SetVelocityDilationHalfRes` 正交：autoSkip 决定本帧是否跳过；halfRes 决定不跳过时 RT 用什么尺寸
+
+### 适用场景
+
+| 场景 | autoSkip 推荐 |
+|------|--------------|
+| 仅 SSR Temporal（无 Motion Blur）的反射场景（如水面、光滑地板）| ✅ ON（每帧省 1 fetch/px）|
+| Motion Blur 必开的赛车 / 动作游戏 | ❌ OFF（autoSkip 不跳过；显式关也行）|
+| 多消费者通用场景 | ❌ OFF（autoSkip 不跳过；保持简单状态）|
+| 不想引入条件分支调试不便的开发期 | ❌ OFF（默认值，行为可预测）|
+
+### 示例
+
+```lua
+-- 仅启用 SSR Temporal 的纯反射 demo / 室内静态场景
+Light.Graphics.HDR.Enable(1280, 720)
+Light.Graphics.HDR.SetVelocityDilation(true)        -- 默认 ON
+Light.Graphics.HDR.SetVelocityDilationAutoSkip(true) -- 单消费者自动跳过省 1 fetch/px
+
+-- 后续如启用 Motion Blur，autoSkip 自动失效（不跳过 dilation pass）
+Light.Graphics.MotionBlur.Enable(1280, 720)
+-- 此时不论 autoSkip 状态，dilation pass 始终运行（多消费者收益最大）
+
+-- 类型错
+local ok, err = Light.Graphics.HDR.SetVelocityDilationAutoSkip(1)
+if not ok then print("err: " .. err) end  -- "SetVelocityDilationAutoSkip: expect boolean"
+```
+
+---
+
+## `HDR.GetVelocityDilationAutoSkip`
+
+### 返回值
+
+`boolean`：当前 dilation pass 自动跳过状态（默认 false）
+
+### 示例
+
+```lua
+if Light.Graphics.HDR.GetVelocityDilationAutoSkip() then
+    print("dilation auto-skip enabled (SSR-only single consumer scenarios)")
 end
 ```
 
