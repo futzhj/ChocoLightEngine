@@ -15,7 +15,7 @@
 | **T4** HDRRenderer 链路 + 联动 hook | ✅ | `hdr_renderer.cpp:17 / 183-184 / 190-191 / 239 / 308-310` |
 | **T5** light_ui.cpp Init/Shutdown + Lua 11 fn 子表 | ✅ | `light_ui.cpp:37 / 519-520 / 745-746` + `light_graphics.cpp:37 / 2822-2913 / 3037-3040` |
 | **T6** smoke + demo 按键 M + CI 登记 | ✅ | `scripts/smoke/motion_blur.lua` (新建) + `samples/demo_ssr/main.lua:51-52/340-349/417-424/434` + `build-templates.yml:104/218-219` |
-| **T7** 文档 6 件套 + CI 监控 | 🟡 进行中 | 当前文件 + FINAL + TODO + Light_Graphics.md MotionBlur 段 + commit + CI run |
+| **T7** 文档 6 件套 + CI 监控 | ✅ | commit `162bbca` + CI run `25894807417` 6/6 success 524s |
 
 ## 2. 验收检查清单
 
@@ -25,8 +25,8 @@
 |----|------|------|
 | Lua 语法 `lightc -p scripts/smoke/motion_blur.lua` | ✅ | exit 0, no stderr |
 | Lua 语法 `lightc -p samples/demo_ssr/main.lua` | ✅ | exit 0, no stderr |
-| C++ 编译 6 平台 | ⏳ | 待 CI |
-| Windows runtime smoke 含 motion_blur.lua | ⏳ | 待 CI |
+| C++ 编译 6 平台 | ✅ | CI run 25894807417, 524s 全绿 |
+| Windows runtime smoke 含 motion_blur.lua | ✅ | 0 fail，与现有 16 个 phase smoke 同管线通过 |
 
 ### 2.2 设计一致性（已完成）
 
@@ -90,29 +90,30 @@
 | shader 内 `int count = clamp(uSampleCount, 1, 32)` 双重 clamp | 性能极小开销 | 留作防御性，无碍 |
 | 与 BatchRenderer 2D sprite 时序关系 | 2D sprite 也会被 motion blur 拖尾（如果 HDR ON） | 用户期望行为（HDR scene 包含 2D） |
 
-## 6. CI 验证（待运行）
+## 6. CI 验证
+
+**CI run [`25894807417`](https://github.com/futzhj/ChocoLightEngine/actions/runs/25894807417)** — 524s 全绿（commit `162bbca`）
 
 | 平台 | 期望 | 实测 |
 |------|------|------|
-| build-windows | ✅ | ⏳ 待 push |
-| build-windows runtime smoke `motion_blur.lua` | 0 fail | ⏳ |
-| build-linux 编译 | ✅ | ⏳ |
-| build-macos 编译 | ✅ | ⏳ |
-| build-android 编译 | ✅ | ⏳ |
-| build-ios 编译 | ✅ | ⏳ |
-| build-web 编译 | ✅ | ⏳ |
-| Lua syntax check (Linux/macOS for-loop) | ✅ | ⏳ |
-
-CI run 编号待 push 后填入 FINAL_PhaseE_15.md。
+| build-windows | ✅ | ✅ success |
+| build-windows runtime smoke `motion_blur.lua` | 0 fail | ✅ 与现有 16 个 phase smoke 同时通过 |
+| build-linux 编译 | ✅ | ✅ |
+| build-macos 编译 | ✅ | ✅ |
+| build-android 编译 | ✅ | ✅ |
+| build-ios 编译 | ✅ | ✅ |
+| build-web 编译 | ✅ | ✅ |
+| Lua syntax check (Linux/macOS for-loop) | ✅ | ✅ |
 
 ## 7. 验收结论
 
-**实施完成度 = 100%**（T1~T6 全部落地，T7 文档+CI 收尾中）。
+**实施完成度 = 100%**（T1~T7 全部落地）。
 
 **质量门控** ✅
 - 与现有架构 1:1 对齐
 - 复用率高（shader/state 全部复用 Phase E.14）
 - 默认安全（autoEnable=false）
 - 双重防御（shader 内 + clamp 调用方）
+- **CI 6/6 success @ 524s** — 含 Windows runtime smoke 0 fail
 
-**待 CI 6/6 success 后 phase 关闭。**
+**Phase E.15 工程主线已正式关闭。剩余仅用户侧真机视觉验收。**

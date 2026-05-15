@@ -8,10 +8,10 @@
 
 ### 1.1 CI 验证
 
-- ⏳ 等 GitHub Actions build run 6/6 success
-- ⏳ Windows runtime smoke `motion_blur.lua` 0 fail
-- ⏳ 全 lua 语法 syntax check 通过（Linux/macOS for-loop）
-- ⏳ run ID 填入 `FINAL_PhaseE_15.md` § 5
+- ✅ GitHub Actions build run **6/6 success** ([`25894807417`](https://github.com/futzhj/ChocoLightEngine/actions/runs/25894807417), 524s)
+- ✅ Windows runtime smoke `motion_blur.lua` **0 fail**
+- ✅ 全 lua 语法 syntax check 通过（Linux/macOS for-loop）
+- ✅ run ID 已填入 `FINAL_PhaseE_15.md` § 5
 
 ### 1.2 真机视觉验收（用户侧）
 

@@ -13,7 +13,7 @@
 | **核心交付** | 单 program per-pixel velocity blur，Lua `Light.Graphics.MotionBlur` 子表（11 fn） |
 | **代码增量** | 新文件 2 + 改动 7 + smoke 1 + docs 6 |
 | **架构亮点** | 复用 Phase E.14 velocity 设施 100%，零回归 |
-| **CI run** | ⏳ 待 push |
+| **CI run** | ✅ [`25894807417`](https://github.com/futzhj/ChocoLightEngine/actions/runs/25894807417) success 524s (8m44s) |
 
 ## 2. 6A 工作流落地
 
@@ -105,16 +105,16 @@ HDRRenderer::EndScene()
 
 ## 5. CI 验证
 
-| 阶段 | 状态 | run ID |
-|------|------|--------|
-| build-windows + Windows runtime smoke | ⏳ | TBD |
-| build-linux + lua syntax | ⏳ | TBD |
-| build-macos + lua syntax | ⏳ | TBD |
-| build-android | ⏳ | TBD |
-| build-ios | ⏳ | TBD |
-| build-web | ⏳ | TBD |
+**Run [`25894807417`](https://github.com/futzhj/ChocoLightEngine/actions/runs/25894807417)** — commit `162bbca` · 524 秒 (8m44s) · 6/6 全绿
 
-**填入时机**：commit + push 后等 CI 完成，本文档 § 5 更新 run ID + 时长。
+| Job | 状态 |
+|-----|------|
+| build-windows + runtime smoke (motion_blur.lua + 16 现有 phase smoke) | ✅ |
+| build-linux + lua syntax (for-loop) | ✅ |
+| build-macos + lua syntax (for-loop) | ✅ |
+| build-android | ✅ |
+| build-ios | ✅ |
+| build-web | ✅ |
 
 ## 6. 关键技术决策回顾
 
