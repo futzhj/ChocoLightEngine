@@ -3154,15 +3154,17 @@ static int l_TAA_GetAntiFlicker(lua_State* L) {
 }
 
 /// @lua_api Light.Graphics.TAA.SetClipMode
-/// @param mode string  "rgb" / "ycocg" (大小写不敏感; 默认 "ycocg")
-///                     "rgb"   = F.0 原生三通道 AABB clip (零 ALU 增量)
-///                     "ycocg" = YCoCg 色彩空间 AABB clip (色彩边缘更鲁棒, +0.05ms @ 1080p)
+/// @param mode string  "rgb" / "ycocg" / "variance" (大小写不敏感; 默认 "ycocg")
+///                     "rgb"      = F.0 原生三通道 AABB clip (零 ALU 增量)
+///                     "ycocg"    = YCoCg AABB clip (F.0.2, 色彩边缘更鲁棒, +0.05ms @ 1080p)
+///                     "variance" = YCoCg variance clip (F.0.3, Salvi 2016 / UE5 default, +0.07ms @ 1080p)
+///                                  算法: clip = [mean - γσ, mean + γσ]; 对 single-outlier 更鲁棒
 /// 错误处理: 非 string / 未识别值 返 nil + err (与 SetVelocityFormat 同模式)
 static int l_TAA_SetClipMode(lua_State* L) {
     luaL_checkany(L, 1);
     if (lua_type(L, 1) != LUA_TSTRING) {
         lua_pushnil(L);
-        lua_pushliteral(L, "TAA.SetClipMode: 期望 string 参数 ('rgb' / 'ycocg')");
+        lua_pushliteral(L, "TAA.SetClipMode: 期望 string 参数 ('rgb' / 'ycocg' / 'variance')");
         return 2;
     }
     const char* mode = lua_tostring(L, 1);
@@ -3173,9 +3175,9 @@ static int l_TAA_SetClipMode(lua_State* L) {
         char c = mode[i];
         lower[i] = (c >= 'A' && c <= 'Z') ? (char)(c + 32) : c;
     }
-    if (strcmp(lower, "rgb") != 0 && strcmp(lower, "ycocg") != 0) {
+    if (strcmp(lower, "rgb") != 0 && strcmp(lower, "ycocg") != 0 && strcmp(lower, "variance") != 0) {
         lua_pushnil(L);
-        lua_pushfstring(L, "TAA.SetClipMode: 未识别的 mode '%s' (期望 'rgb' / 'ycocg')", mode);
+        lua_pushfstring(L, "TAA.SetClipMode: 未识别的 mode '%s' (期望 'rgb' / 'ycocg' / 'variance')", mode);
         return 2;
     }
     TAARenderer::SetClipMode(mode);
@@ -3184,9 +3186,30 @@ static int l_TAA_SetClipMode(lua_State* L) {
 }
 
 /// @lua_api Light.Graphics.TAA.GetClipMode
-/// @return string  "rgb" / "ycocg"
+/// @return string  "rgb" / "ycocg" / "variance"
 static int l_TAA_GetClipMode(lua_State* L) {
     lua_pushstring(L, TAARenderer::GetClipMode());
+    return 1;
+}
+
+/// @lua_api Light.Graphics.TAA.SetVarianceGamma
+/// @param gamma number variance clip 收紧系数 γ (clamp [0, 4]; 默认 1.0)
+///                     仅 ClipMode=="variance" 时生效
+///                     γ 越小 → clip 越严 → ghost 抑制越强, 但可能出现 trail/over-smoothing
+///                     γ 越大 → clip 越宽松 → 接近无 clip
+///                     γ = 0 → 极端激进 (mn=mx=mean)
+///                     Salvi 2016 / UE5 默认推荐 1.0
+static int l_TAA_SetVarianceGamma(lua_State* L) {
+    float gamma = (float)luaL_checknumber(L, 1);
+    TAARenderer::SetVarianceGamma(gamma);
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+/// @lua_api Light.Graphics.TAA.GetVarianceGamma
+/// @return number
+static int l_TAA_GetVarianceGamma(lua_State* L) {
+    lua_pushnumber(L, (lua_Number)TAARenderer::GetVarianceGamma());
     return 1;
 }
 
@@ -3227,9 +3250,12 @@ static const luaL_Reg taa_funcs[] = {
     // Phase F.0.4 — anti-flicker (2 = 1 对): Karis luma-weighted blend, 默认 true
     {"SetAntiFlicker",        l_TAA_SetAntiFlicker},
     {"GetAntiFlicker",        l_TAA_GetAntiFlicker},
-    // Phase F.0.2 — clip color space (2 = 1 对): "rgb" / "ycocg", 默认 "ycocg"
+    // Phase F.0.2/F.0.3 — clip color space (2 = 1 对): "rgb" / "ycocg" / "variance", 默认 "ycocg"
     {"SetClipMode",           l_TAA_SetClipMode},
     {"GetClipMode",           l_TAA_GetClipMode},
+    // Phase F.0.3 — variance gamma (2 = 1 对): 仅 ClipMode=="variance" 生效, clamp [0, 4], 默认 1.0
+    {"SetVarianceGamma",      l_TAA_SetVarianceGamma},
+    {"GetVarianceGamma",      l_TAA_GetVarianceGamma},
     // status (2): debug HUD 用
     {"GetFrameCounter",       l_TAA_GetFrameCounter},
     {"GetCurrentJitter",      l_TAA_GetCurrentJitter},

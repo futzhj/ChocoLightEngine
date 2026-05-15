@@ -1412,7 +1412,7 @@ print(Light.Graphics.MotionBlur.GetHalfRes())      --> true
 >
 > **默认 OFF**：用户主动 `Enable` 才生效（与 Phase E 所有模块一致），零回归保障。
 
-## TAA API 速查表（共 19 函数 = F.0 13 + F.0.1 2 + F.0.2 2 + F.0.4 2）
+## TAA API 速查表（共 21 函数 = F.0 13 + F.0.1 2 + F.0.2 2 + F.0.3 2 + F.0.4 2）
 
 | 类别 | 函数 | 默认值 / 说明 |
 |------|------|--------------|
@@ -1422,7 +1422,8 @@ print(Light.Graphics.MotionBlur.GetHalfRes())      --> true
 | 参数 | `SetJitterEnabled(on)` / `GetJitterEnabled()` | sub-pixel projection jitter，**默认 true** |
 | 参数 (F.0.1) | `SetSharpness(s)` / `GetSharpness()` | 4-tap unsharp mask，clamp `[0, 2]`，**默认 0.5**（0=blit fallback） |
 | 参数 (F.0.4) | `SetAntiFlicker(on)` / `GetAntiFlicker()` | Karis luma weighting blend，**默认 true**（false=F.0 纯 alpha blend） |
-| 参数 (F.0.2) | `SetClipMode(mode)` / `GetClipMode()` | `"rgb"` / `"ycocg"` (大小写不敏感)，**默认 `"ycocg"`**（`"rgb"`=F.0 三通道） |
+| 参数 (F.0.2/F.0.3) | `SetClipMode(mode)` / `GetClipMode()` | `"rgb"` / `"ycocg"` / `"variance"` (大小写不敏感)，**默认 `"ycocg"`** |
+| 参数 (F.0.3) | `SetVarianceGamma(γ)` / `GetVarianceGamma()` | variance clip 收紧系数 γ，clamp `[0, 4]`，**默认 1.0**（仅 `"variance"` 生效） |
 | 状态 | `GetFrameCounter()` | `int` Halton 索引 `[0, 7]`（debug HUD） |
 | 状态 | `GetCurrentJitter()` | `(jx, jy)` 本帧 sub-pixel 偏移（±0.5 px） |
 
@@ -1691,15 +1692,18 @@ TAA.SetAntiFlicker(false)
 
 ## `TAA.SetClipMode` / `TAA.GetClipMode`
 
-**Phase F.0.2** — 9-tap AABB clip 色彩空间选择。
+**Phase F.0.2 / Phase F.0.3** — 9-tap clip 色彩空间与几何选择。
 
 ### 参数
 
-- `mode` (`string`)：`"rgb"` / `"ycocg"` (大小写不敏感, 存储时规范化小写)
+- `mode` (`string`)：`"rgb"` / `"ycocg"` / `"variance"` (大小写不敏感, 存储时规范化小写)
+  - `"rgb"`      — F.0 三通道 RGB AABB clip（零 ALU 增量路径）
+  - `"ycocg"`    — F.0.2 YCoCg AABB clip（+0.05 ms，色彩边缘鲁棒）
+  - `"variance"` — F.0.3 YCoCg variance clip（+0.07 ms，Salvi 2016 / UE5 default）
 
 ### 默认值
 
-`"ycocg"`（F.0.2 主题默认启用新算法，F.0 行为仍可通过 `SetClipMode("rgb")` 复现）
+`"ycocg"`（F.0.2 主题默认启用 AABB clip）
 
 ### 错误处理
 
@@ -1707,10 +1711,10 @@ TAA.SetAntiFlicker(false)
 
 ```lua
 local ok, err = Light.Graphics.TAA.SetClipMode("abc")
-print(ok, err)  --> nil  TAA.SetClipMode: 未识别的 mode 'abc' (期望 'rgb' / 'ycocg')
+print(ok, err)  --> nil  TAA.SetClipMode: 未识别的 mode 'abc' (期望 'rgb' / 'ycocg' / 'variance')
 
 local ok2, err2 = Light.Graphics.TAA.SetClipMode(123)
-print(ok2, err2)  --> nil  TAA.SetClipMode: 期望 string 参数 ('rgb' / 'ycocg')
+print(ok2, err2)  --> nil  TAA.SetClipMode: 期望 string 参数 ('rgb' / 'ycocg' / 'variance')
 ```
 
 ### 算法 — YCoCg lift 形式转换
@@ -1729,25 +1733,26 @@ G = Y      + Cg
 B = Y - Co - Cg
 ```
 
-9-tap AABB clip 不变 (仍是 3×3 邻域 + cur)，仅在 YCoCg 空间 min/max。
+9-tap clip 不变 (仍是 3×3 邻域 + cur)：`"ycocg"` 走 min/max；`"variance"` 走 mean ± γ·σ。
 
-### RGB vs YCoCg 对比
+### 三种模式对比
 
-| 场景 | RGB AABB | YCoCg AABB |
-|------|----------|------------|
-| 重复色块 (低色度) | 完全同结果 (Y 占主) | 同 |
-| 高色度边缘 (红↔蓝) | 可能三通道各自被 clip 产生伪影 | 色度独立保护，边缘更鲁棒 |
-| HDR 高光 spike | RGB 三通道独立 min/max | Y 通道 clip 起主要作用 |
-| 过渡色 (黄↔绿) | RGB clip 可能拉偏色调 | Co/Cg 独立保护色调 |
+| 场景 | RGB AABB | YCoCg AABB | YCoCg variance |
+|------|----------|------------|----------------|
+| 重复色块 (低色度) | 完全同结果 (Y 占主) | 同 | 均值估计更稳 |
+| 高色度边缘 (红↔蓝) | 可能三通道各自被 clip 产生伪影 | 色度独立保护，边缘更鲁棒 | clip 盒更紧凑，ghost 抑制更强 |
+| HDR 高光 spike (firefly) | min/max 被单点拉宽 | 同 | mean/σ 不受单点影响（鲁棒性优势） |
+| 过渡色 (黄↔绿) | RGB clip 可能拉偏色调 | Co/Cg 独立保护色调 | 同，且 σ 带来较平滑过渡 |
 
 ### 性能
 
 - `"rgb"` 路径：0 ALU 增量（与 F.0 完全同路径）
 - `"ycocg"` 路径：+0.05 ms @ 1080p (11 mat3 mul ≈ 165 ALU/px)
+- `"variance"` 路径：+0.07 ms @ 1080p (多 9 个 c² + 1 sqrt)
 
 ### 推荐配合
 
-与 Phase F.0.4 anti-flicker 独立互补：F.0.2 clip 阶段限制 history 譬明范围，F.0.4 blend 阶段压制 high-luma 权重，两者同启为推荐默认。
+与 Phase F.0.4 anti-flicker 独立互补：F.0.2/F.0.3 限制 history 范围，F.0.4 压制 high-luma 权重。 高色度边缘 + firefly 场景下 `"variance"` + AntiFlicker 同启优势最大。
 
 ### 示例
 
@@ -1761,14 +1766,95 @@ print(TAA.GetClipMode())                 --> ycocg
 TAA.SetClipMode("rgb")
 print(TAA.GetClipMode())                 --> rgb
 
--- 大小写不敏感
-TAA.SetClipMode("YCoCg")
-print(TAA.GetClipMode())                 --> ycocg (规范化)
+-- F.0.3 variance clipping (Salvi 2016 / UE5 default)
+TAA.SetClipMode("variance")
+TAA.SetVarianceGamma(1.0)                -- 默认推荐
+print(TAA.GetClipMode())                 --> variance
+print(TAA.GetVarianceGamma())            --> 1.0
 
--- 默认推荐设置
-TAA.SetClipMode("ycocg")
+-- 大小写不敏感
+TAA.SetClipMode("VARIANCE")
+print(TAA.GetClipMode())                 --> variance (规范化)
+
+-- 高色度边缘 + firefly 场景推荐设置
+TAA.SetClipMode("variance")
+TAA.SetVarianceGamma(1.5)                -- 略宽松些避免 trail
 TAA.SetAntiFlicker(true)
 TAA.SetSharpness(0.5)
+```
+
+---
+
+## `TAA.SetVarianceGamma` / `TAA.GetVarianceGamma`
+
+**Phase F.0.3** — Variance clipping 收紧系数 γ，仅 `ClipMode=="variance"` 时生效。
+
+### 参数
+
+- `γ` (`number`)：clamp `[0, 4]` (越小 clip 越严)
+
+### 默认值
+
+`1.0`（Salvi 2016 / UE5 推荐值）
+
+### 错误处理
+
+非 number raise error（调用侧 `pcall` 换取）：
+
+```lua
+local ok, err = pcall(Light.Graphics.TAA.SetVarianceGamma, "foo")
+print(ok, err)  --> false  bad argument #1 to 'SetVarianceGamma' (number expected, got string)
+```
+
+### 算法 — 邻域方差 clip
+
+Marco Salvi GDC 2016 "An Excursion in Temporal Supersampling" / UE5 default:
+
+```
+对 9-tap 邻域 N (3×3 + center) 在 YCoCg 空间:
+  m1   = (1/9) · Σ c_i             // 一阶矩 (mean)
+  m2   = (1/9) · Σ c_i²            // 二阶矩 (mean of squared, 逐通道)
+  σ²  = max(m2 - m1·m1, 0)      // 方差 (König-Huygens 公式, max(0) 防浮点负数)
+  σ   = sqrt(σ²)
+  mn   = m1 - γ·σ
+  mx   = m1 + γ·σ
+  hist = clamp(hist, mn, mx)
+```
+
+### 与 AABB 相比优势
+
+1. **single-outlier 鲁棒性**：AABB 中一个异常点会让 mn/mx 极限化; variance 中均值不受单点影响，只让 σ 略变大。
+2. **clip 盒更紧凑**：mean±σ 总是严于 min/max（除非隔点从不偏离均值）。
+3. **可调节 γ**：调低 γ 可加强抑制 (有 trail 风险)，调高 γ 则接近 AABB / 无 clip。
+
+### γ 取值指南
+
+| γ | 行为 | 适用场景 |
+|----|------|---------|
+| 0    | 极端激进 (mn=mx=mean) | history 被强制贴近邻域均值，可能严重 over-smoothing |
+| 0.75 | 偏严 | 色彩边缘 + firefly 场景鲁棒性需求高 |
+| **1.0**  | **推荐默认** (Salvi 2016 / UE5) | 通用场景 |
+| 1.5  | 略宽松 | 高动态场景 (避免 trail) |
+| 2-4 | 接近无 clip | 调试对比 |
+
+### 示例
+
+```lua
+local TAA = Light.Graphics.TAA
+
+-- 启用 variance clip + Salvi 默认 γ=1.0
+TAA.SetClipMode("variance")
+TAA.SetVarianceGamma(1.0)
+
+-- 高动态场景推荐略宽松
+TAA.SetVarianceGamma(1.5)
+
+-- clamp
+TAA.SetVarianceGamma(10.0)
+print(TAA.GetVarianceGamma())            --> 4.0
+
+-- 极端测试
+TAA.SetVarianceGamma(0)                  -- mn=mx=mean, history 贴近邻域均值
 ```
 
 ---

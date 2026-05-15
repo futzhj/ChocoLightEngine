@@ -2110,7 +2110,8 @@ uniform int   uVelocityDilation;    // 0=单点采 (E.18 dilated path), 1=inline
 uniform int   uVelocityFormat;      // 0=RG16F, 1=RG8
 uniform float uVelocityScale;       // RG8 decode
 uniform int   uAntiFlicker;         // Phase F.0.4: 0=纯 alpha blend, 1=Karis luma-weighted blend
-uniform int   uClipMode;            // Phase F.0.2: 0=RGB AABB clip (F.0), 1=YCoCg AABB clip
+uniform int   uClipMode;            // Phase F.0.2/F.0.3: 0=RGB AABB, 1=YCoCg AABB, 2=YCoCg variance
+uniform float uVarianceGamma;       // Phase F.0.3: variance clip 收紧系数 γ (Salvi 2016 / UE5 推荐 1.0, [0, 4])
 
 // Phase F.0.2 — RGB ↔ YCoCg lift 形式转换 (整数可逆, 与 FXAA / Inside / UE5 标准一致)
 //   Y  = 亮度通道 (0.25R + 0.5G + 0.25B); Co = R-B 色度; Cg = G - 0.5(R+B) 色度
@@ -2162,7 +2163,29 @@ void main() {
     vec4 hist = texture(uHistoryTex, prevUV);
 
     if (uNeighborhoodClip == 1) {
-        if (uClipMode == 1) {
+        if (uClipMode == 2) {
+            // Phase F.0.3 — Variance clipping in YCoCg space (Salvi 2016 / UE5 default)
+            // m1 = mean(YCoCg(N9)); m2 = mean(YCoCg(N9)^2); sigma = sqrt(max(0, m2-m1^2)); clip = [m1-γσ, m1+γσ]
+            // 与 AABB 相比: 对 single-outlier 更鲁棒 (均值不受单点影响), clip 盒更紧凑, ghost 抑制更强
+            vec3 sum = vec3(0.0), sumSq = vec3(0.0);
+            vec3 s;
+            s = RGBToYCoCg(cur.rgb);                                                     sum += s; sumSq += s*s;
+            s = RGBToYCoCg(texture(uCurHdrTex, vUV + uTexel * vec2(-1.0, -1.0)).rgb);    sum += s; sumSq += s*s;
+            s = RGBToYCoCg(texture(uCurHdrTex, vUV + uTexel * vec2( 0.0, -1.0)).rgb);    sum += s; sumSq += s*s;
+            s = RGBToYCoCg(texture(uCurHdrTex, vUV + uTexel * vec2( 1.0, -1.0)).rgb);    sum += s; sumSq += s*s;
+            s = RGBToYCoCg(texture(uCurHdrTex, vUV + uTexel * vec2(-1.0,  0.0)).rgb);    sum += s; sumSq += s*s;
+            s = RGBToYCoCg(texture(uCurHdrTex, vUV + uTexel * vec2( 1.0,  0.0)).rgb);    sum += s; sumSq += s*s;
+            s = RGBToYCoCg(texture(uCurHdrTex, vUV + uTexel * vec2(-1.0,  1.0)).rgb);    sum += s; sumSq += s*s;
+            s = RGBToYCoCg(texture(uCurHdrTex, vUV + uTexel * vec2( 0.0,  1.0)).rgb);    sum += s; sumSq += s*s;
+            s = RGBToYCoCg(texture(uCurHdrTex, vUV + uTexel * vec2( 1.0,  1.0)).rgb);    sum += s; sumSq += s*s;
+            vec3 m1    = sum   * (1.0 / 9.0);
+            vec3 m2    = sumSq * (1.0 / 9.0);
+            vec3 sigma = sqrt(max(m2 - m1 * m1, vec3(0.0)));    // König-Huygens 公式, max(0) 防浮点负数
+            vec3 mn    = m1 - uVarianceGamma * sigma;
+            vec3 mx    = m1 + uVarianceGamma * sigma;
+            vec3 histY = clamp(RGBToYCoCg(hist.rgb), mn, mx);
+            hist.rgb   = YCoCgToRGB(histY);
+        } else if (uClipMode == 1) {
             // Phase F.0.2 — YCoCg AABB clip 路径 (色彩边缘更鲁棒)
             vec3 curY = RGBToYCoCg(cur.rgb);
             vec3 mn = curY;
@@ -2783,7 +2806,8 @@ uniform int   uVelocityDilation;
 uniform int   uVelocityFormat;
 uniform float uVelocityScale;
 uniform int   uAntiFlicker;         // Phase F.0.4: 0=纯 alpha blend, 1=Karis luma-weighted blend
-uniform int   uClipMode;            // Phase F.0.2: 0=RGB AABB clip (F.0), 1=YCoCg AABB clip
+uniform int   uClipMode;            // Phase F.0.2/F.0.3: 0=RGB AABB, 1=YCoCg AABB, 2=YCoCg variance
+uniform float uVarianceGamma;       // Phase F.0.3: variance clip 收紧系数 γ (Salvi 2016 / UE5 推荐 1.0, [0, 4])
 
 // Phase F.0.2 — RGB ↔ YCoCg lift 形式转换 (与 GLES3 版完全等价)
 vec3 RGBToYCoCg(vec3 c) {
@@ -2833,7 +2857,28 @@ void main() {
     vec4 hist = texture(uHistoryTex, prevUV);
 
     if (uNeighborhoodClip == 1) {
-        if (uClipMode == 1) {
+        if (uClipMode == 2) {
+            // Phase F.0.3 — Variance clipping in YCoCg space (Salvi 2016 / UE5 default)
+            // 与 GLES3 版完全等价
+            vec3 sum = vec3(0.0), sumSq = vec3(0.0);
+            vec3 s;
+            s = RGBToYCoCg(cur.rgb);                                                     sum += s; sumSq += s*s;
+            s = RGBToYCoCg(texture(uCurHdrTex, vUV + uTexel * vec2(-1.0, -1.0)).rgb);    sum += s; sumSq += s*s;
+            s = RGBToYCoCg(texture(uCurHdrTex, vUV + uTexel * vec2( 0.0, -1.0)).rgb);    sum += s; sumSq += s*s;
+            s = RGBToYCoCg(texture(uCurHdrTex, vUV + uTexel * vec2( 1.0, -1.0)).rgb);    sum += s; sumSq += s*s;
+            s = RGBToYCoCg(texture(uCurHdrTex, vUV + uTexel * vec2(-1.0,  0.0)).rgb);    sum += s; sumSq += s*s;
+            s = RGBToYCoCg(texture(uCurHdrTex, vUV + uTexel * vec2( 1.0,  0.0)).rgb);    sum += s; sumSq += s*s;
+            s = RGBToYCoCg(texture(uCurHdrTex, vUV + uTexel * vec2(-1.0,  1.0)).rgb);    sum += s; sumSq += s*s;
+            s = RGBToYCoCg(texture(uCurHdrTex, vUV + uTexel * vec2( 0.0,  1.0)).rgb);    sum += s; sumSq += s*s;
+            s = RGBToYCoCg(texture(uCurHdrTex, vUV + uTexel * vec2( 1.0,  1.0)).rgb);    sum += s; sumSq += s*s;
+            vec3 m1    = sum   * (1.0 / 9.0);
+            vec3 m2    = sumSq * (1.0 / 9.0);
+            vec3 sigma = sqrt(max(m2 - m1 * m1, vec3(0.0)));
+            vec3 mn    = m1 - uVarianceGamma * sigma;
+            vec3 mx    = m1 + uVarianceGamma * sigma;
+            vec3 histY = clamp(RGBToYCoCg(hist.rgb), mn, mx);
+            hist.rgb   = YCoCgToRGB(histY);
+        } else if (uClipMode == 1) {
             // Phase F.0.2 — YCoCg AABB clip 路径 (色彩边缘更鲁棒)
             vec3 curY = RGBToYCoCg(cur.rgb);
             vec3 mn = curY;
@@ -3357,7 +3402,8 @@ class GL33Backend : public RenderBackend {
     GLint  locTAA_VelocityFormat            = -1;
     GLint  locTAA_VelocityScale             = -1;
     GLint  locTAA_AntiFlicker               = -1;   // Phase F.0.4: 0/1 上传 Karis weighting 开关
-    GLint  locTAA_ClipMode                  = -1;   // Phase F.0.2: 0=RGB AABB, 1=YCoCg AABB
+    GLint  locTAA_ClipMode                  = -1;   // Phase F.0.2/F.0.3: 0=RGB AABB, 1=YCoCg AABB, 2=YCoCg variance
+    GLint  locTAA_VarianceGamma             = -1;   // Phase F.0.3: variance clip 收紧系数 γ (仅 clipMode==2 生效)
 
     // Phase F.0.1 — TAA Sharpening (4-tap unsharp mask, 复用 SupportsTAA 能力位)
     //   shader: FS_SHARPEN_SOURCE (uInputTex + uTexelSize + uSharpness)
@@ -4323,8 +4369,9 @@ public:
             locTAA_VelocityDilation = glGetUniformLocation(programTAA, "uVelocityDilation");
             locTAA_VelocityFormat   = glGetUniformLocation(programTAA, "uVelocityFormat");
             locTAA_VelocityScale    = glGetUniformLocation(programTAA, "uVelocityScale");
-            locTAA_AntiFlicker      = glGetUniformLocation(programTAA, "uAntiFlicker");  // Phase F.0.4
-            locTAA_ClipMode         = glGetUniformLocation(programTAA, "uClipMode");     // Phase F.0.2
+            locTAA_AntiFlicker      = glGetUniformLocation(programTAA, "uAntiFlicker");     // Phase F.0.4
+            locTAA_ClipMode         = glGetUniformLocation(programTAA, "uClipMode");        // Phase F.0.2/F.0.3
+            locTAA_VarianceGamma    = glGetUniformLocation(programTAA, "uVarianceGamma");   // Phase F.0.3
             // 一次性绑 sampler 到 texture unit (slot 0=cur HDR, slot 1=history, slot 2=velocity)
             glUseProgram(programTAA);
             if (locTAA_CurHdrTex   >= 0) glUniform1i(locTAA_CurHdrTex,   0);
@@ -4560,6 +4607,7 @@ public:
         locTAA_VelocityFormat  = locTAA_VelocityScale    = -1;
         locTAA_AntiFlicker     = -1;   // Phase F.0.4 reset
         locTAA_ClipMode        = -1;   // Phase F.0.2 reset
+        locTAA_VarianceGamma   = -1;   // Phase F.0.3 reset
 
         // Phase F.0.1 — TAA Sharpening 清理
         if (programSharpen) { glDeleteProgram(programSharpen); programSharpen = 0; }
@@ -7352,8 +7400,9 @@ public:
                      float blendAlpha, int neighborhoodClip, int hasHistory,
                      bool velocityDilation, float velocityScale,
                      VelocityFormat velocityFormat,
-                     int antiFlicker,
-                     int clipMode) override {
+                     int   antiFlicker,
+                     int   clipMode,
+                     float varianceGamma) override {
         if (!taaSupported || !programTAA) return;
         if (!curHdrTex || !dstFbo || w <= 0 || h <= 0) return;
 
@@ -7376,8 +7425,10 @@ public:
         if (locTAA_VelocityScale    >= 0) glUniform1f(locTAA_VelocityScale,    velocityScale);
         // Phase F.0.4: Karis luma weighting blend 开关 (0=纯 alpha blend, 1=Karis)
         if (locTAA_AntiFlicker      >= 0) glUniform1i(locTAA_AntiFlicker,      antiFlicker);
-        // Phase F.0.2: clip 色彩空间 (0=RGB AABB 与 F.0 一致, 1=YCoCg AABB 默认)
+        // Phase F.0.2: clip 色彩空间 (0=RGB AABB 与 F.0 一致, 1=YCoCg AABB 默认, 2=YCoCg variance F.0.3)
         if (locTAA_ClipMode         >= 0) glUniform1i(locTAA_ClipMode,         clipMode);
+        // Phase F.0.3: variance clip 收紧系数 γ (仅 clipMode==2 生效，调用方已 clamp [0, 4])
+        if (locTAA_VarianceGamma    >= 0) glUniform1f(locTAA_VarianceGamma,    varianceGamma);
 
         // 绑 sampler: slot 0=cur HDR, slot 1=history (空时给 cur 占位避免黑帧), slot 2=velocity
         glActiveTexture(GL_TEXTURE0);

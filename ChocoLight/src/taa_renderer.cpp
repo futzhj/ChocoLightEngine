@@ -59,7 +59,8 @@ struct State {
     bool     jitterEnabled    = true;        // TAA Enable 时随之拉起 jitter
     float    sharpness        = 0.5f;        // Phase F.0.1: 4-tap unsharp mask 强度 [0, 2], 默认 0.5
     bool     antiFlicker      = true;        // Phase F.0.4: Karis luma weighting blend, 默认启用
-    int      clipMode         = 1;           // Phase F.0.2: 0=RGB AABB (F.0 行为), 1=YCoCg AABB (默认)
+    int      clipMode         = 1;           // Phase F.0.2/F.0.3: 0=RGB AABB / 1=YCoCg AABB (默认) / 2=YCoCg variance
+    float    varianceGamma    = 1.0f;        // Phase F.0.3: variance clip 收紧系数 γ (Salvi 2016 / UE5 默认 1.0)
 
     // jitter state
     uint64_t frameCounter   = 0;
@@ -262,7 +263,8 @@ void Process(uint32_t hdrFbo, uint32_t hdrTex) {
                             g.backend->GetVelocityScale(),
                             g.backend->GetActiveVelocityFormat(),
                             g.antiFlicker ? 1 : 0,      // Phase F.0.4
-                            g.clipMode);                // Phase F.0.2
+                            g.clipMode,                 // Phase F.0.2/F.0.3
+                            g.varianceGamma);           // Phase F.0.3
 
     // Phase F.0.1: sharpness > 0 走 4-tap unsharp mask sharpen pass (in-place 写回 sceneTex);
     //              否则保持 F.0 纯 blit 路径 (零 ALU 开销)
@@ -297,8 +299,8 @@ float GetSharpness()         { return g.sharpness; }
 void  SetAntiFlicker(bool on) { g.antiFlicker = on; }
 bool  GetAntiFlicker()         { return g.antiFlicker; }
 
-// Phase F.0.2 — 9-tap AABB clip 色彩空间
-// 大小写不敏感解析："rgb" / "RGB" / "Rgb" → 0; "ycocg" / "YCoCg" / "YCOCG" → 1
+// Phase F.0.2/F.0.3 — 9-tap clip 色彩空间 + variance 模式
+// 大小写不敏感解析: "rgb" → 0; "ycocg" → 1; "variance" → 2
 // 未识别字符串静默保持当前 state (错误提示在 Lua 层返 nil+err)
 static int parseClipMode_(const char* mode) {
     if (!mode) return -1;
@@ -312,8 +314,9 @@ static int parseClipMode_(const char* mode) {
         }
         return *a == '\0' && *b == '\0';
     };
-    if (eq(mode, "rgb"))   return 0;
-    if (eq(mode, "ycocg")) return 1;
+    if (eq(mode, "rgb"))      return 0;
+    if (eq(mode, "ycocg"))    return 1;
+    if (eq(mode, "variance")) return 2;   // Phase F.0.3
     return -1;
 }
 void SetClipMode(const char* mode) {
@@ -321,8 +324,17 @@ void SetClipMode(const char* mode) {
     if (parsed >= 0) g.clipMode = parsed;   // 仅识别到才写入, 其他静默保持
 }
 const char* GetClipMode() {
-    return (g.clipMode == 0) ? "rgb" : "ycocg";
+    switch (g.clipMode) {
+        case 0:  return "rgb";
+        case 1:  return "ycocg";
+        case 2:  return "variance";       // Phase F.0.3
+        default: return "ycocg";          // 防御性默认 (不可达)
+    }
 }
+
+// Phase F.0.3 — Variance clip 收紧系数 γ, clamp [0, 4]
+void  SetVarianceGamma(float gamma) { g.varianceGamma = clampf(gamma, 0.0f, 4.0f); }
+float GetVarianceGamma()             { return g.varianceGamma; }
 
 void  SetJitterEnabled(bool on) {
     g.jitterEnabled = on;

@@ -110,13 +110,22 @@ float GetSharpness();
 void  SetAntiFlicker(bool on);
 bool  GetAntiFlicker();
 
-/// Phase F.0.2 — 9-tap AABB clip 色彩空间: "rgb" (F.0 行为) / "ycocg" (F.0.2 默认)
-/// 算法: YCoCg lift 形式转换 (与 FXAA / Inside / UE5 同)，clip 在亮度+色度三通道独立约束
-/// RGB 路径 = F.0 原生三通道 min/max; YCoCg 路径 = + 9 tap RGBToYCoCg + 1 hist YCoCgToRGB
-/// 大小写不敏感 ("RGB"/"rgb"/"YCoCg"/"ycocg" 等价); 非法值静默忽略 (Lua 层返 nil+err)
-/// 性能: YCoCg 路径 +0.05ms @ 1080p (11 mat3 mul ≈ 165 ALU/px); RGB 路径 0 增量
+/// Phase F.0.2/F.0.3 — 9-tap clip 色彩空间: "rgb" (F.0) / "ycocg" (F.0.2 默认 AABB) / "variance" (F.0.3 mean±γσ)
+/// 算法: YCoCg lift 形式转换 (与 FXAA / Inside / UE5 同); RGB 路径 = F.0 三通道 min/max
+/// variance 路径 (Salvi 2016 / UE5 default): m1 = mean(N9); m2 = mean(N9^2); σ = sqrt(max(0, m2-m1^2)); clip = [m1-γσ, m1+γσ]
+/// 与 AABB 相比 variance 对 single-outlier 更鲁棒 (均值不受单点影响), clip 盒更紧凑, ghost 抑制更强
+/// 大小写不敏感; 非法值静默忽略 (Lua 层返 nil+err)
+/// 性能: ycocg AABB +0.05ms / variance +0.07ms @ 1080p
 void        SetClipMode(const char* mode);
 const char* GetClipMode();
+
+/// Phase F.0.3 — Variance clip 收紧系数 γ, 仅 ClipMode=="variance" 生效, 默认 1.0
+/// Salvi 2016 推荐 1.0; UE5 默认 1.0; 常用范围 [0.75, 1.5]
+///   γ 越小 → clip 越严 → ghost 抑制越强, 但可能出现 trail/over-smoothing
+///   γ 越大 → clip 越宽松 → 接近无 clip
+///   γ = 0  → 极端激进 (mn=mx=mean), history 被强制贴近邻域均值
+void  SetVarianceGamma(float gamma);   // clamp [0, 4]
+float GetVarianceGamma();
 
 // ==================== 内部状态查询 (debug HUD 用) ====================
 

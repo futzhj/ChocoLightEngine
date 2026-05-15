@@ -1,6 +1,6 @@
--- Phase F.0 + F.0.1 + F.0.2 + F.0.4 smoke: Light.Graphics.TAA (Temporal Anti-Aliasing master pipeline surface)
+-- Phase F.0 + F.0.1 + F.0.2 + F.0.3 + F.0.4 smoke: Light.Graphics.TAA (Temporal Anti-Aliasing master pipeline surface)
 --
--- API coverage (19 functions = F.0 13 + F.0.1 2 + F.0.2 2 + F.0.4 2):
+-- API coverage (21 functions = F.0 13 + F.0.1 2 + F.0.2 2 + F.0.3 2 + F.0.4 2):
 --   Lifecycle 5: Enable / Disable / IsEnabled / IsSupported / Resize
 --   Params     6: SetBlendAlpha / GetBlendAlpha (clamp [0, 1], default 0.92)
 --                 SetNeighborhoodClip / GetNeighborhoodClip (default true)
@@ -9,8 +9,11 @@
 --                                4-tap unsharp mask, 0=blit fallback, > 0 启用 sharpen pass
 --   Phase F.0.4 — Anti-flicker 2: SetAntiFlicker / GetAntiFlicker (boolean, default true)
 --                                  Karis luma-weighted blend, false = 纯 alpha blend (F.0 原始)
---   Phase F.0.2 — Clip mode  2: SetClipMode / GetClipMode ("rgb"/"ycocg", default "ycocg")
---                                  YCoCg lift 转换 + AABB clip, 对色彩边缘更鲁棒
+--   Phase F.0.2/F.0.3 — Clip mode  2: SetClipMode / GetClipMode ("rgb"/"ycocg"/"variance", default "ycocg")
+--                                       “ycocg” = AABB clip in YCoCg space (色彩边缘鲁棒)
+--                                       “variance” = Salvi 2016 / UE5 default: clip = [mean - γσ, mean + γσ]
+--   Phase F.0.3 — Variance gamma 2: SetVarianceGamma / GetVarianceGamma (clamp [0, 4], default 1.0)
+--                                       仅 ClipMode=="variance" 生效; γ 越小 clip 越严
 --   Status     2: GetFrameCounter (Halton index 0..7, debug HUD)
 --                 GetCurrentJitter (returns 2 numbers, sub-pixel offset)
 --
@@ -47,9 +50,10 @@ local fn_names = {
     "SetBlendAlpha", "GetBlendAlpha",
     "SetNeighborhoodClip", "GetNeighborhoodClip",
     "SetJitterEnabled", "GetJitterEnabled",
-    "SetSharpness", "GetSharpness",        -- Phase F.0.1
-    "SetAntiFlicker", "GetAntiFlicker",    -- Phase F.0.4
-    "SetClipMode", "GetClipMode",          -- Phase F.0.2
+    "SetSharpness", "GetSharpness",                -- Phase F.0.1
+    "SetAntiFlicker", "GetAntiFlicker",            -- Phase F.0.4
+    "SetClipMode", "GetClipMode",                  -- Phase F.0.2/F.0.3
+    "SetVarianceGamma", "GetVarianceGamma",        -- Phase F.0.3
     "GetFrameCounter", "GetCurrentJitter",
 }
 for _, k in ipairs(fn_names) do
@@ -380,6 +384,93 @@ TAA.SetAntiFlicker(true)
 TAA.SetClipMode("ycocg")
 
 -- ============================================================
+-- 6.8) Phase F.0.3 — Variance clipping: “variance” ClipMode + VarianceGamma round-trip + clamp
+-- ============================================================
+
+-- Variance clipMode round-trip
+local vc_ok = TAA.SetClipMode("variance")
+if vc_ok ~= true then
+    fail("SetClipMode('variance') should return true, got " .. tostring(vc_ok))
+end
+if TAA.GetClipMode() ~= "variance" then
+    fail("ClipMode round-trip 'variance' failed, got '" .. tostring(TAA.GetClipMode()) .. "'")
+end
+pass("ClipMode round-trip ok ('variance', Phase F.0.3)")
+
+-- 大小写不敏感验证 "VARIANCE" / "Variance" 都应被接受
+for _, v in ipairs({"VARIANCE", "Variance", "vArIaNcE"}) do
+    local ok = TAA.SetClipMode(v)
+    if ok ~= true then
+        fail("ClipMode case-insensitive failed for input '" .. v .. "': " .. tostring(ok))
+    end
+end
+if TAA.GetClipMode() ~= "variance" then
+    fail("ClipMode after mixed-case 'variance' should normalize to 'variance', got '" .. tostring(TAA.GetClipMode()) .. "'")
+end
+pass("ClipMode case-insensitive ok ('VARIANCE'/'Variance'/'vArIaNcE' → normalized 'variance')")
+
+-- VarianceGamma 默认值 1.0 (Salvi 2016 / UE5 推荐)
+local def_vg = TAA.GetVarianceGamma()
+if type(def_vg) ~= "number" then
+    fail("GetVarianceGamma should return number, got " .. type(def_vg))
+end
+if math.abs(def_vg - 1.0) > 1e-4 then
+    fail("Default GetVarianceGamma must be 1.0, got " .. tostring(def_vg))
+end
+pass("Default VarianceGamma = 1.0 (Salvi 2016 / UE5, Phase F.0.3)")
+
+-- Round-trip 范围 [0, 4]
+for _, v in ipairs({0.0, 0.25, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0}) do
+    TAA.SetVarianceGamma(v)
+    local got = TAA.GetVarianceGamma()
+    if not approx_eq(got, v) then
+        fail("VarianceGamma round-trip failed: set=" .. v .. " got=" .. tostring(got))
+    end
+end
+pass("VarianceGamma round-trip ok ([0, 4])")
+
+-- clamp test: > 4 → 4; < 0 → 0
+TAA.SetVarianceGamma(10.0)
+if not approx_eq(TAA.GetVarianceGamma(), 4.0) then
+    fail("VarianceGamma clamp upper bound failed: expected 4.0, got " .. tostring(TAA.GetVarianceGamma()))
+end
+TAA.SetVarianceGamma(-2.0)
+if not approx_eq(TAA.GetVarianceGamma(), 0.0) then
+    fail("VarianceGamma clamp lower bound failed: expected 0.0, got " .. tostring(TAA.GetVarianceGamma()))
+end
+pass("VarianceGamma clamp [0, 4] ok")
+
+-- type-error: string / nil / boolean 都应报错 (luaL_checknumber 会 raise error)
+local vg_ok1, vg_err1 = pcall(TAA.SetVarianceGamma, "foo")
+if vg_ok1 then
+    fail("SetVarianceGamma with string should raise error")
+end
+pass("SetVarianceGamma type-error rejected (string) [" .. tostring(vg_err1):sub(1, 60) .. "...]")
+
+local vg_ok2, vg_err2 = pcall(TAA.SetVarianceGamma, true)
+if vg_ok2 then
+    fail("SetVarianceGamma with boolean should raise error")
+end
+pass("SetVarianceGamma type-error rejected (boolean)")
+
+-- F.0.1 + F.0.2 + F.0.3 + F.0.4 四启共存验证
+TAA.SetSharpness(0.5)
+TAA.SetAntiFlicker(true)
+TAA.SetClipMode("variance")
+TAA.SetVarianceGamma(1.5)
+if math.abs(TAA.GetSharpness() - 0.5) > 1e-4
+   or TAA.GetAntiFlicker() ~= true
+   or TAA.GetClipMode() ~= "variance"
+   or math.abs(TAA.GetVarianceGamma() - 1.5) > 1e-4 then
+    fail("F.0.1 + F.0.2 + F.0.3 + F.0.4 四启共存 failed")
+end
+pass("Sharpness=0.5 + AntiFlicker=true + ClipMode='variance' + VarianceGamma=1.5 四启共存 ok")
+
+-- 复位 default
+TAA.SetClipMode("ycocg")
+TAA.SetVarianceGamma(1.0)
+
+-- ============================================================
 -- 7) Status query — GetFrameCounter / GetCurrentJitter
 -- ============================================================
 
@@ -463,14 +554,15 @@ else
 end
 
 print("")
-print("=== Phase F.0 + F.0.1 + F.0.2 + F.0.4 TAA smoke: ALL TESTS PASSED ===")
-print("Functions covered: " .. #fn_names .. " / 19")
+print("=== Phase F.0 + F.0.1 + F.0.2 + F.0.3 + F.0.4 TAA smoke: ALL TESTS PASSED ===")
+print("Functions covered: " .. #fn_names .. " / 21")
 print("Highlights:")
-print("  - default OFF, alpha=0.92, neighborhoodClip=true, jitterEnabled=true, sharpness=0.5, antiFlicker=true, clipMode='ycocg'")
-print("  - clamp: BlendAlpha [0, 1], Sharpness [0, 2]")
-print("  - type-error: SetNeighborhoodClip / SetJitterEnabled / SetAntiFlicker reject non-boolean; SetClipMode reject non-string / invalid value")
+print("  - default OFF, alpha=0.92, neighborhoodClip=true, jitterEnabled=true, sharpness=0.5, antiFlicker=true, clipMode='ycocg', varianceGamma=1.0")
+print("  - clamp: BlendAlpha [0, 1], Sharpness [0, 2], VarianceGamma [0, 4]")
+print("  - type-error: SetNeighborhoodClip / SetJitterEnabled / SetAntiFlicker reject non-boolean; SetClipMode reject non-string / invalid value; SetVarianceGamma reject non-number")
 print("  - status: GetFrameCounter [0, 7], GetCurrentJitter in ±0.5 px range")
 print("  - coexistence: TAA toggle does not affect SSR Temporal state")
 print("  - Phase F.0.1: 4-tap unsharp mask, sharpness=0 走 blit fallback (零 ALU)")
 print("  - Phase F.0.4: Karis luma-weighted blend, antiFlicker=false 走 F.0 纯 alpha blend")
 print("  - Phase F.0.2: YCoCg AABB clip, clipMode='rgb' 走 F.0 三通道 RGB clip (零 ALU 增量)")
+print("  - Phase F.0.3: variance clip = mean ± γσ (Salvi 2016 / UE5), 优于 AABB 的 single-outlier 鲁棒性")

@@ -522,18 +522,23 @@ while win:IsOpen() do
                 MotionBlur.GetStrength(),
                 MotionBlur.GetSampleCount()))
         end
-        -- Phase F.0+F.0.1+F.0.2+F.0.4: TAA 主管线状态 (jitter + frame counter + alpha + clip + sharpness + antiFlicker + clipMode)
+        -- Phase F.0+F.0.1+F.0.2+F.0.3+F.0.4: TAA 主管线状态 (jitter + frame counter + alpha + clip + sharpness + antiFlicker + clipMode + varianceGamma)
         local TAAhud = Gfx.TAA
         if TAAhud then
             local jx, jy = TAAhud.GetCurrentJitter()
             local sharp  = TAAhud.GetSharpness and TAAhud.GetSharpness() or 0
             local af     = TAAhud.GetAntiFlicker and TAAhud.GetAntiFlicker() or false
-            local cmode  = TAAhud.GetClipMode and TAAhud.GetClipMode() or 'rgb'  -- Phase F.0.2
+            local cmode  = TAAhud.GetClipMode and TAAhud.GetClipMode() or 'ycocg'        -- Phase F.0.2/F.0.3 默认 ycocg
+            -- Phase F.0.3: 仅 ClipMode=="variance" 时在 HUD 添加 vg=γ 字段避免垃圾信息
+            local cmodeStr = cmode
+            if cmode == 'variance' and TAAhud.GetVarianceGamma then
+                cmodeStr = string.format('variance(γ=%.2f)', TAAhud.GetVarianceGamma())
+            end
             line(string.format('TAA: %s | alpha=%.2f | clip=%s/%s | jitter=%s | sharp=%.2f (%s) | AF=%s | frame=%d (jx=%.3f jy=%.3f)',
                 TAAhud.IsEnabled() and 'ON' or 'OFF',
                 TAAhud.GetBlendAlpha(),
                 TAAhud.GetNeighborhoodClip() and 'ON' or 'OFF',
-                cmode,                                   -- Phase F.0.2: rgb / ycocg
+                cmodeStr,                                -- Phase F.0.2/F.0.3: rgb / ycocg / variance(γ=N)
                 TAAhud.GetJitterEnabled() and 'ON' or 'OFF',
                 sharp,
                 sharp > 0 and 'sharpen pass' or 'pure blit',
