@@ -72,6 +72,10 @@ struct State {
     bool           dilationAutoSkip         = false;
     // 内部: once-log 状态追踪 (避免每帧 spam, 仅 active↔skip 转变时打一次日志)
     bool           lastDilationActiveLog    = true;
+
+    // Phase F.0.10.2 — Auto-TAA 开关 (默认 true = 零回归; false = 让用户手动 TAA.Process 控时序)
+    //   split-screen 场景: 用户需要 TAA.SetActiveInstance + TAA.Process(region) 分次处理, 不能让 EndScene 全屏覆盖
+    bool           autoTAA                  = true;
 };
 
 static State g;
@@ -511,7 +515,10 @@ void EndScene() {
     // Phase F.0 — TAA 主管线 (MotionBlur 之后, Tonemap 之前)
     //   读 cur sceneTex + history + dilated/raw velocity → 写 history递推、1  blit 回 sceneTex
     //   仅在用户 TAA::Enable(w,h) 主动启动 + supported 时才走 (默认 OFF, 零回归)
-    TAARenderer::Process(g.fbo, g.sceneTex);
+    // Phase F.0.10.2: autoTAA=false 时跳过自动 TAA, 让用户手动 TAA.Process / ProcessRegion 控时序 (split-screen 必备)
+    if (g.autoTAA) {
+        TAARenderer::Process(g.fbo, g.sceneTex);
+    }
 
     // Tonemap exposure: AE 开时覆盖 manual; AE 关时回归 manual SetExposure
     float exposure = AutoExposureRenderer::IsEnabled()
@@ -611,6 +618,17 @@ bool SetVelocityDilationAutoSkip(bool on) {
     return true;
 }
 bool GetVelocityDilationAutoSkip() { return g.dilationAutoSkip; }
+
+// Phase F.0.10.2 — Auto-TAA 开关
+// 默认 true = EndScene 内自动调 TAARenderer::Process(g.fbo, g.sceneTex) (零回归)
+// 设 false 后用户负责手动调 TAA.Process / TAA.ProcessRegion 控制 TAA 时序 (split-screen 必备)
+// 无状态依赖, 立即生效, 同值 no-op
+bool SetAutoTAA(bool on) {
+    if (g.autoTAA == on) return true;   // no-op (同值)
+    g.autoTAA = on;
+    return true;
+}
+bool GetAutoTAA() { return g.autoTAA; }
 
 bool GetVelocityDilation() { return g.velocityDilation; }
 

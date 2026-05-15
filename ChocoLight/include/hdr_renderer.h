@@ -189,6 +189,20 @@ bool          GetVelocityDilationAutoSkip();
 bool           SetVelocityFormat(VelocityFormat fmt);
 VelocityFormat GetVelocityFormat();
 
+// ==================== Phase F.0.10.2 — Auto-TAA 开关 (split-screen 必备) ====================
+
+/// 是否在 EndScene 内自动调 TAARenderer::Process() 全屏处理.
+/// 默认 true (零回归); 设 false 后用户需手动 TAA.Process / TAA.ProcessRegion 控制 TAA 时序.
+/// 典型用法 (split-screen 多 instance):
+///   HDR.SetAutoTAA(false)
+///   HDR.BeginScene()
+///   -- 渲染 player 1 (viewport 左半) + TAA.SetActiveInstance(1) + TAA.Process(0,0,W/2,H)
+///   -- 渲染 player 2 (viewport 右半) + TAA.SetActiveInstance(2) + TAA.Process(W/2,0,W/2,H)
+///   HDR.EndScene()  -- bloom/tonemap 仍跑, TAA 跳过
+/// @return true 设置成功 (含 no-op 同值)
+bool SetAutoTAA(bool on);
+bool GetAutoTAA();
+
 /// 当前 HDR RT 宽度 / 高度 (未 Enable 时 = 0)
 int GetWidth();
 int GetHeight();

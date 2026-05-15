@@ -41,6 +41,8 @@ local fn_names = {
     "SetVelocityDilationHalfRes", "GetVelocityDilationHalfRes",
     -- Phase E.18.2 — dilation pass 自动跳过单消费者
     "SetVelocityDilationAutoSkip", "GetVelocityDilationAutoSkip",
+    -- Phase F.0.10.2 — Auto-TAA 开关 (split-screen 多 instance 必备)
+    "SetAutoTAA", "GetAutoTAA",
 }
 for _, k in ipairs(fn_names) do
     if type(HDR[k]) ~= "function" then
@@ -433,7 +435,46 @@ end
 pass("SetVelocityDilationAutoSkip idempotent (no-op same value)")
 
 -- ============================================================
+-- 11) Phase F.0.10.2 — SetAutoTAA / GetAutoTAA (split-screen 必备)
+-- ============================================================
+-- 默认 true (老 EndScene 自动调 TAA.Process), 设 false 后用户手动 TAA.Process 控时序
+
+-- 11.1 GetAutoTAA() 默认 = true
+if HDR.GetAutoTAA() ~= true then
+    fail("GetAutoTAA() default must be true (零回归), got " .. tostring(HDR.GetAutoTAA()))
+end
+pass("GetAutoTAA() default = true (零回归)")
+
+-- 11.2 SetAutoTAA round-trip
+HDR.SetAutoTAA(false)
+if HDR.GetAutoTAA() ~= false then
+    fail("SetAutoTAA(false) round-trip failed, got " .. tostring(HDR.GetAutoTAA()))
+end
+HDR.SetAutoTAA(true)
+if HDR.GetAutoTAA() ~= true then
+    fail("SetAutoTAA(true) round-trip failed, got " .. tostring(HDR.GetAutoTAA()))
+end
+pass("SetAutoTAA true/false round-trip ok")
+
+-- 11.3 SetAutoTAA bad arg → nil + err
+local ok_at, err_at = HDR.SetAutoTAA("yes")
+if ok_at ~= nil then fail("SetAutoTAA('yes') should return nil, got " .. tostring(ok_at)) end
+if type(err_at) ~= "string" then fail("SetAutoTAA bad-arg err must be string, got " .. type(err_at)) end
+pass("SetAutoTAA bad-arg returns nil + err string")
+
+-- 11.4 no-op 同值
+HDR.SetAutoTAA(true)
+HDR.SetAutoTAA(true)
+if HDR.GetAutoTAA() ~= true then
+    fail("SetAutoTAA(true) twice should remain true")
+end
+pass("SetAutoTAA idempotent (no-op same value)")
+
+-- 11.5 恢复默认 (后续 demo 不破坏)
+HDR.SetAutoTAA(true)
+
+-- ============================================================
 -- Done
 -- ============================================================
 
-print("[Phase E.3 + E.14 + E.18.1 + E.18.2] Light.Graphics.HDR smoke PASS (20 functions)")
+print("[Phase E.3 + E.14 + E.18.1 + E.18.2 + F.0.10.2] Light.Graphics.HDR smoke PASS (" .. #fn_names .. " functions)")

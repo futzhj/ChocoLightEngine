@@ -1755,6 +1755,30 @@ static int l_HDR_GetVelocityDilationAutoSkip(lua_State* L) {
     return 1;
 }
 
+/// @lua_api Light.Graphics.HDR.SetAutoTAA
+/// @brief Phase F.0.10.2 — 是否在 EndScene 内自动调 TAA Process (默认 true = 零回归)
+/// @param on boolean true=自动调用 (老行为) / false=用户手动 TAA.Process / TAA.ProcessRegion 控时序
+/// @return boolean true = 设置成功; nil, string = 入参非 boolean
+/// @note split-screen 多 instance 场景必须设 false, 让用户手动用 TAA.Process(rgnX, rgnY, rgnW, rgnH) 按区域更新
+static int l_HDR_SetAutoTAA(lua_State* L) {
+    if (!lua_isboolean(L, 1)) {
+        lua_pushnil(L);
+        lua_pushstring(L, "SetAutoTAA: expect boolean");
+        return 2;
+    }
+    bool on = lua_toboolean(L, 1) != 0;
+    HDRRenderer::SetAutoTAA(on);
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+/// @lua_api Light.Graphics.HDR.GetAutoTAA
+/// @return boolean 当前 auto-TAA 状态 (默认 true)
+static int l_HDR_GetAutoTAA(lua_State* L) {
+    lua_pushboolean(L, HDRRenderer::GetAutoTAA() ? 1 : 0);
+    return 1;
+}
+
 /// @lua_api Light.Graphics.HDR.SetVelocityFormat
 /// @brief 切换 velocity buffer 存储格式 (RG16F 默认 / RG8 节省 4x VRAM)
 /// @param fmt string "rg16f" | "rg8" (大小写敏感)
@@ -1810,6 +1834,9 @@ static const luaL_Reg hdr_funcs[] = {
     // Phase E.18.2 — dilation pass 自动跳过单消费者场景
     {"SetVelocityDilationAutoSkip", l_HDR_SetVelocityDilationAutoSkip},
     {"GetVelocityDilationAutoSkip", l_HDR_GetVelocityDilationAutoSkip},
+    // Phase F.0.10.2 — Auto-TAA 开关 (split-screen 多 instance 必备)
+    {"SetAutoTAA",                  l_HDR_SetAutoTAA},
+    {"GetAutoTAA",                  l_HDR_GetAutoTAA},
     {NULL, NULL}
 };
 
@@ -3520,6 +3547,59 @@ static int l_TAA_GetCurrentJitter(lua_State* L) {
     return 2;
 }
 
+/// @lua_api Light.Graphics.TAA.Process
+/// @brief Phase F.0.10.2 — 手动 TAA process (用户控制 TAA 时序, 配合 HDR.SetAutoTAA(false))
+/// @param rgnX integer 可选: 区域左下 X (默认 0)
+/// @param rgnY integer 可选: 区域左下 Y (默认 0)
+/// @param rgnW integer 可选: 区域宽 (默认 0 = 全屏, 零回归)
+/// @param rgnH integer 可选: 区域高 (默认 0 = 全屏)
+/// @return boolean true 成功 (或静默 no-op); nil, string = 参数非法 / HDR 未启用
+/// @note 内部用 HDRRenderer::GetFBO() + GetSceneTexture() 作为 hdr 目标, 无需用户传句柄
+///       老的 EndScene 自动 TAA 仍 default 启用, 用户通常需先 HDR.SetAutoTAA(false) 避免双 TAA
+///       headless / HDR 未启 时静默 no-op (返 false + err string)
+///       典型用法:
+///         HDR.SetAutoTAA(false)
+///         TAA.SetActiveInstance(1); TAA.ApplyJitter(); -- ...draw player 1...
+///         TAA.Process(0, 0, W/2, H)   -- 处理左半 region (instance 1 history)
+///         TAA.SetActiveInstance(2); TAA.ApplyJitter(); -- ...draw player 2...
+///         TAA.Process(W/2, 0, W/2, H) -- 处理右半 region (instance 2 history)
+static int l_TAA_Process(lua_State* L) {
+    // 参数检查 (4 个 optional integer, 缺省 = 0): 全部 0 = 全屏老接口
+    const int nargs = lua_gettop(L);
+    int rgnX = 0, rgnY = 0, rgnW = 0, rgnH = 0;
+    if (nargs >= 1) rgnX = (int)luaL_checkinteger(L, 1);
+    if (nargs >= 2) rgnY = (int)luaL_checkinteger(L, 2);
+    if (nargs >= 3) rgnW = (int)luaL_checkinteger(L, 3);
+    if (nargs >= 4) rgnH = (int)luaL_checkinteger(L, 4);
+
+    // 防御性: 部分 region 参数 (只传 2 个 / 3 个) 视为非法
+    if (nargs != 0 && nargs != 4) {
+        lua_pushnil(L);
+        lua_pushfstring(L, "TAA.Process: expected 0 or 4 args (got %d); region=(x,y,w,h) all-or-none", nargs);
+        return 2;
+    }
+    // 防御性: 区域 w/h 必须 >= 0 (0/0/0/0 = 全屏 path; w<0 或 h<0 拒绝)
+    if (rgnW < 0 || rgnH < 0) {
+        lua_pushnil(L);
+        lua_pushfstring(L, "TAA.Process: w/h must be >= 0 (got w=%d, h=%d)", rgnW, rgnH);
+        return 2;
+    }
+
+    // 取 HDR fbo + sceneTex (HDR 未启用时返 0, TAARenderer::Process 内部静默 no-op)
+    const uint32_t fbo = HDRRenderer::GetFBO();
+    const uint32_t tex = HDRRenderer::GetSceneTexture();
+    if (!fbo || !tex) {
+        lua_pushnil(L);
+        lua_pushliteral(L, "TAA.Process: HDR not enabled (fbo / sceneTex = 0)");
+        return 2;
+    }
+
+    // 转发到 TAARenderer (rgnW/rgnH=0 时 backend 内部跳过 scissor, 与无参 Process 等价)
+    TAARenderer::Process(fbo, tex, rgnX, rgnY, rgnW, rgnH);
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
 static const luaL_Reg taa_funcs[] = {
     // lifecycle (5)
     {"Enable",                l_TAA_Enable},
@@ -3571,6 +3651,8 @@ static const luaL_Reg taa_funcs[] = {
     {"SetActiveInstance",     l_TAA_SetActiveInstance},
     {"GetActiveInstance",     l_TAA_GetActiveInstance},
     {"GetInstanceCount",      l_TAA_GetInstanceCount},
+    // Phase F.0.10.2 — 手动 TAA Process (region 可选, 配合 HDR.SetAutoTAA(false) 做真物理 split-screen)
+    {"Process",               l_TAA_Process},
     // status (2): debug HUD 用
     {"GetFrameCounter",       l_TAA_GetFrameCounter},
     {"GetCurrentJitter",      l_TAA_GetCurrentJitter},

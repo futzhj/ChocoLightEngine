@@ -83,6 +83,7 @@ local fn_names = {
     "CreateInstance", "DestroyInstance",            -- Phase F.0.10
     "SetActiveInstance", "GetActiveInstance",       -- Phase F.0.10
     "GetInstanceCount",                              -- Phase F.0.10
+    "Process",                                       -- Phase F.0.10.2 (manual TAA region process)
     "GetFrameCounter", "GetCurrentJitter",
 }
 for _, k in ipairs(fn_names) do
@@ -1385,9 +1386,68 @@ TAA.DestroyInstance(rid1)
 if TAA.GetInstanceCount() ~= 1 then fail("After re-destroy, count=1") end
 pass("槽位复用: Create → Destroy → Create 返同一 id")
 
+-- ============================================================
+-- 10) Phase F.0.10.2 — TAA.Process (manual region API)
+-- ============================================================
+-- headless 下 HDR fbo=0, Process 返 nil + err; 用于验证 Lua 层参数校验链路
 print("")
-print("=== Phase F.0 + F.0.1 + F.0.2 + F.0.3 + F.0.4 + F.0.5 + F.0.6 + F.0.8 + F.0.9 + F.0.10 + F.0.12 + F.0.13 + F.0.14 TAA smoke: ALL TESTS PASSED ===")
-print("Functions covered: " .. #fn_names .. " / 40 (F.0.10 +5 fn: multi-instance API)")
+print("--- Phase F.0.10.2 (Process region) ---")
+
+-- 10.1) 0 个参数: 等价于全屏老接口 (HDR 未启用 → nil + err string)
+do
+    local ok, err = TAA.Process()
+    if ok ~= nil then fail("Process() expected nil (HDR off), got " .. tostring(ok)) end
+    if type(err) ~= "string" then fail("Process() expected err string, got " .. type(err)) end
+    pass("Process() 0 args headless: nil + err (HDR not enabled)")
+end
+
+-- 10.2) 4 个 integer 参数: HDR 未启用 → nil + err string
+do
+    local ok, err = TAA.Process(0, 0, 100, 200)
+    if ok ~= nil then fail("Process(0,0,100,200) expected nil (HDR off), got " .. tostring(ok)) end
+    if type(err) ~= "string" then fail("Process(0,0,100,200) expected err string") end
+    pass("Process(rgnX,Y,W,H) 4 args headless: nil + err")
+end
+
+-- 10.3) 部分参数 (1/2/3 个) 拒绝
+do
+    local ok, err = TAA.Process(0, 0, 100)  -- 3 args 非法
+    if ok ~= nil then fail("Process(3 args) expected nil") end
+    if not err:find("expected 0 or 4 args") then fail("Process(3 args) wrong err: " .. tostring(err)) end
+    pass("Process(3 args) rejected: 'expected 0 or 4 args'")
+end
+
+-- 10.4) w<0 / h<0 拒绝
+do
+    local ok, err = TAA.Process(0, 0, -100, 100)
+    if ok ~= nil then fail("Process(w<0) expected nil") end
+    if not err:find("w/h must be >= 0") then fail("Process(w<0) wrong err: " .. tostring(err)) end
+    pass("Process(w<0) rejected: 'w/h must be >= 0'")
+
+    local ok2, err2 = TAA.Process(0, 0, 100, -100)
+    if ok2 ~= nil then fail("Process(h<0) expected nil") end
+    pass("Process(h<0) rejected")
+end
+
+-- 10.5) 类型错: 非 integer 抛 luaL_error
+do
+    local ok, err = pcall(TAA.Process, "x", 0, 100, 100)
+    if ok then fail("Process('x', ...) should raise (luaL_checkinteger)") end
+    pass("Process(non-integer) raises error")
+end
+
+-- 10.6) rgnW=0 + rgnH=0 是合法 (全屏路径)
+do
+    local ok, err = TAA.Process(0, 0, 0, 0)
+    -- 等价于全屏 Process(); HDR 未启用 → nil + err (与 10.1 等价)
+    if ok ~= nil then fail("Process(0,0,0,0) expected nil (HDR off)") end
+    if type(err) ~= "string" then fail("Process(0,0,0,0) expected err string") end
+    pass("Process(0,0,0,0) = full-screen path, headless OK (HDR err)")
+end
+
+print("")
+print("=== Phase F.0 + F.0.1 + F.0.2 + F.0.3 + F.0.4 + F.0.5 + F.0.6 + F.0.8 + F.0.9 + F.0.10 + F.0.10.2 + F.0.12 + F.0.13 + F.0.14 TAA smoke: ALL TESTS PASSED ===")
+print("Functions covered: " .. #fn_names .. " / 41 (F.0.10 +5 fn: multi-instance API; F.0.10.2 +1 fn: TAA.Process)")
 print("Highlights:")
 print("  - default OFF, alpha=0.92, neighborhoodClip=true, jitterEnabled=true, sharpness=0.5, antiFlicker=true, clipMode='ycocg', varianceGamma=1.0, halfResHistory=false, sharpenMode='unsharp', motionGamma=1.5, motionAdaptive=false")
 print("  - clamp: BlendAlpha [0, 1], Sharpness [0, 2], VarianceGamma [0, 4], MotionGamma [0, 4]")
@@ -1399,6 +1459,7 @@ print("  - Phase F.0.12: FSR2 5-tap RCAS (Robust CAS), noise detection (range<1/
 print("  - Phase F.0.13: motion-adaptive sharpness, 高速相机运动时 effSharpness lerp 到 motionSharpness (默认 0.1) 减 trail; 与所有 sharpenMode 共存")
 print("  - Phase F.0.14: Lanczos-2 25-tap 5x5 上采样 (超高画质); -10% blur vs Catmull-Rom (-55% vs bilinear); ~+0.04 ms; 仅 sharpness=0 && halfRes=true 生效")
 print("  - Phase F.0.10: multi-instance (default + 3 user), 各 instance 独立 history RT + 14 参数; split-screen 双人/四人; 默认 active=0 (零回归)")
+print("  - Phase F.0.10.2: TAA.Process(rgnX,Y,W,H) 手动 region 触发, 配合 HDR.SetAutoTAA(false) 做真物理 split-screen")
 print("  - status: GetFrameCounter [0, 7], GetCurrentJitter in ±0.5 px range")
 print("  - coexistence: TAA toggle does not affect SSR Temporal state")
 print("  - Phase F.0.1: 4-tap unsharp mask, sharpness=0 走 blit fallback (零 ALU)")
