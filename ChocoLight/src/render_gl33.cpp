@@ -6893,8 +6893,8 @@ public:
     /// 首帧 hasPrevViewProjForVelocity=false 时返 0 (避免误判为高速)
     float ComputeCameraMotionScalar() const override {
         if (!hasPrevViewProjForVelocity) return 0.0f;
-        // ComputeViewProj3D 是 non-const 内部方法, 安全 const_cast (仅计算, 无 state 修改副作用)
-        Mat4 cur = const_cast<GL33RenderBackend*>(this)->ComputeViewProj3D();
+        // ComputeViewProj3D 已是 const, 直接调用 (仅计算 projection * view)
+        const Mat4 cur = ComputeViewProj3D();
         float ssd = 0.0f;
         for (int i = 0; i < 16; ++i) {
             const float d = cur.m[i] - prevViewProj.m[i];
