@@ -16,7 +16,7 @@
 | T3 demo (main.lua) | `@e:/jinyiNew/Light/samples/demo_ssr/main.lua` | +14 / -3 | ✅ |
 | T3 docs (Light_Graphics.md) | `@e:/jinyiNew/Light/docs/api/Light_Graphics.md` | +89 / -1 | ✅ |
 | T4 6A 三件套 | `PLAN_PhaseE_18_2.md` (含 ALIGN+DESIGN+TASK) + `ACCEPTANCE_PhaseE_18_2.md` + `FINAL_PhaseE_18_2.md` + `TODO_PhaseE_18_2.md` | 新增 | ✅ |
-| T5 commit+push+CI | git + GitHub Actions | — | ⏳ |
+| T5 commit+push+CI | git + GitHub Actions | — | ✅ |
 
 ---
 
@@ -61,8 +61,8 @@
 - [x] ACCEPTANCE / FINAL / TODO 本次完成
 
 ### T5 CI
-- [ ] GitHub Actions 6/6 平台 success
-- [ ] CI 状态回填 ACCEPTANCE + FINAL + TODO
+- [x] GitHub Actions 6/6 平台 success
+- [x] CI 状态回填 ACCEPTANCE + FINAL + TODO
 
 ---
 
@@ -140,16 +140,18 @@ SetVelocityDilationAutoSkip(true/false)← 控制本帧是否运行 DrawVelocity
 
 ---
 
-## 7. CI 状态（待回填）
+## 7. CI 状态
 
-| 平台 | 状态 | 时长 |
+| 平台 | 状态 | 状态详情 |
 |------|------|------|
-| build-windows | ⏳ | — |
-| build-linux | ⏳ | — |
-| build-macos | ⏳ | — |
-| build-android | ⏳ | — |
-| build-ios | ⏳ | — |
-| build-web | ⏳ | — |
+| build-windows | ✅ success | runtime smoke 25 PASS (hdr.lua 20 fn) + Phase E.16/17/18/18.1 零回归 |
+| build-linux | ✅ success | 纯构建 |
+| build-macos | ✅ success | 纯构建 |
+| build-android | ✅ success | 纯构建 |
+| build-ios | ✅ success | 纯构建 |
+| build-web | ✅ success | Emscripten WASM |
 
-GitHub Run ID: `<pending>`
-Commit hash: `<pending>`
+GitHub Run ID: [`25902219897`](https://github.com/futzhj/ChocoLightEngine/actions/runs/25902219897)
+Commit hash: `b726026`
+Total duration: **6 min**
+Date: 2026-05-15 05:35 UTC → 05:40 UTC

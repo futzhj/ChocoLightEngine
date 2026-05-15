@@ -37,8 +37,15 @@
 - **风险**：邻域物理覆盖减半（uTexel 翻倍），可能 1-px 错配伪影回升；consumer 单点采时硬件 bilinear 上采可能引入轻微模糊
 - **建议**：先实测 GPU profile，若 dilation pass 占比 >5% 再考虑
 
-### Phase E.18.2 — 运行时智能判断 single-consumer
+### Phase E.18.2 — 运行时智能判断 single-consumer — ✅ 已完成
 
+- ✅ Phase E.18.2 已完成（CI run [25902219897](https://github.com/futzhj/ChocoLightEngine/actions/runs/25902219897) 6/6 green，commit `b726026`）
+- **修订决策**：基于 fetch/px 经济性分析，跳过规则精化为 `autoSkip && SSR Temporal && !MB`（即仅 SSR-only 单消费者场景跳过；MB-only 时 inline 9-tap × N samples 反而亏 55 fetch，故不跳过）
+- 实施回顾：HDRRenderer 增 `dilationAutoSkip` state + `lastDilationActiveLog` once-log 追踪；EndScene 内 shouldRun 闸口；Lua API `HDR.SetVelocityDilationAutoSkip` / `GetVelocityDilationAutoSkip` 默认 false
+- 性能：仅 SSR-only 场景省 1 fetch/px（~0.01ms @ 1080p）；其他场景无效
+- 详见 `@e:/jinyiNew/Light/docs/Phase E.18.2 Velocity Dilation Auto-Skip/FINAL_PhaseE_18_2.md`
+
+**原候选方案**（保留参考）：
 - **场景**：仅 SSR 或仅 MB 启用时，dilation pass 反而亏 1 fetch
 - **方案**：HDR EndScene 内查询 `SSRRenderer::IsEnabled() + MotionBlurRenderer::IsEnabled()`，仅 ≥2 时启用 dilation pass
 - **风险**：自动行为可能不符用户预期，需文档明确
