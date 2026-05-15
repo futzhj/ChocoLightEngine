@@ -3372,7 +3372,7 @@ static int l_TAA_SetUpscaleMode(lua_State* L) {
     luaL_checkany(L, 1);
     if (lua_type(L, 1) != LUA_TSTRING) {
         lua_pushnil(L);
-        lua_pushliteral(L, "TAA.SetUpscaleMode: 期望 string 参数 ('bilinear' / 'bicubic')");
+        lua_pushliteral(L, "TAA.SetUpscaleMode: 期望 string 参数 ('bilinear' / 'bicubic' / 'lanczos')");
         return 2;
     }
     const char* mode = lua_tostring(L, 1);
@@ -3382,9 +3382,10 @@ static int l_TAA_SetUpscaleMode(lua_State* L) {
         char c = mode[i];
         lower[i++] = (c >= 'A' && c <= 'Z') ? (char)(c + 32) : c;
     }
-    if (strcmp(lower, "bilinear") != 0 && strcmp(lower, "bicubic") != 0) {
+    // Phase F.0.14: 白名单加 "lanczos" (Lanczos-2 25-tap 5x5 上采样)
+    if (strcmp(lower, "bilinear") != 0 && strcmp(lower, "bicubic") != 0 && strcmp(lower, "lanczos") != 0) {
         lua_pushnil(L);
-        lua_pushfstring(L, "TAA.SetUpscaleMode: 未识别的 mode '%s' (期望 'bilinear' / 'bicubic')", mode);
+        lua_pushfstring(L, "TAA.SetUpscaleMode: 未识别的 mode '%s' (期望 'bilinear' / 'bicubic' / 'lanczos')", mode);
         return 2;
     }
     TAARenderer::SetUpscaleMode(mode);
