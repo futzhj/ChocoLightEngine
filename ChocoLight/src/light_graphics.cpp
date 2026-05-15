@@ -632,8 +632,7 @@ static int l_GetScissor(lua_State* L) {
 /// @return void
 /// @note 不会自动恢复; 调用者负责后续 reset (典型用法: 渲染完一个 region 后切下一个)
 static int l_SetViewport(lua_State* L) {
-    if (!g_render) return 0;
-    // 类型检查 (4 个 integer, 失败抛 luaL_error)
+    // 注意: 类型检查 + 范围检查必须在 g_render=null 之前 (headless smoke 也需要这些验证)
     int x = (int)luaL_checkinteger(L, 1);
     int y = (int)luaL_checkinteger(L, 2);
     int w = (int)luaL_checkinteger(L, 3);
@@ -642,7 +641,8 @@ static int l_SetViewport(lua_State* L) {
     if (w <= 0 || h <= 0) {
         return luaL_error(L, "SetViewport: w/h must be > 0 (got w=%d, h=%d)", w, h);
     }
-    g_render->SetViewport(x, y, w, h);
+    // backend 调用仅在 g_render 存在时 (headless 无 backend 时 silent skip, 但参数已校验)
+    if (g_render) g_render->SetViewport(x, y, w, h);
     return 0;
 }
 
