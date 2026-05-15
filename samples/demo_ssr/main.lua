@@ -348,6 +348,16 @@ while win:IsOpen() do
         end
     end
 
+    -- Phase E.16 — ;: 循环切 motion blur mode (0→1→2→0)
+    if MotionBlur and keyTap(';') then
+        local names = { [0] = 'combined', [1] = 'camera_only', [2] = 'object_only' }
+        local cur = MotionBlur.GetMode()
+        local nxt = (cur + 1) % 3
+        MotionBlur.SetMode(nxt)
+        print(string.format('[demo] MotionBlur Mode: %s (%d) -> %s (%d)',
+            names[cur], cur, names[nxt], nxt))
+    end
+
     -- R: reset 默认
     if keyTap('r') then
         SSR.SetMaxSteps(64); SSR.SetStepSize(0.1); SSR.SetThickness(0.5)
@@ -414,14 +424,17 @@ while win:IsOpen() do
             HDR.GetVelocityFormat(),
             HDR.GetVelocityDilation() and 'ON' or 'OFF',
             SSR.GetTemporalEnabled() and 'velocity-first' or 'idle (Temporal OFF)'))
-        -- Phase E.15: MotionBlur 状态 (可选模块)
+        -- Phase E.15+E.16: MotionBlur 状态 (可选模块)
         if MotionBlur then
-            line(string.format('MotionBlur: %s | strength=%.2f | samples=%d',
+            local modeNames = { [0] = 'combined', [1] = 'camera_only', [2] = 'object_only' }
+            local m = MotionBlur.GetMode and MotionBlur.GetMode() or 0
+            line(string.format('MotionBlur: %s | mode=%d (%s) | strength=%.2f | samples=%d',
                 MotionBlur.IsEnabled() and 'ON' or 'OFF',
+                m, modeNames[m] or '?',
                 MotionBlur.GetStrength(),
                 MotionBlur.GetSampleCount()))
         end
-        line('Keys: F=SSR B=Blur V=Bilateral T=Temporal 9/0=radius ,/.=sigma U/I=alpha N=reject K=Dilation L=Format M=MotionBlur R=reset ESC')
+        line('Keys: F=SSR B=Blur V=Bilateral T=Temporal 9/0=radius ,/.=sigma U/I=alpha N=reject K=Dilation L=Format M=MotionBlur ;=Mode R=reset ESC')
     end
 
     win:EndFrame()

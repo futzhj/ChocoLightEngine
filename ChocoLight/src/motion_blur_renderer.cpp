@@ -32,6 +32,7 @@ struct State {
     // 调参
     float          strength    = 1.0f;      // [0, 4]
     int            sampleCount = 8;         // [1, 32]
+    int            mode        = 0;         // Phase E.16: 0=combined / 1=camera / 2=object
 };
 
 static State g;
@@ -181,6 +182,11 @@ float GetStrength()           { return g.strength; }
 void SetSampleCount(int n)    { g.sampleCount = ClampI(n, 1, 32); }
 int  GetSampleCount()         { return g.sampleCount; }
 
+// Phase E.16 — mode 参数 (clamp [0, 2])
+//   0=combined (与 Phase E.15 行为一致); 1=camera_only; 2=object_only
+void SetMode(int m)           { g.mode = ClampI(m, 0, 2); }
+int  GetMode()                { return g.mode; }
+
 // ==================== 管线调用 ====================
 
 void Process(uint32_t hdrFbo, uint32_t hdrTex) {
@@ -192,11 +198,17 @@ void Process(uint32_t hdrFbo, uint32_t hdrTex) {
     uint32_t velocityTex = HDRRenderer::GetVelocityTexture();
     if (!velocityTex) return;   // 后端不支持 velocity buffer 或 HDR 未启 → silent skip
 
+    // Phase E.16 — 取 camera-only velocity (mode=1/2 需；mode=0 也传入 backend 作为占位)
+    // 不存在时 backend safeMode 会自动 fallback 到 mode=0。
+    uint32_t cameraVelocityTex = HDRRenderer::GetCameraVelocityTexture();
+
     g.backend->DrawMotionBlur(hdrTex, velocityTex,
+                               cameraVelocityTex,                  // ★ Phase E.16
                                g.fbo, g.tex,
                                hdrFbo,
                                g.width, g.height,
-                               g.strength, g.sampleCount);
+                               g.strength, g.sampleCount,
+                               g.mode);                            // ★ Phase E.16
 }
 
 } // namespace MotionBlurRenderer

@@ -72,9 +72,13 @@ bool CreateRT(int w, int h) {
     uint32_t tex = 0;
     uint32_t normalTex = 0;
     uint32_t velocityTex = 0;
+    uint32_t cameraVelocityTex = 0;   // Phase E.16: 第二张 velocity tex (slot 3)
     // Phase E.14: 透传当前 velocity format (默认 RG16F)
+    // Phase E.16: 额外请求 cameraVelocityTex 供 MotionBlur mode=1/2 使用
+    //             (mode=0 下 backend 仅创建不读、零回归)
     uint32_t fbo = g.backend->CreateHDRFBO(w, h, &tex, &normalTex, &velocityTex,
-                                            g.velocityFormat);
+                                            g.velocityFormat,
+                                            &cameraVelocityTex);
     if (!fbo || !tex) {
         if (fbo || tex) g.backend->DeleteHDRFBO(fbo, tex);  // 部分失败兜底
         return false;
@@ -346,6 +350,11 @@ uint32_t GetSceneTexture() { return g.sceneTex; }
 uint32_t GetFBO()          { return g.fbo; }    // Phase E.8.x — SSAO 拿 normal tex 用
 uint32_t GetVelocityTexture() {
     return (g.backend && g.fbo) ? g.backend->GetHDRVelocityTex(g.fbo) : 0;
+}
+
+/// Phase E.16 — 查询 HDR FBO 关联 camera-only velocity tex
+uint32_t GetCameraVelocityTexture() {
+    return (g.backend && g.fbo) ? g.backend->GetHDRCameraVelocityTex(g.fbo) : 0;
 }
 int      GetWidth()        { return g.width; }
 int      GetHeight()       { return g.height; }

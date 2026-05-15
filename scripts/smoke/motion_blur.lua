@@ -1,10 +1,12 @@
--- Phase E.15 smoke: Light.Graphics.MotionBlur (velocity-driven motion blur surface)
+-- Phase E.15+E.16 smoke: Light.Graphics.MotionBlur (velocity-driven motion blur surface)
 --
--- API coverage (11 functions):
+-- API coverage (13 functions):
 --   Lifecycle 5: Enable / Disable / IsEnabled / IsSupported / Resize
 --   AutoEnable 2: SetAutoEnable / GetAutoEnable          (default false)
 --   Params     4: SetStrength / GetStrength (clamp [0, 4])
 --                 SetSampleCount / GetSampleCount (clamp [1, 32])
+--   Phase E.16 2: SetMode / GetMode (default 0; clamp [0, 2])
+--                 0=combined / 1=camera_only / 2=object_only
 --
 -- Headless guard: same as hdr.lua. Enable() MUST either
 --   (a) return false cleanly when no GL ctx (typical) OR
@@ -34,6 +36,7 @@ local fn_names = {
     "SetAutoEnable", "GetAutoEnable",
     "SetStrength", "GetStrength",
     "SetSampleCount", "GetSampleCount",
+    "SetMode", "GetMode",                       -- Phase E.16
 }
 for _, k in ipairs(fn_names) do
     if type(MB[k]) ~= "function" then
@@ -190,8 +193,51 @@ MB.Disable()
 pass("Double Disable() idempotent")
 
 -- ============================================================
+-- 7) Phase E.16 — Mode default / round-trip / clamp
+-- ============================================================
+
+-- 默认 mode = 0 (combined, 与 Phase E.15 行为一致)
+local mode0 = MB.GetMode()
+if type(mode0) ~= "number" then
+    fail("GetMode should return number/integer, got " .. type(mode0))
+end
+if math.floor(mode0 + 0.5) ~= 0 then
+    fail("Default GetMode() must be 0 (combined), got " .. tostring(mode0))
+end
+pass("GetMode() default = 0 (combined)")
+
+-- round-trip 1 (camera_only)
+MB.SetMode(1)
+if math.floor(MB.GetMode() + 0.5) ~= 1 then
+    fail("SetMode(1) round-trip failed (got " .. tostring(MB.GetMode()) .. ")")
+end
+
+-- round-trip 2 (object_only)
+MB.SetMode(2)
+if math.floor(MB.GetMode() + 0.5) ~= 2 then
+    fail("SetMode(2) round-trip failed (got " .. tostring(MB.GetMode()) .. ")")
+end
+pass("SetMode / GetMode round-trip ok (1=camera_only, 2=object_only)")
+
+-- clamp 下界
+MB.SetMode(-5)
+if math.floor(MB.GetMode() + 0.5) ~= 0 then
+    fail("SetMode(-5) should clamp to 0, got " .. tostring(MB.GetMode()))
+end
+pass("SetMode clamp lower bound (0)")
+
+-- clamp 上界
+MB.SetMode(99)
+if math.floor(MB.GetMode() + 0.5) ~= 2 then
+    fail("SetMode(99) should clamp to 2, got " .. tostring(MB.GetMode()))
+end
+pass("SetMode clamp upper bound (2)")
+
+MB.SetMode(0)               -- 复位为 combined
+
+-- ============================================================
 -- Final summary
 -- ============================================================
 
 print("")
-print("=== Light.Graphics.MotionBlur smoke OK ===")
+print("=== Light.Graphics.MotionBlur smoke OK (Phase E.15+E.16) ===")

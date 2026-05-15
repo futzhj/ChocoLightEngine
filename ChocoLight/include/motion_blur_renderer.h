@@ -86,6 +86,13 @@ float GetStrength();
 void SetSampleCount(int n);
 int  GetSampleCount();
 
+/// Phase E.16 — motion blur 模式 (默认 0; clamp [0, 2])
+///   0 = combined     (camera + object 合一，与 Phase E.15 行为一致)
+///   1 = camera_only  (仅相机运动造成的拖尾，物体在屏幕静止时不拖)
+///   2 = object_only  (仅物体运动造成的拖尾，近似等于 combined - camera)
+void SetMode(int m);
+int  GetMode();
+
 // ==================== 管线调用 (HDRRenderer::EndScene 内部调) ====================
 
 /**

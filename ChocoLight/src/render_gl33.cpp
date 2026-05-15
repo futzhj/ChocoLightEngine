@@ -132,6 +132,7 @@ out vec2 vTexCoord;
 out vec4 vColor;
 out vec4 vCurClip;
 out vec4 vPrevClip;
+out vec4 vPrevClipCameraOnly;  // Phase E.16: prevVP * curModel * pos (camera-only velocity)
 void main() {
     gl_Position = uMVP * vec4(aPos, 1.0);
     vNormalW = mat3(uModel) * aNormal;
@@ -140,6 +141,8 @@ void main() {
     vColor = aColor;
     vCurClip = gl_Position;
     vPrevClip = uPrevViewProj * (uPrevModel * vec4(aPos, 1.0));
+    // Phase E.16: 假设物体未动 (uModel = curModel)，仅留相机运动到 prevVP
+    vPrevClipCameraOnly = uPrevViewProj * (uModel * vec4(aPos, 1.0));
 }
 )";
 
@@ -169,6 +172,7 @@ out vec2 vTexCoord;
 out vec4 vColor;
 out vec4 vCurClip;
 out vec4 vPrevClip;
+out vec4 vPrevClipCameraOnly;  // Phase E.16: prevVP * curModel * pos (camera-only velocity)
 void main() {
     mat4 blend = aWeights.x * uJointMats[aJoints.x]
                + aWeights.y * uJointMats[aJoints.y]
@@ -188,6 +192,8 @@ void main() {
     vColor      = aColor;
     vCurClip    = gl_Position;
     vPrevClip   = uPrevViewProj * (uPrevModel * prevSkinnedPos);
+    // Phase E.16: 用当前帧 skinned·morph 后位置 (物体未动假设)，仅 prevVP 取上一帧
+    vPrevClipCameraOnly = uPrevViewProj * (uModel * skinnedPos);
 }
 )";
 
@@ -228,6 +234,7 @@ out vec2 vTexCoord;
 out vec4 vColor;
 out vec4 vCurClip;
 out vec4 vPrevClip;
+out vec4 vPrevClipCameraOnly;  // Phase E.16: prevVP * curModel * pos (camera-only velocity)
 void main() {
     // 1. Morph: base + Σ (weight × delta)
     vec3 morphedPos    = aPos;
@@ -263,6 +270,8 @@ void main() {
     vColor      = aColor;
     vCurClip    = gl_Position;
     vPrevClip   = uPrevViewProj * (uPrevModel * prevSkinnedPos);
+    // Phase E.16: 用当前帧 skinned·morph 后位置 (物体未动假设)，仅 prevVP 取上一帧
+    vPrevClipCameraOnly = uPrevViewProj * (uModel * skinnedPos);
 }
 )";
 
@@ -274,6 +283,7 @@ in vec4 vColor;
 in vec3 vNormalW;                // Phase E.8.x: 供 MRT normal 输出
 in vec4 vCurClip;
 in vec4 vPrevClip;
+in vec4 vPrevClipCameraOnly;     // Phase E.16: camera-only velocity 另一路 varying
 uniform vec4 uColor;
 uniform vec3 uEmissive;
 uniform sampler2D uTexBaseColor;
@@ -290,6 +300,7 @@ uniform float uVelocityScale;      // RG8 模式下的编码尺度; 默认 0.25
 layout(location=0) out vec4 FragColor;
 layout(location=1) out vec2 FragNormal;   // Phase E.8.x: view-space normal MRT
 layout(location=2) out vec2 FragVelocity;
+layout(location=3) out vec2 FragCameraVelocity;   // Phase E.16: camera-only velocity (slot 3)
 void main() {
     vec4 base = uColor * vColor;
     if (uHasBaseColorTex == 1) base *= texture(uTexBaseColor, vTexCoord);
@@ -305,16 +316,22 @@ void main() {
         vec2 curUV = (vCurClip.xy / max(vCurClip.w, 1e-6)) * 0.5 + 0.5;
         vec2 prevUV = (vPrevClip.xy / max(vPrevClip.w, 1e-6)) * 0.5 + 0.5;
         vec2 raw = curUV - prevUV;
+        // Phase E.16 — camera-only velocity (prevVP × curModel × pos)
+        vec2 prevUVCam = (vPrevClipCameraOnly.xy / max(vPrevClipCameraOnly.w, 1e-6)) * 0.5 + 0.5;
+        vec2 rawCam    = curUV - prevUVCam;
         // Phase E.14 — 按 velocity format 选编码路径
         //   RG16F 直接存 UV delta; RG8 用 bias/scale 压缩到 [0, 1] UNORM
         if (uVelocityFormat == 1) {
-            FragVelocity = clamp(raw / (2.0 * uVelocityScale) + 0.5, 0.0, 1.0);
+            FragVelocity       = clamp(raw    / (2.0 * uVelocityScale) + 0.5, 0.0, 1.0);
+            FragCameraVelocity = clamp(rawCam / (2.0 * uVelocityScale) + 0.5, 0.0, 1.0);
         } else {
-            FragVelocity = raw;
+            FragVelocity       = raw;
+            FragCameraVelocity = rawCam;
         }
     } else {
         // RG8 模式下 0.5 表示零速度 (UNORM 中点); RG16F 模式下零速度即 0
-        FragVelocity = (uVelocityFormat == 1) ? vec2(0.5) : vec2(0.0);
+        FragVelocity       = (uVelocityFormat == 1) ? vec2(0.5) : vec2(0.0);
+        FragCameraVelocity = (uVelocityFormat == 1) ? vec2(0.5) : vec2(0.0);
     }
 }
 )";
@@ -328,6 +345,7 @@ in vec2 vTexCoord;
 in vec4 vColor;
 in vec4 vCurClip;
 in vec4 vPrevClip;
+in vec4 vPrevClipCameraOnly;     // Phase E.16: camera-only velocity 另一路 varying
 uniform vec4 uColor;
 uniform vec3 uEmissive;
 uniform float uMetallic;
@@ -363,6 +381,7 @@ uniform float uVelocityScale;      // RG8 模式下的编码尺度; 默认 0.25
 layout(location=0) out vec4 FragColor;
 layout(location=1) out vec2 FragNormal;   // Phase E.8.x: view-space normal MRT (encode xy [0,1])
 layout(location=2) out vec2 FragVelocity;
+layout(location=3) out vec2 FragCameraVelocity;   // Phase E.16: camera-only velocity (slot 3)
 const float PI = 3.14159265;
 
 vec3 BRDF(vec3 N, vec3 V, vec3 L, vec3 baseColor, float metallic, float roughness, vec3 F0) {
@@ -452,16 +471,22 @@ void main() {
         vec2 curUV = (vCurClip.xy / max(vCurClip.w, 1e-6)) * 0.5 + 0.5;
         vec2 prevUV = (vPrevClip.xy / max(vPrevClip.w, 1e-6)) * 0.5 + 0.5;
         vec2 raw = curUV - prevUV;
+        // Phase E.16 — camera-only velocity (prevVP × curModel × pos)
+        vec2 prevUVCam = (vPrevClipCameraOnly.xy / max(vPrevClipCameraOnly.w, 1e-6)) * 0.5 + 0.5;
+        vec2 rawCam    = curUV - prevUVCam;
         // Phase E.14 — 按 velocity format 选编码路径
         //   RG16F 直接存 UV delta; RG8 用 bias/scale 压缩到 [0, 1] UNORM
         if (uVelocityFormat == 1) {
-            FragVelocity = clamp(raw / (2.0 * uVelocityScale) + 0.5, 0.0, 1.0);
+            FragVelocity       = clamp(raw    / (2.0 * uVelocityScale) + 0.5, 0.0, 1.0);
+            FragCameraVelocity = clamp(rawCam / (2.0 * uVelocityScale) + 0.5, 0.0, 1.0);
         } else {
-            FragVelocity = raw;
+            FragVelocity       = raw;
+            FragCameraVelocity = rawCam;
         }
     } else {
         // RG8 模式下 0.5 表示零速度 (UNORM 中点); RG16F 模式下零速度即 0
-        FragVelocity = (uVelocityFormat == 1) ? vec2(0.5) : vec2(0.0);
+        FragVelocity       = (uVelocityFormat == 1) ? vec2(0.5) : vec2(0.0);
+        FragCameraVelocity = (uVelocityFormat == 1) ? vec2(0.5) : vec2(0.0);
     }
 }
 )";
@@ -485,6 +510,7 @@ out vec2 vTexCoord;
 out vec4 vColor;
 out vec4 vCurClip;
 out vec4 vPrevClip;
+out vec4 vPrevClipCameraOnly;  // Phase E.16: prevVP * curModel * pos (camera-only velocity)
 void main() {
     gl_Position = uMVP * vec4(aPos, 1.0);
     vNormalW = mat3(uModel) * aNormal;
@@ -493,6 +519,8 @@ void main() {
     vColor = aColor;
     vCurClip = gl_Position;
     vPrevClip = uPrevViewProj * (uPrevModel * vec4(aPos, 1.0));
+    // Phase E.16: 假设物体未动 (uModel = curModel)，仅留相机运动到 prevVP
+    vPrevClipCameraOnly = uPrevViewProj * (uModel * vec4(aPos, 1.0));
 }
 )";
 
@@ -522,6 +550,7 @@ out vec2 vTexCoord;
 out vec4 vColor;
 out vec4 vCurClip;
 out vec4 vPrevClip;
+out vec4 vPrevClipCameraOnly;  // Phase E.16: prevVP * curModel * pos (camera-only velocity)
 void main() {
     mat4 blend = aWeights.x * uJointMats[aJoints.x]
                + aWeights.y * uJointMats[aJoints.y]
@@ -541,6 +570,8 @@ void main() {
     vColor      = aColor;
     vCurClip    = gl_Position;
     vPrevClip   = uPrevViewProj * (uPrevModel * prevSkinnedPos);
+    // Phase E.16: 用当前帧 skinned·morph 后位置 (物体未动假设)，仅 prevVP 取上一帧
+    vPrevClipCameraOnly = uPrevViewProj * (uModel * skinnedPos);
 }
 )";
 
@@ -578,6 +609,7 @@ out vec2 vTexCoord;
 out vec4 vColor;
 out vec4 vCurClip;
 out vec4 vPrevClip;
+out vec4 vPrevClipCameraOnly;  // Phase E.16: prevVP * curModel * pos (camera-only velocity)
 void main() {
     vec3 morphedPos    = aPos;
     vec3 prevMorphedPos = aPos;
@@ -611,6 +643,8 @@ void main() {
     vColor      = aColor;
     vCurClip    = gl_Position;
     vPrevClip   = uPrevViewProj * (uPrevModel * prevSkinnedPos);
+    // Phase E.16: 用当前帧 skinned·morph 后位置 (物体未动假设)，仅 prevVP 取上一帧
+    vPrevClipCameraOnly = uPrevViewProj * (uModel * skinnedPos);
 }
 )";
 
@@ -622,6 +656,7 @@ in vec4 vColor;
 in vec3 vNormalW;                // Phase E.8.x
 in vec4 vCurClip;
 in vec4 vPrevClip;
+in vec4 vPrevClipCameraOnly;     // Phase E.16: camera-only velocity 另一路 varying
 uniform vec4 uColor;
 uniform vec3 uEmissive;
 uniform sampler2D uTexBaseColor;
@@ -638,6 +673,7 @@ uniform float uVelocityScale;      // RG8 模式下的编码尺度; 默认 0.25
 layout(location=0) out vec4 FragColor;
 layout(location=1) out vec2 FragNormal;   // Phase E.8.x: view-space normal MRT
 layout(location=2) out vec2 FragVelocity;
+layout(location=3) out vec2 FragCameraVelocity;   // Phase E.16: camera-only velocity (slot 3)
 void main() {
     vec4 base = uColor * vColor;
     if (uHasBaseColorTex == 1) base *= texture(uTexBaseColor, vTexCoord);
@@ -652,16 +688,22 @@ void main() {
         vec2 curUV = (vCurClip.xy / max(vCurClip.w, 1e-6)) * 0.5 + 0.5;
         vec2 prevUV = (vPrevClip.xy / max(vPrevClip.w, 1e-6)) * 0.5 + 0.5;
         vec2 raw = curUV - prevUV;
+        // Phase E.16 — camera-only velocity (prevVP × curModel × pos)
+        vec2 prevUVCam = (vPrevClipCameraOnly.xy / max(vPrevClipCameraOnly.w, 1e-6)) * 0.5 + 0.5;
+        vec2 rawCam    = curUV - prevUVCam;
         // Phase E.14 — 按 velocity format 选编码路径
         //   RG16F 直接存 UV delta; RG8 用 bias/scale 压缩到 [0, 1] UNORM
         if (uVelocityFormat == 1) {
-            FragVelocity = clamp(raw / (2.0 * uVelocityScale) + 0.5, 0.0, 1.0);
+            FragVelocity       = clamp(raw    / (2.0 * uVelocityScale) + 0.5, 0.0, 1.0);
+            FragCameraVelocity = clamp(rawCam / (2.0 * uVelocityScale) + 0.5, 0.0, 1.0);
         } else {
-            FragVelocity = raw;
+            FragVelocity       = raw;
+            FragCameraVelocity = rawCam;
         }
     } else {
         // RG8 模式下 0.5 表示零速度 (UNORM 中点); RG16F 模式下零速度即 0
-        FragVelocity = (uVelocityFormat == 1) ? vec2(0.5) : vec2(0.0);
+        FragVelocity       = (uVelocityFormat == 1) ? vec2(0.5) : vec2(0.0);
+        FragCameraVelocity = (uVelocityFormat == 1) ? vec2(0.5) : vec2(0.0);
     }
 }
 )";
@@ -675,6 +717,7 @@ in vec2 vTexCoord;
 in vec4 vColor;
 in vec4 vCurClip;
 in vec4 vPrevClip;
+in vec4 vPrevClipCameraOnly;     // Phase E.16: camera-only velocity 另一路 varying
 uniform vec4 uColor;
 uniform vec3 uEmissive;
 uniform float uMetallic;
@@ -710,6 +753,7 @@ uniform float uVelocityScale;      // RG8 模式下的编码尺度; 默认 0.25
 layout(location=0) out vec4 FragColor;
 layout(location=1) out vec2 FragNormal;   // Phase E.8.x: view-space normal MRT
 layout(location=2) out vec2 FragVelocity;
+layout(location=3) out vec2 FragCameraVelocity;   // Phase E.16: camera-only velocity (slot 3)
 const float PI = 3.14159265;
 
 vec3 BRDF(vec3 N, vec3 V, vec3 L, vec3 baseColor, float metallic, float roughness, vec3 F0) {
@@ -798,16 +842,22 @@ void main() {
         vec2 curUV = (vCurClip.xy / max(vCurClip.w, 1e-6)) * 0.5 + 0.5;
         vec2 prevUV = (vPrevClip.xy / max(vPrevClip.w, 1e-6)) * 0.5 + 0.5;
         vec2 raw = curUV - prevUV;
+        // Phase E.16 — camera-only velocity (prevVP × curModel × pos)
+        vec2 prevUVCam = (vPrevClipCameraOnly.xy / max(vPrevClipCameraOnly.w, 1e-6)) * 0.5 + 0.5;
+        vec2 rawCam    = curUV - prevUVCam;
         // Phase E.14 — 按 velocity format 选编码路径
         //   RG16F 直接存 UV delta; RG8 用 bias/scale 压缩到 [0, 1] UNORM
         if (uVelocityFormat == 1) {
-            FragVelocity = clamp(raw / (2.0 * uVelocityScale) + 0.5, 0.0, 1.0);
+            FragVelocity       = clamp(raw    / (2.0 * uVelocityScale) + 0.5, 0.0, 1.0);
+            FragCameraVelocity = clamp(rawCam / (2.0 * uVelocityScale) + 0.5, 0.0, 1.0);
         } else {
-            FragVelocity = raw;
+            FragVelocity       = raw;
+            FragCameraVelocity = rawCam;
         }
     } else {
         // RG8 模式下 0.5 表示零速度 (UNORM 中点); RG16F 模式下零速度即 0
-        FragVelocity = (uVelocityFormat == 1) ? vec2(0.5) : vec2(0.0);
+        FragVelocity       = (uVelocityFormat == 1) ? vec2(0.5) : vec2(0.0);
+        FragCameraVelocity = (uVelocityFormat == 1) ? vec2(0.5) : vec2(0.0);
     }
 }
 )";
@@ -1959,6 +2009,23 @@ vec2 SampleVelocityDilated(vec2 uv) {
     return bestV;
 }
 
+// Phase E.16: 与 SampleVelocityDilated 同算法，切换采 cameraVelocityTex
+// GLES3 不支持 sampler 作函数参数，故复制一份
+//   mode=1: 单独采此量，mode=2: combined - camera = object_only
+vec2 SampleCameraVelocityDilated(vec2 uv) {
+    if (uVelocityDilation == 0) return DecodeVelocity(texture(uCameraVelocityTex, uv).rg);
+    vec2 bestV = vec2(0.0);
+    float bestLen = -1.0;
+    for (int dy = -1; dy <= 1; ++dy) {
+        for (int dx = -1; dx <= 1; ++dx) {
+            vec2 v = DecodeVelocity(texture(uCameraVelocityTex, uv + vec2(float(dx), float(dy)) * uTexel).rg);
+            float l = dot(v, v);
+            if (l > bestLen) { bestLen = l; bestV = v; }
+        }
+    }
+    return bestV;
+}
+
 void main() {
     vec4 cur = texture(uCurReflectTex, vUV);
 
@@ -2026,13 +2093,15 @@ in  vec2 vUV;
 out vec4 FragColor;
 
 uniform sampler2D uSceneTex;       // HDR + 所有后处理 (Bloom/SSR/LensFlare 累积)
-uniform sampler2D uVelocityTex;    // RG16F 或 RG8
+uniform sampler2D uVelocityTex;        // combined velocity (slot 1)
+uniform sampler2D uCameraVelocityTex;  // Phase E.16: camera-only velocity (slot 2)
 uniform vec2  uTexel;              // 1.0 / vec2(W, H)
 uniform float uStrength;           // 用户调 [0, 4]
 uniform int   uSampleCount;        // [1, 32]
 uniform int   uVelocityDilation;   // 0=单点 / 1=3x3 max-length
 uniform int   uVelocityFormat;     // 0=RG16F / 1=RG8
 uniform float uVelocityScale;      // RG8 解码 scale (默认 0.25)
+uniform int   uMode;               // Phase E.16: 0=combined / 1=camera_only / 2=object_only
 
 vec2 DecodeVelocity(vec2 raw) {
     return (uVelocityFormat == 1) ? ((raw - 0.5) * (2.0 * uVelocityScale)) : raw;
@@ -2052,8 +2121,37 @@ vec2 SampleVelocityDilated(vec2 uv) {
     return bestV;
 }
 
+// Phase E.16: 与 SampleVelocityDilated 同算法，切换采 cameraVelocityTex
+// GLES3 不支持 sampler 作函数参数，故复制一份
+//   mode=1: 单独采此量，mode=2: combined - camera = object_only
+vec2 SampleCameraVelocityDilated(vec2 uv) {
+    if (uVelocityDilation == 0) return DecodeVelocity(texture(uCameraVelocityTex, uv).rg);
+    vec2 bestV = vec2(0.0);
+    float bestLen = -1.0;
+    for (int dy = -1; dy <= 1; ++dy) {
+        for (int dx = -1; dx <= 1; ++dx) {
+            vec2 v = DecodeVelocity(texture(uCameraVelocityTex, uv + vec2(float(dx), float(dy)) * uTexel).rg);
+            float l = dot(v, v);
+            if (l > bestLen) { bestLen = l; bestV = v; }
+        }
+    }
+    return bestV;
+}
+
 void main() {
-    vec2 vel = SampleVelocityDilated(vUV) * uStrength;
+    // Phase E.16 — 按 mode 选 velocity 源:
+    //   0=combined (camera+object 合一)
+    //   1=camera_only (仅相机运动，物体独立于序列)
+    //   2=object_only (v_combined - v_camera 近似物体独立运动)
+    vec2 vel;
+    if (uMode == 1) {
+        vel = SampleCameraVelocityDilated(vUV);
+    } else if (uMode == 2) {
+        vel = SampleVelocityDilated(vUV) - SampleCameraVelocityDilated(vUV);
+    } else {
+        vel = SampleVelocityDilated(vUV);
+    }
+    vel *= uStrength;
 
     // E3 软限: max blur UV = 屏幕对角线 × 0.3 (sqrt(2) * 0.3 ≈ 0.4243)
     const float kMaxBlurUV = 0.4243;
@@ -2397,6 +2495,23 @@ vec2 SampleVelocityDilated(vec2 uv) {
     return bestV;
 }
 
+// Phase E.16: 与 SampleVelocityDilated 同算法，切换采 cameraVelocityTex
+// GLES3 不支持 sampler 作函数参数，故复制一份
+//   mode=1: 单独采此量，mode=2: combined - camera = object_only
+vec2 SampleCameraVelocityDilated(vec2 uv) {
+    if (uVelocityDilation == 0) return DecodeVelocity(texture(uCameraVelocityTex, uv).rg);
+    vec2 bestV = vec2(0.0);
+    float bestLen = -1.0;
+    for (int dy = -1; dy <= 1; ++dy) {
+        for (int dx = -1; dx <= 1; ++dx) {
+            vec2 v = DecodeVelocity(texture(uCameraVelocityTex, uv + vec2(float(dx), float(dy)) * uTexel).rg);
+            float l = dot(v, v);
+            if (l > bestLen) { bestLen = l; bestV = v; }
+        }
+    }
+    return bestV;
+}
+
 void main() {
     vec4 cur = texture(uCurReflectTex, vUV);
 
@@ -2459,13 +2574,15 @@ in  vec2 vUV;
 out vec4 FragColor;
 
 uniform sampler2D uSceneTex;       // HDR + 所有后处理 (Bloom/SSR/LensFlare 累积)
-uniform sampler2D uVelocityTex;    // RG16F 或 RG8
+uniform sampler2D uVelocityTex;        // combined velocity (slot 1)
+uniform sampler2D uCameraVelocityTex;  // Phase E.16: camera-only velocity (slot 2)
 uniform vec2  uTexel;              // 1.0 / vec2(W, H)
 uniform float uStrength;           // 用户调 [0, 4]
 uniform int   uSampleCount;        // [1, 32]
 uniform int   uVelocityDilation;   // 0=单点 / 1=3x3 max-length
 uniform int   uVelocityFormat;     // 0=RG16F / 1=RG8
 uniform float uVelocityScale;      // RG8 解码 scale (默认 0.25)
+uniform int   uMode;               // Phase E.16: 0=combined / 1=camera_only / 2=object_only
 
 vec2 DecodeVelocity(vec2 raw) {
     return (uVelocityFormat == 1) ? ((raw - 0.5) * (2.0 * uVelocityScale)) : raw;
@@ -2485,8 +2602,37 @@ vec2 SampleVelocityDilated(vec2 uv) {
     return bestV;
 }
 
+// Phase E.16: 与 SampleVelocityDilated 同算法，切换采 cameraVelocityTex
+// GLES3 不支持 sampler 作函数参数，故复制一份
+//   mode=1: 单独采此量，mode=2: combined - camera = object_only
+vec2 SampleCameraVelocityDilated(vec2 uv) {
+    if (uVelocityDilation == 0) return DecodeVelocity(texture(uCameraVelocityTex, uv).rg);
+    vec2 bestV = vec2(0.0);
+    float bestLen = -1.0;
+    for (int dy = -1; dy <= 1; ++dy) {
+        for (int dx = -1; dx <= 1; ++dx) {
+            vec2 v = DecodeVelocity(texture(uCameraVelocityTex, uv + vec2(float(dx), float(dy)) * uTexel).rg);
+            float l = dot(v, v);
+            if (l > bestLen) { bestLen = l; bestV = v; }
+        }
+    }
+    return bestV;
+}
+
 void main() {
-    vec2 vel = SampleVelocityDilated(vUV) * uStrength;
+    // Phase E.16 — 按 mode 选 velocity 源:
+    //   0=combined (camera+object 合一)
+    //   1=camera_only (仅相机运动，物体独立于序列)
+    //   2=object_only (v_combined - v_camera 近似物体独立运动)
+    vec2 vel;
+    if (uMode == 1) {
+        vel = SampleCameraVelocityDilated(vUV);
+    } else if (uMode == 2) {
+        vel = SampleVelocityDilated(vUV) - SampleCameraVelocityDilated(vUV);
+    } else {
+        vel = SampleVelocityDilated(vUV);
+    }
+    vel *= uStrength;
 
     // E3 软限: max blur UV = 屏幕对角线 × 0.3 (sqrt(2) * 0.3 ≈ 0.4243)
     const float kMaxBlurUV = 0.4243;
@@ -2626,6 +2772,10 @@ class GL33Backend : public RenderBackend {
     // GetHDRNormalTex(fbo) 仅读查找.
     std::unordered_map<uint32_t, uint32_t> hdrFboNormalTex;
     std::unordered_map<uint32_t, uint32_t> hdrFboVelocityTex;
+    // Phase E.16 — camera-only velocity tex (slot 3 of HDR FBO MRT)
+    // CreateHDRFBO 在 outCameraVelocityTex != null 时创建, 与 velocityTex 同格式.
+    // 3D shader FS 同时写 FragVelocity (combined) + FragCameraVelocity (camera-only).
+    std::unordered_map<uint32_t, uint32_t> hdrFboCameraVelocityTex;
     // Phase E.14 — 记录每个 fbo 创建时使用的 velocity 存储格式，
     // 供 SSRTemporal/3D shader 将来选择对应 program (RG16F vs RG8 双路径)。
     std::unordered_map<uint32_t, VelocityFormat> hdrFboVelocityFormat;
@@ -2786,16 +2936,19 @@ class GL33Backend : public RenderBackend {
     GLint  locSSRTemporal_VelocityScale    = -1;
 
     // Phase E.15 — Motion Blur (per-pixel velocity blur, 单 program + ping-pong RT)
+    // Phase E.16 扩展: + uCameraVelocityTex (slot 2) + uMode
     GLuint programMotionBlur            = 0;
     bool   motionBlurSupported          = false;
     GLint  locMB_SceneTex               = -1;   // sampler2D, slot 0
-    GLint  locMB_VelocityTex            = -1;   // sampler2D, slot 1
+    GLint  locMB_VelocityTex            = -1;   // sampler2D, slot 1 (combined)
+    GLint  locMB_CameraVelocityTex      = -1;   // sampler2D, slot 2 (camera-only)  ★ E.16
     GLint  locMB_Texel                  = -1;
     GLint  locMB_Strength               = -1;
     GLint  locMB_SampleCount            = -1;
     GLint  locMB_VelocityDilation       = -1;
     GLint  locMB_VelocityFormat         = -1;
     GLint  locMB_VelocityScale          = -1;
+    GLint  locMB_Mode                   = -1;   // ★ E.16: 0=combined / 1=camera / 2=object
 
     // Phase E.2.1 — Lighting2D dirty bit cache
     // 当 state->version 与此值相等时, UploadLighting2D 跳过所有 glUniform*v 调用
@@ -3687,18 +3840,21 @@ public:
         // 复用 VS_TONEMAP_SOURCE 全屏 quad VS, FS = FS_MOTION_BLUR_SOURCE
         programMotionBlur = buildProgram(FS_MOTION_BLUR_SOURCE, "MotionBlur");
         if (programMotionBlur) {
-            locMB_SceneTex         = glGetUniformLocation(programMotionBlur, "uSceneTex");
-            locMB_VelocityTex      = glGetUniformLocation(programMotionBlur, "uVelocityTex");
-            locMB_Texel            = glGetUniformLocation(programMotionBlur, "uTexel");
-            locMB_Strength         = glGetUniformLocation(programMotionBlur, "uStrength");
-            locMB_SampleCount      = glGetUniformLocation(programMotionBlur, "uSampleCount");
-            locMB_VelocityDilation = glGetUniformLocation(programMotionBlur, "uVelocityDilation");
-            locMB_VelocityFormat   = glGetUniformLocation(programMotionBlur, "uVelocityFormat");
-            locMB_VelocityScale    = glGetUniformLocation(programMotionBlur, "uVelocityScale");
-            // 一次性绑 sampler 到 texture unit (slot 0 = scene, slot 1 = velocity)
+            locMB_SceneTex            = glGetUniformLocation(programMotionBlur, "uSceneTex");
+            locMB_VelocityTex         = glGetUniformLocation(programMotionBlur, "uVelocityTex");
+            locMB_CameraVelocityTex   = glGetUniformLocation(programMotionBlur, "uCameraVelocityTex");  // ★ E.16
+            locMB_Texel               = glGetUniformLocation(programMotionBlur, "uTexel");
+            locMB_Strength            = glGetUniformLocation(programMotionBlur, "uStrength");
+            locMB_SampleCount         = glGetUniformLocation(programMotionBlur, "uSampleCount");
+            locMB_VelocityDilation    = glGetUniformLocation(programMotionBlur, "uVelocityDilation");
+            locMB_VelocityFormat      = glGetUniformLocation(programMotionBlur, "uVelocityFormat");
+            locMB_VelocityScale       = glGetUniformLocation(programMotionBlur, "uVelocityScale");
+            locMB_Mode                = glGetUniformLocation(programMotionBlur, "uMode");                // ★ E.16
+            // 一次性绑 sampler 到 texture unit (slot 0=scene, slot 1=velocity, slot 2=cameraVelocity)
             glUseProgram(programMotionBlur);
-            if (locMB_SceneTex    >= 0) glUniform1i(locMB_SceneTex,    0);
-            if (locMB_VelocityTex >= 0) glUniform1i(locMB_VelocityTex, 1);
+            if (locMB_SceneTex          >= 0) glUniform1i(locMB_SceneTex,          0);
+            if (locMB_VelocityTex       >= 0) glUniform1i(locMB_VelocityTex,       1);
+            if (locMB_CameraVelocityTex >= 0) glUniform1i(locMB_CameraVelocityTex, 2);   // ★ E.16
             glUseProgram(0);
             motionBlurSupported = true;
         } else {
@@ -3886,11 +4042,12 @@ public:
         locSSRTemporal_VelocityScale    = -1;
 
         // Phase E.15 — Motion Blur 清理 (1 program; ping-pong RT 由 MotionBlurRenderer 管)
+        // Phase E.16 — 多 2 个 loc: locMB_CameraVelocityTex / locMB_Mode
         if (programMotionBlur) { glDeleteProgram(programMotionBlur); programMotionBlur = 0; }
         motionBlurSupported = false;
-        locMB_SceneTex = locMB_VelocityTex = locMB_Texel = -1;
+        locMB_SceneTex = locMB_VelocityTex = locMB_CameraVelocityTex = locMB_Texel = -1;
         locMB_Strength = locMB_SampleCount = -1;
-        locMB_VelocityDilation = locMB_VelocityFormat = locMB_VelocityScale = -1;
+        locMB_VelocityDilation = locMB_VelocityFormat = locMB_VelocityScale = locMB_Mode = -1;
     }
 
     bool SupportsLit2D() const override { return lit2DSupported; }
@@ -3901,10 +4058,12 @@ public:
 
     /// 创建 HDR FBO: RGBA16F 颜色附件 + (可选) RG16F view-normal/velocity + Depth24 RBO
     /// Phase E.14: velocityFormat 控制可选 velocity 附件使用 RG16F (默认) 或 RG8 (低精度节 VRAM)
+    /// Phase E.16: outCameraVelocityTex != null 时额外创建 slot 3 camera-only velocity tex
     uint32_t CreateHDRFBO(int w, int h, uint32_t* outTex,
                           uint32_t* outNormalTex,
                           uint32_t* outVelocityTex,
-                          VelocityFormat velocityFormat) override {
+                          VelocityFormat velocityFormat,
+                          uint32_t* outCameraVelocityTex) override {
         if (!tonemapSupported || w <= 0 || h <= 0 || !outTex) return 0;
 
         // 1. 创建 RGBA16F 颜色纹理 (GL_LINEAR + GL_CLAMP_TO_EDGE)
@@ -3957,6 +4116,31 @@ public:
             glBindTexture(GL_TEXTURE_2D, 0);
         }
 
+        // Phase E.16 — camera-only velocity tex (slot 3): 与 velocityTex 同格式、同 sampler 参数
+        // 仅在 outCameraVelocityTex != null 且 outVelocityTex != null 时创建
+        // (设计: 第二张 velocity 依赖第一张；MotionBlur shader mode=2 需要同时采两张)
+        GLuint cameraVelocityTex = 0;
+        if (outCameraVelocityTex && outVelocityTex && velocityTex) {
+            glGenTextures(1, &cameraVelocityTex);
+            if (!cameraVelocityTex) {
+                glDeleteTextures(1, &tex);
+                if (normalTex) glDeleteTextures(1, &normalTex);
+                glDeleteTextures(1, &velocityTex);
+                return 0;
+            }
+            glBindTexture(GL_TEXTURE_2D, cameraVelocityTex);
+            if (velocityFormat == VelocityFormat::RG8) {
+                glTexImage2D(GL_TEXTURE_2D, 0, GL_RG8, w, h, 0, GL_RG, GL_UNSIGNED_BYTE, nullptr);
+            } else {
+                glTexImage2D(GL_TEXTURE_2D, 0, GL_RG16F, w, h, 0, GL_RG, GL_FLOAT, nullptr);
+            }
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+            glBindTexture(GL_TEXTURE_2D, 0);
+        }
+
         // 2. 创建 Depth24 RBO
         GLuint depthRB = 0;
         glGenRenderbuffers(1, &depthRB);
@@ -3964,19 +4148,21 @@ public:
             glDeleteTextures(1, &tex);
             if (normalTex) glDeleteTextures(1, &normalTex);
             if (velocityTex) glDeleteTextures(1, &velocityTex);
+            if (cameraVelocityTex) glDeleteTextures(1, &cameraVelocityTex);
             return 0;
         }
         glBindRenderbuffer(GL_RENDERBUFFER, depthRB);
         glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, w, h);
         glBindRenderbuffer(GL_RENDERBUFFER, 0);
 
-        // 3. 创建 FBO 并附加 color + (normal) + depth
+        // 3. 创建 FBO 并附加 color + (normal) + (velocity) + (cameraVelocity) + depth
         GLuint fbo = 0;
         glGenFramebuffers(1, &fbo);
         if (!fbo) {
             glDeleteTextures(1, &tex);
             if (normalTex) glDeleteTextures(1, &normalTex);
             if (velocityTex) glDeleteTextures(1, &velocityTex);
+            if (cameraVelocityTex) glDeleteTextures(1, &cameraVelocityTex);
             glDeleteRenderbuffers(1, &depthRB);
             return 0;
         }
@@ -3989,7 +4175,27 @@ public:
         if (velocityTex) {
             glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT2, GL_TEXTURE_2D, velocityTex, 0);
         }
-        if (normalTex && velocityTex) {
+        if (cameraVelocityTex) {
+            // Phase E.16 — camera-only velocity 为 COLOR_ATTACHMENT3
+            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT3, GL_TEXTURE_2D, cameraVelocityTex, 0);
+        }
+        // drawBuffers 选择矩阵：Phase E.16 增 3 个带 cameraVelocity 的分支
+        if (cameraVelocityTex) {
+            // 多 1 张 = 必与 velocity 同时存在; normal 可选
+            if (normalTex) {
+                const GLenum drawBufs[4] = {
+                    GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1,
+                    GL_COLOR_ATTACHMENT2, GL_COLOR_ATTACHMENT3
+                };
+                glDrawBuffers(4, drawBufs);
+            } else {
+                const GLenum drawBufs[4] = {
+                    GL_COLOR_ATTACHMENT0, GL_NONE,
+                    GL_COLOR_ATTACHMENT2, GL_COLOR_ATTACHMENT3
+                };
+                glDrawBuffers(4, drawBufs);
+            }
+        } else if (normalTex && velocityTex) {
             const GLenum drawBufs[3] = { GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1, GL_COLOR_ATTACHMENT2 };
             glDrawBuffers(3, drawBufs);
         } else if (normalTex) {
@@ -4015,6 +4221,7 @@ public:
             glDeleteTextures(1, &tex);
             if (normalTex) glDeleteTextures(1, &normalTex);
             if (velocityTex) glDeleteTextures(1, &velocityTex);
+            if (cameraVelocityTex) glDeleteTextures(1, &cameraVelocityTex);
             return 0;
         }
 
@@ -4027,6 +4234,11 @@ public:
             hdrFboVelocityTex[fbo] = velocityTex;
             hdrFboVelocityFormat[fbo] = velocityFormat;     // Phase E.14: 跟踪格式
             *outVelocityTex = velocityTex;
+        }
+        if (cameraVelocityTex) {
+            // Phase E.16: 跟踪 camera-only velocity tex
+            hdrFboCameraVelocityTex[fbo] = cameraVelocityTex;
+            *outCameraVelocityTex = cameraVelocityTex;
         }
         // Phase E.14: 同步活跃 format，供 3D shader UploadVelocityUniforms 上传使用
         activeVelocityFormat_ = velocityFormat;
@@ -4043,6 +4255,13 @@ public:
     uint32_t GetHDRVelocityTex(uint32_t fbo) const override {
         auto it = hdrFboVelocityTex.find(fbo);
         return (it != hdrFboVelocityTex.end()) ? it->second : 0;
+    }
+
+    /// Phase E.16 — 查找 HDR FBO 关联的 camera-only velocity tex (slot 3)
+    /// 返 0 表示未创建 / 后端不支持 / fbo 已释放
+    uint32_t GetHDRCameraVelocityTex(uint32_t fbo) const override {
+        auto it = hdrFboCameraVelocityTex.find(fbo);
+        return (it != hdrFboCameraVelocityTex.end()) ? it->second : 0;
     }
 
     /// 释放 HDR FBO 资源 (与 CreateHDRFBO 配对; 自动从 map 查 depthRB + normalTex)
@@ -4066,6 +4285,13 @@ public:
                 GLuint t = itV->second;
                 if (t) glDeleteTextures(1, &t);
                 hdrFboVelocityTex.erase(itV);
+            }
+            // Phase E.16 — 释放关联 camera-only velocity tex
+            auto itCV = hdrFboCameraVelocityTex.find(fbo);
+            if (itCV != hdrFboCameraVelocityTex.end()) {
+                GLuint t = itCV->second;
+                if (t) glDeleteTextures(1, &t);
+                hdrFboCameraVelocityTex.erase(itCV);
             }
             // Phase E.14: 同步清理 velocity format 记录
             hdrFboVelocityFormat.erase(fbo);
@@ -6345,13 +6571,24 @@ public:
     ///   Pass1: bind motionBlurFbo → 沿 velocity 多采样 sceneTex → 写 motionBlurTex
     ///   Pass2: glBlitFramebuffer(motionBlurFbo → dstFbo, COLOR_BUFFER) 覆盖 sceneTex
     void DrawMotionBlur(uint32_t sceneTex, uint32_t velocityTex,
+                        uint32_t cameraVelocityTex,             // ★ Phase E.16
                         uint32_t motionBlurFbo, uint32_t motionBlurTex,
                         uint32_t dstFbo,
                         int w, int h,
-                        float strength, int sampleCount) override {
+                        float strength, int sampleCount,
+                        int mode) override {                    // ★ Phase E.16
         if (!motionBlurSupported || !programMotionBlur) return;
         if (!sceneTex || !velocityTex || !motionBlurFbo || !motionBlurTex || !dstFbo) return;
         if (w <= 0 || h <= 0) return;
+
+        // Phase E.16 — mode=1/2 但 cameraVelocityTex 缺失 → silent fallback combined (mode=0)
+        // 不打 warning log 避免每帧刷屏
+        int safeMode = mode;
+        if ((mode == 1 || mode == 2) && !cameraVelocityTex) {
+            safeMode = 0;
+        }
+        // slot 2 占位策略：mode=0 也需绑有效 sampler，避免 driver invalid binding
+        uint32_t boundCameraTex = cameraVelocityTex ? cameraVelocityTex : velocityTex;
 
         // ===== Pass1: 全屏 shader, 写 motionBlurFbo =====
         glBindFramebuffer(GL_FRAMEBUFFER, (GLuint)motionBlurFbo);
@@ -6371,12 +6608,15 @@ public:
         if (locMB_VelocityFormat   >= 0) glUniform1i(locMB_VelocityFormat,
                                                     (activeVelocityFormat_ == VelocityFormat::RG8) ? 1 : 0);
         if (locMB_VelocityScale    >= 0) glUniform1f(locMB_VelocityScale, kVelocityScaleDefault);
+        if (locMB_Mode             >= 0) glUniform1i(locMB_Mode, safeMode);  // ★ Phase E.16
 
-        // 绑 sampler unit (slot 0 = scene, slot 1 = velocity)
+        // 绑 sampler unit (slot 0 = scene, slot 1 = velocity, slot 2 = cameraVelocity Phase E.16)
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, (GLuint)sceneTex);
         glActiveTexture(GL_TEXTURE1);
         glBindTexture(GL_TEXTURE_2D, (GLuint)velocityTex);
+        glActiveTexture(GL_TEXTURE2);                            // ★ Phase E.16
+        glBindTexture(GL_TEXTURE_2D, (GLuint)boundCameraTex);    // 占位: mode=0 也绑有效 tex
 
         // 全屏三角 (用 vaoTonemap, 6 顶点 = 2 三角形)
         glBindVertexArray(vaoTonemap);
@@ -6384,6 +6624,8 @@ public:
         glBindVertexArray(0);
 
         // 状态复位
+        glActiveTexture(GL_TEXTURE2);                            // ★ Phase E.16
+        glBindTexture(GL_TEXTURE_2D, 0);
         glActiveTexture(GL_TEXTURE1);
         glBindTexture(GL_TEXTURE_2D, 0);
         glActiveTexture(GL_TEXTURE0);

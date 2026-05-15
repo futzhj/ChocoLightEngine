@@ -140,6 +140,10 @@ uint32_t GetFBO();
 /// 当前 HDR RT 的 velocity 纹理 id (Enable 未调或后端不支持时 = 0)
 uint32_t GetVelocityTexture();
 
+/// Phase E.16 — 当前 HDR RT 的 camera-only velocity 纹理 id (slot 3)
+/// Enable 未调 / 后端不支持 / CreateHDRFBO 未传 outCameraVelocityTex 时 = 0
+uint32_t GetCameraVelocityTexture();
+
 // ==================== Phase E.14 — Velocity dilation + 存储格式切换 ====================
 
 /// dilation 开关：SSRTemporal 采样 velocity 时是否用 3x3 max-length 邻域（默认 ON）

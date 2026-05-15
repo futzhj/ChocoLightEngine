@@ -1093,6 +1093,51 @@ print(Light.Graphics.MotionBlur.GetSampleCount())  --> 1
 
 ---
 
+## `MotionBlur.SetMode`
+
+**Phase E.16** — Motion blur 模式选择。三档供取舍：拖尾跟随相机/物体/合一。
+
+### 参数
+
+| 名称 | 类型 | 说明 |
+|------|------|------|
+| `m` | `integer` | 模式编号（clamp 到 `[0, 2]`） |
+
+### 模式映射
+
+| 值 | 名称 | 数学公式 | 适用场景 |
+|----|------|---------|----------|
+| `0` | `combined`（默认） | `v = curUV − prevUV`（camera + object 合一） | 通用场景，与 Phase E.15 完全一致 |
+| `1` | `camera_only` | `v = curUV − (prevVP × curModel × pos).xy/w` | 第一人称 / 赛车：相机晃动时拖尾，物体在屏幕静止时不拖 |
+| `2` | `object_only` | `v ≈ v_combined − v_camera` | 物体快速运动（爆炸碎片、武器挥舞）拖尾，相机平稳时使用 |
+
+### 设计
+
+- 3D shader VS 同时输出 `vPrevClip` (combined) 和 `vPrevClipCameraOnly` (camera-only)，FS 写入 HDR FBO MRT slot 2/3
+- VRAM 增量：1080p 下 +1 MB（RG8）/ +4 MB（RG16F），跟随 `HDR.SetVelocityFormat`
+- mode=1/2 但 `cameraVelocityTex` 缺失（旧 backend）→ silent fallback 到 mode=0
+- 不影响 SSR Temporal（reproject 数学要求 combined velocity）
+
+### 示例
+
+```lua
+Light.Graphics.MotionBlur.SetMode(1)  -- camera_only：仅相机运动拖尾
+print(Light.Graphics.MotionBlur.GetMode())  --> 1
+
+Light.Graphics.MotionBlur.SetMode(99)  -- clamp
+print(Light.Graphics.MotionBlur.GetMode())  --> 2
+```
+
+---
+
+## `MotionBlur.GetMode`
+
+### 返回值
+
+`number`（整数）：当前模式编号（0/1/2）
+
+---
+
 ## 完整用法示例
 
 ```lua
@@ -1108,6 +1153,7 @@ if MB.IsSupported() then
     MB.Enable(1280, 720)
     MB.SetStrength(1.5)
     MB.SetSampleCount(16)
+    MB.SetMode(1)               -- Phase E.16: camera-only motion blur
 end
 
 -- 3. 主循环：Draw 3D 场景（mesh:Draw 传 prevModel 才会写 velocity buffer）

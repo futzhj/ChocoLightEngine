@@ -546,11 +546,21 @@ public:
      *
      * 默认实现 (Legacy): return 0.
      */
+    /**
+     * Phase E.16 扩展: 可选 outCameraVelocityTex 参数启用双 velocity MRT
+     *  - outCameraVelocityTex == nullptr: 根本不创建第二张 velocity tex (Phase E.15 原行为)
+     *  - outCameraVelocityTex != nullptr: 创建 camera-only velocity tex 于
+     *                                       COLOR_ATTACHMENT3, 与 outVelocityTex 同格式.
+     *                                       3D shader FS 同时写 FragVelocity (slot 2 combined)
+     *                                       + FragCameraVelocity (slot 3 camera-only).
+     *                                       MotionBlurRenderer mode=1/2 时读取.
+     */
     virtual uint32_t CreateHDRFBO(int /*w*/, int /*h*/,
                                    uint32_t* /*outColorTex*/,
                                    uint32_t* /*outNormalTex*/ = nullptr,
                                    uint32_t* /*outVelocityTex*/ = nullptr,
-                                   VelocityFormat /*velocityFormat*/ = VelocityFormat::RG16F) { return 0; }
+                                   VelocityFormat /*velocityFormat*/ = VelocityFormat::RG16F,
+                                   uint32_t* /*outCameraVelocityTex*/ = nullptr) { return 0; }
 
     /**
      * @brief 释放 HDR FBO 资源
@@ -577,6 +587,10 @@ public:
      */
     virtual uint32_t GetHDRNormalTex(uint32_t /*fbo*/) const { return 0; }
     virtual uint32_t GetHDRVelocityTex(uint32_t /*fbo*/) const { return 0; }
+    /// Phase E.16 — 查询 HDR FBO 关联的 camera-only velocity tex (slot 3)
+    /// 返 0 表示 HDR FBO 创建时未请求第二张、后端不支持、或 fbo 已释放.
+    /// MotionBlurRenderer mode=1 (camera) / mode=2 (object) 时读。
+    virtual uint32_t GetHDRCameraVelocityTex(uint32_t /*fbo*/) const { return 0; }
 
     /**
      * @brief 用 ACES tonemap shader 把 HDR 纹理全屏 blit 到当前绑定的 framebuffer
@@ -1168,19 +1182,24 @@ public:
     /// 执行 motion blur 完整 2-pass 流程
     ///   Pass1 (shader): bind motionBlurFbo → 沿 velocity 多采样 → 写 motionBlurTex
     ///   Pass2 (blit):   motionBlurTex → dstFbo (覆盖 sceneTex 内容)
-    /// @param sceneTex       HDR scene 颜色 tex (HDR + 所有后处理累积)
-    /// @param velocityTex    Phase E.13 velocity buffer (RG16F / RG8)
-    /// @param motionBlurFbo  ping-pong fbo (由 MotionBlurRenderer 持有)
-    /// @param motionBlurTex  ping-pong tex
-    /// @param dstFbo         HDR fbo (输出目标，sceneTex 所属 fbo)
-    /// @param w, h           分辨率
-    /// @param strength       用户调节 [0, 4] (clamp 由调用方做)
-    /// @param sampleCount    沿 velocity 采样数 [1, 32] (clamp 由调用方做)
+    /// @param sceneTex            HDR scene 颜色 tex (HDR + 所有后处理累积)
+    /// @param velocityTex         Phase E.13 velocity buffer (RG16F / RG8) — combined (camera+object)
+    /// @param cameraVelocityTex   Phase E.16 — camera-only velocity tex (mode=1/2 时读;
+    ///                            0 表示 fbo 创建时未请求, backend 内部 fallback 到 mode=0)
+    /// @param motionBlurFbo       ping-pong fbo (由 MotionBlurRenderer 持有)
+    /// @param motionBlurTex       ping-pong tex
+    /// @param dstFbo              HDR fbo (输出目标，sceneTex 所属 fbo)
+    /// @param w, h                分辨率
+    /// @param strength            用户调节 [0, 4] (clamp 由调用方做)
+    /// @param sampleCount         沿 velocity 采样数 [1, 32] (clamp 由调用方做)
+    /// @param mode                Phase E.16 — 0=combined / 1=camera_only / 2=object_only
     virtual void DrawMotionBlur(uint32_t /*sceneTex*/, uint32_t /*velocityTex*/,
+                                 uint32_t /*cameraVelocityTex*/,
                                  uint32_t /*motionBlurFbo*/, uint32_t /*motionBlurTex*/,
                                  uint32_t /*dstFbo*/,
                                  int /*w*/, int /*h*/,
-                                 float /*strength*/, int /*sampleCount*/) {}
+                                 float /*strength*/, int /*sampleCount*/,
+                                 int /*mode*/) {}
 };
 
 // ==================== 工厂函数 ====================

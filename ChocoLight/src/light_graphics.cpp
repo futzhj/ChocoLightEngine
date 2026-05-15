@@ -2894,6 +2894,21 @@ static int l_MB_GetSampleCount(lua_State* L) {
     return 1;
 }
 
+/// @lua_api Light.Graphics.MotionBlur.SetMode
+/// @param m integer Phase E.16 motion blur 模式 (clamp [0, 2])
+///                  0=combined (与 Phase E.15 一致) / 1=camera_only / 2=object_only
+static int l_MB_SetMode(lua_State* L) {
+    MotionBlurRenderer::SetMode((int)luaL_checkinteger(L, 1));
+    return 0;
+}
+
+/// @lua_api Light.Graphics.MotionBlur.GetMode
+/// @return integer 当前 motion blur 模式 (0/1/2)
+static int l_MB_GetMode(lua_State* L) {
+    lua_pushinteger(L, (lua_Integer)MotionBlurRenderer::GetMode());
+    return 1;
+}
+
 static const luaL_Reg mb_funcs[] = {
     // lifecycle (5)
     {"Enable",         l_MB_Enable},
@@ -2909,6 +2924,9 @@ static const luaL_Reg mb_funcs[] = {
     {"GetStrength",    l_MB_GetStrength},
     {"SetSampleCount", l_MB_SetSampleCount},
     {"GetSampleCount", l_MB_GetSampleCount},
+    // Phase E.16 — mode (2 = 1 对): 0=combined / 1=camera_only / 2=object_only
+    {"SetMode",        l_MB_SetMode},
+    {"GetMode",        l_MB_GetMode},
     {NULL, NULL}
 };
 
