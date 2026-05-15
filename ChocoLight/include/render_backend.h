@@ -1324,6 +1324,9 @@ public:
     ///                           YCoCg AABB 在亮度+色度独立约束; variance clip = mean ± γ·σ 代替 min/max
     /// @param varianceGamma      Phase F.0.3: variance clip 收紧系数 γ，仅 clipMode==2 生效
     ///                           Salvi 2016 / UE5 推荐 1.0；调用方应 clamp 到 [0, 4]。 越大 clip 越宽松 (接近无 clip)；0=极端激进 (mn=mx=mean)
+    /// @param motionGamma        Phase F.0.8: motion-adaptive 高速区域 γ (UE5 高级形式), 仅 clipMode==2 && motionAdaptiveGamma==1 生效
+    ///                           默认 1.5; 调用方应 clamp 到 [0, 4]; 静止区域用 varianceGamma, 高速运动 lerp 至 motionGamma
+    /// @param motionAdaptiveGamma Phase F.0.8: 0=仅用 varianceGamma (F.0.3 行为, 零回归), 1=按 |velocity| 长度 lerp 两 γ
     virtual void DrawTAAPass(uint32_t /*curHdrTex*/, uint32_t /*historyTex*/,
                              uint32_t /*velocityTex*/, uint32_t /*dstFbo*/,
                              int /*w*/, int /*h*/,
@@ -1332,9 +1335,12 @@ public:
                              bool /*velocityDilation*/,
                              float /*velocityScale*/,
                              VelocityFormat /*velocityFormat*/,
-                             int   /*antiFlicker*/   = 1,
-                             int   /*clipMode*/      = 1,
-                             float /*varianceGamma*/ = 1.0f) {}
+                             int   /*antiFlicker*/        = 1,
+                             int   /*clipMode*/           = 1,
+                             float /*varianceGamma*/      = 1.0f,
+                             float /*motionGamma*/        = 1.5f,   // Phase F.0.8 default = 1.5
+                             int   /*motionAdaptiveGamma*/= 0)      // Phase F.0.8 default = OFF (零回归)
+                             {}
 
     /// 把 TAA 输出 blit 回 HDR sceneTex (覆盖, 让后续 Tonemap 用 TAA 后内容)
     /// @param srcTex    TAA 输出 tex (= history 新 slot tex)
