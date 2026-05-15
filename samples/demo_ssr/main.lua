@@ -414,6 +414,18 @@ while win:IsOpen() do
             (not cur) and 'sub-pixel super-sampling' or 'pure temporal stability (no SS)'))
     end
 
+    -- Phase F.0.1 — H: 调节 TAA sharpness (±0.1, clamp [0, 2], 默认 0.5)
+    --   sharpness=0 走纯 blit fallback (零 ALU); > 0 启用 4-tap unsharp mask
+    if TAA and TAA.IsEnabled() and TAA.SetSharpness and keyTap('h') then
+        local cur = TAA.GetSharpness()
+        local nxt = cur + 0.1
+        if nxt > 2.0 + 1e-3 then nxt = 0.0 end   -- 环状回 0 (方便演示 sharpness=0 路径)
+        TAA.SetSharpness(nxt)
+        print(string.format('[demo] TAA Sharpness: %.2f -> %.2f (%s)',
+            cur, TAA.GetSharpness(),
+            TAA.GetSharpness() > 0 and '4-tap unsharp mask' or 'pure blit (zero ALU)'))
+    end
+
     -- R: reset 默认
     if keyTap('r') then
         SSR.SetMaxSteps(64); SSR.SetStepSize(0.1); SSR.SetThickness(0.5)
@@ -499,19 +511,22 @@ while win:IsOpen() do
                 MotionBlur.GetStrength(),
                 MotionBlur.GetSampleCount()))
         end
-        -- Phase F.0: TAA 主管线状态 (jitter + frame counter + alpha + clip)
+        -- Phase F.0+F.0.1: TAA 主管线状态 (jitter + frame counter + alpha + clip + sharpness)
         local TAAhud = Gfx.TAA
         if TAAhud then
             local jx, jy = TAAhud.GetCurrentJitter()
-            line(string.format('TAA: %s | alpha=%.2f | clip=%s | jitter=%s | frame=%d (jx=%.3f jy=%.3f)',
+            local sharp = TAAhud.GetSharpness and TAAhud.GetSharpness() or 0
+            line(string.format('TAA: %s | alpha=%.2f | clip=%s | jitter=%s | sharp=%.2f (%s) | frame=%d (jx=%.3f jy=%.3f)',
                 TAAhud.IsEnabled() and 'ON' or 'OFF',
                 TAAhud.GetBlendAlpha(),
                 TAAhud.GetNeighborhoodClip() and 'ON' or 'OFF',
                 TAAhud.GetJitterEnabled() and 'ON' or 'OFF',
+                sharp,
+                sharp > 0 and 'sharpen pass' or 'pure blit',
                 TAAhud.GetFrameCounter(),
                 jx, jy))
         end
-        line('Keys: F=SSR B=Blur V=Bilateral T=Temporal 9/0=radius ,/.=sigma U/I=alpha N=reject K=Dilation L=Format M=MotionBlur ;=Mode [=MBHalfRes ]=DilHalfRes \\=AutoSkip Y=TAA J=TAAjitter R=reset ESC')
+        line('Keys: F=SSR B=Blur V=Bilateral T=Temporal 9/0=radius ,/.=sigma U/I=alpha N=reject K=Dilation L=Format M=MotionBlur ;=Mode [=MBHalfRes ]=DilHalfRes \\=AutoSkip Y=TAA J=TAAjitter H=TAAsharp R=reset ESC')
     end
 
     win:EndFrame()

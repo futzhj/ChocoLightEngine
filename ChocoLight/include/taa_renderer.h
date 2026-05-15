@@ -95,6 +95,13 @@ bool  GetNeighborhoodClip();
 void  SetJitterEnabled(bool on);
 bool  GetJitterEnabled();
 
+/// Phase F.0.1 — TAA Sharpening 强度 [0, 2], 默认 0.5
+/// 算法: 4-tap unsharp mask, 弥补 TAA 引入的 sub-pixel 模糊
+/// 0 = 纯 blit (零 ALU 开销); > 0 启用 sharpen pass (~0.03ms @ 1080p)
+/// 推荐值 0.3~0.8; > 1.5 易产生 ringing 伪影 / firefly 加剧
+void  SetSharpness(float s);
+float GetSharpness();
+
 // ==================== 内部状态查询 (debug HUD 用) ====================
 
 /// 当前帧 Halton 索引 (% 8), 累加帧计数器低 3 位

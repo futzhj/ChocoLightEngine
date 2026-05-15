@@ -1,10 +1,12 @@
--- Phase F.0 smoke: Light.Graphics.TAA (Temporal Anti-Aliasing master pipeline surface)
+-- Phase F.0 + F.0.1 smoke: Light.Graphics.TAA (Temporal Anti-Aliasing master pipeline surface)
 --
--- API coverage (13 functions):
+-- API coverage (15 functions = F.0 13 + F.0.1 2):
 --   Lifecycle 5: Enable / Disable / IsEnabled / IsSupported / Resize
 --   Params     6: SetBlendAlpha / GetBlendAlpha (clamp [0, 1], default 0.92)
 --                 SetNeighborhoodClip / GetNeighborhoodClip (default true)
 --                 SetJitterEnabled / GetJitterEnabled (default true)
+--   Phase F.0.1 — Sharpening 2: SetSharpness / GetSharpness (clamp [0, 2], default 0.5)
+--                                4-tap unsharp mask, 0=blit fallback, > 0 启用 sharpen pass
 --   Status     2: GetFrameCounter (Halton index 0..7, debug HUD)
 --                 GetCurrentJitter (returns 2 numbers, sub-pixel offset)
 --
@@ -41,6 +43,7 @@ local fn_names = {
     "SetBlendAlpha", "GetBlendAlpha",
     "SetNeighborhoodClip", "GetNeighborhoodClip",
     "SetJitterEnabled", "GetJitterEnabled",
+    "SetSharpness", "GetSharpness",        -- Phase F.0.1
     "GetFrameCounter", "GetCurrentJitter",
 }
 for _, k in ipairs(fn_names) do
@@ -102,6 +105,16 @@ if def_jit ~= true then
     fail("Default GetJitterEnabled must be true, got " .. tostring(def_jit))
 end
 pass("Default JitterEnabled = true")
+
+-- Phase F.0.1: Sharpness default 0.5 (4-tap unsharp mask)
+local def_sharp = TAA.GetSharpness()
+if type(def_sharp) ~= "number" then
+    fail("GetSharpness should return number, got " .. type(def_sharp))
+end
+if math.abs(def_sharp - 0.5) > 1e-4 then
+    fail("Default GetSharpness must be 0.5, got " .. tostring(def_sharp))
+end
+pass("Default Sharpness = 0.5 (Phase F.0.1)")
 
 -- ============================================================
 -- 4) Set/Get round-trip — BlendAlpha
@@ -181,6 +194,41 @@ if r3 ~= nil or type(r4) ~= "string" then
     fail("SetJitterEnabled with number should return nil + err string")
 end
 pass("SetJitterEnabled type-error rejected (number)")
+
+-- ============================================================
+-- 6.5) Phase F.0.1 — Sharpness round-trip + clamp
+-- ============================================================
+
+-- Round-trip 0..2 range
+for _, v in ipairs({0.0, 0.3, 0.5, 0.8, 1.0, 1.5, 2.0}) do
+    TAA.SetSharpness(v)
+    local got = TAA.GetSharpness()
+    if not approx_eq(got, v) then
+        fail("Sharpness round-trip failed: set=" .. v .. " got=" .. tostring(got))
+    end
+end
+pass("Sharpness round-trip ok (0..2)")
+
+-- clamp test: > 2 -> 2; < 0 -> 0
+TAA.SetSharpness(3.0)
+if not approx_eq(TAA.GetSharpness(), 2.0) then
+    fail("Sharpness clamp upper bound failed: expected 2.0, got " .. tostring(TAA.GetSharpness()))
+end
+TAA.SetSharpness(-0.5)
+if not approx_eq(TAA.GetSharpness(), 0.0) then
+    fail("Sharpness clamp lower bound failed: expected 0.0, got " .. tostring(TAA.GetSharpness()))
+end
+pass("Sharpness clamp [0, 2] ok")
+
+-- Sharpness=0 路径验证 (TAARenderer::Process 会走纯 blit 路径而非 sharpen pass)
+TAA.SetSharpness(0.0)
+if TAA.GetSharpness() ~= 0.0 then
+    fail("SetSharpness(0) failed")
+end
+pass("Sharpness = 0 路径 ok (Process 内部应走 BlitTAAToHDR 原路径)")
+
+-- 复位 default
+TAA.SetSharpness(0.5)
 
 -- ============================================================
 -- 7) Status query — GetFrameCounter / GetCurrentJitter
@@ -266,11 +314,12 @@ else
 end
 
 print("")
-print("=== Phase F.0 TAA smoke: ALL TESTS PASSED ===")
-print("Functions covered: " .. #fn_names .. " / 13")
+print("=== Phase F.0 + F.0.1 TAA smoke: ALL TESTS PASSED ===")
+print("Functions covered: " .. #fn_names .. " / 15")
 print("Highlights:")
-print("  - default OFF, alpha=0.92, neighborhoodClip=true, jitterEnabled=true")
-print("  - clamp: BlendAlpha [0, 1]")
+print("  - default OFF, alpha=0.92, neighborhoodClip=true, jitterEnabled=true, sharpness=0.5")
+print("  - clamp: BlendAlpha [0, 1], Sharpness [0, 2]")
 print("  - type-error: SetNeighborhoodClip / SetJitterEnabled reject non-boolean")
 print("  - status: GetFrameCounter [0, 7], GetCurrentJitter in ±0.5 px range")
 print("  - coexistence: TAA toggle does not affect SSR Temporal state")
+print("  - Phase F.0.1: 4-tap unsharp mask, sharpness=0 走 blit fallback (零 ALU)")

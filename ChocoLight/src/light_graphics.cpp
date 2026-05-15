@@ -3111,6 +3111,24 @@ static int l_TAA_GetJitterEnabled(lua_State* L) {
     return 1;
 }
 
+/// @lua_api Light.Graphics.TAA.SetSharpness
+/// @param s number 4-tap unsharp mask 强度 (clamp [0, 2], 默认 0.5)
+///                 0 = 关闭锐化 (纯 blit, 零 ALU); > 0 启用 sharpen pass
+///                 推荐 0.3~0.8; > 1.5 易产生 ringing
+static int l_TAA_SetSharpness(lua_State* L) {
+    float s = (float)luaL_checknumber(L, 1);
+    TAARenderer::SetSharpness(s);
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+/// @lua_api Light.Graphics.TAA.GetSharpness
+/// @return number
+static int l_TAA_GetSharpness(lua_State* L) {
+    lua_pushnumber(L, (lua_Number)TAARenderer::GetSharpness());
+    return 1;
+}
+
 /// @lua_api Light.Graphics.TAA.GetFrameCounter
 /// @return integer 当前帧 Halton 索引 (0-7, 用于 debug HUD)
 static int l_TAA_GetFrameCounter(lua_State* L) {
@@ -3142,6 +3160,9 @@ static const luaL_Reg taa_funcs[] = {
     {"GetNeighborhoodClip",   l_TAA_GetNeighborhoodClip},
     {"SetJitterEnabled",      l_TAA_SetJitterEnabled},
     {"GetJitterEnabled",      l_TAA_GetJitterEnabled},
+    // Phase F.0.1 — sharpness (2 = 1 对): 4-tap unsharp mask, clamp [0, 2], 默认 0.5
+    {"SetSharpness",          l_TAA_SetSharpness},
+    {"GetSharpness",          l_TAA_GetSharpness},
     // status (2): debug HUD 用
     {"GetFrameCounter",       l_TAA_GetFrameCounter},
     {"GetCurrentJitter",      l_TAA_GetCurrentJitter},

@@ -1412,7 +1412,7 @@ print(Light.Graphics.MotionBlur.GetHalfRes())      --> true
 >
 > **默认 OFF**：用户主动 `Enable` 才生效（与 Phase E 所有模块一致），零回归保障。
 
-## TAA API 速查表
+## TAA API 速查表（共 15 函数 = F.0 13 + F.0.1 2）
 
 | 类别 | 函数 | 默认值 / 说明 |
 |------|------|--------------|
@@ -1420,6 +1420,7 @@ print(Light.Graphics.MotionBlur.GetHalfRes())      --> true
 | 参数 | `SetBlendAlpha(a)` / `GetBlendAlpha()` | history 权重，clamp `[0, 1]`，**默认 0.92** |
 | 参数 | `SetNeighborhoodClip(on)` / `GetNeighborhoodClip()` | 9-tap AABB clip，**默认 true** |
 | 参数 | `SetJitterEnabled(on)` / `GetJitterEnabled()` | sub-pixel projection jitter，**默认 true** |
+| 参数 (F.0.1) | `SetSharpness(s)` / `GetSharpness()` | 4-tap unsharp mask，clamp `[0, 2]`，**默认 0.5**（0=blit fallback） |
 | 状态 | `GetFrameCounter()` | `int` Halton 索引 `[0, 7]`（debug HUD） |
 | 状态 | `GetCurrentJitter()` | `(jx, jy)` 本帧 sub-pixel 偏移（±0.5 px） |
 
@@ -1565,6 +1566,51 @@ sub-pixel projection jitter 开关。关闭后 TAA 退化为**纯时序 stabilit
 |--------|------|---------|
 | ON | 抗锯齿 + super-sampling 效果 | 通用静态/中速场景 |
 | OFF | 仅 history 累积平滑 | 极慢运动或 disocclusion 严重场景 |
+
+---
+
+## `TAA.SetSharpness` / `TAA.GetSharpness`
+
+**Phase F.0.1** — TAA 后 4-tap unsharp mask 锐化补偿，弥补 sub-pixel 累积带来的高频损失。
+
+### 参数
+
+- `s` (`number`)：clamp `[0, 2]`
+
+### 默认值
+
+`0.5`（中等强度，视觉差异可感知；UE5 保守值约 0.3）
+
+### 算法
+
+`sharpened = max(0, c + (c - avg4) × s)`，其中 `avg4` 为上下左右 4 邻域均值。
+
+### 取值建议
+
+| sharpness 值 | 视觉效果 | 适用场景 |
+|--------------|----------|---------|
+| 0.0 | 关闭锐化 (走纯 blit, 零 ALU) | 性能敏感 / 完全软场景 |
+| 0.3 | 轻微补偿 (UE5 保守值) | 自然画面 / 慢动作 |
+| 0.5 | 中等锐化（推荐） | 通用 |
+| 0.8 | 明显锐化 | 高细节场景 / cyber-punk 风格 |
+| > 1.5 | 易产生 ringing 伪影 / firefly 加剧 | 仅 debug |
+
+### 性能优化
+
+`sharpness = 0` 时引擎走 `BlitTAAToHDR` 原路径（与 Phase F.0 一致），零 ALU 开销；`> 0` 时启用 `DrawTAASharpenPass` (~0.03 ms @ 1080p)。
+
+### 示例
+
+```lua
+local TAA = Light.Graphics.TAA
+TAA.SetSharpness(0.5)                     -- 默认推荐
+print(TAA.GetSharpness())                 --> 0.5
+
+TAA.SetSharpness(3.0)                     -- clamp
+print(TAA.GetSharpness())                 --> 2.0
+
+TAA.SetSharpness(0)                       -- 关闭锐化 (走纯 blit)
+```
 
 ---
 

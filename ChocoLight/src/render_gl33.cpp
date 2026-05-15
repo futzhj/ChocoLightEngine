@@ -2163,6 +2163,35 @@ void main() {
 }
 )";
 
+// ---- FS_SHARPEN (GLES 3.0): Phase F.0.1 — TAA 后 4-tap unsharp mask 锐化补偿 ----
+//   算法: sharpened = c + (c - avg4) × sharpness ; avg4 = (N+S+E+W) / 4
+//   防 ringing: max(0); HDR 不 clamp 上限 (保留超亮)
+//   性能: 5 fetch + 几 ALU/px ≈ 0.03 ms @ 1080p
+static const char* FS_SHARPEN_SOURCE = R"(#version 300 es
+precision highp float;
+precision highp sampler2D;
+in  vec2 vUV;
+out vec4 FragColor;
+
+uniform sampler2D uInputTex;       // slot 0: TAA blend 输出 (history[writeIdx])
+uniform vec2  uTexelSize;          // 1.0 / vec2(W, H)
+uniform float uSharpness;          // [0, 2]
+
+void main() {
+    vec3 c = texture(uInputTex, vUV).rgb;
+    // 4-tap 上下左右邻域采样 (对角线舍弃, 业界主流 4-tap unsharp mask)
+    vec3 n = texture(uInputTex, vUV + vec2(0.0,         uTexelSize.y)).rgb;
+    vec3 s = texture(uInputTex, vUV - vec2(0.0,         uTexelSize.y)).rgb;
+    vec3 e = texture(uInputTex, vUV + vec2(uTexelSize.x, 0.0       )).rgb;
+    vec3 w = texture(uInputTex, vUV - vec2(uTexelSize.x, 0.0       )).rgb;
+    vec3 avg4 = (n + s + e + w) * 0.25;
+    // unsharp mask: c + (c - avg) × sharpness
+    vec3 sharpened = c + (c - avg4) * uSharpness;
+    // 防 ringing 下界: 黑色像素被锐化后不能为负 (HDR 上界不 clamp)
+    FragColor = vec4(max(sharpened, vec3(0.0)), 1.0);
+}
+)";
+
 // ---- FS_MOTION_BLUR (GLES 3.0): Phase E.15 per-pixel velocity blur ----
 //   1. SampleVelocityDilated 与 SSRTemporal 同算法 (3x3 max-length 邻域可选)
 //   2. E3 软限: |vel| <= screenDiagUV × 0.3 ≈ 0.4243 防极端拖尾糊死
@@ -2755,6 +2784,32 @@ void main() {
 }
 )";
 
+// ---- FS_SHARPEN (GL 3.3): Phase F.0.1 — TAA 后 4-tap unsharp mask 锐化补偿 ----
+// 与 GLES3 版完全等价, 仅 #version + 无 precision qualifier
+static const char* FS_SHARPEN_SOURCE = R"(
+#version 330 core
+in  vec2 vUV;
+out vec4 FragColor;
+
+uniform sampler2D uInputTex;       // slot 0: TAA blend 输出 (history[writeIdx])
+uniform vec2  uTexelSize;          // 1.0 / vec2(W, H)
+uniform float uSharpness;          // [0, 2]
+
+void main() {
+    vec3 c = texture(uInputTex, vUV).rgb;
+    // 4-tap 上下左右邻域采样 (对角线舍弃, 业界主流 4-tap unsharp mask)
+    vec3 n = texture(uInputTex, vUV + vec2(0.0,         uTexelSize.y)).rgb;
+    vec3 s = texture(uInputTex, vUV - vec2(0.0,         uTexelSize.y)).rgb;
+    vec3 e = texture(uInputTex, vUV + vec2(uTexelSize.x, 0.0       )).rgb;
+    vec3 w = texture(uInputTex, vUV - vec2(uTexelSize.x, 0.0       )).rgb;
+    vec3 avg4 = (n + s + e + w) * 0.25;
+    // unsharp mask: c + (c - avg) × sharpness
+    vec3 sharpened = c + (c - avg4) * uSharpness;
+    // 防 ringing 下界: 黑色像素被锐化后不能为负 (HDR 上界不 clamp)
+    FragColor = vec4(max(sharpened, vec3(0.0)), 1.0);
+}
+)";
+
 // ---- FS_MOTION_BLUR (GL 3.3): Phase E.15 per-pixel velocity blur ----
 //   1. SampleVelocityDilated 与 SSRTemporal 同算法 (3x3 max-length 邻域可选)
 //   2. E3 软限: |vel| <= screenDiagUV × 0.3 ≈ 0.4243 防极端拖尾糊死
@@ -3202,6 +3257,13 @@ class GL33Backend : public RenderBackend {
     GLint  locTAA_VelocityDilation          = -1;
     GLint  locTAA_VelocityFormat            = -1;
     GLint  locTAA_VelocityScale             = -1;
+
+    // Phase F.0.1 — TAA Sharpening (4-tap unsharp mask, 复用 SupportsTAA 能力位)
+    //   shader: FS_SHARPEN_SOURCE (uInputTex + uTexelSize + uSharpness)
+    GLuint programSharpen                   = 0;
+    GLint  locSharpen_InputTex              = -1;   // sampler2D, slot 0
+    GLint  locSharpen_TexelSize             = -1;
+    GLint  locSharpen_Sharpness             = -1;
 
     // Phase E.2.1 — Lighting2D dirty bit cache
     // 当 state->version 与此值相等时, UploadLighting2D 跳过所有 glUniform*v 调用
@@ -4173,6 +4235,23 @@ public:
             CC::Log(CC::LOG_WARN, "GL33: Phase F.0 TAA shader compile failed; TAA Enable 将返 false");
         }
 
+        // ---- Phase F.0.1 — TAA Sharpening shader ----
+        //   复用 SupportsTAA() 能力位; 编译失败时 DrawTAASharpenPass 内部 fallback 走 BlitTAAToHDR
+        //   shader: FS_SHARPEN_SOURCE (4-tap unsharp mask)
+        programSharpen = buildProgram(FS_SHARPEN_SOURCE, "TAA_Sharpen");
+        if (programSharpen) {
+            locSharpen_InputTex  = glGetUniformLocation(programSharpen, "uInputTex");
+            locSharpen_TexelSize = glGetUniformLocation(programSharpen, "uTexelSize");
+            locSharpen_Sharpness = glGetUniformLocation(programSharpen, "uSharpness");
+            // 一次性绑 sampler slot 0
+            glUseProgram(programSharpen);
+            if (locSharpen_InputTex >= 0) glUniform1i(locSharpen_InputTex, 0);
+            glUseProgram(0);
+            CC::Log(CC::LOG_INFO, "GL33: Phase F.0.1 TAA Sharpen shader compiled (program=%u)", programSharpen);
+        } else {
+            CC::Log(CC::LOG_WARN, "GL33: Phase F.0.1 TAA Sharpen shader compile failed; DrawTAASharpenPass 将 fallback 走 Blit");
+        }
+
         CC::Log(CC::LOG_INFO,
                 "GL33: Phase E.6+E.7+E.8+E.9+E.10+E.11+E.12 LensFx/SSAO/SSR ready (lensDirt=%s, streak=%s, lensFlare=%s, ssao=%s, ssr=%s, ssrBlur=%s, ssrTemporal=%s; programs=[LD=%u, SB=%u, SC=%u, LFG=%u, S=%u, SB=%u, SC=%u, SSR=%u, SSRC=%u, SSRB=%u, SSRT=%u])",
                 lensDirtSupported ? "yes" : "no",
@@ -4376,6 +4455,10 @@ public:
         locTAA_Texel           = locTAA_BlendAlpha       = locTAA_NeighborhoodClip = -1;
         locTAA_HasHistory      = locTAA_VelocityDilation = -1;
         locTAA_VelocityFormat  = locTAA_VelocityScale    = -1;
+
+        // Phase F.0.1 — TAA Sharpening 清理
+        if (programSharpen) { glDeleteProgram(programSharpen); programSharpen = 0; }
+        locSharpen_InputTex = locSharpen_TexelSize = locSharpen_Sharpness = -1;
     }
 
     bool SupportsLit2D() const override { return lit2DSupported; }
@@ -7203,6 +7286,38 @@ public:
             glActiveTexture(GL_TEXTURE0 + s);
             glBindTexture(GL_TEXTURE_2D, 0);
         }
+        glUseProgram(0);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    }
+
+    /// Phase F.0.1 — TAA Sharpen pass: 4-tap unsharp mask, 替代 BlitTAAToHDR (in-place 写回 sceneTex)
+    /// shader 编译失败时调用方应回落到 BlitTAAToHDR; sharpness <= 0 由调用方在 CPU 端跳过.
+    void DrawTAASharpenPass(uint32_t srcTex, uint32_t dstFbo,
+                            int w, int h, float sharpness) override {
+        if (!programSharpen || !srcTex || !dstFbo || w <= 0 || h <= 0) return;
+
+        glBindFramebuffer(GL_FRAMEBUFFER, dstFbo);
+        glViewport(0, 0, w, h);
+        glDisable(GL_DEPTH_TEST);
+        glDisable(GL_SCISSOR_TEST);
+        glDisable(GL_BLEND);
+
+        glUseProgram(programSharpen);
+        if (locSharpen_TexelSize >= 0) glUniform2f(locSharpen_TexelSize, 1.0f / (float)w, 1.0f / (float)h);
+        if (locSharpen_Sharpness >= 0) glUniform1f(locSharpen_Sharpness, sharpness);
+
+        // 绑 src TAA 输出到 slot 0
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, (GLuint)srcTex);
+
+        // 全屏 quad: 复用 tonemap VAO
+        glBindVertexArray(vaoTonemap);
+        glDrawArrays(GL_TRIANGLES, 0, 6);
+        glBindVertexArray(0);
+
+        // 状态复位
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, 0);
         glUseProgram(0);
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
     }

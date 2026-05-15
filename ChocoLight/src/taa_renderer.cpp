@@ -57,6 +57,7 @@ struct State {
     float    blendAlpha       = 0.92f;       // history 权重 (略高于 SSR Temporal 的 0.9, 主管线累积更稳)
     bool     neighborhoodClip = true;        // 默认启用 9-tap AABB clip
     bool     jitterEnabled    = true;        // TAA Enable 时随之拉起 jitter
+    float    sharpness        = 0.5f;        // Phase F.0.1: 4-tap unsharp mask 强度 [0, 2], 默认 0.5
 
     // jitter state
     uint64_t frameCounter   = 0;
@@ -259,8 +260,14 @@ void Process(uint32_t hdrFbo, uint32_t hdrTex) {
                             g.backend->GetVelocityScale(),
                             g.backend->GetActiveVelocityFormat());
 
-    // 把 TAA 输出 blit 回 HDR sceneTex (让 Tonemap 用 TAA 后内容)
-    g.backend->BlitTAAToHDR(g.historyTexs[writeIdx], hdrFbo, g.width, g.height);
+    // Phase F.0.1: sharpness > 0 走 4-tap unsharp mask sharpen pass (in-place 写回 sceneTex);
+    //              否则保持 F.0 纯 blit 路径 (零 ALU 开销)
+    if (g.sharpness > 0.0f) {
+        g.backend->DrawTAASharpenPass(g.historyTexs[writeIdx], hdrFbo,
+                                     g.width, g.height, g.sharpness);
+    } else {
+        g.backend->BlitTAAToHDR(g.historyTexs[writeIdx], hdrFbo, g.width, g.height);
+    }
 
     // 状态推进
     g.historyIdx   = readIdx;             // ping-pong swap
@@ -278,6 +285,9 @@ float GetBlendAlpha()            { return g.blendAlpha; }
 
 void  SetNeighborhoodClip(bool on) { g.neighborhoodClip = on; }
 bool  GetNeighborhoodClip()        { return g.neighborhoodClip; }
+
+void  SetSharpness(float s) { g.sharpness = clampf(s, 0.0f, 2.0f); }
+float GetSharpness()         { return g.sharpness; }
 
 void  SetJitterEnabled(bool on) {
     g.jitterEnabled = on;

@@ -1334,6 +1334,16 @@ public:
     virtual void BlitTAAToHDR(uint32_t /*srcTex*/, uint32_t /*dstFbo*/,
                               int /*w*/, int /*h*/) {}
 
+    /// Phase F.0.1 — TAA Sharpen pass: 4-tap unsharp mask, 替代 BlitTAAToHDR (in-place 写回 sceneTex)
+    /// 调用方在 sharpness > 0 时调; sharpness <= 0 时直接走 BlitTAAToHDR (零 ALU 开销).
+    /// shader 编译失败时此函数空实现, 调用方需 fallback 到 BlitTAAToHDR (基类默认 do nothing 已满足).
+    /// @param srcTex     TAA 输出 tex (= history 新 slot tex)
+    /// @param dstFbo     HDR FBO (绑定的 sceneTex 是写回目标)
+    /// @param w, h       尺寸 (full-res)
+    /// @param sharpness  unsharp mask 强度, 推荐 [0, 2]; 已由调用方 clamp
+    virtual void DrawTAASharpenPass(uint32_t /*srcTex*/, uint32_t /*dstFbo*/,
+                                    int /*w*/, int /*h*/, float /*sharpness*/) {}
+
     /// 设置 jittered projection matrix (TAA 启用时每帧 BeginScene 前调)
     /// 调用后, ComputeMVP3D() 用 jitteredProjection 替代原 projection (raster 路径).
     /// GetProjection() 仍返 unjittered (SSR/SSAO 等 view-space reconstruction 不受影响).
