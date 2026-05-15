@@ -1138,6 +1138,49 @@ public:
                                   bool           /*velocityDilation*/ = true,
                                   float          /*velocityScale*/    = 0.25f,
                                   VelocityFormat /*velocityFormat*/   = VelocityFormat::RG16F) {}
+
+    // ==================== Phase E.15 — Motion Blur 虚接口 ====================
+    // 设计 (与 Bloom/SSR 同模式):
+    //   1. SupportsMotionBlur()  — shader 编译成功才返 true (Legacy 永 false)
+    //   2. CreateMotionBlurRT()  — 独立 RGBA16F ping-pong RT (与 sceneTex 同尺寸)
+    //   3. DeleteMotionBlurRT()  — 配对释放
+    //   4. DrawMotionBlur()      — 2 pass: ① 采 sceneTex+velocityTex 写 motionBlurTex
+    //                                       ② blit motionBlurTex 覆盖 sceneTex
+    //
+    // velocity format / scale / dilation 由 backend 内部从 Phase E.14 状态字段取
+    // (SetVelocityDilation/GetActiveVelocityFormat/GetVelocityScale)，不增加参数。
+
+    /// 后端是否支持 motion blur (GL33 = shader 编译成功才 true)
+    virtual bool SupportsMotionBlur() const { return false; }
+
+    /// 创建 motion blur ping-pong RT (RGBA16F, color-only, 无 depth)
+    /// @param  w, h    与 HDR sceneTex 同尺寸
+    /// @param  outTex  返回 GL tex id (失败为 0)
+    /// @return GL fbo id (失败为 0); 失败时 outTex 也保证为 0
+    virtual uint32_t CreateMotionBlurRT(int /*w*/, int /*h*/, uint32_t* outTex) {
+        if (outTex) *outTex = 0;
+        return 0;
+    }
+
+    /// 释放 motion blur RT (与 CreateMotionBlurRT 配对)
+    virtual void DeleteMotionBlurRT(uint32_t /*fbo*/, uint32_t /*tex*/) {}
+
+    /// 执行 motion blur 完整 2-pass 流程
+    ///   Pass1 (shader): bind motionBlurFbo → 沿 velocity 多采样 → 写 motionBlurTex
+    ///   Pass2 (blit):   motionBlurTex → dstFbo (覆盖 sceneTex 内容)
+    /// @param sceneTex       HDR scene 颜色 tex (HDR + 所有后处理累积)
+    /// @param velocityTex    Phase E.13 velocity buffer (RG16F / RG8)
+    /// @param motionBlurFbo  ping-pong fbo (由 MotionBlurRenderer 持有)
+    /// @param motionBlurTex  ping-pong tex
+    /// @param dstFbo         HDR fbo (输出目标，sceneTex 所属 fbo)
+    /// @param w, h           分辨率
+    /// @param strength       用户调节 [0, 4] (clamp 由调用方做)
+    /// @param sampleCount    沿 velocity 采样数 [1, 32] (clamp 由调用方做)
+    virtual void DrawMotionBlur(uint32_t /*sceneTex*/, uint32_t /*velocityTex*/,
+                                 uint32_t /*motionBlurFbo*/, uint32_t /*motionBlurTex*/,
+                                 uint32_t /*dstFbo*/,
+                                 int /*w*/, int /*h*/,
+                                 float /*strength*/, int /*sampleCount*/) {}
 };
 
 // ==================== 工厂函数 ====================

@@ -889,3 +889,233 @@ print(ok2, err)
 `string`：`"rg16f"`（默认）或 `"rg8"`（规范小写）
 
 ---
+
+# `Light.Graphics.MotionBlur` 子表
+
+> Phase E.15 — Velocity-driven Motion Blur（基于 velocity buffer 的相机/物体运动模糊）
+
+`Light.Graphics.MotionBlur` 是 **11 个函数** 的 Lua 子表，控制 per-pixel 速度模糊后处理。复用 Phase E.13 / E.14 velocity buffer（RG16F 或 RG8）；插在 HDR 后处理链 LensFlare 之后、Tonemap 之前。
+
+## 管线总览
+
+```
+HDRRenderer::EndScene
+  ↓ Bloom / LensDirt / Streak / SSAO / SSR / LensFlare 累积到 sceneTex
+  ↓ ★ MotionBlur.Process
+    ├ Pass1 (shader): 沿 velocity × strength 多采样 sceneTex → 写 motionBlurTex
+    │   - 复用 SSRTemporal 的 DecodeVelocity + SampleVelocityDilated（3x3 max-length）
+    │   - 软限 max blur = 屏幕对角线 × 30%（防极端运动糊死画面）
+    └ Pass2 (blit): glBlitFramebuffer motionBlurTex → 覆盖 sceneTex
+  ↓ DrawTonemapFullscreen → default fb
+```
+
+- **未 Enable 时**：所有 API 静默 no-op，HDR 管线仍正常工作
+- **依赖**：HDR 必须先 `Enable`（velocity buffer 来自 HDR FBO 的 MRT slot 2）
+- **后端**：GL3.3 支持；Legacy / GLES3 后端 `IsSupported() = false` 时所有调用 no-op
+- **默认行为**：`autoEnable = false`，HDR.Enable 不会自动拉起 MotionBlur（与 LensDirt/SSAO/SSR 一致）
+
+## 子表函数索引
+
+| 分类 | 函数 |
+|------|------|
+| 生命周期 | `Enable / Disable / IsEnabled / IsSupported / Resize` |
+| HDR 联动 | `SetAutoEnable / GetAutoEnable`（默认 `false`） |
+| 强度 | `SetStrength / GetStrength`（默认 `1.0`，clamp `[0, 4]`） |
+| 采样数 | `SetSampleCount / GetSampleCount`（默认 `8`，clamp `[1, 32]`） |
+
+---
+
+## `MotionBlur.Enable`
+
+启用 Motion Blur：创建 RGBA16F ping-pong RT（与 HDR sceneTex 同尺寸）。
+
+### 参数
+
+| 名称 | 类型 | 说明 |
+|------|------|------|
+| `w` | `number` | RT 宽度（> 0，建议与 HDR RT 同） |
+| `h` | `number` | RT 高度（> 0） |
+
+### 返回值
+
+`boolean`：成功 / 失败（后端不支持 / 参数非法 / FBO 创建失败）
+
+### 行为
+
+- 允许同进程多次 `Enable`，等价于 `Resize`
+- 必须先 `Light.Graphics.HDR.Enable(...)`；如 HDR 未启用，本调用仍可成功但 `Process` 因 hdrTex=0 silent skip
+
+### 示例
+
+```lua
+Light.Graphics.HDR.Enable(1280, 720)
+if Light.Graphics.MotionBlur.IsSupported() then
+    Light.Graphics.MotionBlur.Enable(1280, 720)
+end
+```
+
+---
+
+## `MotionBlur.Disable`
+
+释放 ping-pong RT；下一帧管线跳过 motion blur。
+
+### 返回值
+
+`void`
+
+### 行为
+
+- idempotent：未启用时为 no-op
+- HDR.Disable 会**自动**触发本函数（OnHDRDisabled 强制 Disable）
+
+---
+
+## `MotionBlur.IsEnabled`
+
+### 返回值
+
+`boolean`：当前是否启用
+
+---
+
+## `MotionBlur.IsSupported`
+
+### 返回值
+
+`boolean`：后端是否支持 motion blur（shader 编译成功才 true；Legacy/Init 未调时返 false）
+
+---
+
+## `MotionBlur.Resize`
+
+调整 ping-pong RT 尺寸。内部 = `Disable + Enable`。
+
+### 参数
+
+| 名称 | 类型 | 说明 |
+|------|------|------|
+| `w` | `number` | 新宽度（> 0） |
+| `h` | `number` | 新高度（> 0） |
+
+### 返回值
+
+`boolean`
+
+---
+
+## `MotionBlur.SetAutoEnable / GetAutoEnable`
+
+控制 HDR.Enable 是否自动拉起 MotionBlur。
+
+### 参数
+
+| 名称 | 类型 | 说明 |
+|------|------|------|
+| `flag` | `boolean` | true = HDR.Enable 时自动 Enable；false = 用户必须显式 Enable |
+
+### 默认值
+
+`false`（与 LensDirt/SSAO/SSR 一致；仅 Bloom 默认 true）
+
+---
+
+## `MotionBlur.SetStrength`
+
+强度（默认 1.0）。1.0 = velocity 位移直接做 blur；> 1.0 加强；0 = 关闭 blur 效果（但仍跑两个 pass）。
+
+### 参数
+
+| 名称 | 类型 | 说明 |
+|------|------|------|
+| `v` | `number` | 强度（clamp 到 `[0, 4]`） |
+
+### 软限
+
+shader 内置 **max blur distance = 屏幕对角线 × 30%**（UV 空间 0.4243）。即便 strength=4 + RG8 饱和也不会糊死画面。
+
+### 示例
+
+```lua
+Light.Graphics.MotionBlur.SetStrength(1.5)   -- 加强 50%
+print(Light.Graphics.MotionBlur.GetStrength())  --> 1.5
+
+Light.Graphics.MotionBlur.SetStrength(99)    -- clamp
+print(Light.Graphics.MotionBlur.GetStrength())  --> 4.0
+```
+
+---
+
+## `MotionBlur.GetStrength`
+
+### 返回值
+
+`number`：当前强度
+
+---
+
+## `MotionBlur.SetSampleCount`
+
+沿 velocity 方向的采样数（默认 8）。高质量 16~32，性能优先 4~8。
+
+### 参数
+
+| 名称 | 类型 | 说明 |
+|------|------|------|
+| `n` | `integer` | 采样数（clamp 到 `[1, 32]`） |
+
+### 性能预算（1080p）
+
+| 采样数 | Pass1 估算 | 适用场景 |
+|--------|-----------|----------|
+| 4 | ~0.25 ms | 移动端 / 性能优先 |
+| 8 | ~0.5 ms | 桌面默认 |
+| 16 | ~1.0 ms | 高质量 |
+| 32 | ~2.0 ms | 极致质量 / 慢速运动 |
+
+### 示例
+
+```lua
+Light.Graphics.MotionBlur.SetSampleCount(16)
+print(Light.Graphics.MotionBlur.GetSampleCount())  --> 16
+
+Light.Graphics.MotionBlur.SetSampleCount(0)        -- clamp
+print(Light.Graphics.MotionBlur.GetSampleCount())  --> 1
+```
+
+---
+
+## `MotionBlur.GetSampleCount`
+
+### 返回值
+
+`number`（整数）：当前采样数
+
+---
+
+## 完整用法示例
+
+```lua
+local Gfx = require 'Light.Graphics'
+local HDR = Gfx.HDR
+local MB  = Gfx.MotionBlur
+
+-- 1. HDR 必须先启用
+HDR.Enable(1280, 720)
+
+-- 2. 启用 motion blur
+if MB.IsSupported() then
+    MB.Enable(1280, 720)
+    MB.SetStrength(1.5)
+    MB.SetSampleCount(16)
+end
+
+-- 3. 主循环：Draw 3D 场景（mesh:Draw 传 prevModel 才会写 velocity buffer）
+-- ...
+
+-- 4. 关闭（顺序反向）
+MB.Disable()
+HDR.Disable()
+```
+
+---

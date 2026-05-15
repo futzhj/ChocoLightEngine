@@ -34,6 +34,7 @@
 #include "lens_flare_renderer.h"     // Phase E.7.2 — Lens Flare (Ghost + Halo + Chromatic)
 #include "ssao_renderer.h"            // Phase E.8.2 — SSAO (屏幕空间环境光遮蔽)
 #include "ssr_renderer.h"             // Phase E.9 — SSR (屏幕空间反射)
+#include "motion_blur_renderer.h"    // Phase E.15 — Velocity-driven Motion Blur
 #include <cmath>
 #include <cstring>
 
@@ -2818,6 +2819,99 @@ static const luaL_Reg ssr_funcs[] = {
     {NULL, NULL}
 };
 
+// ==================== Phase E.15 — Light.Graphics.MotionBlur Lua API ====================
+//
+// 子表 Light.Graphics.MotionBlur 挂在 luaopen_Light_Graphics 注册时附加 (SSR 子表之后).
+//
+// API 设计 (11 函数):
+//   生命周期 5: Enable / Disable / IsEnabled / IsSupported / Resize
+//   联动     2: SetAutoEnable / GetAutoEnable                  (默认 false)
+//   参数     4: SetStrength / GetStrength (clamp [0, 4])
+//                SetSampleCount / GetSampleCount (clamp [1, 32])
+
+static int l_MB_Enable(lua_State* L) {
+    int w = (int)luaL_checkinteger(L, 1);
+    int h = (int)luaL_checkinteger(L, 2);
+    lua_pushboolean(L, MotionBlurRenderer::Enable(w, h) ? 1 : 0);
+    return 1;
+}
+
+static int l_MB_Disable(lua_State* L) {
+    (void)L;
+    MotionBlurRenderer::Disable();
+    return 0;
+}
+
+static int l_MB_IsEnabled(lua_State* L) {
+    lua_pushboolean(L, MotionBlurRenderer::IsEnabled() ? 1 : 0);
+    return 1;
+}
+
+static int l_MB_IsSupported(lua_State* L) {
+    lua_pushboolean(L, MotionBlurRenderer::IsSupported() ? 1 : 0);
+    return 1;
+}
+
+static int l_MB_Resize(lua_State* L) {
+    int w = (int)luaL_checkinteger(L, 1);
+    int h = (int)luaL_checkinteger(L, 2);
+    lua_pushboolean(L, MotionBlurRenderer::Resize(w, h) ? 1 : 0);
+    return 1;
+}
+
+static int l_MB_SetAutoEnable(lua_State* L) {
+    luaL_checkany(L, 1);
+    MotionBlurRenderer::SetAutoEnable(lua_toboolean(L, 1) != 0);
+    return 0;
+}
+
+static int l_MB_GetAutoEnable(lua_State* L) {
+    lua_pushboolean(L, MotionBlurRenderer::GetAutoEnable() ? 1 : 0);
+    return 1;
+}
+
+/// @lua_api Light.Graphics.MotionBlur.SetStrength
+/// @param v number 强度 (clamp [0, 4]; 1.0 = velocity 位移直接做 blur)
+static int l_MB_SetStrength(lua_State* L) {
+    MotionBlurRenderer::SetStrength((float)luaL_checknumber(L, 1));
+    return 0;
+}
+
+static int l_MB_GetStrength(lua_State* L) {
+    lua_pushnumber(L, (lua_Number)MotionBlurRenderer::GetStrength());
+    return 1;
+}
+
+/// @lua_api Light.Graphics.MotionBlur.SetSampleCount
+/// @param n integer 采样数 (clamp [1, 32]; 8 默认平衡，高质量 16~32)
+static int l_MB_SetSampleCount(lua_State* L) {
+    MotionBlurRenderer::SetSampleCount((int)luaL_checkinteger(L, 1));
+    return 0;
+}
+
+static int l_MB_GetSampleCount(lua_State* L) {
+    lua_pushinteger(L, (lua_Integer)MotionBlurRenderer::GetSampleCount());
+    return 1;
+}
+
+static const luaL_Reg mb_funcs[] = {
+    // lifecycle (5)
+    {"Enable",         l_MB_Enable},
+    {"Disable",        l_MB_Disable},
+    {"IsEnabled",      l_MB_IsEnabled},
+    {"IsSupported",    l_MB_IsSupported},
+    {"Resize",         l_MB_Resize},
+    // autoEnable (2)
+    {"SetAutoEnable",  l_MB_SetAutoEnable},
+    {"GetAutoEnable",  l_MB_GetAutoEnable},
+    // params (4 = 2 对)
+    {"SetStrength",    l_MB_SetStrength},
+    {"GetStrength",    l_MB_GetStrength},
+    {"SetSampleCount", l_MB_SetSampleCount},
+    {"GetSampleCount", l_MB_GetSampleCount},
+    {NULL, NULL}
+};
+
 static const luaL_Reg graphics_funcs[] = {
     // --- 绘图基元 ---
     {"Draw",              l_Draw},
@@ -2939,6 +3033,11 @@ int luaopen_Light_Graphics(lua_State* L) {
         lua_createtable(L, 0, 0);
         luaL_setfuncs(L, ssr_funcs, 0);
         lua_setfield(L, -2, "SSR");
+
+        // Phase E.15 — MotionBlur 子表 (Light.Graphics.MotionBlur.*)
+        lua_createtable(L, 0, 0);
+        luaL_setfuncs(L, mb_funcs, 0);
+        lua_setfield(L, -2, "MotionBlur");
 
         lua_rawset(L, -3);
         lua_pushstring(L, "Graphics");

@@ -48,6 +48,8 @@ end
 
 local HDR = Gfx.HDR
 local SSR = Gfx.SSR
+-- Phase E.15 — MotionBlur 是可选模块 (老版本可能没有), 不强制要求
+local MotionBlur = Gfx.MotionBlur
 if type(HDR) ~= 'table' or type(SSR) ~= 'table' then
     print('[demo_ssr] need HDR + SSR subtables')
     print('demo_ssr ok (subtable missing)')
@@ -335,6 +337,17 @@ while win:IsOpen() do
               ' (' .. (ok and 'ok' or 'failed') .. ')')
     end
 
+    -- Phase E.15 — M: 切 Motion Blur ON/OFF
+    if MotionBlur and keyTap('m') then
+        if MotionBlur.IsEnabled() then
+            MotionBlur.Disable()
+            print('[demo] MotionBlur OFF')
+        else
+            local ok = MotionBlur.Enable(WIN_W, WIN_H)
+            print('[demo] MotionBlur ' .. (ok and 'ON' or 'OFF (fail)'))
+        end
+    end
+
     -- R: reset 默认
     if keyTap('r') then
         SSR.SetMaxSteps(64); SSR.SetStepSize(0.1); SSR.SetThickness(0.5)
@@ -401,7 +414,14 @@ while win:IsOpen() do
             HDR.GetVelocityFormat(),
             HDR.GetVelocityDilation() and 'ON' or 'OFF',
             SSR.GetTemporalEnabled() and 'velocity-first' or 'idle (Temporal OFF)'))
-        line('Keys: F=SSR B=Blur V=Bilateral T=Temporal 9/0=radius ,/.=sigma U/I=alpha N=reject K=Dilation L=Format R=reset ESC')
+        -- Phase E.15: MotionBlur 状态 (可选模块)
+        if MotionBlur then
+            line(string.format('MotionBlur: %s | strength=%.2f | samples=%d',
+                MotionBlur.IsEnabled() and 'ON' or 'OFF',
+                MotionBlur.GetStrength(),
+                MotionBlur.GetSampleCount()))
+        end
+        line('Keys: F=SSR B=Blur V=Bilateral T=Temporal 9/0=radius ,/.=sigma U/I=alpha N=reject K=Dilation L=Format M=MotionBlur R=reset ESC')
     end
 
     win:EndFrame()
@@ -411,6 +431,7 @@ end
 -- 4. 反向清理
 -- ============================================================================
 
+if MotionBlur and MotionBlur.IsEnabled() then MotionBlur.Disable() end
 if SSR.IsEnabled() then SSR.Disable() end
 if hdrEnabled then HDR.Disable() end
 if cubeMesh then cubeMesh:Delete() end

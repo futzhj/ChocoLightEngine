@@ -2015,6 +2015,65 @@ void main() {
 }
 )";
 
+// ---- FS_MOTION_BLUR (GLES 3.0): Phase E.15 per-pixel velocity blur ----
+//   1. SampleVelocityDilated 与 SSRTemporal 同算法 (3x3 max-length 邻域可选)
+//   2. E3 软限: |vel| <= screenDiagUV × 0.3 ≈ 0.4243 防极端拖尾糊死
+//   3. 沿 -vel × strength 均匀 N 采样, N ∈ [1, 32]
+static const char* FS_MOTION_BLUR_SOURCE = R"(#version 300 es
+precision highp float;
+precision highp sampler2D;
+in  vec2 vUV;
+out vec4 FragColor;
+
+uniform sampler2D uSceneTex;       // HDR + 所有后处理 (Bloom/SSR/LensFlare 累积)
+uniform sampler2D uVelocityTex;    // RG16F 或 RG8
+uniform vec2  uTexel;              // 1.0 / vec2(W, H)
+uniform float uStrength;           // 用户调 [0, 4]
+uniform int   uSampleCount;        // [1, 32]
+uniform int   uVelocityDilation;   // 0=单点 / 1=3x3 max-length
+uniform int   uVelocityFormat;     // 0=RG16F / 1=RG8
+uniform float uVelocityScale;      // RG8 解码 scale (默认 0.25)
+
+vec2 DecodeVelocity(vec2 raw) {
+    return (uVelocityFormat == 1) ? ((raw - 0.5) * (2.0 * uVelocityScale)) : raw;
+}
+
+vec2 SampleVelocityDilated(vec2 uv) {
+    if (uVelocityDilation == 0) return DecodeVelocity(texture(uVelocityTex, uv).rg);
+    vec2 bestV = vec2(0.0);
+    float bestLen = -1.0;
+    for (int dy = -1; dy <= 1; ++dy) {
+        for (int dx = -1; dx <= 1; ++dx) {
+            vec2 v = DecodeVelocity(texture(uVelocityTex, uv + vec2(float(dx), float(dy)) * uTexel).rg);
+            float l = dot(v, v);
+            if (l > bestLen) { bestLen = l; bestV = v; }
+        }
+    }
+    return bestV;
+}
+
+void main() {
+    vec2 vel = SampleVelocityDilated(vUV) * uStrength;
+
+    // E3 软限: max blur UV = 屏幕对角线 × 0.3 (sqrt(2) * 0.3 ≈ 0.4243)
+    const float kMaxBlurUV = 0.4243;
+    float velLen = length(vel);
+    if (velLen > kMaxBlurUV) vel *= (kMaxBlurUV / velLen);
+
+    int   count    = clamp(uSampleCount, 1, 32);
+    float countInv = 1.0 / float(max(count - 1, 1));
+    vec3  sum      = vec3(0.0);
+    const int kMaxSamples = 32;
+    for (int i = 0; i < kMaxSamples; ++i) {
+        if (i >= count) break;
+        float t = float(i) * countInv;            // [0, 1]
+        vec2  uv = vUV - vel * t;                  // 朝过去帧方向采样
+        sum += texture(uSceneTex, uv).rgb;
+    }
+    FragColor = vec4(sum / float(count), 1.0);
+}
+)";
+
 #else  // 桌面 GL 3.3 Core
 
 // ---- FS_SSAO (GL 3.3): 同 GLES3 算法 ----
@@ -2390,6 +2449,64 @@ void main() {
 }
 )";
 
+// ---- FS_MOTION_BLUR (GL 3.3): Phase E.15 per-pixel velocity blur ----
+//   1. SampleVelocityDilated 与 SSRTemporal 同算法 (3x3 max-length 邻域可选)
+//   2. E3 软限: |vel| <= screenDiagUV × 0.3 ≈ 0.4243 防极端拖尾糊死
+//   3. 沿 -vel × strength 均匀 N 采样, N ∈ [1, 32]
+static const char* FS_MOTION_BLUR_SOURCE = R"(
+#version 330 core
+in  vec2 vUV;
+out vec4 FragColor;
+
+uniform sampler2D uSceneTex;       // HDR + 所有后处理 (Bloom/SSR/LensFlare 累积)
+uniform sampler2D uVelocityTex;    // RG16F 或 RG8
+uniform vec2  uTexel;              // 1.0 / vec2(W, H)
+uniform float uStrength;           // 用户调 [0, 4]
+uniform int   uSampleCount;        // [1, 32]
+uniform int   uVelocityDilation;   // 0=单点 / 1=3x3 max-length
+uniform int   uVelocityFormat;     // 0=RG16F / 1=RG8
+uniform float uVelocityScale;      // RG8 解码 scale (默认 0.25)
+
+vec2 DecodeVelocity(vec2 raw) {
+    return (uVelocityFormat == 1) ? ((raw - 0.5) * (2.0 * uVelocityScale)) : raw;
+}
+
+vec2 SampleVelocityDilated(vec2 uv) {
+    if (uVelocityDilation == 0) return DecodeVelocity(texture(uVelocityTex, uv).rg);
+    vec2 bestV = vec2(0.0);
+    float bestLen = -1.0;
+    for (int dy = -1; dy <= 1; ++dy) {
+        for (int dx = -1; dx <= 1; ++dx) {
+            vec2 v = DecodeVelocity(texture(uVelocityTex, uv + vec2(float(dx), float(dy)) * uTexel).rg);
+            float l = dot(v, v);
+            if (l > bestLen) { bestLen = l; bestV = v; }
+        }
+    }
+    return bestV;
+}
+
+void main() {
+    vec2 vel = SampleVelocityDilated(vUV) * uStrength;
+
+    // E3 软限: max blur UV = 屏幕对角线 × 0.3 (sqrt(2) * 0.3 ≈ 0.4243)
+    const float kMaxBlurUV = 0.4243;
+    float velLen = length(vel);
+    if (velLen > kMaxBlurUV) vel *= (kMaxBlurUV / velLen);
+
+    int   count    = clamp(uSampleCount, 1, 32);
+    float countInv = 1.0 / float(max(count - 1, 1));
+    vec3  sum      = vec3(0.0);
+    const int kMaxSamples = 32;
+    for (int i = 0; i < kMaxSamples; ++i) {
+        if (i >= count) break;
+        float t = float(i) * countInv;            // [0, 1]
+        vec2  uv = vUV - vel * t;                  // 朝过去帧方向采样
+        sum += texture(uSceneTex, uv).rgb;
+    }
+    FragColor = vec4(sum / float(count), 1.0);
+}
+)";
+
 #endif
 
 // Phase AS.2 — Mesh GPU 资源 (Phase AX 扩展加 morph delta texture)
@@ -2667,6 +2784,18 @@ class GL33Backend : public RenderBackend {
     GLint  locSSRTemporal_VelocityDilation = -1;
     GLint  locSSRTemporal_VelocityFormat   = -1;
     GLint  locSSRTemporal_VelocityScale    = -1;
+
+    // Phase E.15 — Motion Blur (per-pixel velocity blur, 单 program + ping-pong RT)
+    GLuint programMotionBlur            = 0;
+    bool   motionBlurSupported          = false;
+    GLint  locMB_SceneTex               = -1;   // sampler2D, slot 0
+    GLint  locMB_VelocityTex            = -1;   // sampler2D, slot 1
+    GLint  locMB_Texel                  = -1;
+    GLint  locMB_Strength               = -1;
+    GLint  locMB_SampleCount            = -1;
+    GLint  locMB_VelocityDilation       = -1;
+    GLint  locMB_VelocityFormat         = -1;
+    GLint  locMB_VelocityScale          = -1;
 
     // Phase E.2.1 — Lighting2D dirty bit cache
     // 当 state->version 与此值相等时, UploadLighting2D 跳过所有 glUniform*v 调用
@@ -3553,6 +3682,29 @@ public:
             ssrTemporalSupported = false;
         }
 
+        // ---- Phase E.15 — Motion Blur shader ----
+        // 编译失败仅 motionBlurSupported=false; 不影响其他后处理.
+        // 复用 VS_TONEMAP_SOURCE 全屏 quad VS, FS = FS_MOTION_BLUR_SOURCE
+        programMotionBlur = buildProgram(FS_MOTION_BLUR_SOURCE, "MotionBlur");
+        if (programMotionBlur) {
+            locMB_SceneTex         = glGetUniformLocation(programMotionBlur, "uSceneTex");
+            locMB_VelocityTex      = glGetUniformLocation(programMotionBlur, "uVelocityTex");
+            locMB_Texel            = glGetUniformLocation(programMotionBlur, "uTexel");
+            locMB_Strength         = glGetUniformLocation(programMotionBlur, "uStrength");
+            locMB_SampleCount      = glGetUniformLocation(programMotionBlur, "uSampleCount");
+            locMB_VelocityDilation = glGetUniformLocation(programMotionBlur, "uVelocityDilation");
+            locMB_VelocityFormat   = glGetUniformLocation(programMotionBlur, "uVelocityFormat");
+            locMB_VelocityScale    = glGetUniformLocation(programMotionBlur, "uVelocityScale");
+            // 一次性绑 sampler 到 texture unit (slot 0 = scene, slot 1 = velocity)
+            glUseProgram(programMotionBlur);
+            if (locMB_SceneTex    >= 0) glUniform1i(locMB_SceneTex,    0);
+            if (locMB_VelocityTex >= 0) glUniform1i(locMB_VelocityTex, 1);
+            glUseProgram(0);
+            motionBlurSupported = true;
+        } else {
+            motionBlurSupported = false;
+        }
+
         CC::Log(CC::LOG_INFO,
                 "GL33: Phase E.6+E.7+E.8+E.9+E.10+E.11+E.12 LensFx/SSAO/SSR ready (lensDirt=%s, streak=%s, lensFlare=%s, ssao=%s, ssr=%s, ssrBlur=%s, ssrTemporal=%s; programs=[LD=%u, SB=%u, SC=%u, LFG=%u, S=%u, SB=%u, SC=%u, SSR=%u, SSRC=%u, SSRB=%u, SSRT=%u])",
                 lensDirtSupported ? "yes" : "no",
@@ -3732,6 +3884,13 @@ public:
         locSSRTemporal_VelocityDilation = -1;
         locSSRTemporal_VelocityFormat   = -1;
         locSSRTemporal_VelocityScale    = -1;
+
+        // Phase E.15 — Motion Blur 清理 (1 program; ping-pong RT 由 MotionBlurRenderer 管)
+        if (programMotionBlur) { glDeleteProgram(programMotionBlur); programMotionBlur = 0; }
+        motionBlurSupported = false;
+        locMB_SceneTex = locMB_VelocityTex = locMB_Texel = -1;
+        locMB_Strength = locMB_SampleCount = -1;
+        locMB_VelocityDilation = locMB_VelocityFormat = locMB_VelocityScale = -1;
     }
 
     bool SupportsLit2D() const override { return lit2DSupported; }
@@ -6131,6 +6290,113 @@ public:
     bool  GetVelocityDilation() const override { return velocityDilation_; }
     float GetVelocityScale() const override { return kVelocityScaleDefault; }
     VelocityFormat GetActiveVelocityFormat() const override { return activeVelocityFormat_; }
+
+    // ==================== Phase E.15 — Motion Blur 虚接口实现 ====================
+
+    bool SupportsMotionBlur() const override { return motionBlurSupported; }
+
+    /// 创建 motion blur ping-pong RT (RGBA16F, color-only, 无 depth)
+    /// @param  outTex  返回 GL tex id (失败为 0)
+    /// @return GL fbo id (失败为 0)
+    uint32_t CreateMotionBlurRT(int w, int h, uint32_t* outTex) override {
+        if (outTex) *outTex = 0;
+        if (!motionBlurSupported || w <= 0 || h <= 0 || !outTex) return 0;
+
+        GLuint fbo = 0, tex = 0;
+        glGenFramebuffers(1, &fbo);
+        glGenTextures(1, &tex);
+        if (!fbo || !tex) {
+            if (fbo) glDeleteFramebuffers(1, &fbo);
+            if (tex) glDeleteTextures(1, &tex);
+            return 0;
+        }
+
+        glBindTexture(GL_TEXTURE_2D, tex);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, w, h, 0, GL_RGBA, GL_FLOAT, nullptr);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S,     GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T,     GL_CLAMP_TO_EDGE);
+
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
+        GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glBindTexture(GL_TEXTURE_2D, 0);
+
+        if (status != GL_FRAMEBUFFER_COMPLETE) {
+            CC::Log(CC::LOG_WARN,
+                    "GL33: Phase E.15 Motion Blur FBO incomplete (status=0x%X), %dx%d", status, w, h);
+            glDeleteFramebuffers(1, &fbo);
+            glDeleteTextures(1, &tex);
+            return 0;
+        }
+
+        *outTex = (uint32_t)tex;
+        return (uint32_t)fbo;
+    }
+
+    void DeleteMotionBlurRT(uint32_t fbo, uint32_t tex) override {
+        if (fbo) { GLuint f = (GLuint)fbo; glDeleteFramebuffers(1, &f); }
+        if (tex) { GLuint t = (GLuint)tex; glDeleteTextures(1, &t);     }
+    }
+
+    /// Motion Blur 完整 2-pass:
+    ///   Pass1: bind motionBlurFbo → 沿 velocity 多采样 sceneTex → 写 motionBlurTex
+    ///   Pass2: glBlitFramebuffer(motionBlurFbo → dstFbo, COLOR_BUFFER) 覆盖 sceneTex
+    void DrawMotionBlur(uint32_t sceneTex, uint32_t velocityTex,
+                        uint32_t motionBlurFbo, uint32_t motionBlurTex,
+                        uint32_t dstFbo,
+                        int w, int h,
+                        float strength, int sampleCount) override {
+        if (!motionBlurSupported || !programMotionBlur) return;
+        if (!sceneTex || !velocityTex || !motionBlurFbo || !motionBlurTex || !dstFbo) return;
+        if (w <= 0 || h <= 0) return;
+
+        // ===== Pass1: 全屏 shader, 写 motionBlurFbo =====
+        glBindFramebuffer(GL_FRAMEBUFFER, (GLuint)motionBlurFbo);
+        glViewport(0, 0, w, h);
+        glDisable(GL_BLEND);
+        glDisable(GL_DEPTH_TEST);
+        glDisable(GL_CULL_FACE);
+        glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+
+        glUseProgram(programMotionBlur);
+        // 上传 uniform (clamp 调用方已做, 此处再补 sanity)
+        if (locMB_Texel       >= 0) glUniform2f(locMB_Texel, 1.0f / (float)w, 1.0f / (float)h);
+        if (locMB_Strength    >= 0) glUniform1f(locMB_Strength, strength);
+        if (locMB_SampleCount >= 0) glUniform1i(locMB_SampleCount, sampleCount);
+        // Phase E.14 联动: 实时取 backend 的 dilation/format/scale
+        if (locMB_VelocityDilation >= 0) glUniform1i(locMB_VelocityDilation, velocityDilation_ ? 1 : 0);
+        if (locMB_VelocityFormat   >= 0) glUniform1i(locMB_VelocityFormat,
+                                                    (activeVelocityFormat_ == VelocityFormat::RG8) ? 1 : 0);
+        if (locMB_VelocityScale    >= 0) glUniform1f(locMB_VelocityScale, kVelocityScaleDefault);
+
+        // 绑 sampler unit (slot 0 = scene, slot 1 = velocity)
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, (GLuint)sceneTex);
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, (GLuint)velocityTex);
+
+        // 全屏三角 (用 vaoTonemap, 6 顶点 = 2 三角形)
+        glBindVertexArray(vaoTonemap);
+        glDrawArrays(GL_TRIANGLES, 0, 6);
+        glBindVertexArray(0);
+
+        // 状态复位
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        glUseProgram(0);
+
+        // ===== Pass2: blit motionBlurFbo → dstFbo (覆盖 sceneTex) =====
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, (GLuint)motionBlurFbo);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, (GLuint)dstFbo);
+        glBlitFramebuffer(0, 0, w, h, 0, 0, w, h, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+    }
 
     void SetNextPreviousModelMatrix(const float* prevModelMat4) override {
         if (!prevModelMat4) {

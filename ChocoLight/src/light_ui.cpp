@@ -34,6 +34,7 @@
 #include "lens_flare_renderer.h"      // Phase E.7.2 — Lens Flare (Ghost + Halo + Chromatic)
 #include "ssao_renderer.h"              // Phase E.8.2 — SSAO (屏幕空间环境光遮蔽)
 #include "ssr_renderer.h"               // Phase E.9 — SSR (屏幕空间反射)
+#include "motion_blur_renderer.h"       // Phase E.15 — Velocity-driven Motion Blur
 #include "light_audio_backend.h"
 #include "light_platform_net.h"
 #include "platform_window.h"
@@ -515,6 +516,8 @@ static int l_Window_Open(lua_State* L) {
     SSAORenderer::Init(g_render);
     // Phase E.9: 初始化 SSR (默认 autoEnable=false)
     SSRRenderer::Init(g_render);
+    // Phase E.15: 初始化 Motion Blur (默认 autoEnable=false)
+    MotionBlurRenderer::Init(g_render);
 
     // 初始化音频后端
     if (!AudioBackend::Init()) {
@@ -739,6 +742,8 @@ static int l_UI_Resume(lua_State* L) {
             }
             PlatformNet::Shutdown();
             AudioBackend::Shutdown();
+            // Phase E.15: Motion Blur 依赖 HDR sceneTex + velocityTex; 最先关闭 (管线末端)
+            MotionBlurRenderer::Shutdown();
             // Phase E.9: SSR 依赖 HDR RT + G-buffer normal; 最先关闭 (管线末端, 在 SSAO 之前)
             SSRRenderer::Shutdown();
             // Phase E.8.2: SSAO 依赖 HDR RT depth; 最先关闭 (管线末端)

@@ -60,7 +60,7 @@
 
 | 候选 | 动机 | 备注 |
 |------|------|------|
-| Velocity 驱动 motion blur | 利用 RG16F/RG8 velocity 做后处理 | Phase E.13 §3 候选；现可消费完整 velocity |
+| ✅ Velocity 驱动 motion blur | 利用 RG16F/RG8 velocity 做后处理 | **Phase E.15 已完成**（11 fn Lua API + 全管线集成） |
 | Velocity 驱动 TAA | 取代 Phase E.12 reverse depth 作为整帧 TAA | 需 history color RT + neighborhood clip + camera jitter |
 | Roughness-aware Temporal SSR | 高 roughness 用 velocity，低 roughness 用 matrix | 需 GBuffer roughness 透传到 Temporal shader |
 | 独立 velocity dilation pass | velocity 多消费者时（motion blur + TAA + SSR）共享 dilated RT | 需 1 个新 RT + 1 个 fullscreen pass |

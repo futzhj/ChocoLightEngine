@@ -14,6 +14,7 @@
 #include "lens_flare_renderer.h"        // Phase E.7.2 — Lens Flare (ghost + halo + chromatic) 联动
 #include "ssao_renderer.h"               // Phase E.8.2 — SSAO (屏幕空间环境光遮蔽) 联动
 #include "ssr_renderer.h"                // Phase E.9 — SSR (屏幕空间反射) 联动
+#include "motion_blur_renderer.h"        // Phase E.15 — Velocity-driven Motion Blur 联动
 #include "light.h"         // CC::Log
 
 #include <chrono>
@@ -179,11 +180,15 @@ bool Enable(int w, int h) {
     SSAORenderer::OnHDREnabled(w, h);
     // Phase E.9 — 通知 SSR (autoEnable=false 时 no-op)
     SSRRenderer::OnHDREnabled(w, h);
+    // Phase E.15 — 通知 Motion Blur (autoEnable=false 时 no-op)
+    MotionBlurRenderer::OnHDREnabled(w, h);
     return true;
 }
 
 void Disable() {
     if (!g.enabled) return;
+    // Phase E.15 — Motion Blur 依赖 HDR sceneTex + velocityTex, 最先关闭 (管线末端)
+    MotionBlurRenderer::OnHDRDisabled();
     // Phase E.9 — SSR 依赖 HDR RT depth + normal (blit 源), 必须在 HDR RT 销毁前先释放 (在 SSAO 之前, 与容释放顺序无冲突)
     SSRRenderer::OnHDRDisabled();
     // Phase E.8.2 — SSAO 依赖 HDR RT depth (blit 源), 必须在 HDR RT 销毁前先释放
@@ -231,6 +236,7 @@ bool Resize(int w, int h) {
         LensFlareRenderer::OnHDRResized(w, h);      // Phase E.7.2
         SSAORenderer::OnHDRResized(w, h);            // Phase E.8.2 — SSAO depth/AO RT 同步尺寸
         SSRRenderer::OnHDRResized(w, h);             // Phase E.9 — SSR depth/reflect RT 同步尺寸
+        MotionBlurRenderer::OnHDRResized(w, h);      // Phase E.15 — motion blur RT 同步尺寸
     }
     return ok;
 }
@@ -298,6 +304,10 @@ void EndScene() {
     // Phase E.7.2 — Lens Flare (内部自检 IsEnabled; 未启用 no-op)
     // 复用 Bloom bright/composite shader, 独立 ping-pong RT
     LensFlareRenderer::Process(g.fbo, g.sceneTex);
+
+    // Phase E.15 — Motion Blur (LensFlare 之后, Tonemap 之前)
+    // 读 sceneTex + velocityTex 写 ping-pong, 再 blit 覆盖回 sceneTex
+    MotionBlurRenderer::Process(g.fbo, g.sceneTex);
 
     // Tonemap exposure: AE 开时覆盖 manual; AE 关时回归 manual SetExposure
     float exposure = AutoExposureRenderer::IsEnabled()
