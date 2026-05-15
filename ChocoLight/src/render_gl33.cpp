@@ -6791,10 +6791,12 @@ public:
 
     /// 创建 dilation pass ping-pong RT (RG16F, color-only, 无 depth)
     /// 与 motion blur RT 同模式; dilatedTex.rg = shader 内已 decode 的 float velocity
-    /// w/h 必须与 srcVelocityTex 同尺寸 (full-res), 即使 motion blur 半分辨率也用全尺寸
-    uint32_t CreateVelocityDilateRT(int w, int h, uint32_t* outTex) override {
+    /// Phase E.18.1: w/h = logical (full-res, 当前未使用), sw/sh = storage (实际 RT 尺寸)
+    ///               halfRes=false 时 sw=w, sh=h; halfRes=true 时 sw=((w+1)/2), sh=((h+1)/2)
+    uint32_t CreateVelocityDilateRT(int w, int h, int sw, int sh, uint32_t* outTex) override {
+        (void)w; (void)h;   // logical 当前未用 (保留供未来 sanity check; 实际尺寸取自 sw/sh)
         if (outTex) *outTex = 0;
-        if (!velocityDilateSupported || w <= 0 || h <= 0 || !outTex) return 0;
+        if (!velocityDilateSupported || sw <= 0 || sh <= 0 || !outTex) return 0;
 
         GLuint fbo = 0, tex = 0;
         glGenFramebuffers(1, &fbo);
@@ -6807,8 +6809,9 @@ public:
 
         glBindTexture(GL_TEXTURE_2D, tex);
         // dilatedTex 永远 RG16F (无视 raw velocity format), shader 内 decode 后直存 float
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RG16F, w, h, 0, GL_RG, GL_FLOAT, nullptr);
-        // bilinear: consumer 单点采 sub-pixel 时硬件 filter 平滑;
+        // Phase E.18.1: 实际存储尺寸 = sw × sh (half-res 时 1/4 像素 / 1/4 VRAM)
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RG16F, sw, sh, 0, GL_RG, GL_FLOAT, nullptr);
+        // bilinear: consumer 单点采 sub-pixel 时硬件 filter 平滑 (half-res 时承担上采角色);
         // CLAMP_TO_EDGE: 边界采样不引入 wrap artifact
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
@@ -6823,8 +6826,8 @@ public:
 
         if (status != GL_FRAMEBUFFER_COMPLETE) {
             CC::Log(CC::LOG_WARN,
-                    "GL33: Phase E.18 Velocity Dilate FBO incomplete (status=0x%X), %dx%d",
-                    status, w, h);
+                    "GL33: Phase E.18 Velocity Dilate FBO incomplete (status=0x%X), %dx%d (logical %dx%d)",
+                    status, sw, sh, w, h);
             glDeleteFramebuffers(1, &fbo);
             glDeleteTextures(1, &tex);
             return 0;
@@ -6842,21 +6845,23 @@ public:
     /// 执行 dilation pass — 全屏 9-tap max-length 单 pass
     ///   shader 内据 backend velocityFormat 状态 decode raw velocity,
     ///   输出写入 dilatedTex (RG16F, 已 decode 的 float)
-    void DrawVelocityDilate(uint32_t srcVelocityTex, uint32_t dstFbo, int w, int h) override {
+    /// Phase E.18.1: sw/sh = dilatedTex storage 尺寸 (= viewport, uTexel = 1/(sw,sh))
+    ///               half-res 时邻域物理覆盖 = 6 raw 像素 (vs full-res 的 3 raw 像素), max-filter 更鲁棒
+    void DrawVelocityDilate(uint32_t srcVelocityTex, uint32_t dstFbo, int sw, int sh) override {
         if (!velocityDilateSupported || !programVelocityDilate) return;
-        if (!srcVelocityTex || !dstFbo || w <= 0 || h <= 0) return;
+        if (!srcVelocityTex || !dstFbo || sw <= 0 || sh <= 0) return;
 
-        // 全分辨率 viewport (与 srcVelocityTex 同尺寸)
+        // viewport 跟随 dilatedTex 实际尺寸 (full-res 或 half-res)
         glBindFramebuffer(GL_FRAMEBUFFER, (GLuint)dstFbo);
-        glViewport(0, 0, w, h);
+        glViewport(0, 0, sw, sh);
         glDisable(GL_BLEND);
         glDisable(GL_DEPTH_TEST);
         glDisable(GL_CULL_FACE);
         glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
 
         glUseProgram(programVelocityDilate);
-        // uTexel = 1.0 / vec2(W, H) — full-res, 决定 9-tap 邻域物理覆盖 (与 SSR/MB inline 9-tap 一致)
-        if (locVDilate_Texel          >= 0) glUniform2f(locVDilate_Texel, 1.0f / (float)w, 1.0f / (float)h);
+        // uTexel = 1.0 / vec2(sw, sh) — 半分辨率纹素间距; 9-tap 在 raw velocity space 物理覆盖 = 2(sw 步长)*3 = 6 raw 像素
+        if (locVDilate_Texel          >= 0) glUniform2f(locVDilate_Texel, 1.0f / (float)sw, 1.0f / (float)sh);
         // 据 backend 当前 velocityFormat 状态告知 shader 如何 decode raw (RG16F 直存 / RG8 反编码)
         if (locVDilate_VelocityFormat >= 0) glUniform1i(locVDilate_VelocityFormat,
                                                        (activeVelocityFormat_ == VelocityFormat::RG8) ? 1 : 0);

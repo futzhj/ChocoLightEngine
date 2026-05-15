@@ -591,6 +591,7 @@ EndFrame
 | 曝光 / 伽马 | `SetExposure / GetExposure / SetGamma / GetGamma` | E.3 |
 | Tonemap operator | `SetTonemapper / GetTonemapper` | E.3.4 |
 | Velocity dilation | `SetVelocityDilation / GetVelocityDilation` | E.14 |
+| Velocity dilation 半分辨率 | `SetVelocityDilationHalfRes / GetVelocityDilationHalfRes` | E.18.1 |
 | Velocity 格式 | `SetVelocityFormat / GetVelocityFormat` | E.14 |
 
 ---
@@ -852,6 +853,97 @@ if not ok then print("err: " .. err) end  -- "SetVelocityDilation: expect boolea
 ### 返回值
 
 `boolean`：当前 dilation 开关状态（默认 true）
+
+---
+
+## `HDR.SetVelocityDilationHalfRes`
+
+**Phase E.18.1** —— 控制独立 dilation pass 的输出 RT 是否为**半分辨率**。开启后：
+
+- `dilatedVelocityTex` / `dilatedCameraVelocityTex` 尺寸 = `((W+1)/2, (H+1)/2)` 向上取整
+- **VRAM 节省 75%**（1080p：每张 RT 由 8MB → 2MB；双 RT 同步 12MB 总省）
+- **dilation pass 自身性能 +4×**（fragment count -75%）
+- **uTexel = `1/(sw, sh)`**：邻域物理覆盖在 raw velocity space 由 3 raw 像素扩展为 6 raw 像素，max-filter 自动更鲁棒（不会引入伪信号）
+- Consumer (SSR Temporal / Motion Blur) 仍单点采样 `dilatedTex`，硬件 `GL_LINEAR + GL_CLAMP_TO_EDGE` 自动 bilinear 上采至 full-res 屏幕坐标
+- **默认 OFF**（与 Phase E.18 完全等价行为）
+
+> **生效前提**
+>
+> 此开关**仅在 dilation pass 启用时有意义**：需要满足 `SetVelocityDilation(true)`（默认 ON）+ backend 支持 dilation pass（`SupportsVelocityDilation()=true`）。若不满足，字段被保存但 dilated RT 未创建，状态对渲染无影响。
+
+### 参数
+
+| 名称 | 类型 | 说明 |
+|------|------|------|
+| `on` | `boolean` | true = 半分辨率；false = 全分辨率（默认）|
+
+### 返回值
+
+| 状态 | 返回 |
+|------|------|
+| 成功 | `boolean true` |
+| 入参非 boolean | `nil, string err`（多返回值）|
+
+### 行为
+
+- 切换时若 HDR 已 Enable → **立即释放并重建** dilated RT（combined + camera-only 双 RT 同步切换），无需调用 Resize
+- 切换时若未 Enable → 仅更新 state，下次 Enable 时按新尺寸创建
+- 同值切换 = no-op（不重建 RT）
+
+### 性能 / VRAM 收益（Phase E.18.1，1080p）
+
+| 配置 | VRAM (combined+camera) | dilation pass 像素数 | dilation pass 估算 ms |
+|------|----------------------|---------------------|----------------------|
+| `halfRes=false`（默认）| 16 MB | 2.07 M | 0.10 ms |
+| `halfRes=true` | **4 MB** | **0.52 M** | **0.025 ms** |
+| **节省** | **-75%** | **-75%** | **-75%（dilation 自身）** |
+
+> Consumer fetch 数不变（仍单点采 dilatedTex），故总管线收益主要在 dilation pass 自身 + VRAM。
+
+### 适用场景
+
+| 场景 | halfRes 推荐 |
+|------|------------|
+| Mobile / VR | ✅ 始终 ON |
+| 4K (2160p) | ✅ ON |
+| 1440p QHD | ✅ ON |
+| 1080p + 单 consumer（仅 SSR Temporal 或仅 Motion Blur N≤4）| ⚖️ 看视觉容忍度 |
+| 1080p + 多 consumer（SSR + MB N=8） | ✅ ON |
+| 720p HD | ❌ OFF（VRAM 已不大）|
+| 极宽窄物体高速运动场景 | ❌ OFF（half-res 可能漏 1px 物体）|
+
+### 示例
+
+```lua
+-- 移动端推荐配置：dilation pass + half-res 双开
+Light.Graphics.HDR.Enable(1280, 720)
+Light.Graphics.HDR.SetVelocityDilation(true)         -- 默认 ON
+Light.Graphics.HDR.SetVelocityDilationHalfRes(true)  -- VRAM -75%
+
+-- 桌面 4K 配置 + 多 consumer
+Light.Graphics.HDR.Enable(3840, 2160)
+Light.Graphics.HDR.SetVelocityDilationHalfRes(true)  -- 4K dilation pass 受益最大
+
+-- 类型错
+local ok, err = Light.Graphics.HDR.SetVelocityDilationHalfRes("yes")
+if not ok then print("err: " .. err) end  -- "SetVelocityDilationHalfRes: expect boolean"
+```
+
+---
+
+## `HDR.GetVelocityDilationHalfRes`
+
+### 返回值
+
+`boolean`：当前 dilation pass 半分辨率状态（默认 false）
+
+### 示例
+
+```lua
+if Light.Graphics.HDR.GetVelocityDilationHalfRes() then
+    print("dilation pass running at half-res")
+end
+```
 
 ---
 

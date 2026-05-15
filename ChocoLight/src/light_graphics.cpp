@@ -1667,6 +1667,31 @@ static int l_HDR_GetVelocityDilation(lua_State* L) {
     return 1;
 }
 
+/// @lua_api Light.Graphics.HDR.SetVelocityDilationHalfRes
+/// @brief Phase E.18.1 — dilation pass 半分辨率开关 (默认 OFF / full-res)
+/// @param on boolean true=半分辨率 (VRAM -75% / dilation perf +4×) / false=全分辨率
+/// @return boolean true = 设置成功; nil, string = 入参非 boolean
+/// @note 仅在 dilation pass 启用 (SetVelocityDilation(true) + backend 支持) 时有意义；
+///       切换时若已 Enable 立即重建 dilated RT (双 RT 同步)
+static int l_HDR_SetVelocityDilationHalfRes(lua_State* L) {
+    if (!lua_isboolean(L, 1)) {
+        lua_pushnil(L);
+        lua_pushstring(L, "SetVelocityDilationHalfRes: expect boolean");
+        return 2;
+    }
+    bool on = lua_toboolean(L, 1) != 0;
+    HDRRenderer::SetVelocityDilationHalfRes(on);
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+/// @lua_api Light.Graphics.HDR.GetVelocityDilationHalfRes
+/// @return boolean 当前 dilation 半分辨率状态 (默认 false)
+static int l_HDR_GetVelocityDilationHalfRes(lua_State* L) {
+    lua_pushboolean(L, HDRRenderer::GetVelocityDilationHalfRes() ? 1 : 0);
+    return 1;
+}
+
 /// @lua_api Light.Graphics.HDR.SetVelocityFormat
 /// @brief 切换 velocity buffer 存储格式 (RG16F 默认 / RG8 节省 4x VRAM)
 /// @param fmt string "rg16f" | "rg8" (大小写敏感)
@@ -1716,6 +1741,9 @@ static const luaL_Reg hdr_funcs[] = {
     {"GetVelocityDilation", l_HDR_GetVelocityDilation},
     {"SetVelocityFormat",   l_HDR_SetVelocityFormat},
     {"GetVelocityFormat",   l_HDR_GetVelocityFormat},
+    // Phase E.18.1 — dilation pass 半分辨率开关
+    {"SetVelocityDilationHalfRes", l_HDR_SetVelocityDilationHalfRes},
+    {"GetVelocityDilationHalfRes", l_HDR_GetVelocityDilationHalfRes},
     {NULL, NULL}
 };
 

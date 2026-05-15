@@ -163,6 +163,16 @@ uint32_t GetDilatedCameraVelocityTexture();
 bool          SetVelocityDilation(bool on);
 bool          GetVelocityDilation();
 
+/// Phase E.18.1 — dilation pass 半分辨率开关（默认 OFF / full-res）
+/// halfRes=true: dilatedTex 尺寸 = ((W+1)/2, (H+1)/2), VRAM -75% / dilation pass perf +4×
+/// halfRes=false: dilatedTex 与 raw velocityTex 同尺寸 (Phase E.18 默认行为)
+/// 仅在 dilation pass 启用 (SetVelocityDilation(true) + backend 支持) 时有意义;
+/// 否则字段被保存但不影响渲染 (dilation RT 未创建)。
+/// 切换时若 HDR 已 Enable → 立即释放并重建 dilated RT (双 RT 同步切换)
+/// @return true = 设置成功 (含 no-op 同值); false 不会返回
+bool          SetVelocityDilationHalfRes(bool on);
+bool          GetVelocityDilationHalfRes();
+
 /// Velocity 存储格式切换（RG16F 默认 vs RG8 低精度节 VRAM）
 /// @return true = 切换成功（含 RT 重建）; false = 后端未启 / 重建失败。
 /// HDR 未 Enable 时仅更新 state，下次 Enable 时生效。切换会隐含重置 velocity history。

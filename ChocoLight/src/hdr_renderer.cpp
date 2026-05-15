@@ -53,12 +53,83 @@ struct State {
     // 内容:     9-tap max-length 后已 decode 的 RG16F float velocity
     // 消费:     MotionBlurRenderer / SSRRenderer 走单点采样
     uint32_t       dilatedVelocityFbo       = 0;  // combined velocity dilation 输出 fbo
-    uint32_t       dilatedVelocityTex       = 0;  // 与 g.fbo velocityTex 同尺寸 RG16F
+    uint32_t       dilatedVelocityTex       = 0;  // 与 g.fbo velocityTex 同尺寸 (或 half-res) RG16F
     uint32_t       dilatedCameraVelocityFbo = 0;  // camera-only dilation 输出 fbo (与 cameraVelocityTex 同条件)
     uint32_t       dilatedCameraVelocityTex = 0;
+
+    // Phase E.18.1 — dilation pass 半分辨率开关 (默认 false = full-res = Phase E.18 行为)
+    //   true: dilatedTex storage = ((W+1)/2, (H+1)/2); VRAM -75%, dilation pass perf +4×
+    //   仅在 dilation pass 启用时有意义 (否则 dilatedFbo 未创建, 字段被保存但不生效)
+    //   切换时若已 Enable → ReleaseDilationRT + RebuildDilationRT (双 RT 同步)
+    bool           dilationHalfRes          = false;
 };
 
 static State g;
+
+// Phase E.18.1: 内部辅助 — 计算 dilation RT 实际存储尺寸
+// halfRes=true 时 ((W+1)/2, (H+1)/2) 向上取整 (与 Phase E.17 motion blur 同模式)
+// halfRes=false 时 (W, H) 与 Phase E.18 行为等价
+static inline void ComputeDilationStorageSize(int w, int h, int& sw, int& sh) {
+    if (g.dilationHalfRes) {
+        sw = (w + 1) / 2;
+        sh = (h + 1) / 2;
+    } else {
+        sw = w;
+        sh = h;
+    }
+}
+
+// Phase E.18.1: 内部辅助 — 仅释放 dilation RT 部分 (不动 HDR scene/normal/velocity MRT)
+// 供 SetVelocityDilationHalfRes 切换时避免重建整个 HDR FBO
+void ReleaseDilationRT() {
+    if (!g.backend) return;
+    if (g.dilatedVelocityFbo || g.dilatedVelocityTex) {
+        g.backend->DeleteVelocityDilateRT(g.dilatedVelocityFbo, g.dilatedVelocityTex);
+        g.dilatedVelocityFbo = 0;
+        g.dilatedVelocityTex = 0;
+    }
+    if (g.dilatedCameraVelocityFbo || g.dilatedCameraVelocityTex) {
+        g.backend->DeleteVelocityDilateRT(g.dilatedCameraVelocityFbo, g.dilatedCameraVelocityTex);
+        g.dilatedCameraVelocityFbo = 0;
+        g.dilatedCameraVelocityTex = 0;
+    }
+    // 通知 backend dilation 已停用 (可能重建后才重新启用)
+    g.backend->SetDilationPassActive(false);
+}
+
+// Phase E.18.1: 内部辅助 — 重建 dilation RT (仅在 HDR 已 Enable + backend 支持 + raw velocityTex 存在时)
+// 取 raw cameraVelocityTex 是否存在决定是否同时创建 dilatedCamRT
+void RebuildDilationRT(int w, int h) {
+    if (!g.backend || !g.fbo || w <= 0 || h <= 0) return;
+    if (!g.backend->SupportsVelocityDilation()) return;
+    const uint32_t rawVelocity = g.backend->GetHDRVelocityTex(g.fbo);
+    if (!rawVelocity) return;
+
+    int dsw = 0, dsh = 0;
+    ComputeDilationStorageSize(w, h, dsw, dsh);
+
+    uint32_t dilatedTex = 0;
+    const uint32_t dilatedFbo = g.backend->CreateVelocityDilateRT(w, h, dsw, dsh, &dilatedTex);
+    if (dilatedFbo && dilatedTex) {
+        g.dilatedVelocityFbo = dilatedFbo;
+        g.dilatedVelocityTex = dilatedTex;
+        CC::Log(CC::LOG_INFO,
+                "HDRRenderer: Phase E.18.1 rebuilt dilated combined velocity RT (storage=%dx%d, halfRes=%s)",
+                dsw, dsh, g.dilationHalfRes ? "ON" : "OFF");
+    }
+    const uint32_t rawCamera = g.backend->GetHDRCameraVelocityTex(g.fbo);
+    if (rawCamera) {
+        uint32_t dilatedCamTex = 0;
+        const uint32_t dilatedCamFbo = g.backend->CreateVelocityDilateRT(w, h, dsw, dsh, &dilatedCamTex);
+        if (dilatedCamFbo && dilatedCamTex) {
+            g.dilatedCameraVelocityFbo = dilatedCamFbo;
+            g.dilatedCameraVelocityTex = dilatedCamTex;
+            CC::Log(CC::LOG_INFO,
+                    "HDRRenderer: Phase E.18.1 rebuilt dilated camera velocity RT (storage=%dx%d, halfRes=%s)",
+                    dsw, dsh, g.dilationHalfRes ? "ON" : "OFF");
+        }
+    }
+}
 
 // 内部辅助: 释放 RT 资源 (不改 exposure/gamma)
 void ReleaseRT() {
@@ -121,25 +192,29 @@ bool CreateRT(int w, int h) {
     //             同时创建 dilatedVelocityFbo/Tex (combined 始终; camera-only 与 cameraVelocityTex 同条件).
     //             创建失败 silent fallback — EndScene 内 dilation pass 自动 skip,
     //             consumer 走 inline 9-tap 旧路径 (零回归).
+    // Phase E.18.1: 透传实际存储尺寸 dsw/dsh (full-res 或 half-res)
     if (g.backend->SupportsVelocityDilation() && velocityTex) {
+        int dsw = 0, dsh = 0;
+        ComputeDilationStorageSize(w, h, dsw, dsh);
+
         uint32_t dilatedTex = 0;
-        const uint32_t dilatedFbo = g.backend->CreateVelocityDilateRT(w, h, &dilatedTex);
+        const uint32_t dilatedFbo = g.backend->CreateVelocityDilateRT(w, h, dsw, dsh, &dilatedTex);
         if (dilatedFbo && dilatedTex) {
             g.dilatedVelocityFbo = dilatedFbo;
             g.dilatedVelocityTex = dilatedTex;
             CC::Log(CC::LOG_INFO,
-                    "HDRRenderer: Phase E.18 dilated combined velocity RT created (%dx%d, fbo=%u, tex=%u)",
-                    w, h, dilatedFbo, dilatedTex);
+                    "HDRRenderer: Phase E.18 dilated combined velocity RT created (storage=%dx%d, logical=%dx%d, halfRes=%s, fbo=%u, tex=%u)",
+                    dsw, dsh, w, h, g.dilationHalfRes ? "ON" : "OFF", dilatedFbo, dilatedTex);
         }
         if (cameraVelocityTex) {
             uint32_t dilatedCamTex = 0;
-            const uint32_t dilatedCamFbo = g.backend->CreateVelocityDilateRT(w, h, &dilatedCamTex);
+            const uint32_t dilatedCamFbo = g.backend->CreateVelocityDilateRT(w, h, dsw, dsh, &dilatedCamTex);
             if (dilatedCamFbo && dilatedCamTex) {
                 g.dilatedCameraVelocityFbo = dilatedCamFbo;
                 g.dilatedCameraVelocityTex = dilatedCamTex;
                 CC::Log(CC::LOG_INFO,
-                        "HDRRenderer: Phase E.18 dilated camera velocity RT created (%dx%d, fbo=%u, tex=%u)",
-                        w, h, dilatedCamFbo, dilatedCamTex);
+                        "HDRRenderer: Phase E.18 dilated camera velocity RT created (storage=%dx%d, logical=%dx%d, halfRes=%s, fbo=%u, tex=%u)",
+                        dsw, dsh, w, h, g.dilationHalfRes ? "ON" : "OFF", dilatedCamFbo, dilatedCamTex);
             }
         }
     }
@@ -358,17 +433,21 @@ void EndScene() {
     //         后续 SSR Temporal / Motion Blur shader 走单点采样 (避免重复 9-tap)
     //   失败兜底: dilation RT 不存在或 raw velocityTex=0 → dilationActive=false,
     //             consumer fallback inline 9-tap (零回归)
+    // Phase E.18.1: 预先计算 dilation storage 尺寸 (full-res 或 half-res), 给 DrawVelocityDilate
     bool dilationActive = false;
     if (g.velocityDilation && g.backend->SupportsVelocityDilation()) {
+        int dsw = 0, dsh = 0;
+        ComputeDilationStorageSize(g.width, g.height, dsw, dsh);
+
         const uint32_t rawCombined = g.backend->GetHDRVelocityTex(g.fbo);
         if (rawCombined && g.dilatedVelocityFbo) {
-            g.backend->DrawVelocityDilate(rawCombined, g.dilatedVelocityFbo, g.width, g.height);
+            g.backend->DrawVelocityDilate(rawCombined, g.dilatedVelocityFbo, dsw, dsh);
             dilationActive = true;
         }
         // camera-only dilation 与 cameraVelocityTex 同条件 (MotionBlur mode=1/2 才用)
         const uint32_t rawCamera = g.backend->GetHDRCameraVelocityTex(g.fbo);
         if (rawCamera && g.dilatedCameraVelocityFbo) {
-            g.backend->DrawVelocityDilate(rawCamera, g.dilatedCameraVelocityFbo, g.width, g.height);
+            g.backend->DrawVelocityDilate(rawCamera, g.dilatedCameraVelocityFbo, dsw, dsh);
             // dilationActive 已在 combined 时置 true; camera-only 单独失败不影响
         }
     }
@@ -460,6 +539,22 @@ bool SetVelocityDilation(bool on) {
     g.backend->SetVelocityDilation(on);
     return true;
 }
+
+// Phase E.18.1 — dilation pass 半分辨率开关
+// no-op 短路: 同值不重建
+// 已 Enable: 立即 ReleaseDilationRT + RebuildDilationRT (双 RT 同步重建)
+// 未 Enable: 仅更新 state、下次 Enable 时 CreateRT 走新 sw/sh
+bool SetVelocityDilationHalfRes(bool on) {
+    if (g.dilationHalfRes == on) return true;   // no-op (同值)
+    g.dilationHalfRes = on;
+    // 仅在已 Enable 且 backend 支持 dilation pass 时才需重建
+    if (g.inited && g.backend && g.fbo && g.width > 0 && g.height > 0) {
+        ReleaseDilationRT();
+        RebuildDilationRT(g.width, g.height);
+    }
+    return true;
+}
+bool GetVelocityDilationHalfRes() { return g.dilationHalfRes; }
 
 bool GetVelocityDilation() { return g.velocityDilation; }
 

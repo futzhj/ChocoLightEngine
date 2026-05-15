@@ -37,6 +37,8 @@ local fn_names = {
     -- Phase E.14 — Velocity dilation + format
     "SetVelocityDilation", "GetVelocityDilation",
     "SetVelocityFormat",   "GetVelocityFormat",
+    -- Phase E.18.1 — dilation pass 半分辨率
+    "SetVelocityDilationHalfRes", "GetVelocityDilationHalfRes",
 }
 for _, k in ipairs(fn_names) do
     if type(HDR[k]) ~= "function" then
@@ -333,7 +335,55 @@ end
 pass("SetVelocityFormat case-sensitive ('RG8' rejected)")
 
 -- ============================================================
+-- 9) Phase E.18.1 — dilation pass half-resolution
+-- ============================================================
+--
+-- API: SetVelocityDilationHalfRes(bool), GetVelocityDilationHalfRes()
+-- Headless: smoke 运行时 HDR 未 Enable，但 API 接受未 Enable 状态
+--   - GetVelocityDilationHalfRes 返默认 false (兼容 Phase E.18 行为)
+--   - SetVelocityDilationHalfRes 仅更新 state，下次 Enable 时影响 dilated RT 尺寸
+
+-- 9.1 默认状态
+local dhr0 = HDR.GetVelocityDilationHalfRes()
+if type(dhr0) ~= "boolean" then
+    fail("GetVelocityDilationHalfRes should return boolean, got " .. type(dhr0))
+end
+if dhr0 ~= false then
+    fail("GetVelocityDilationHalfRes() default must be false, got " .. tostring(dhr0))
+end
+pass("GetVelocityDilationHalfRes() default = false")
+
+-- 9.2 SetVelocityDilationHalfRes round-trip
+HDR.SetVelocityDilationHalfRes(true)
+if HDR.GetVelocityDilationHalfRes() ~= true then
+    fail("SetVelocityDilationHalfRes(true) round-trip failed")
+end
+HDR.SetVelocityDilationHalfRes(false)
+if HDR.GetVelocityDilationHalfRes() ~= false then
+    fail("SetVelocityDilationHalfRes(false) round-trip failed")
+end
+pass("SetVelocityDilationHalfRes true/false round-trip ok")
+
+-- 9.3 SetVelocityDilationHalfRes bad arg → nil + err
+local ok_bdhr, err_bdhr = HDR.SetVelocityDilationHalfRes("yes")
+if ok_bdhr ~= nil then
+    fail("SetVelocityDilationHalfRes('yes') should return nil, got " .. tostring(ok_bdhr))
+end
+if type(err_bdhr) ~= "string" then
+    fail("SetVelocityDilationHalfRes bad-arg err must be string, got " .. type(err_bdhr))
+end
+pass("SetVelocityDilationHalfRes bad-arg returns nil + err string")
+
+-- 9.4 no-op 同值不报错
+HDR.SetVelocityDilationHalfRes(false)
+HDR.SetVelocityDilationHalfRes(false)
+if HDR.GetVelocityDilationHalfRes() ~= false then
+    fail("SetVelocityDilationHalfRes(false) twice should remain false")
+end
+pass("SetVelocityDilationHalfRes idempotent (no-op same value)")
+
+-- ============================================================
 -- Done
 -- ============================================================
 
-print("[Phase E.3 + E.14] Light.Graphics.HDR smoke PASS (16 functions)")
+print("[Phase E.3 + E.14 + E.18.1] Light.Graphics.HDR smoke PASS (18 functions)")
