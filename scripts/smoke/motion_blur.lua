@@ -1,12 +1,14 @@
--- Phase E.15+E.16 smoke: Light.Graphics.MotionBlur (velocity-driven motion blur surface)
+-- Phase E.15+E.16+E.17 smoke: Light.Graphics.MotionBlur (velocity-driven motion blur surface)
 --
--- API coverage (13 functions):
+-- API coverage (15 functions):
 --   Lifecycle 5: Enable / Disable / IsEnabled / IsSupported / Resize
 --   AutoEnable 2: SetAutoEnable / GetAutoEnable          (default false)
 --   Params     4: SetStrength / GetStrength (clamp [0, 4])
 --                 SetSampleCount / GetSampleCount (clamp [1, 32])
 --   Phase E.16 2: SetMode / GetMode (default 0; clamp [0, 2])
 --                 0=combined / 1=camera_only / 2=object_only
+--   Phase E.17 2: SetHalfRes / GetHalfRes (default false)
+--                 true=half-res (VRAM -75%, perf ~4x)
 --
 -- Headless guard: same as hdr.lua. Enable() MUST either
 --   (a) return false cleanly when no GL ctx (typical) OR
@@ -37,6 +39,7 @@ local fn_names = {
     "SetStrength", "GetStrength",
     "SetSampleCount", "GetSampleCount",
     "SetMode", "GetMode",                       -- Phase E.16
+    "SetHalfRes", "GetHalfRes",                 -- Phase E.17
 }
 for _, k in ipairs(fn_names) do
     if type(MB[k]) ~= "function" then
@@ -236,8 +239,41 @@ pass("SetMode clamp upper bound (2)")
 MB.SetMode(0)               -- 复位为 combined
 
 -- ============================================================
+-- 8) Phase E.17 — HalfRes default / round-trip / no-op
+-- ============================================================
+
+-- 默认 false (full-res, 与 Phase E.15/E.16 一致)
+local hr0 = MB.GetHalfRes()
+if type(hr0) ~= "boolean" then
+    fail("GetHalfRes should return boolean, got " .. type(hr0))
+end
+if hr0 ~= false then
+    fail("Default GetHalfRes() must be false, got " .. tostring(hr0))
+end
+pass("GetHalfRes() default = false")
+
+-- round-trip true → false
+MB.SetHalfRes(true)
+if MB.GetHalfRes() ~= true then
+    fail("SetHalfRes(true) round-trip failed")
+end
+MB.SetHalfRes(false)
+if MB.GetHalfRes() ~= false then
+    fail("SetHalfRes(false) round-trip failed")
+end
+pass("SetHalfRes / GetHalfRes round-trip ok")
+
+-- SetHalfRes 不应损坏 IsEnabled 状态类型 (headless 友好)
+MB.SetHalfRes(true)
+if type(MB.IsEnabled()) ~= "boolean" then
+    fail("SetHalfRes 不应影响 IsEnabled 返回类型")
+end
+MB.SetHalfRes(false)        -- 复位
+pass("SetHalfRes does not corrupt IsEnabled state")
+
+-- ============================================================
 -- Final summary
 -- ============================================================
 
 print("")
-print("=== Light.Graphics.MotionBlur smoke OK (Phase E.15+E.16) ===")
+print("=== Light.Graphics.MotionBlur smoke OK (Phase E.15+E.16+E.17) ===")

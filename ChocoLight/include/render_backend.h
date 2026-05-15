@@ -1168,10 +1168,14 @@ public:
     virtual bool SupportsMotionBlur() const { return false; }
 
     /// 创建 motion blur ping-pong RT (RGBA16F, color-only, 无 depth)
-    /// @param  w, h    与 HDR sceneTex 同尺寸
-    /// @param  outTex  返回 GL tex id (失败为 0)
+    /// @param  w, h               逻辑尺寸 (与 HDR sceneTex 同)
+    /// @param  outTex             返回 GL tex id (失败为 0)
+    /// @param  storageW, storageH Phase E.17 — RT 实际分配尺寸 (0 = 沿用 w/h)
+    ///                            half-res 下为 (w+1)/2, (h+1)/2
     /// @return GL fbo id (失败为 0); 失败时 outTex 也保证为 0
-    virtual uint32_t CreateMotionBlurRT(int /*w*/, int /*h*/, uint32_t* outTex) {
+    virtual uint32_t CreateMotionBlurRT(int /*w*/, int /*h*/, uint32_t* outTex,
+                                         int /*storageW*/ = 0,    // ★ Phase E.17
+                                         int /*storageH*/ = 0) {  // ★ Phase E.17
         if (outTex) *outTex = 0;
         return 0;
     }
@@ -1193,13 +1197,17 @@ public:
     /// @param strength            用户调节 [0, 4] (clamp 由调用方做)
     /// @param sampleCount         沿 velocity 采样数 [1, 32] (clamp 由调用方做)
     /// @param mode                Phase E.16 — 0=combined / 1=camera_only / 2=object_only
+    /// @param rtW, rtH            Phase E.17 — motionBlurTex 实际尺寸 (0 = 沿用 w/h)
+    ///                            Pass1 viewport 用 (rtW, rtH); Pass2 blit src=(rtW, rtH) dst=(w, h)
+    ///                            (rtW < w || rtH < h) → 自动选 GL_LINEAR 上采样; 否则 GL_NEAREST
     virtual void DrawMotionBlur(uint32_t /*sceneTex*/, uint32_t /*velocityTex*/,
                                  uint32_t /*cameraVelocityTex*/,
                                  uint32_t /*motionBlurFbo*/, uint32_t /*motionBlurTex*/,
                                  uint32_t /*dstFbo*/,
                                  int /*w*/, int /*h*/,
                                  float /*strength*/, int /*sampleCount*/,
-                                 int /*mode*/) {}
+                                 int /*mode*/,
+                                 int /*rtW*/ = 0, int /*rtH*/ = 0) {}  // ★ Phase E.17
 };
 
 // ==================== 工厂函数 ====================

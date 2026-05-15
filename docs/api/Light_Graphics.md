@@ -1138,6 +1138,60 @@ print(Light.Graphics.MotionBlur.GetMode())  --> 2
 
 ---
 
+## `MotionBlur.SetHalfRes`
+
+**Phase E.17** — Half-res motion blur 开关。`motionBlurTex` 改为 `((w+1)/2, (h+1)/2)`，Pass2 用 `GL_LINEAR` 硬件 bilinear 上采样回原分辨率。
+
+### 参数
+
+| 名称 | 类型 | 说明 |
+|------|------|------|
+| `flag` | `boolean` | true = 启用 half-res；false = full-res（默认） |
+
+### 性能与 VRAM 收益（@ 1080p RGBA16F）
+
+| 项 | full-res（默认） | half-res（Phase E.17） | 收益 |
+|----|----------------|------------------------|------|
+| Pass1 fragment 数 | 2,073,600 | 518,400 | **−75%** |
+| Pass1 时间（sampleCount=8） | ~0.50 ms | ~0.13 ms | **−74%** |
+| Pass2 blit | ~0.05 ms (NEAREST) | ~0.07 ms (LINEAR) | +0.02 ms |
+| **合计** | ~0.55 ms | **~0.20 ms** | **−64%** |
+| `motionBlurTex` VRAM | 8 MB | **2 MB** | **−75%** |
+
+### 设计
+
+- **velocity buffer 保持全分辨率**：shader 9-tap dilation 物理覆盖范围正确，精度无损
+- **shader 零改动**：uTexel 仍按全分辨率 `1/vec2(w, h)` 上传，dilation 邻域物理覆盖一致
+- **bilinear 上采样自动低通**：行业惯例不补偿 strength/sampleCount，依赖低分辨率本身的低通效应自然平滑视觉
+- **切换时机**：已 Enable 时立即 Resize 重建 RT；未 Enable 时下次 Enable 生效
+- **零回归**：默认 false → 与 Phase E.15/E.16 完全一致；Pass2 自动 fallback `GL_NEAREST`
+
+### 使用建议
+
+| 场景 | 推荐 |
+|------|------|
+| 移动端 / VR | ✅ 始终 ON |
+| 高分屏（≥ 1440p） | ✅ ON（视觉损失肉眼几乎不可见） |
+| 桌面 1080p | ⚖️ 性能优先 ON / 极致质量 OFF |
+| 720p 以下 | ❌ OFF（half-res 360p 视觉劣化明显） |
+
+### 示例
+
+```lua
+Light.Graphics.MotionBlur.SetHalfRes(true)         -- 启用
+print(Light.Graphics.MotionBlur.GetHalfRes())      --> true
+```
+
+---
+
+## `MotionBlur.GetHalfRes`
+
+### 返回值
+
+`boolean`：当前 half-res 开关状态
+
+---
+
 ## 完整用法示例
 
 ```lua
@@ -1154,6 +1208,7 @@ if MB.IsSupported() then
     MB.SetStrength(1.5)
     MB.SetSampleCount(16)
     MB.SetMode(1)               -- Phase E.16: camera-only motion blur
+    MB.SetHalfRes(true)         -- Phase E.17: half-res 优化（移动端 / 高分屏推荐）
 end
 
 -- 3. 主循环：Draw 3D 场景（mesh:Draw 传 prevModel 才会写 velocity buffer）

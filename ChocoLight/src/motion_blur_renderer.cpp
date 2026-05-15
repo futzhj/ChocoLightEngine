@@ -33,6 +33,7 @@ struct State {
     float          strength    = 1.0f;      // [0, 4]
     int            sampleCount = 8;         // [1, 32]
     int            mode        = 0;         // Phase E.16: 0=combined / 1=camera / 2=object
+    bool           halfRes     = false;     // Phase E.17: half-res motion blur 开关
 };
 
 static State g;
@@ -48,12 +49,27 @@ void ReleaseRT() {
     g.height = 0;
 }
 
+// Phase E.17 — 内部辅助: 从逻辑尺寸 (w, h) 推出 motionBlurTex 实际存储尺寸
+// halfRes=true → (w+1)/2, (h+1)/2 (向上取整防奇数丢边)
+static inline void ComputeStorageSize(int w, int h, int& sw, int& sh) {
+    if (g.halfRes) {
+        sw = (w + 1) / 2;
+        sh = (h + 1) / 2;
+    } else {
+        sw = w;
+        sh = h;
+    }
+}
+
 // 内部辅助: 创建 RT 资源 (失败返回 false 并清理半成品)
 bool CreateRT(int w, int h) {
     if (!g.backend) return false;
     if (w <= 0 || h <= 0) return false;
     uint32_t tex = 0;
-    uint32_t fbo = g.backend->CreateMotionBlurRT(w, h, &tex);
+    // Phase E.17: 透传实际存储尺寸 (full-res 时 sw==w, sh==h, 与 Phase E.16 等价)
+    int sw = 0, sh = 0;
+    ComputeStorageSize(w, h, sw, sh);
+    uint32_t fbo = g.backend->CreateMotionBlurRT(w, h, &tex, sw, sh);
     if (!fbo || !tex) {
         if (fbo || tex) g.backend->DeleteMotionBlurRT(fbo, tex);   // 部分失败兜底
         return false;
@@ -187,6 +203,21 @@ int  GetSampleCount()         { return g.sampleCount; }
 void SetMode(int m)           { g.mode = ClampI(m, 0, 2); }
 int  GetMode()                { return g.mode; }
 
+// Phase E.17 — half-res 开关
+//   已 Enable 时切换 → 立即 Resize 重建 RT (用户体验连贯)
+//   未 Enable 时切换 → 仅更新状态，下次 Enable 时生效
+//   同值为 no-op (避免重建同尺寸 RT)
+void SetHalfRes(bool flag) {
+    if (g.halfRes == flag) return;       // no-op: 状态未变
+    g.halfRes = flag;
+    if (g.enabled) {
+        // 立即重建 RT (逻辑尺寸不变，仅实际存储尺寸变)
+        Resize(g.width, g.height);
+    }
+    // 未 Enable 时状态字段已更新，后续 Enable 会用新值
+}
+bool GetHalfRes()             { return g.halfRes; }
+
 // ==================== 管线调用 ====================
 
 void Process(uint32_t hdrFbo, uint32_t hdrTex) {
@@ -202,13 +233,18 @@ void Process(uint32_t hdrFbo, uint32_t hdrTex) {
     // 不存在时 backend safeMode 会自动 fallback 到 mode=0。
     uint32_t cameraVelocityTex = HDRRenderer::GetCameraVelocityTexture();
 
+    // Phase E.17 — 计算 motionBlurTex 实际尺寸 (full-res 时 == g.width/g.height)
+    int rtW = 0, rtH = 0;
+    ComputeStorageSize(g.width, g.height, rtW, rtH);
+
     g.backend->DrawMotionBlur(hdrTex, velocityTex,
                                cameraVelocityTex,                  // ★ Phase E.16
                                g.fbo, g.tex,
                                hdrFbo,
                                g.width, g.height,
                                g.strength, g.sampleCount,
-                               g.mode);                            // ★ Phase E.16
+                               g.mode,                             // ★ Phase E.16
+                               rtW, rtH);                          // ★ Phase E.17
 }
 
 } // namespace MotionBlurRenderer

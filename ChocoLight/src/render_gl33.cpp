@@ -6522,11 +6522,17 @@ public:
     bool SupportsMotionBlur() const override { return motionBlurSupported; }
 
     /// 创建 motion blur ping-pong RT (RGBA16F, color-only, 无 depth)
-    /// @param  outTex  返回 GL tex id (失败为 0)
+    /// @param  outTex             返回 GL tex id (失败为 0)
+    /// @param  storageW, storageH Phase E.17 — RT 实际分配尺寸 (0 = 沿用 w/h, full-res)
     /// @return GL fbo id (失败为 0)
-    uint32_t CreateMotionBlurRT(int w, int h, uint32_t* outTex) override {
+    uint32_t CreateMotionBlurRT(int w, int h, uint32_t* outTex,
+                                 int storageW, int storageH) override {
         if (outTex) *outTex = 0;
         if (!motionBlurSupported || w <= 0 || h <= 0 || !outTex) return 0;
+
+        // ★ Phase E.17: storageW/H==0 → fallback w/h (向后兼容全分辨率)
+        const int sw = (storageW > 0) ? storageW : w;
+        const int sh = (storageH > 0) ? storageH : h;
 
         GLuint fbo = 0, tex = 0;
         glGenFramebuffers(1, &fbo);
@@ -6538,7 +6544,8 @@ public:
         }
 
         glBindTexture(GL_TEXTURE_2D, tex);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, w, h, 0, GL_RGBA, GL_FLOAT, nullptr);
+        // ★ Phase E.17: 使用 sw/sh 实际分配 (half-res 下 = (w+1)/2, (h+1)/2)
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, sw, sh, 0, GL_RGBA, GL_FLOAT, nullptr);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S,     GL_CLAMP_TO_EDGE);
@@ -6551,8 +6558,10 @@ public:
         glBindTexture(GL_TEXTURE_2D, 0);
 
         if (status != GL_FRAMEBUFFER_COMPLETE) {
+            // Phase E.17: 记录 逻辑尺寸 与 实际存储尺寸（half-res 调试友好）
             CC::Log(CC::LOG_WARN,
-                    "GL33: Phase E.15 Motion Blur FBO incomplete (status=0x%X), %dx%d", status, w, h);
+                    "GL33: Phase E.15 Motion Blur FBO incomplete (status=0x%X), logical=%dx%d storage=%dx%d",
+                    status, w, h, sw, sh);
             glDeleteFramebuffers(1, &fbo);
             glDeleteTextures(1, &tex);
             return 0;
@@ -6570,16 +6579,22 @@ public:
     /// Motion Blur 完整 2-pass:
     ///   Pass1: bind motionBlurFbo → 沿 velocity 多采样 sceneTex → 写 motionBlurTex
     ///   Pass2: glBlitFramebuffer(motionBlurFbo → dstFbo, COLOR_BUFFER) 覆盖 sceneTex
+    /// Phase E.17: rtW/rtH 为 motionBlurTex 实际尺寸，half-res 下 < w/h → 自动 GL_LINEAR 上采样
     void DrawMotionBlur(uint32_t sceneTex, uint32_t velocityTex,
                         uint32_t cameraVelocityTex,             // ★ Phase E.16
                         uint32_t motionBlurFbo, uint32_t motionBlurTex,
                         uint32_t dstFbo,
                         int w, int h,
                         float strength, int sampleCount,
-                        int mode) override {                    // ★ Phase E.16
+                        int mode,                               // ★ Phase E.16
+                        int rtW, int rtH) override {            // ★ Phase E.17
         if (!motionBlurSupported || !programMotionBlur) return;
         if (!sceneTex || !velocityTex || !motionBlurFbo || !motionBlurTex || !dstFbo) return;
         if (w <= 0 || h <= 0) return;
+
+        // ★ Phase E.17: rtW/H==0 → fallback w/h (full-res, 与 Phase E.16 等价)
+        const int passW = (rtW > 0) ? rtW : w;
+        const int passH = (rtH > 0) ? rtH : h;
 
         // Phase E.16 — mode=1/2 但 cameraVelocityTex 缺失 → silent fallback combined (mode=0)
         // 不打 warning log 避免每帧刷屏
@@ -6591,8 +6606,13 @@ public:
         uint32_t boundCameraTex = cameraVelocityTex ? cameraVelocityTex : velocityTex;
 
         // ===== Pass1: 全屏 shader, 写 motionBlurFbo =====
+        // ★ Phase E.17: viewport 用实际 RT 尺寸 (passW, passH)。
+        //               关键：uTexel 仍按全分辨率 1/vec2(w, h) 上传 (line 下方)，
+        //               原因：velocityTex/cameraVelocityTex 始终是全分辨率，
+        //                    9-tap dilation 邻域物理覆盖必须一致；
+        //                    vUV (0..1) 与 viewport 无关，bilinear filter 自动下采样。
         glBindFramebuffer(GL_FRAMEBUFFER, (GLuint)motionBlurFbo);
-        glViewport(0, 0, w, h);
+        glViewport(0, 0, passW, passH);
         glDisable(GL_BLEND);
         glDisable(GL_DEPTH_TEST);
         glDisable(GL_CULL_FACE);
@@ -6633,9 +6653,13 @@ public:
         glUseProgram(0);
 
         // ===== Pass2: blit motionBlurFbo → dstFbo (覆盖 sceneTex) =====
+        // ★ Phase E.17: src=(passW, passH) → dst=(w, h)。
+        //               passW/H < w/h → 自动选 GL_LINEAR 硬件 bilinear 上采样;
+        //               同尺寸 → GL_NEAREST (与 Phase E.16 等价，零回归)
         glBindFramebuffer(GL_READ_FRAMEBUFFER, (GLuint)motionBlurFbo);
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, (GLuint)dstFbo);
-        glBlitFramebuffer(0, 0, w, h, 0, 0, w, h, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+        const GLenum blitFilter = (passW == w && passH == h) ? GL_NEAREST : GL_LINEAR;
+        glBlitFramebuffer(0, 0, passW, passH, 0, 0, w, h, GL_COLOR_BUFFER_BIT, blitFilter);
         glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
     }

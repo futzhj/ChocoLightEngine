@@ -93,6 +93,15 @@ int  GetSampleCount();
 void SetMode(int m);
 int  GetMode();
 
+/// Phase E.17 — half-res motion blur 开关 (默认 false)
+///   true  = motionBlurTex 改为 ((w+1)/2, (h+1)/2)，Pass2 用 GL_LINEAR 上采样
+///           VRAM -75% (1080p RGBA16F: 8MB → 2MB), Pass1 fragment 性能 ~4×
+///           视觉损失 ≤ 5%，依靠 bilinear 的低通效应自然平滑
+///   false = full-res (与 Phase E.15/E.16 一致)
+/// 已 Enable 时切换 → 立即 Resize 重建 RT; 未 Enable 时 → 下次 Enable 生效
+void SetHalfRes(bool flag);
+bool GetHalfRes();
+
 // ==================== 管线调用 (HDRRenderer::EndScene 内部调) ====================
 
 /**

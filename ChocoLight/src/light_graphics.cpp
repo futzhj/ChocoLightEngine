@@ -2909,6 +2909,23 @@ static int l_MB_GetMode(lua_State* L) {
     return 1;
 }
 
+/// @lua_api Light.Graphics.MotionBlur.SetHalfRes
+/// @param flag boolean Phase E.17 half-res motion blur 开关
+///                     true = motionBlurTex 改 ((w+1)/2, (h+1)/2)，VRAM -75%、Pass1 性能 ~4×
+///                     false = full-res (与 Phase E.15/E.16 一致，默认)
+///                     已 Enable 时切换 → 立即 Resize 重建 RT
+static int l_MB_SetHalfRes(lua_State* L) {
+    MotionBlurRenderer::SetHalfRes(lua_toboolean(L, 1) != 0);
+    return 0;
+}
+
+/// @lua_api Light.Graphics.MotionBlur.GetHalfRes
+/// @return boolean 当前 half-res 开关
+static int l_MB_GetHalfRes(lua_State* L) {
+    lua_pushboolean(L, MotionBlurRenderer::GetHalfRes() ? 1 : 0);
+    return 1;
+}
+
 static const luaL_Reg mb_funcs[] = {
     // lifecycle (5)
     {"Enable",         l_MB_Enable},
@@ -2927,6 +2944,9 @@ static const luaL_Reg mb_funcs[] = {
     // Phase E.16 — mode (2 = 1 对): 0=combined / 1=camera_only / 2=object_only
     {"SetMode",        l_MB_SetMode},
     {"GetMode",        l_MB_GetMode},
+    // Phase E.17 — half-res 开关 (2 = 1 对): VRAM -75% 性能 ~4×
+    {"SetHalfRes",     l_MB_SetHalfRes},
+    {"GetHalfRes",     l_MB_GetHalfRes},
     {NULL, NULL}
 };
 
