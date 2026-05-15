@@ -6153,12 +6153,22 @@ public:
     }
 
     /// 旁路核心: glBlitFramebuffer 从 HDR FBO 复制 depth 到 SSAO FBO
-    void BlitHDRDepthToSSAO(uint32_t hdrFbo, uint32_t ssaoDepthFbo, int w, int h) override {
+    /// Phase F.0.10.3: rgnW/H > 0 时仅 blit sub-rect (split-screen 必备); 0 = 全屏老路径
+    void BlitHDRDepthToSSAO(uint32_t hdrFbo, uint32_t ssaoDepthFbo, int w, int h,
+                            int rgnX, int rgnY, int rgnW, int rgnH) override {
         if (!ssaoSupported || !hdrFbo || !ssaoDepthFbo || w <= 0 || h <= 0) return;
         glBindFramebuffer(GL_READ_FRAMEBUFFER, (GLuint)hdrFbo);
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, (GLuint)ssaoDepthFbo);
-        glBlitFramebuffer(0, 0, w, h, 0, 0, w, h,
-                          GL_DEPTH_BUFFER_BIT, GL_NEAREST);
+        // Phase F.0.10.3 — sub-rect blit (与 MotionBlur Pass2 同模式)
+        // 注: glBlitFramebuffer 不受 GL_SCISSOR_TEST 影响, 必须用 src/dst rect 显式控制
+        if (rgnW > 0 && rgnH > 0) {
+            glBlitFramebuffer(rgnX, rgnY, rgnX + rgnW, rgnY + rgnH,
+                              rgnX, rgnY, rgnX + rgnW, rgnY + rgnH,
+                              GL_DEPTH_BUFFER_BIT, GL_NEAREST);
+        } else {
+            glBlitFramebuffer(0, 0, w, h, 0, 0, w, h,
+                              GL_DEPTH_BUFFER_BIT, GL_NEAREST);
+        }
         glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
     }
@@ -6524,20 +6534,28 @@ public:
 
     /// SSR raw pass: depthTex + normalTex + hdrTex -> dstFbo (RGBA16F, full-res)
     /// Phase E.12: jitterX/jitterY 是像素单位偏移 (±0.5 范围), backend 内除尺寸转 UV 空间
+    /// Phase F.0.10.3: rgnW/H > 0 时 scissor 限定 raster 写区域 (ray march shader 内仍全屏)
     void DrawSSR(uint32_t depthTex, uint32_t normalTex, uint32_t hdrTex,
                  uint32_t dstFbo,
                  int w, int h,
                  const float* projMat4, const float* invProjMat4,
                  int maxSteps, float stepSize, float thickness,
                  float maxDist, float edgeFade,
-                 float jitterX, float jitterY) override {
+                 float jitterX, float jitterY,
+                 int rgnX, int rgnY, int rgnW, int rgnH) override {
         if (!ssrSupported || !depthTex || !normalTex || !hdrTex || !dstFbo
             || w <= 0 || h <= 0 || !projMat4 || !invProjMat4 || maxSteps <= 0) return;
 
         glBindFramebuffer(GL_FRAMEBUFFER, (GLuint)dstFbo);
         glViewport(0, 0, w, h);
         glDisable(GL_DEPTH_TEST);
-        glDisable(GL_SCISSOR_TEST);
+        // Phase F.0.10.3 — scissor 限定 region 写区域 (ray march 仍跨边界采样, 反射借邻区合理)
+        if (rgnW > 0 && rgnH > 0) {
+            glEnable(GL_SCISSOR_TEST);
+            glScissor(rgnX, rgnY, rgnW, rgnH);
+        } else {
+            glDisable(GL_SCISSOR_TEST);
+        }
         glDisable(GL_BLEND);
 
         glUseProgram(programSSR);
@@ -6573,14 +6591,17 @@ public:
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, 0);
         glUseProgram(0);
+        glDisable(GL_SCISSOR_TEST);   // Phase F.0.10.3 — 复位
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
     }
 
     /// SSR composite: 解 feedback loop (与 SSAO 同模式)
     /// 流程: ① glBlitFramebuffer 复制 hdrFbo color -> ssrCompTempTex
     ///       ② 绑 hdrFbo, shader 读 ssrCompTempTex + reflectTex, 加性写到 hdrFbo
+    /// Phase F.0.10.3: rgnW/H > 0 时 ① blit 子矩形 + ② shader 加 scissor (additive write)
     void DrawSSRComposite(uint32_t reflectTex, uint32_t hdrFbo,
-                          int w, int h, float intensity) override {
+                          int w, int h, float intensity,
+                          int rgnX, int rgnY, int rgnW, int rgnH) override {
         if (!ssrSupported || !reflectTex || !hdrFbo || w <= 0 || h <= 0) return;
 
         // 懒重建 composite temp RT (尺寸变化时)
@@ -6618,16 +6639,29 @@ public:
         }
 
         // ① blit hdrFbo (HDR color) -> ssrCompTempFbo (临时 copy)
+        // Phase F.0.10.3 — sub-rect blit (节省 IO + 防越界, 仅 copy 本 region)
         glBindFramebuffer(GL_READ_FRAMEBUFFER, (GLuint)hdrFbo);
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, ssrCompTempFbo);
-        glBlitFramebuffer(0, 0, w, h, 0, 0, w, h,
-                          GL_COLOR_BUFFER_BIT, GL_NEAREST);
+        if (rgnW > 0 && rgnH > 0) {
+            glBlitFramebuffer(rgnX, rgnY, rgnX + rgnW, rgnY + rgnH,
+                              rgnX, rgnY, rgnX + rgnW, rgnY + rgnH,
+                              GL_COLOR_BUFFER_BIT, GL_NEAREST);
+        } else {
+            glBlitFramebuffer(0, 0, w, h, 0, 0, w, h,
+                              GL_COLOR_BUFFER_BIT, GL_NEAREST);
+        }
 
         // ② 绑 hdrFbo, shader 读 ssrCompTempTex + reflectTex, 加性写到 hdrFbo
         glBindFramebuffer(GL_FRAMEBUFFER, (GLuint)hdrFbo);
         glViewport(0, 0, w, h);
         glDisable(GL_DEPTH_TEST);
-        glDisable(GL_SCISSOR_TEST);
+        // Phase F.0.10.3 — scissor 限定 composite 写区域
+        if (rgnW > 0 && rgnH > 0) {
+            glEnable(GL_SCISSOR_TEST);
+            glScissor(rgnX, rgnY, rgnW, rgnH);
+        } else {
+            glDisable(GL_SCISSOR_TEST);
+        }
         glDisable(GL_BLEND);   // shader 内部 hdr + reflect, 不用硬件 blend
 
         glUseProgram(programSSRComposite);
@@ -6647,6 +6681,7 @@ public:
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, 0);
         glUseProgram(0);
+        glDisable(GL_SCISSOR_TEST);   // Phase F.0.10.3 — 复位
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
     }
 
@@ -6720,10 +6755,13 @@ public:
 
     /// separable Gaussian blur pass: srcTex -> dstFbo
     /// axis 0=horizontal, 1=vertical; uTexel = 1/dstSize.
+    /// Phase F.0.10.3: rgnW/H > 0 时 scissor 限定 half-res blur 写区域
+    ///                  (caller 负责将 full-res region 缩半传入)
     void DrawSSRBlur(uint32_t srcTex, uint32_t depthTex,
                      uint32_t dstFbo, int dstW, int dstH,
                      int axis, float radius,
-                     bool bilateralEnabled, float depthSigma) override {
+                     bool bilateralEnabled, float depthSigma,
+                     int rgnX, int rgnY, int rgnW, int rgnH) override {
         // Phase E.11: depthTex 必须非零 (bilateral=true 时依赖; bilateral=false 时 shader
         // 不采样 depthTex, 但本函数仍会 bind slot 1 避免 driver 状态不一致 — 所以仍要严检)
         if (!ssrBlurSupported || !programSSRBlur || !srcTex || !depthTex || !dstFbo ||
@@ -6732,7 +6770,13 @@ public:
         glBindFramebuffer(GL_FRAMEBUFFER, (GLuint)dstFbo);
         glViewport(0, 0, dstW, dstH);
         glDisable(GL_DEPTH_TEST);
-        glDisable(GL_SCISSOR_TEST);
+        // Phase F.0.10.3 — scissor 限定 half-res blur 写区域 (region 已是 half-res 空间)
+        if (rgnW > 0 && rgnH > 0) {
+            glEnable(GL_SCISSOR_TEST);
+            glScissor(rgnX, rgnY, rgnW, rgnH);
+        } else {
+            glDisable(GL_SCISSOR_TEST);
+        }
         glDisable(GL_BLEND);
         glDisable(GL_CULL_FACE);
 
@@ -6760,6 +6804,7 @@ public:
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, 0);
         glUseProgram(0);
+        glDisable(GL_SCISSOR_TEST);   // Phase F.0.10.3 — 复位
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
     }
 
@@ -6832,6 +6877,7 @@ public:
     /// Phase E.12 — Temporal pass: reproject + neighborhood clip + history blend
     /// Phase E.14 — 末尾增 3 个 trailing 参数：dilation、velocityScale、velocityFormat
     /// shader 内部的 hasHistory=0 (首帧) 路径会强制输出 cur, 避免 1-frame 黑帧.
+    /// Phase F.0.10.3: rgnW/H > 0 时 scissor 限定 history write 区域 (防写脏邻 region; reproject 跨 region 读 history 不受影响)
     void DrawSSRTemporal(uint32_t curReflectTex,
                           uint32_t historyTex,
                           uint32_t depthTex,
@@ -6845,7 +6891,8 @@ public:
                           int   hasHistory,
                           bool           velocityDilation,
                           float          velocityScale,
-                          VelocityFormat velocityFormat) override {
+                          VelocityFormat velocityFormat,
+                          int rgnX, int rgnY, int rgnW, int rgnH) override {
         if (!ssrTemporalSupported || !programSSRTemporal
             || !curReflectTex || !depthTex || !dstFbo
             || w <= 0 || h <= 0 || !reprojectMat4 || !invProjMat4) return;
@@ -6853,7 +6900,13 @@ public:
         glBindFramebuffer(GL_FRAMEBUFFER, (GLuint)dstFbo);
         glViewport(0, 0, w, h);
         glDisable(GL_DEPTH_TEST);
-        glDisable(GL_SCISSOR_TEST);
+        // Phase F.0.10.3 — scissor 限定 history write 区域
+        if (rgnW > 0 && rgnH > 0) {
+            glEnable(GL_SCISSOR_TEST);
+            glScissor(rgnX, rgnY, rgnW, rgnH);
+        } else {
+            glDisable(GL_SCISSOR_TEST);
+        }
         glDisable(GL_BLEND);
         glDisable(GL_CULL_FACE);
 
@@ -6900,6 +6953,7 @@ public:
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, 0);
         glUseProgram(0);
+        glDisable(GL_SCISSOR_TEST);   // Phase F.0.10.3 — 复位
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
     }
 

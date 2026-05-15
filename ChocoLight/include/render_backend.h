@@ -960,8 +960,11 @@ public:
     /// Phase E.8 旁路核心: 用 glBlitFramebuffer 从 HDR FBO 复制 depth 到 SSAO FBO
     /// @note 在每帧 SSAORenderer::Process() 入口调用；GL_DEPTH_BUFFER_BIT + GL_NEAREST
     ///       HDR RT 的 depth renderbuffer -> SSAO 专用 depth texture
+    /// Phase F.0.10.3: rgnX/Y/W/H 默认 0 = 全屏 blit; >0 时仅 blit sub-rect (split-screen 必备)
     virtual void BlitHDRDepthToSSAO(uint32_t /*hdrFbo*/, uint32_t /*ssaoDepthFbo*/,
-                                     int /*w*/, int /*h*/) {}
+                                     int /*w*/, int /*h*/,
+                                     int /*rgnX*/ = 0, int /*rgnY*/ = 0,
+                                     int /*rgnW*/ = 0, int /*rgnH*/ = 0) {}
 
     /// 创建 SSAO AO ping-pong RT:
     ///   [0] raw AO    (R16F, 半分辨率)
@@ -1066,18 +1069,24 @@ public:
     /// @param edgeFade   屏幕边缘 UV 空间 fade 宽度 [0, 0.5]
     /// @param jitterX,jitterY  Phase E.12: ray march 起点像素单位偏移 (±0.5 pixel 范围)
     ///                  TemporalEnabled=false 时调用方传 0.0 即旧行为
+    /// Phase F.0.10.3: rgnX/Y/W/H 默认 0 = 全屏; >0 时 scissor 限定 raster (ray march 仍全屏, 允许跨边采样)
     virtual void DrawSSR(uint32_t /*depthTex*/, uint32_t /*normalTex*/, uint32_t /*hdrTex*/,
                          uint32_t /*dstFbo*/,
                          int /*w*/, int /*h*/,
                          const float* /*projMat4*/, const float* /*invProjMat4*/,
                          int /*maxSteps*/, float /*stepSize*/, float /*thickness*/,
                          float /*maxDist*/, float /*edgeFade*/,
-                         float /*jitterX*/, float /*jitterY*/) {}
+                         float /*jitterX*/, float /*jitterY*/,
+                         int /*rgnX*/ = 0, int /*rgnY*/ = 0,
+                         int /*rgnW*/ = 0, int /*rgnH*/ = 0) {}
 
     /// SSR composite: hdrFbo += reflectTex.rgb * reflectTex.a * intensity
     /// 后端内部用临时 RT 解 feedback loop (HDR 既读又写).
+    /// Phase F.0.10.3: rgnX/Y/W/H 默认 0 = 全屏 composite; >0 时 scissor 限定 additive 写区域
     virtual void DrawSSRComposite(uint32_t /*reflectTex*/, uint32_t /*hdrFbo*/,
-                                   int /*w*/, int /*h*/, float /*intensity*/) {}
+                                   int /*w*/, int /*h*/, float /*intensity*/,
+                                   int /*rgnX*/ = 0, int /*rgnY*/ = 0,
+                                   int /*rgnW*/ = 0, int /*rgnH*/ = 0) {}
 
     // ==================== Phase E.10 — SSR Blur (反射模糊, 粗糙度模拟) ====================
     //
@@ -1116,10 +1125,14 @@ public:
     /// @param bilateralEnabled Phase E.11: true=Bilateral, false=Gaussian (Phase E.10 行为)
     /// @param depthSigma       Phase E.11: bilateral 深度权重 σ [50, 500]
     ///                         (bilateralEnabled=false 时 ignored)
+    /// Phase F.0.10.3: rgnX/Y/W/H 默认 0 = 全屏; >0 时 scissor 限定 half-res blur 写区域
+    ///                  (caller 负责将 full-res region 缩半传入)
     virtual void DrawSSRBlur(uint32_t /*srcTex*/, uint32_t /*depthTex*/,
                               uint32_t /*dstFbo*/, int /*dstW*/, int /*dstH*/,
                               int /*axis*/, float /*radius*/,
-                              bool /*bilateralEnabled*/, float /*depthSigma*/) {}
+                              bool /*bilateralEnabled*/, float /*depthSigma*/,
+                              int /*rgnX*/ = 0, int /*rgnY*/ = 0,
+                              int /*rgnW*/ = 0, int /*rgnH*/ = 0) {}
 
     // ==================== Phase E.12 — Temporal SSR (时序累积降噪) ====================
     //
@@ -1162,6 +1175,8 @@ public:
     /// @param blendAlpha     history 权重 [0.5, 0.99]
     /// @param rejectionMode  0 = current-depth threshold, 1 = neighborhood AABB clip
     /// @param hasHistory     0 = 首帧禁用 temporal (输出=cur), 1 = 正常累积
+    /// Phase F.0.10.3: rgnX/Y/W/H 默认 0 = 全屏 temporal; >0 时 scissor 限定 history write 区域
+    ///                  (防写脏邻 region history; reproject 允许跨 region 读 history, shader 不动)
     virtual void DrawSSRTemporal(uint32_t /*curReflectTex*/,
                                   uint32_t /*historyTex*/,
                                   uint32_t /*depthTex*/,
@@ -1175,7 +1190,9 @@ public:
                                   int   /*hasHistory*/,
                                   bool           /*velocityDilation*/ = true,
                                   float          /*velocityScale*/    = 0.25f,
-                                  VelocityFormat /*velocityFormat*/   = VelocityFormat::RG16F) {}
+                                  VelocityFormat /*velocityFormat*/   = VelocityFormat::RG16F,
+                                  int /*rgnX*/ = 0, int /*rgnY*/ = 0,
+                                  int /*rgnW*/ = 0, int /*rgnH*/ = 0) {}
 
     // ==================== Phase E.15 — Motion Blur 虚接口 ====================
     // 设计 (与 Bloom/SSR 同模式):

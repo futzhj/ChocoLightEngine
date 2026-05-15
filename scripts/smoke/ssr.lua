@@ -52,6 +52,7 @@ local fns = {
     "SetTemporalAlpha", "GetTemporalAlpha",         -- Phase E.12
     "SetRejectionMode", "GetRejectionMode",         -- Phase E.12
     "GetReflectionTexId",
+    "Process",                                       -- Phase F.0.10.3 (region overload)
 }
 for _, k in ipairs(fns) do
     if type(S[k]) ~= "function" then
@@ -575,4 +576,59 @@ if not (S.GetTemporalEnabled() == true
 end
 pass("Phase E.12 默认预设 round-trip 完整恢复")
 
-print("[OK] Phase E.9+E.10+E.11+E.12 smoke (Light.Graphics.SSR): all checks passed")
+-- ============================================================
+-- Phase F.0.10.3 — Process(region) overload defense (6 PASS)
+-- ============================================================
+-- HDR 未启 + SSR 未启 时, Process 应返 nil + err string (silent skip, 不崩)
+-- 与 MotionBlur.Process / Bloom.Process 同模式
+
+-- 测试 1: 无参 Process (full-screen) - HDR 未启 → nil + err
+local r1, e1 = S.Process()
+if r1 ~= nil then
+    fail("SSR.Process() with HDR off should return nil; got " .. tostring(r1))
+end
+if type(e1) ~= "string" then
+    fail("SSR.Process() with HDR off should return err string; got " .. type(e1))
+end
+pass("SSR.Process() with HDR off returns nil + err string")
+
+-- 测试 2: 4 args region Process - HDR 未启 → nil + err
+local r2, e2 = S.Process(0, 0, 100, 100)
+if r2 ~= nil or type(e2) ~= "string" then
+    fail("SSR.Process(0,0,100,100) with HDR off should return nil + err; got " ..
+         tostring(r2) .. ", " .. type(e2))
+end
+pass("SSR.Process(x,y,w,h) with HDR off returns nil + err string")
+
+-- 测试 3: 部分 region 参数 (3 个) → 拒绝
+local r3, e3 = S.Process(0, 0, 100)
+if r3 ~= nil or type(e3) ~= "string" or not string.find(e3, "expected 0 or 4 args") then
+    fail("SSR.Process(0,0,100) should reject with 'expected 0 or 4 args' err; got " ..
+         tostring(r3) .. ", " .. tostring(e3))
+end
+pass("SSR.Process partial args rejected (3 args)")
+
+-- 测试 4: w<0 拒绝
+local r4, e4 = S.Process(0, 0, -1, 100)
+if r4 ~= nil or type(e4) ~= "string" or not string.find(e4, "w/h must be >= 0") then
+    fail("SSR.Process(0,0,-1,100) should reject with 'w/h must be >= 0' err; got " ..
+         tostring(r4) .. ", " .. tostring(e4))
+end
+pass("SSR.Process w<0 rejected")
+
+-- 测试 5: h<0 拒绝
+local r5, e5 = S.Process(0, 0, 100, -1)
+if r5 ~= nil or type(e5) ~= "string" or not string.find(e5, "w/h must be >= 0") then
+    fail("SSR.Process(0,0,100,-1) should reject with 'w/h must be >= 0' err; got " ..
+         tostring(r5) .. ", " .. tostring(e5))
+end
+pass("SSR.Process h<0 rejected")
+
+-- 测试 6: 类型错 (传 string 而非 integer) → luaL_error 抛
+local ok6 = pcall(function() S.Process("a", "b", "c", "d") end)
+if ok6 then
+    fail("SSR.Process('a','b','c','d') should throw luaL_error; succeeded")
+end
+pass("SSR.Process type error throws luaL_error")
+
+print("[OK] Phase E.9+E.10+E.11+E.12+F.0.10.3 smoke (Light.Graphics.SSR): all checks passed")

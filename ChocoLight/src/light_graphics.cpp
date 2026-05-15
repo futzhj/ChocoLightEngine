@@ -3014,6 +3014,55 @@ static int l_SSR_GetReflectionTexId(lua_State* L) {
     return 1;
 }
 
+/// @lua_api Light.Graphics.SSR.Process
+/// @param x integer? region 左下角 X (默认 0)
+/// @param y integer? region 左下角 Y (默认 0)
+/// @param w integer? region 宽度 (默认 0 = 全屏老路径)
+/// @param h integer? region 高度 (默认 0 = 全屏老路径)
+/// @return boolean true 成功; nil, string = 参数非法 / HDR 未启用
+/// @note Phase F.0.10.3 — region 化 SSR (split-screen 必备 overload)
+///       内部 5 pass 全部 region 化: depth blit / raw / temporal / blur×2 / composite
+///       blur 自动缩半 region (full-res → half-res)
+///       典型用法 (split-screen):
+///         HDR.SetAutoSSR(false)
+///         SSR.Process(0,    0, W/2, H)  -- 左半屏 player 1
+///         SSR.Process(W/2,  0, W/2, H)  -- 右半屏 player 2
+static int l_SSR_Process(lua_State* L) {
+    // 参数检查 (4 个 optional integer, 缺省 = 0): 全部 0 = 全屏老接口
+    const int nargs = lua_gettop(L);
+    int rgnX = 0, rgnY = 0, rgnW = 0, rgnH = 0;
+    if (nargs >= 1) rgnX = (int)luaL_checkinteger(L, 1);
+    if (nargs >= 2) rgnY = (int)luaL_checkinteger(L, 2);
+    if (nargs >= 3) rgnW = (int)luaL_checkinteger(L, 3);
+    if (nargs >= 4) rgnH = (int)luaL_checkinteger(L, 4);
+
+    // 防御性: 部分 region 参数 (只传 2 个 / 3 个) 视为非法
+    if (nargs != 0 && nargs != 4) {
+        lua_pushnil(L);
+        lua_pushfstring(L, "SSR.Process: expected 0 or 4 args (got %d); region=(x,y,w,h) all-or-none", nargs);
+        return 2;
+    }
+    // 防御性: 区域 w/h 必须 >= 0
+    if (rgnW < 0 || rgnH < 0) {
+        lua_pushnil(L);
+        lua_pushfstring(L, "SSR.Process: w/h must be >= 0 (got w=%d, h=%d)", rgnW, rgnH);
+        return 2;
+    }
+
+    // 取 HDR fbo + sceneTex
+    const uint32_t fbo = HDRRenderer::GetFBO();
+    const uint32_t tex = HDRRenderer::GetSceneTexture();
+    if (!fbo || !tex) {
+        lua_pushnil(L);
+        lua_pushliteral(L, "SSR.Process: HDR not enabled (fbo / sceneTex = 0)");
+        return 2;
+    }
+
+    SSRRenderer::Process(fbo, tex, rgnX, rgnY, rgnW, rgnH);
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
 static const luaL_Reg ssr_funcs[] = {
     // lifecycle (5)
     {"Enable",              l_SSR_Enable},
@@ -3056,6 +3105,8 @@ static const luaL_Reg ssr_funcs[] = {
     {"GetRejectionMode",    l_SSR_GetRejectionMode},
     // debug (1)
     {"GetReflectionTexId",  l_SSR_GetReflectionTexId},
+    // Phase F.0.10.3 — 手动 region SSR (配合 HDR.SetAutoSSR(false) 做真物理 split-screen)
+    {"Process",             l_SSR_Process},
     {NULL, NULL}
 };
 

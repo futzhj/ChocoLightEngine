@@ -156,4 +156,25 @@ uint32_t GetReflectionTexId();
  */
 void Process(uint32_t hdrFbo, uint32_t hdrTex);
 
+/**
+ * @brief Phase F.0.10.3 — Region 限定 SSR (split-screen 必备 overload)
+ *
+ * 与无 region 版语义等价 (rgnW=0 || rgnH=0 时退化为全屏路径), 区别:
+ *   1. BlitHDRDepthToSSAO: sub-rect blit (节省 IO + 防越界)
+ *   2. DrawSSR raw:  scissor 限定写区域 (ray march shader 内仍全屏, 允许跨边界采样反射)
+ *   3. DrawSSRTemporal:   scissor 限定 history write 区域 (防写脏邻 region history;
+ *                         reproject 允许跨 region 读 history, shader 不动)
+ *   4. DrawSSRBlur × 2:   half-res region (caller 缩半: ((x+1)/2, (y+1)/2, max(1, w/2), max(1, h/2)))
+ *   5. DrawSSRComposite:  sub-rect blit + scissor 限定 additive 写区域
+ *
+ * 典型用法 (split-screen, HDR.SetAutoSSR(false) 后手动调):
+ *   SSR.Process(0,    0, W/2, H)   -- 左半屏 player 1
+ *   SSR.Process(W/2,  0, W/2, H)   -- 右半屏 player 2
+ *
+ * 注意: 反射 ray march 跨 region 是物理正确的 (player 1 屏上可能看到 player 2 区位的反射),
+ *       这与 SSR 屏幕空间本质一致, 不视为缺陷
+ */
+void Process(uint32_t hdrFbo, uint32_t hdrTex,
+             int rgnX, int rgnY, int rgnW, int rgnH);
+
 } // namespace SSRRenderer

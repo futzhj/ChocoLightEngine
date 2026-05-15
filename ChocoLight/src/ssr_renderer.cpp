@@ -350,6 +350,15 @@ uint32_t GetReflectionTexId() {
 // ==================== 管线 ====================
 
 void Process(uint32_t hdrFbo, uint32_t hdrTex) {
+    // 转发到 region 版本 (0/0/0/0 = 全屏老路径, 零回归)
+    Process(hdrFbo, hdrTex, 0, 0, 0, 0);
+}
+
+// Phase F.0.10.3 — Region 限定 SSR (split-screen 必备)
+// 5 个 backend pass 全部加 region: depth blit / raw / temporal / blur×2 / composite
+// blur pass 由 caller 负责 region 缩半 (full-res -> half-res 空间)
+void Process(uint32_t hdrFbo, uint32_t hdrTex,
+             int rgnX, int rgnY, int rgnW, int rgnH) {
     if (!g.enabled || !g.supported || !g.backend) return;
     if (!hdrFbo || !hdrTex) return;
     if (!g.depthFbo || !g.depthTex || !g.reflectFbo || !g.reflectTex) return;
@@ -368,8 +377,20 @@ void Process(uint32_t hdrFbo, uint32_t hdrTex) {
         return;
     }
 
+    // Phase F.0.10.3 — half-res blur region (caller 处理 full-res → half-res 缩半)
+    // 与 backend CreateSSRBlurRT 内部 max(1, full/2) 同模式
+    const bool useRegion = (rgnW > 0 && rgnH > 0);
+    int blurRgnX = 0, blurRgnY = 0, blurRgnW = 0, blurRgnH = 0;
+    if (useRegion) {
+        blurRgnX = rgnX / 2;
+        blurRgnY = rgnY / 2;
+        blurRgnW = (rgnW > 1) ? (rgnW / 2) : 1;
+        blurRgnH = (rgnH > 1) ? (rgnH / 2) : 1;
+    }
+
     // 0. 旁路核心: 从 HDR FBO 复制 depth 到 SSR depth tex (复用 SSAO blit 接口)
-    g.backend->BlitHDRDepthToSSAO(hdrFbo, g.depthFbo, g.srcW, g.srcH);
+    g.backend->BlitHDRDepthToSSAO(hdrFbo, g.depthFbo, g.srcW, g.srcH,
+                                   rgnX, rgnY, rgnW, rgnH);
 
     // 取当前 view + projection + 计算逆 (Phase E.12 需 viewProj 用于 reprojection)
     float view[16], proj[16];
@@ -398,7 +419,8 @@ void Process(uint32_t hdrFbo, uint32_t hdrTex) {
                        g.srcW, g.srcH, proj, invProj,
                        g.maxSteps, g.stepSize, g.thickness,
                        g.maxDistance, g.edgeFade,
-                       jitterX, jitterY);
+                       jitterX, jitterY,
+                       rgnX, rgnY, rgnW, rgnH);
 
     // Phase E.12 — Temporal pass: reproject + clip + blend
     // 输出: historyTexs[writeIdx] = 本帧 temporal 结果 (也是 blur 的输入)
@@ -435,7 +457,8 @@ void Process(uint32_t hdrFbo, uint32_t hdrTex) {
                                        g.hasPrevViewProj ? 1 : 0,
                                        g.backend->GetVelocityDilation(),
                                        g.backend->GetVelocityScale(),
-                                       g.backend->GetActiveVelocityFormat());
+                                       g.backend->GetActiveVelocityFormat(),
+                                       rgnX, rgnY, rgnW, rgnH);
             srcForBlur = g.historyTexs[writeIdx];
             memcpy(g.prevViewProj, curViewProj, sizeof(curViewProj));
             g.hasPrevViewProj = true;
@@ -447,6 +470,7 @@ void Process(uint32_t hdrFbo, uint32_t hdrTex) {
 
     // 2. (Phase E.10) 可选 blur: separable Gaussian H+V on half-res ping-pong
     //    输入源: temporal 启用且成功 -> historyTexs[writeIdx]; 否则 -> reflectTex
+    //    region: 已缩半 (blurRgn*)
     uint32_t finalReflectTex = srcForBlur;
     if (g.blurEnabled && g.blurFbos[0] && g.blurFbos[1] && g.blurW > 0 && g.blurH > 0) {
         // H pass: full-res srcForBlur -> half-res blurFbos[0]
@@ -454,18 +478,21 @@ void Process(uint32_t hdrFbo, uint32_t hdrTex) {
         g.backend->DrawSSRBlur(srcForBlur, g.depthTex,
                                 g.blurFbos[0], g.blurW, g.blurH,
                                 0, g.blurRadius,
-                                g.bilateralEnabled, g.blurDepthSigma);
+                                g.bilateralEnabled, g.blurDepthSigma,
+                                blurRgnX, blurRgnY, blurRgnW, blurRgnH);
         // V pass: half-res blurTexs[0] -> half-res blurFbos[1]
         g.backend->DrawSSRBlur(g.blurTexs[0], g.depthTex,
                                 g.blurFbos[1], g.blurW, g.blurH,
                                 1, g.blurRadius,
-                                g.bilateralEnabled, g.blurDepthSigma);
+                                g.bilateralEnabled, g.blurDepthSigma,
+                                blurRgnX, blurRgnY, blurRgnW, blurRgnH);
         finalReflectTex = g.blurTexs[1];   // composite 用 half-res 模糊结果, 自动 bilinear upscale
     }
 
     // 3. composite: HDR += reflect.rgb * reflect.a * intensity (加性)
     //    backend 内部用临时 RT 解 feedback loop
-    g.backend->DrawSSRComposite(finalReflectTex, hdrFbo, g.srcW, g.srcH, g.intensity);
+    g.backend->DrawSSRComposite(finalReflectTex, hdrFbo, g.srcW, g.srcH, g.intensity,
+                                 rgnX, rgnY, rgnW, rgnH);
 
     // Phase E.12 — 帧计数器推进 (仅 Halton 索引用, 不重置)
     ++g.frameCounter;
