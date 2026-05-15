@@ -5,13 +5,13 @@
 
 ---
 
-## 1. 必做（阻塞性，本 Phase 内）
+## 1. 必做（阻塞性，本 Phase 内）— ✅ 全部完成
 
-| 任务 | 操作 | 优先级 |
+| 任务 | 操作 | 状态 |
 |------|------|--------|
-| commit + push 代码到 main | git add + commit + push origin main | 🔴 高 |
-| 监控 GitHub Actions CI 6/6 平台 success | gh run view | 🔴 高 |
-| CI 状态回填 ACCEPTANCE/FINAL/TODO | 编辑 3 份文档 §CI 状态 | 🔴 高 |
+| commit + push 代码到 main | `bc82376` pushed to `origin/main` | ✅ 完成 |
+| 监控 GitHub Actions CI 6/6 平台 success | Run `25914279471` 11m01s, 6/6 PASS | ✅ 完成 |
+| CI 状态回填 ACCEPTANCE/FINAL/TODO | 三份文档均已更新 | ✅ 完成 |
 
 ---
 
@@ -87,19 +87,20 @@ end
 
 ---
 
-## 6. CI 回填（待 T6 完成后填）
+## 6. CI 回填
 
 | 字段 | 值 |
 |------|---|
-| GitHub Run ID | `<pending>` |
-| Commit hash | `<pending>` |
-| 6/6 平台状态 | `<pending>` |
-| Total duration | `<pending>` |
-| Date | `<pending>` |
+| GitHub Run ID | `25914279471` |
+| Commit hash | `bc823760c2c2fec9a00c65effde2078679ecafa2` (short: `bc82376`) |
+| 6/6 平台状态 | ✅ build-windows / build-linux / build-macos / build-android / build-ios / build-web 全 success |
+| Total duration | **11m01s** (2026-05-15T10:59:14Z → 2026-05-15T11:10:15Z) |
+| Date | 2026-05-15 |
 
-回填后同步更新：
-- `ACCEPTANCE_PhaseF_0.md` 第 7 章
-- `FINAL_PhaseF_0.md` 第 8 章
+同步更新状态：
+- ✅ `ACCEPTANCE_PhaseF_0.md` 第 7 章
+- ✅ `FINAL_PhaseF_0.md` 第 8 章
+- ✅ `TODO_PhaseF_0.md` 本章
 
 ---
 

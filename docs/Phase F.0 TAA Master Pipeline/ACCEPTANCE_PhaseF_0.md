@@ -25,7 +25,7 @@
 | T4 Light_Graphics.md TAA 文档 | `@e:/jinyiNew/Light/docs/api/Light_Graphics.md` | +250 / 0 | ✅ |
 | T4 CI workflow 加 phaseF0Smoke | `@e:/jinyiNew/Light/.github/workflows/build-templates.yml` | +3 / 0 | ✅ |
 | T5 6A 三件套 | `PLAN_PhaseF_0.md` + `ACCEPTANCE_PhaseF_0.md` + `FINAL_PhaseF_0.md` + `TODO_PhaseF_0.md` | 新建 | ✅ |
-| T6 commit + push + CI | git + GitHub Actions | — | ⏳ |
+| T6 commit + push + CI | git + GitHub Actions | — | ✅ |
 
 **累计代码 +1,279 行 / -10 行；新建 4 个文件（taa_renderer.h/.cpp + taa.lua + 6A docs）**
 
@@ -212,18 +212,20 @@ jitteredProj[9] += ndcOffY;   // col 2, row 1
 
 ---
 
-## 7. CI 状态（待回填）
+## 7. CI 状态
 
 | 平台 | 状态 | 状态详情 |
 |------|------|------|
-| build-windows | ⏳ | runtime smoke 26 PASS (含 taa.lua 13 fn) + Phase E.16/17/18/18.1/18.2 零回归 |
-| build-linux | ⏳ | 纯构建 |
-| build-macos | ⏳ | 纯构建 |
-| build-android | ⏳ | 纯构建 |
-| build-ios | ⏳ | 纯构建 |
-| build-web | ⏳ | Emscripten WASM |
+| build-windows | ✅ success | runtime smoke 26 PASS (含 taa.lua 13 fn) + Phase E.16/17/18/18.1/18.2 零回归 |
+| build-linux | ✅ success | 纯构建 |
+| build-macos | ✅ success | 纯构建 |
+| build-android | ✅ success | 纯构建 |
+| build-ios | ✅ success | 纯构建 |
+| build-web | ✅ success | Emscripten WASM |
 
-GitHub Run ID: `<pending>`
-Commit hash: `<pending>`
-Total duration: `<pending>`
-Date: `<pending>`
+GitHub Run ID: `25914279471`
+Commit hash: `bc823760c2c2fec9a00c65effde2078679ecafa2` (short: `bc82376`)
+Total duration: **11m01s** (2026-05-15T10:59:14Z → 2026-05-15T11:10:15Z)
+Date: 2026-05-15
+
+**✅ 6/6 平台全 PASS, Phase F.0 验收通过。**

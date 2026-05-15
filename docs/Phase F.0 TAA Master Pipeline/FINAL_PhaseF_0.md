@@ -155,21 +155,23 @@ Phase F.0 是 Phase E velocity 链路的**集大成输出**：
 
 ---
 
-## 8. CI 状态（待回填）
+## 8. CI 状态
 
 | 平台 | 状态 | 备注 |
 |------|------|------|
-| build-windows | ⏳ | runtime smoke 26 PASS (含 taa.lua 13 fn) + Phase E.16/17/18/18.1/18.2 零回归 |
-| build-linux | ⏳ | 纯构建 |
-| build-macos | ⏳ | 纯构建 |
-| build-android | ⏳ | 纯构建 |
-| build-ios | ⏳ | 纯构建 |
-| build-web | ⏳ | Emscripten WASM |
+| build-windows | ✅ success | runtime smoke 26 PASS (含 taa.lua 13 fn) + Phase E.16/17/18/18.1/18.2 零回归 |
+| build-linux | ✅ success | 纯构建 |
+| build-macos | ✅ success | 纯构建 |
+| build-android | ✅ success | 纯构建 |
+| build-ios | ✅ success | 纯构建 |
+| build-web | ✅ success | Emscripten WASM |
 
-GitHub Run ID: `<pending>`
-Commit hash: `<pending>`
-Date: `<pending>`
-Total duration: `<pending>`
+GitHub Run ID: `25914279471`
+Commit hash: `bc823760c2c2fec9a00c65effde2078679ecafa2` (short: `bc82376`)
+Date: 2026-05-15
+Total duration: **11m01s** (2026-05-15T10:59:14Z → 2026-05-15T11:10:15Z)
+
+**✅ 6/6 平台全 PASS, Phase F.0 交付完整，Phase E velocity 链路完美闭环。**
 
 ---
 
