@@ -87,9 +87,9 @@
 - [x] TODO_PhaseF_0_6.md (下一文件)
 
 ### T5 CI
-- [ ] GitHub Actions 6/6 平台 success (待回填)
-- [ ] Windows runtime smoke 25/25 fn + 10 个 F.0.6 PASS + 六启共存 (待回填)
-- [ ] CI 状态回填 ACCEPTANCE + FINAL + TODO
+- [x] GitHub Actions 6/6 平台 success (Run 25931268319, 11m42s)
+- [x] Windows runtime smoke 25/25 fn + 10 个 F.0.6 PASS + 六启共存
+- [x] CI 状态回填 ACCEPTANCE + FINAL + TODO
 
 ---
 
@@ -198,18 +198,18 @@ Functions covered: 25 / 25
 
 ---
 
-## 7. CI 状态（待回填）
+## 7. CI 状态 (✅ 全部通过)
 
 | 平台 | 状态 | 状态详情 |
 |------|------|---------|
-| build-windows | ⏳ | runtime smoke 含 taa.lua 25 fn + sharpenMode 10 PASS + 六启共存 |
-| build-linux | ⏳ | 纯构建 |
-| build-macos | ⏳ | 纯构建 |
-| build-android | ⏳ | 纯构建 |
-| build-ios | ⏳ | 纯构建 |
-| build-web | ⏳ | Emscripten WASM |
+| build-windows | ✅ success | runtime smoke 25 fn + sharpenMode 10 PASS + 六启共存 |
+| build-linux | ✅ success | 纯构建 |
+| build-macos | ✅ success | 纯构建 |
+| build-android | ✅ success | 纯构建 |
+| build-ios | ✅ success | 纯构建 |
+| build-web | ✅ success | Emscripten WASM |
 
-GitHub Run ID: `<pending>`
-Commit hash: `<pending>`
-Total duration: `<pending>`
-Date: `<pending>`
+GitHub Run ID: [25931268319](https://github.com/futzhj/ChocoLightEngine/actions/runs/25931268319)
+Commit hash: `7b14f46`
+Total duration: `11m42s` (17:16:34 → 17:28:16 UTC)
+Date: `2026-05-15`

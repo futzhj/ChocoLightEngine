@@ -152,21 +152,21 @@ Functions covered: 25 / 25
 
 ---
 
-## 6. CI 状态（待回填）
+## 6. CI 状态 (✅ 全部通过)
 
 | 平台 | 状态 | 备注 |
 |------|------|------|
-| build-windows | ⏳ | runtime smoke 含 25 fn + 10 个 F.0.6 PASS |
-| build-linux | ⏳ | 纯构建 |
-| build-macos | ⏳ | 纯构建 |
-| build-android | ⏳ | 纯构建 |
-| build-ios | ⏳ | 纯构建 |
-| build-web | ⏳ | Emscripten WASM |
+| build-windows | ✅ success | runtime smoke 25 fn + 10 个 F.0.6 PASS + 六启共存 |
+| build-linux | ✅ success | 纯构建 |
+| build-macos | ✅ success | 纯构建 |
+| build-android | ✅ success | 纯构建 |
+| build-ios | ✅ success | 纯构建 |
+| build-web | ✅ success | Emscripten WASM |
 
-GitHub Run ID: `<pending>`
-Commit hash: `<pending>`
-Date: `<pending>`
-Total duration: `<pending>`
+GitHub Run ID: [25931268319](https://github.com/futzhj/ChocoLightEngine/actions/runs/25931268319)
+Commit hash: `7b14f46`
+Date: `2026-05-15`
+Total duration: `11m42s` (17:16:34 → 17:28:16 UTC)
 
 ---
 
