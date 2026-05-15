@@ -143,21 +143,29 @@ Functions covered: 17 / 17
 
 ---
 
-## 8. CI 状态（待回填）
+## 8. CI 状态（已回填）
 
 | 平台 | 状态 | 备注 |
 |------|------|------|
-| build-windows | ⏳ | runtime smoke 含 taa.lua 17 fn |
-| build-linux | ⏳ | 纯构建 |
-| build-macos | ⏳ | 纯构建 |
-| build-android | ⏳ | 纯构建 |
-| build-ios | ⏳ | 纯构建 |
-| build-web | ⏳ | Emscripten WASM |
+| build-windows | ✅ success | runtime smoke 6 个 F.0.4 PASS + Functions covered: 17 / 17 |
+| build-linux | ✅ success | 纯构建 |
+| build-macos | ✅ success | 纯构建 |
+| build-android | ✅ success | 纯构建 |
+| build-ios | ✅ success | 纯构建 |
+| build-web | ✅ success | Emscripten WASM |
+| release | ⏭️ skipped | 符合非 tag push 预期 |
 
-GitHub Run ID: `<pending>`
-Commit hash: `<pending>`
-Date: `<pending>`
-Total duration: `<pending>`
+GitHub Run ID: `25917658584`
+Commit hash: `361a56ff269f4f30889ed232f77f66f2611e559e` (`361a56f`)
+Date: 2026-05-15
+Total duration: ~8 分 27 秒（12:25:40Z → 12:34:07Z UTC）
+
+**Windows runtime smoke 关键 PASS**：
+- Default AntiFlicker = true (Phase F.0.4)
+- AntiFlicker round-trip ok
+- SetAntiFlicker type-error rejected (number / string) — `nil + err` 模式与 F.0 同模块一致
+- AntiFlicker state preserved on failed call
+- AntiFlicker(true) + Sharpness(0.8) coexist ok (Karis blend + 4-tap sharpen 双启)
 
 ---
 

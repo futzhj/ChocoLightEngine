@@ -76,8 +76,9 @@
 - [x] `TODO_PhaseF_0_4.md` (下一文件)
 
 ### T5 CI
-- [ ] GitHub Actions 6/6 平台 success
-- [ ] CI 状态回填 ACCEPTANCE + FINAL + TODO
+- [x] GitHub Actions 6/6 平台 success (Run `25917658584`)
+- [x] Windows runtime smoke 6 F.0.4 PASS + Functions covered 17/17
+- [x] CI 状态回填 ACCEPTANCE + FINAL + TODO
 
 ---
 
@@ -180,18 +181,37 @@ Phase F.0 + F.0.1 + F.0.4 TAA smoke: ALL TESTS PASSED
 
 ---
 
-## 7. CI 状态（待回填）
+## 7. CI 状态（已回填）
 
-| 平台 | 状态 | 状态详情 |
-|------|------|---------|
-| build-windows | ⏳ | runtime smoke 含 taa.lua 17 fn + AntiFlicker 5 新 PASS + 与 sharpening 共存 |
-| build-linux | ⏳ | 纯构建 |
-| build-macos | ⏳ | 纯构建 |
-| build-android | ⏳ | 纯构建 |
-| build-ios | ⏳ | 纯构建 |
-| build-web | ⏳ | Emscripten WASM |
+| 平台 | 状态 | 详情 |
+|------|------|------|
+| build-windows | ✅ success | runtime smoke 6 个 F.0.4 PASS + Functions covered: 17 / 17 |
+| build-linux | ✅ success | 纯构建 |
+| build-macos | ✅ success | 纯构建 |
+| build-android | ✅ success | 纯构建 |
+| build-ios | ✅ success | 纯构建 |
+| build-web | ✅ success | Emscripten WASM |
+| release | ⏭️ skipped | 符合非 tag push 预期（仅 v* tag 触发） |
 
-GitHub Run ID: `<pending>`
-Commit hash: `<pending>`
-Total duration: `<pending>`
-Date: `<pending>`
+**Windows runtime smoke 实证日志摘录**（来自 Run `25917658584` build-windows job）：
+
+```
+PASS: Default AntiFlicker = true (Phase F.0.4)
+PASS: AntiFlicker round-trip ok
+PASS: SetAntiFlicker type-error rejected (number)
+PASS: SetAntiFlicker type-error rejected (string)
+PASS: AntiFlicker state preserved on failed call
+PASS: AntiFlicker(true) + Sharpness(0.8) coexist ok (Karis blend + 4-tap sharpen 双启)
+=== Phase F.0 + F.0.1 + F.0.4 TAA smoke: ALL TESTS PASSED ===
+Functions covered: 17 / 17
+  - default OFF, alpha=0.92, neighborhoodClip=true, jitterEnabled=true, sharpness=0.5, antiFlicker=true
+  - type-error: SetNeighborhoodClip / SetJitterEnabled / SetAntiFlicker reject non-boolean
+  - Phase F.0.4: Karis luma-weighted blend, antiFlicker=false 走 F.0 纯 alpha blend
+```
+
+| 字段 | 值 |
+|------|---|
+| GitHub Run ID | `25917658584` |
+| Commit hash | `361a56ff269f4f30889ed232f77f66f2611e559e` (`361a56f`) |
+| Total duration | ~8 分 27 秒（12:25:40Z → 12:34:07Z UTC） |
+| Date | 2026-05-15 |

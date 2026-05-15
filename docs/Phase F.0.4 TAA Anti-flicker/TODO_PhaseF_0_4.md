@@ -5,13 +5,13 @@
 
 ---
 
-## 1. 必做（阻塞性，本 Phase 内）
+## 1. 必做（阻塞性，本 Phase 内）— **全部完成 ✅**
 
-| 任务 | 操作 | 优先级 |
-|------|------|--------|
-| commit + push 代码到 main | git add + commit + push origin main | 🔴 高 |
-| 监控 GitHub Actions CI 6/6 平台 success | gh run view | 🔴 高 |
-| CI 状态回填 ACCEPTANCE / FINAL / TODO | 编辑 3 份文档 §CI 状态 | 🔴 高 |
+| 任务 | 操作 | 状态 |
+|------|------|------|
+| commit + push 代码到 main | `git commit -F` + `git push origin main` | ✅ 完成（commit `361a56f`） |
+| 监控 GitHub Actions CI 6/6 平台 success | `gh run view 25917658584` | ✅ 完成（6/6 全 success） |
+| CI 状态回填 ACCEPTANCE / FINAL / TODO | 编辑 3 份文档 §CI 状态 | ✅ 完成 |
 
 ---
 
@@ -86,19 +86,20 @@ end
 
 ---
 
-## 6. CI 回填（待 T5 完成后填）
+## 6. CI 回填（已完成 ✅）
 
 | 字段 | 值 |
 |------|---|
-| GitHub Run ID | `<pending>` |
-| Commit hash | `<pending>` |
-| 6/6 平台状态 | `<pending>` |
-| Total duration | `<pending>` |
-| Date | `<pending>` |
+| GitHub Run ID | `25917658584` |
+| Commit hash | `361a56ff269f4f30889ed232f77f66f2611e559e` (`361a56f`) |
+| 6/6 平台状态 | ✅ 全 success（windows/linux/macos/android/ios/web；release skipped 符合预期） |
+| Total duration | ~8 分 27 秒（12:25:40Z → 12:34:07Z UTC） |
+| Date | 2026-05-15 |
+| Windows runtime smoke | 6 个 F.0.4 PASS + Functions covered: 17 / 17 |
 
-回填后同步更新：
-- `ACCEPTANCE_PhaseF_0_4.md` 第 7 章
-- `FINAL_PhaseF_0_4.md` 第 8 章
+已同步更新：
+- `ACCEPTANCE_PhaseF_0_4.md` 第 7 章 ✅
+- `FINAL_PhaseF_0_4.md` 第 8 章 ✅
 
 ---
 
