@@ -1175,21 +1175,24 @@ in  vec2 vUV;
 out vec4 FragColor;
 uniform sampler2D uSrc;
 uniform vec2 uTexel;
+uniform vec4 uUvBounds;   // Phase F.0.10.5: (uMin.xy, uMax.xy) clamp 13-tap; 默认 (0,0,1,1) = 无 clamp
+vec2 ClampUV(vec2 uv) { return clamp(uv, uUvBounds.xy, uUvBounds.zw); }   // Phase F.0.10.5
 void main() {
     // COD AW 13-tap: 4 个 ±2 偏移 + 8 个 ±1/±2 偏移 + 1 个中心
-    vec3 A = texture(uSrc, vUV + uTexel * vec2(-2.0,  2.0)).rgb;
-    vec3 B = texture(uSrc, vUV + uTexel * vec2( 0.0,  2.0)).rgb;
-    vec3 C = texture(uSrc, vUV + uTexel * vec2( 2.0,  2.0)).rgb;
-    vec3 D = texture(uSrc, vUV + uTexel * vec2(-2.0,  0.0)).rgb;
-    vec3 E = texture(uSrc, vUV                              ).rgb;
-    vec3 F = texture(uSrc, vUV + uTexel * vec2( 2.0,  0.0)).rgb;
-    vec3 G = texture(uSrc, vUV + uTexel * vec2(-2.0, -2.0)).rgb;
-    vec3 H = texture(uSrc, vUV + uTexel * vec2( 0.0, -2.0)).rgb;
-    vec3 I = texture(uSrc, vUV + uTexel * vec2( 2.0, -2.0)).rgb;
-    vec3 J = texture(uSrc, vUV + uTexel * vec2(-1.0,  1.0)).rgb;
-    vec3 K = texture(uSrc, vUV + uTexel * vec2( 1.0,  1.0)).rgb;
-    vec3 L = texture(uSrc, vUV + uTexel * vec2(-1.0, -1.0)).rgb;
-    vec3 M = texture(uSrc, vUV + uTexel * vec2( 1.0, -1.0)).rgb;
+    // Phase F.0.10.5: ClampUV 防跨 region 边界采样泄漏 (Bloom mip 链上限明显)
+    vec3 A = texture(uSrc, ClampUV(vUV + uTexel * vec2(-2.0,  2.0))).rgb;
+    vec3 B = texture(uSrc, ClampUV(vUV + uTexel * vec2( 0.0,  2.0))).rgb;
+    vec3 C = texture(uSrc, ClampUV(vUV + uTexel * vec2( 2.0,  2.0))).rgb;
+    vec3 D = texture(uSrc, ClampUV(vUV + uTexel * vec2(-2.0,  0.0))).rgb;
+    vec3 E = texture(uSrc, ClampUV(vUV                              )).rgb;
+    vec3 F = texture(uSrc, ClampUV(vUV + uTexel * vec2( 2.0,  0.0))).rgb;
+    vec3 G = texture(uSrc, ClampUV(vUV + uTexel * vec2(-2.0, -2.0))).rgb;
+    vec3 H = texture(uSrc, ClampUV(vUV + uTexel * vec2( 0.0, -2.0))).rgb;
+    vec3 I = texture(uSrc, ClampUV(vUV + uTexel * vec2( 2.0, -2.0))).rgb;
+    vec3 J = texture(uSrc, ClampUV(vUV + uTexel * vec2(-1.0,  1.0))).rgb;
+    vec3 K = texture(uSrc, ClampUV(vUV + uTexel * vec2( 1.0,  1.0))).rgb;
+    vec3 L = texture(uSrc, ClampUV(vUV + uTexel * vec2(-1.0, -1.0))).rgb;
+    vec3 M = texture(uSrc, ClampUV(vUV + uTexel * vec2( 1.0, -1.0))).rgb;
     // COD AW 权重: 中心 4 重 (J K L M) * 0.5, 8 个外围 * 0.125
     vec3 o = E * 0.125;
     o += (A + C + G + I) * 0.03125;
@@ -1209,18 +1212,20 @@ uniform sampler2D uSrc;
 uniform vec2  uTexel;
 uniform float uRadius;       // upsample 扩散半径 (0..1+)
 uniform float uIntensity;    // composite 缩放 (upsample 时为 1.0)
+uniform vec4  uUvBounds;     // Phase F.0.10.5: (uMin.xy, uMax.xy) clamp 9-tap tent; 默认 (0,0,1,1) = 无 clamp
+vec2 ClampUV(vec2 uv) { return clamp(uv, uUvBounds.xy, uUvBounds.zw); }   // Phase F.0.10.5
 void main() {
     vec2 d = uTexel * uRadius;
-    // tent 9-tap
-    vec3 c = texture(uSrc, vUV).rgb * 4.0;
-    c += texture(uSrc, vUV + vec2(-d.x,  0.0)).rgb * 2.0;
-    c += texture(uSrc, vUV + vec2( d.x,  0.0)).rgb * 2.0;
-    c += texture(uSrc, vUV + vec2( 0.0, -d.y)).rgb * 2.0;
-    c += texture(uSrc, vUV + vec2( 0.0,  d.y)).rgb * 2.0;
-    c += texture(uSrc, vUV + vec2(-d.x, -d.y)).rgb;
-    c += texture(uSrc, vUV + vec2( d.x, -d.y)).rgb;
-    c += texture(uSrc, vUV + vec2(-d.x,  d.y)).rgb;
-    c += texture(uSrc, vUV + vec2( d.x,  d.y)).rgb;
+    // tent 9-tap; Phase F.0.10.5: ClampUV 防跨 region 边界
+    vec3 c = texture(uSrc, ClampUV(vUV)).rgb * 4.0;
+    c += texture(uSrc, ClampUV(vUV + vec2(-d.x,  0.0))).rgb * 2.0;
+    c += texture(uSrc, ClampUV(vUV + vec2( d.x,  0.0))).rgb * 2.0;
+    c += texture(uSrc, ClampUV(vUV + vec2( 0.0, -d.y))).rgb * 2.0;
+    c += texture(uSrc, ClampUV(vUV + vec2( 0.0,  d.y))).rgb * 2.0;
+    c += texture(uSrc, ClampUV(vUV + vec2(-d.x, -d.y))).rgb;
+    c += texture(uSrc, ClampUV(vUV + vec2( d.x, -d.y))).rgb;
+    c += texture(uSrc, ClampUV(vUV + vec2(-d.x,  d.y))).rgb;
+    c += texture(uSrc, ClampUV(vUV + vec2( d.x,  d.y))).rgb;
     FragColor = vec4((c / 16.0) * uIntensity, 1.0);
 }
 )";
@@ -1451,20 +1456,23 @@ in  vec2 vUV;
 out vec4 FragColor;
 uniform sampler2D uSrc;
 uniform vec2 uTexel;
+uniform vec4 uUvBounds;   // Phase F.0.10.5: (uMin.xy, uMax.xy) clamp 13-tap; 默认 (0,0,1,1) = 无 clamp
+vec2 ClampUV(vec2 uv) { return clamp(uv, uUvBounds.xy, uUvBounds.zw); }   // Phase F.0.10.5
 void main() {
-    vec3 A = texture(uSrc, vUV + uTexel * vec2(-2.0,  2.0)).rgb;
-    vec3 B = texture(uSrc, vUV + uTexel * vec2( 0.0,  2.0)).rgb;
-    vec3 C = texture(uSrc, vUV + uTexel * vec2( 2.0,  2.0)).rgb;
-    vec3 D = texture(uSrc, vUV + uTexel * vec2(-2.0,  0.0)).rgb;
-    vec3 E = texture(uSrc, vUV                              ).rgb;
-    vec3 F = texture(uSrc, vUV + uTexel * vec2( 2.0,  0.0)).rgb;
-    vec3 G = texture(uSrc, vUV + uTexel * vec2(-2.0, -2.0)).rgb;
-    vec3 H = texture(uSrc, vUV + uTexel * vec2( 0.0, -2.0)).rgb;
-    vec3 I = texture(uSrc, vUV + uTexel * vec2( 2.0, -2.0)).rgb;
-    vec3 J = texture(uSrc, vUV + uTexel * vec2(-1.0,  1.0)).rgb;
-    vec3 K = texture(uSrc, vUV + uTexel * vec2( 1.0,  1.0)).rgb;
-    vec3 L = texture(uSrc, vUV + uTexel * vec2(-1.0, -1.0)).rgb;
-    vec3 M = texture(uSrc, vUV + uTexel * vec2( 1.0, -1.0)).rgb;
+    // Phase F.0.10.5: ClampUV 防跨 region 边界采样泄漏
+    vec3 A = texture(uSrc, ClampUV(vUV + uTexel * vec2(-2.0,  2.0))).rgb;
+    vec3 B = texture(uSrc, ClampUV(vUV + uTexel * vec2( 0.0,  2.0))).rgb;
+    vec3 C = texture(uSrc, ClampUV(vUV + uTexel * vec2( 2.0,  2.0))).rgb;
+    vec3 D = texture(uSrc, ClampUV(vUV + uTexel * vec2(-2.0,  0.0))).rgb;
+    vec3 E = texture(uSrc, ClampUV(vUV                              )).rgb;
+    vec3 F = texture(uSrc, ClampUV(vUV + uTexel * vec2( 2.0,  0.0))).rgb;
+    vec3 G = texture(uSrc, ClampUV(vUV + uTexel * vec2(-2.0, -2.0))).rgb;
+    vec3 H = texture(uSrc, ClampUV(vUV + uTexel * vec2( 0.0, -2.0))).rgb;
+    vec3 I = texture(uSrc, ClampUV(vUV + uTexel * vec2( 2.0, -2.0))).rgb;
+    vec3 J = texture(uSrc, ClampUV(vUV + uTexel * vec2(-1.0,  1.0))).rgb;
+    vec3 K = texture(uSrc, ClampUV(vUV + uTexel * vec2( 1.0,  1.0))).rgb;
+    vec3 L = texture(uSrc, ClampUV(vUV + uTexel * vec2(-1.0, -1.0))).rgb;
+    vec3 M = texture(uSrc, ClampUV(vUV + uTexel * vec2( 1.0, -1.0))).rgb;
     vec3 o = E * 0.125;
     o += (A + C + G + I) * 0.03125;
     o += (B + D + F + H) * 0.0625;
@@ -1482,17 +1490,20 @@ uniform sampler2D uSrc;
 uniform vec2  uTexel;
 uniform float uRadius;
 uniform float uIntensity;
+uniform vec4  uUvBounds;     // Phase F.0.10.5: (uMin.xy, uMax.xy) clamp 9-tap tent
+vec2 ClampUV(vec2 uv) { return clamp(uv, uUvBounds.xy, uUvBounds.zw); }   // Phase F.0.10.5
 void main() {
     vec2 d = uTexel * uRadius;
-    vec3 c = texture(uSrc, vUV).rgb * 4.0;
-    c += texture(uSrc, vUV + vec2(-d.x,  0.0)).rgb * 2.0;
-    c += texture(uSrc, vUV + vec2( d.x,  0.0)).rgb * 2.0;
-    c += texture(uSrc, vUV + vec2( 0.0, -d.y)).rgb * 2.0;
-    c += texture(uSrc, vUV + vec2( 0.0,  d.y)).rgb * 2.0;
-    c += texture(uSrc, vUV + vec2(-d.x, -d.y)).rgb;
-    c += texture(uSrc, vUV + vec2( d.x, -d.y)).rgb;
-    c += texture(uSrc, vUV + vec2(-d.x,  d.y)).rgb;
-    c += texture(uSrc, vUV + vec2( d.x,  d.y)).rgb;
+    // Phase F.0.10.5: ClampUV 防跨 region 边界
+    vec3 c = texture(uSrc, ClampUV(vUV)).rgb * 4.0;
+    c += texture(uSrc, ClampUV(vUV + vec2(-d.x,  0.0))).rgb * 2.0;
+    c += texture(uSrc, ClampUV(vUV + vec2( d.x,  0.0))).rgb * 2.0;
+    c += texture(uSrc, ClampUV(vUV + vec2( 0.0, -d.y))).rgb * 2.0;
+    c += texture(uSrc, ClampUV(vUV + vec2( 0.0,  d.y))).rgb * 2.0;
+    c += texture(uSrc, ClampUV(vUV + vec2(-d.x, -d.y))).rgb;
+    c += texture(uSrc, ClampUV(vUV + vec2( d.x, -d.y))).rgb;
+    c += texture(uSrc, ClampUV(vUV + vec2(-d.x,  d.y))).rgb;
+    c += texture(uSrc, ClampUV(vUV + vec2( d.x,  d.y))).rgb;
     FragColor = vec4((c / 16.0) * uIntensity, 1.0);
 }
 )";
@@ -3652,14 +3663,16 @@ class GL33Backend : public RenderBackend {
     GLint  locBloomBright_Threshold = -1;
 
     // Downsample uniform: uSrc(sampler) / uTexel(vec2)
-    GLint  locBloomDown_Src   = -1;
-    GLint  locBloomDown_Texel = -1;
+    GLint  locBloomDown_Src      = -1;
+    GLint  locBloomDown_Texel    = -1;
+    GLint  locBloomDown_UvBounds = -1;   // Phase F.0.10.5
 
     // Upsample uniform: uSrc(sampler) / uTexel(vec2) / uRadius(float) / uIntensity(float)
     GLint  locBloomUp_Src       = -1;
     GLint  locBloomUp_Texel     = -1;
     GLint  locBloomUp_Radius    = -1;
     GLint  locBloomUp_Intensity = -1;
+    GLint  locBloomUp_UvBounds  = -1;   // Phase F.0.10.5
 
     // ---- Phase E.5 — Auto Exposure (Eye Adaptation) ----
     // 1 个 shader program (luma extract; 共用 vaoTonemap 全屏 quad)
@@ -4464,8 +4477,9 @@ public:
         glUseProgram(programBloomBright);
         if (locBloomBright_Src >= 0) glUniform1i(locBloomBright_Src, 0);
 
-        locBloomDown_Src   = glGetUniformLocation(programBloomDown, "uSrc");
-        locBloomDown_Texel = glGetUniformLocation(programBloomDown, "uTexel");
+        locBloomDown_Src      = glGetUniformLocation(programBloomDown, "uSrc");
+        locBloomDown_Texel    = glGetUniformLocation(programBloomDown, "uTexel");
+        locBloomDown_UvBounds = glGetUniformLocation(programBloomDown, "uUvBounds");   // Phase F.0.10.5
         glUseProgram(programBloomDown);
         if (locBloomDown_Src >= 0) glUniform1i(locBloomDown_Src, 0);
 
@@ -4473,6 +4487,7 @@ public:
         locBloomUp_Texel     = glGetUniformLocation(programBloomUp, "uTexel");
         locBloomUp_Radius    = glGetUniformLocation(programBloomUp, "uRadius");
         locBloomUp_Intensity = glGetUniformLocation(programBloomUp, "uIntensity");
+        locBloomUp_UvBounds  = glGetUniformLocation(programBloomUp, "uUvBounds");      // Phase F.0.10.5
         glUseProgram(programBloomUp);
         if (locBloomUp_Src >= 0) glUniform1i(locBloomUp_Src, 0);
 
@@ -5040,8 +5055,8 @@ public:
         if (programBloomDown)   { glDeleteProgram(programBloomDown);   programBloomDown   = 0; }
         if (programBloomUp)     { glDeleteProgram(programBloomUp);     programBloomUp     = 0; }
         locBloomBright_Src = locBloomBright_Threshold = -1;
-        locBloomDown_Src = locBloomDown_Texel = -1;
-        locBloomUp_Src = locBloomUp_Texel = locBloomUp_Radius = locBloomUp_Intensity = -1;
+        locBloomDown_Src = locBloomDown_Texel = locBloomDown_UvBounds = -1;
+        locBloomUp_Src = locBloomUp_Texel = locBloomUp_Radius = locBloomUp_Intensity = locBloomUp_UvBounds = -1;
         bloomSupported = false;
 
         // Phase E.5 — 释放 Auto Exposure shader (luma RT 由 AutoExposureRenderer::Shutdown 配对释放)
@@ -5552,7 +5567,8 @@ public:
     /// Downsample: srcTex → dstFbo (13-tap COD AW)
     void DrawBloomDownsample(uint32_t srcTex, uint32_t dstFbo,
                               int dstW, int dstH,
-                              int rgnX, int rgnY, int rgnW, int rgnH) override {
+                              int rgnX, int rgnY, int rgnW, int rgnH,
+                              const float* uvBounds) override {   // Phase F.0.10.5
         if (!bloomSupported || !srcTex || !dstFbo || dstW <= 0 || dstH <= 0) return;
 
         // uTexel = 1.0 / srcSize. 注: downsample 的 src 是上一级, 大小 = dst * 2
@@ -5573,6 +5589,11 @@ public:
 
         glUseProgram(programBloomDown);
         if (locBloomDown_Texel >= 0) glUniform2f(locBloomDown_Texel, texelX, texelY);
+        // Phase F.0.10.5: uvBounds 上传 (nullptr 上传 0,0,1,1 = 无 clamp, 零回归)
+        if (locBloomDown_UvBounds >= 0) {
+            const float defaultBounds[4] = {0.0f, 0.0f, 1.0f, 1.0f};
+            glUniform4fv(locBloomDown_UvBounds, 1, uvBounds ? uvBounds : defaultBounds);
+        }
 
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, (GLuint)srcTex);
@@ -5590,7 +5611,8 @@ public:
     /// Upsample + additive blend: srcTex → dstFbo (tent 3x3, hardware blend)
     void DrawBloomUpsample(uint32_t srcTex, uint32_t dstFbo,
                             int dstW, int dstH, float radius,
-                            int rgnX, int rgnY, int rgnW, int rgnH) override {
+                            int rgnX, int rgnY, int rgnW, int rgnH,
+                            const float* uvBounds) override {   // Phase F.0.10.5
         if (!bloomSupported || !srcTex || !dstFbo || dstW <= 0 || dstH <= 0) return;
 
         // uTexel = 1.0 / dstSize (tent 采样在 dst 空间进行, 扩散半径相对 dst 像素)
@@ -5615,6 +5637,11 @@ public:
         if (locBloomUp_Texel     >= 0) glUniform2f(locBloomUp_Texel, texelX, texelY);
         if (locBloomUp_Radius    >= 0) glUniform1f(locBloomUp_Radius, radius);
         if (locBloomUp_Intensity >= 0) glUniform1f(locBloomUp_Intensity, 1.0f);  // upsample 不缩放
+        // Phase F.0.10.5: uvBounds 上传
+        if (locBloomUp_UvBounds >= 0) {
+            const float defaultBounds[4] = {0.0f, 0.0f, 1.0f, 1.0f};
+            glUniform4fv(locBloomUp_UvBounds, 1, uvBounds ? uvBounds : defaultBounds);
+        }
 
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, (GLuint)srcTex);
@@ -5634,7 +5661,8 @@ public:
     /// 复用 upsample shader, radius=0 相当于零偏移采样 (tent 中心权重 16/16 = 全权)
     void DrawBloomComposite(uint32_t bloomTex, uint32_t hdrFbo,
                              int w, int h, float intensity,
-                             int rgnX, int rgnY, int rgnW, int rgnH) override {
+                             int rgnX, int rgnY, int rgnW, int rgnH,
+                             const float* uvBounds) override {   // Phase F.0.10.5
         if (!bloomSupported || !bloomTex || !hdrFbo || w <= 0 || h <= 0) return;
 
         float texelX = 1.0f / (float)w;
@@ -5657,6 +5685,11 @@ public:
         if (locBloomUp_Texel     >= 0) glUniform2f(locBloomUp_Texel, texelX, texelY);
         if (locBloomUp_Radius    >= 0) glUniform1f(locBloomUp_Radius, 0.0f);       // 0 偏移 = 零扩散
         if (locBloomUp_Intensity >= 0) glUniform1f(locBloomUp_Intensity, intensity);
+        // Phase F.0.10.5: composite 复用 BloomUp shader, uvBounds 同口上传 (radius=0 时 ClampUV 是 no-op)
+        if (locBloomUp_UvBounds >= 0) {
+            const float defaultBounds[4] = {0.0f, 0.0f, 1.0f, 1.0f};
+            glUniform4fv(locBloomUp_UvBounds, 1, uvBounds ? uvBounds : defaultBounds);
+        }
 
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, (GLuint)bloomTex);

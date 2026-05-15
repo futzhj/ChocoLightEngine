@@ -209,6 +209,7 @@ void Process(uint32_t hdrFbo, uint32_t hdrTex) {
 // Phase F.0.10.3 — Region 限定 bloom (split-screen 必备)
 // rgnW=0 || rgnH=0 时退化为全屏路径 (与老 Process 等价, 零回归)
 // region 在 mip 链中按 >>i (downsample) / <<i (upsample) 缩放
+// Phase F.0.10.5 — 加 uvBounds 上传到 Down/Up/Composite shader, 完美防 ~1px 边界泄漏
 void Process(uint32_t hdrFbo, uint32_t hdrTex,
              int rgnX, int rgnY, int rgnW, int rgnH) {
     // 防御性检查: 未启用 / backend 无效 / pyramid 不足 → no-op
@@ -219,19 +220,41 @@ void Process(uint32_t hdrFbo, uint32_t hdrTex,
     // useRegion: rgnW/rgnH > 0 才启 scissor; 否则退化为全屏老路径
     const bool useRegion = (rgnW > 0 && rgnH > 0);
 
+    // Phase F.0.10.5 — uvBounds 算 helper (lambda) — 把 region 转换为 src 空间 normalized UV
+    // 加 0.5 texel inset 防线性插值越界 (业界标准, UE 同模式)
+    auto calcUvBounds = [](int srcW, int srcH,
+                            int srcRgnX, int srcRgnY, int srcRgnW, int srcRgnH,
+                            float out[4]) {
+        const float invW = 1.0f / (float)srcW;
+        const float invH = 1.0f / (float)srcH;
+        out[0] = ((float)srcRgnX           + 0.5f) * invW;
+        out[1] = ((float)srcRgnY           + 0.5f) * invH;
+        out[2] = ((float)(srcRgnX + srcRgnW) - 0.5f) * invW;
+        out[3] = ((float)(srcRgnY + srcRgnH) - 0.5f) * invH;
+    };
+
     // 1. Bright Pass: HDR RT → pyramid[0]  (region 同输入坐标, mip-0 full-res)
+    //    Bright shader 单点采 → 不需 uvBounds (老 backend 默认 nullptr OK)
     g.backend->DrawBloomBrightPass(hdrTex, g.fbos[0],
                                     g.width, g.height, g.threshold,
                                     rgnX, rgnY, rgnW, rgnH);
 
     // 2. Downsample: pyramid[0] → [1] → ... → [actualLevels-1]
     // 每级尺寸 = (前级宽 / 2, 前级高 / 2), 最小 1x1; region 同步缩半
+    // Phase F.0.10.5: shader 内 ClampUV 用 src (i-1) 空间 UV, 故 uvBounds 算 src region
     int prevW = g.width, prevH = g.height;
     int curRgnX = rgnX, curRgnY = rgnY, curRgnW = rgnW, curRgnH = rgnH;
     for (int i = 1; i < g.actualLevels; ++i) {
         int curW = (prevW > 1) ? prevW / 2 : 1;
         int curH = (prevH > 1) ? prevH / 2 : 1;
-        // region 缩半 (>>1); useRegion=false 时保持 0/0/0/0
+        // Phase F.0.10.5: src region = 当前 mip-(i-1) region (即缩半前 region) — 算 uvBounds
+        float uvBoundsBuf[4];
+        const float* uvBoundsPtr = nullptr;
+        if (useRegion) {
+            calcUvBounds(prevW, prevH, curRgnX, curRgnY, curRgnW, curRgnH, uvBoundsBuf);
+            uvBoundsPtr = uvBoundsBuf;
+        }
+        // dst region 缩半 (>>1); useRegion=false 时保持 0/0/0/0
         if (useRegion) {
             curRgnX >>= 1;
             curRgnY >>= 1;
@@ -239,7 +262,8 @@ void Process(uint32_t hdrFbo, uint32_t hdrTex,
             curRgnH = (curRgnH > 1) ? (curRgnH >> 1) : 1;
         }
         g.backend->DrawBloomDownsample(g.texs[i - 1], g.fbos[i], curW, curH,
-                                        curRgnX, curRgnY, curRgnW, curRgnH);
+                                        curRgnX, curRgnY, curRgnW, curRgnH,
+                                        uvBoundsPtr);   // Phase F.0.10.5
         prevW = curW;
         prevH = curH;
     }
@@ -247,26 +271,52 @@ void Process(uint32_t hdrFbo, uint32_t hdrTex,
     // 3. Upsample + additive blend: 反向从最底层往回累加
     // pyramid[N-1] → [N-2] → ... → [0]
     // 每级 upsample 的 dst 大小 = 下级 * 2; region 按 (i-1) 层反算 (不递推, 避免误差)
+    // Phase F.0.10.5: src 是 mip-i, uvBounds 算 mip-i 空间 region
     for (int i = g.actualLevels - 1; i > 0; --i) {
         // 第 i-1 级的原始大小 (按 width >> (i-1) 反算)
         int dstW = g.width  >> (i - 1);
         int dstH = g.height >> (i - 1);
         if (dstW < 1) dstW = 1;
         if (dstH < 1) dstH = 1;
-        // region 在 i-1 级 (按 >> (i-1) 反算; 不递推保证一致性)
+        // src mip-i 大小 (按 >> i 反算)
+        int srcW = g.width  >> i;
+        int srcH = g.height >> i;
+        if (srcW < 1) srcW = 1;
+        if (srcH < 1) srcH = 1;
+        // region 在 i-1 级 (dst) 和 i 级 (src) 各自的坐标 (按 >> 反算, 不递推保证一致性)
         int dRgnX = useRegion ? (rgnX >> (i - 1)) : 0;
         int dRgnY = useRegion ? (rgnY >> (i - 1)) : 0;
         int dRgnW = useRegion ? ((rgnW > 0) ? std::max(1, rgnW >> (i - 1)) : 0) : 0;
         int dRgnH = useRegion ? ((rgnH > 0) ? std::max(1, rgnH >> (i - 1)) : 0) : 0;
+        // Phase F.0.10.5: uvBounds 在 src mip-i 空间
+        float uvBoundsBuf[4];
+        const float* uvBoundsPtr = nullptr;
+        if (useRegion) {
+            int sRgnX = rgnX >> i;
+            int sRgnY = rgnY >> i;
+            int sRgnW = std::max(1, rgnW >> i);
+            int sRgnH = std::max(1, rgnH >> i);
+            calcUvBounds(srcW, srcH, sRgnX, sRgnY, sRgnW, sRgnH, uvBoundsBuf);
+            uvBoundsPtr = uvBoundsBuf;
+        }
         g.backend->DrawBloomUpsample(g.texs[i], g.fbos[i - 1],
                                       dstW, dstH, g.radius,
-                                      dRgnX, dRgnY, dRgnW, dRgnH);
+                                      dRgnX, dRgnY, dRgnW, dRgnH,
+                                      uvBoundsPtr);   // Phase F.0.10.5
     }
 
     // 4. Composite: pyramid[0] additive blend → hdrFbo (intensity 缩放), region 同输入坐标
+    // Phase F.0.10.5: src = pyramid[0] mip-0 (g.width × g.height), uvBounds 同 region
+    float compositeUvBoundsBuf[4];
+    const float* compositeUvBoundsPtr = nullptr;
+    if (useRegion) {
+        calcUvBounds(g.width, g.height, rgnX, rgnY, rgnW, rgnH, compositeUvBoundsBuf);
+        compositeUvBoundsPtr = compositeUvBoundsBuf;
+    }
     g.backend->DrawBloomComposite(g.texs[0], hdrFbo,
                                    g.width, g.height, g.intensity,
-                                   rgnX, rgnY, rgnW, rgnH);
+                                   rgnX, rgnY, rgnW, rgnH,
+                                   compositeUvBoundsPtr);   // Phase F.0.10.5
 }
 
 // ==================== Phase E.6 — 高级查询 ====================

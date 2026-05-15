@@ -686,7 +686,8 @@ public:
     virtual void DrawBloomDownsample(uint32_t /*srcTex*/, uint32_t /*dstFbo*/,
                                       int /*dstW*/, int /*dstH*/,
                                       int /*rgnX*/ = 0, int /*rgnY*/ = 0,
-                                      int /*rgnW*/ = 0, int /*rgnH*/ = 0) {}
+                                      int /*rgnW*/ = 0, int /*rgnH*/ = 0,
+                                      const float* /*uvBounds*/ = nullptr) {}   // Phase F.0.10.5
 
     /**
      * @brief Upsample + additive blend: srcTex → dstFbo (tent 3x3 filter)
@@ -699,7 +700,8 @@ public:
     virtual void DrawBloomUpsample(uint32_t /*srcTex*/, uint32_t /*dstFbo*/,
                                     int /*dstW*/, int /*dstH*/, float /*radius*/,
                                     int /*rgnX*/ = 0, int /*rgnY*/ = 0,
-                                    int /*rgnW*/ = 0, int /*rgnH*/ = 0) {}
+                                    int /*rgnW*/ = 0, int /*rgnH*/ = 0,
+                                    const float* /*uvBounds*/ = nullptr) {}   // Phase F.0.10.5
 
     /**
      * @brief Final composite: bloomTex additive blend → hdrFbo (intensity scaled)
@@ -711,7 +713,8 @@ public:
     virtual void DrawBloomComposite(uint32_t /*bloomTex*/, uint32_t /*hdrFbo*/,
                                      int /*w*/, int /*h*/, float /*intensity*/,
                                      int /*rgnX*/ = 0, int /*rgnY*/ = 0,
-                                     int /*rgnW*/ = 0, int /*rgnH*/ = 0) {}
+                                     int /*rgnW*/ = 0, int /*rgnH*/ = 0,
+                                     const float* /*uvBounds*/ = nullptr) {}   // Phase F.0.10.5
 
     // ==================== Phase E.5 — Auto Exposure (Eye Adaptation) ====================
 
