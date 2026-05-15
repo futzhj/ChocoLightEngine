@@ -559,3 +559,333 @@ mesh:Draw(material, prevModel)
 `void`
 
 ---
+
+# `Light.Graphics.HDR` 子表
+
+> Phase E.3 ~ E.14 — HDR 离屏渲染管线 + Tonemap + Velocity buffer 控制
+
+`Light.Graphics.HDR` 是一组 **16 个函数** 的 Lua 子表，控制 HDR RGBA16F 离屏渲染、tonemap 曲线、曝光/伽马、以及 velocity buffer 的 dilation 与存储格式。
+
+## 管线总览
+
+```
+BeginFrame
+  ↓ HDR.BeginScene() → 绑定 RGBA16F FBO + Clear
+  ↓ Lua Draw / DrawLit / Draw3D（所有像素可 > 1.0）
+  ↓ Bloom / AutoExposure / LensDirt / LensFlare 后处理（Phase E.4 ~ E.7）
+  ↓ HDR.EndScene() → tonemap blit 到 default fb（用 GetTonemapper 选曲线）
+  ↓ SwapBuffers
+EndFrame
+```
+
+- **未 Enable 时**：所有 API 静默 no-op，主循环走 LDR 路径
+- **Legacy 后端**：`HDR.IsSupported() == false`，`Enable` 永远返 false
+- **GL3.3 后端（默认）**：完整支持
+
+## 子表函数索引
+
+| 分类 | 函数 | Phase |
+|------|------|-------|
+| 生命周期 | `Enable / Disable / IsEnabled / IsSupported / Resize` | E.3 |
+| 后端纹理 | `GetSceneTexture` | E.3 |
+| 曝光 / 伽马 | `SetExposure / GetExposure / SetGamma / GetGamma` | E.3 |
+| Tonemap operator | `SetTonemapper / GetTonemapper` | E.3.4 |
+| Velocity dilation | `SetVelocityDilation / GetVelocityDilation` | E.14 |
+| Velocity 格式 | `SetVelocityFormat / GetVelocityFormat` | E.14 |
+
+---
+
+## `HDR.Enable`
+
+启用 HDR：创建 RGBA16F 离屏 RT 与配套 velocity（RG16F/RG8）/depth/normal MRT。`Init` 必须由引擎在主循环启动时已调（`light_ui.cpp` 自动），用户脚本只调 `Enable`。
+
+### 参数
+
+| 名称 | 类型 | 说明 |
+|------|------|------|
+| `w` | `number` | RT 宽度（像素，> 0） |
+| `h` | `number` | RT 高度（像素，> 0） |
+
+### 返回值
+
+| 状态 | 返回 |
+|------|------|
+| 成功 | `boolean true` |
+| 失败 | `boolean false`（后端不支持 / 参数非法 / 资源创建失败） |
+
+### 行为
+
+- 允许同进程多次 `Enable`，等价于 `Resize(w, h)`
+- 成功后下一帧主循环走 HDR 路径（所有像素可 > 1.0）
+- 自动联动：成功后会通知 `Bloom` / `AutoExposure` / `LensDirt` / `LensFlare` 模块（autoEnable=true 时各自拉起）
+- `IsSupported() == false` 时直接返 false 并 warn log
+
+### 示例
+
+```lua
+if Light.Graphics.HDR.IsSupported() then
+    Light.Graphics.HDR.Enable(1280, 720)
+end
+```
+
+---
+
+## `HDR.Disable`
+
+释放 HDR RT，主循环回退到 LDR 路径。
+
+### 参数
+
+无
+
+### 返回值
+
+`void`
+
+### 行为
+
+- 联动通知 `Bloom::OnHDRDisabled`（其他后处理模块按需联动）
+- 已 disabled 时 idempotent
+
+---
+
+## `HDR.IsEnabled`
+
+查询 HDR 是否当前启用（`Enable` 成功 + 未 `Disable`）。
+
+### 返回值
+
+`boolean`
+
+---
+
+## `HDR.IsSupported`
+
+查询当前后端是否支持 HDR。`Init` 未调时返 false。
+
+### 返回值
+
+`boolean`
+
+---
+
+## `HDR.Resize`
+
+调整 HDR RT 尺寸（窗口 resize 时调用方主动调）。内部实现 = `Disable + Enable(w, h)`。未 `Enable` 时等价于 `Enable(w, h)`。
+
+### 参数
+
+| 名称 | 类型 | 说明 |
+|------|------|------|
+| `w` | `number` | 新宽度（> 0） |
+| `h` | `number` | 新高度（> 0） |
+
+### 返回值
+
+`boolean`：true = 成功；false = 资源创建失败 / 非法尺寸
+
+---
+
+## `HDR.GetSceneTexture`
+
+获取当前 HDR RT 的颜色纹理 GL id（用于自定义 shader 采样、调试 IMGui blit 等高级用法）。
+
+### 返回值
+
+`number`：GL texture id；未 `Enable` / 后端不支持时返 0
+
+---
+
+## `HDR.SetExposure`
+
+设置线性曝光预乘（默认 1.0）。LDR 模式下写入值但不影响渲染。**注意**：当 `Light.Graphics.AutoExposure` 启用时，渲染会用 AE 计算的 exposure 覆盖此 manual 值；AE 关闭时回归 manual。
+
+### 参数
+
+| 名称 | 类型 | 说明 |
+|------|------|------|
+| `v` | `number` | 曝光预乘（推荐 0.1 ~ 10.0） |
+
+### 返回值
+
+`void`
+
+---
+
+## `HDR.GetExposure`
+
+### 返回值
+
+`number`：当前 manual exposure（不反映 AE 覆盖）
+
+---
+
+## `HDR.SetGamma`
+
+设置 sRGB encode gamma（默认 2.2）。内部 clamp 到 `> 0.0001` 防止除零。
+
+### 参数
+
+| 名称 | 类型 | 说明 |
+|------|------|------|
+| `v` | `number` | gamma（推荐 1.8 ~ 2.4） |
+
+### 返回值
+
+`void`
+
+---
+
+## `HDR.GetGamma`
+
+### 返回值
+
+`number`：当前 gamma
+
+---
+
+## `HDR.SetTonemapper`
+
+切换 tonemap 曲线（Phase E.3.4）。**入参大小写无关**；未知名静默回退 `"aces"`（不报错）。
+
+### 参数
+
+| 名称 | 类型 | 说明 |
+|------|------|------|
+| `name` | `string` | 曲线名：`"aces"` / `"reinhard"` / `"uncharted2"` / `"linear"` |
+
+### 4 种曲线
+
+| 名 | 算法 | 风格 |
+|----|------|------|
+| `aces` | Narkowicz 2016 fitted | 默认，电影感，对比度高 |
+| `reinhard` | `x / (1 + x)` | 简单基线，柔和 |
+| `uncharted2` | Hable filmic（含 white scale） | 电影感另一种 |
+| `linear` | `clamp(x, 0, 1)` | 调试用，等同 LDR clip |
+
+### 返回值
+
+`void`
+
+### 示例
+
+```lua
+Light.Graphics.HDR.SetTonemapper("uncharted2")
+print(Light.Graphics.HDR.GetTonemapper())  --> "uncharted2"
+
+Light.Graphics.HDR.SetTonemapper("UnKnOwN")
+print(Light.Graphics.HDR.GetTonemapper())  --> "aces"（回退）
+```
+
+---
+
+## `HDR.GetTonemapper`
+
+获取当前 tonemap operator 的规范小写名。
+
+### 返回值
+
+`string`：`"aces"` / `"reinhard"` / `"uncharted2"` / `"linear"` 之一
+
+---
+
+## `HDR.SetVelocityDilation`
+
+控制 SSRTemporal shader 是否对 velocity buffer 做 **3x3 max-length 邻域采样**（Phase E.14）。开启可抑制几何边缘的 1 像素错配伪影；关闭可省 8 次 texture fetch / pixel。**默认 ON**。
+
+### 参数
+
+| 名称 | 类型 | 说明 |
+|------|------|------|
+| `on` | `boolean` | true = 开 dilation；false = 单点采样 |
+
+### 返回值
+
+| 状态 | 返回 |
+|------|------|
+| 成功 | `boolean true` |
+| 入参非 boolean | `nil, string err`（多返回值，遵循 Lua 错误约定） |
+
+### 行为
+
+- 不重建 RT，仅修改后端状态
+- 下一帧 SSRTemporal draw 立即生效（无延迟）
+- 仅影响 SSRTemporal pass；其他消费者（如未来的 motion blur）可能不读 dilation 标志
+
+### 示例
+
+```lua
+if Light.Graphics.HDR.SetVelocityDilation(false) then
+    print("dilation disabled, perf++")
+end
+
+local ok, err = Light.Graphics.HDR.SetVelocityDilation("yes")  -- 类型错
+if not ok then print("err: " .. err) end  -- "SetVelocityDilation: expect boolean"
+```
+
+---
+
+## `HDR.GetVelocityDilation`
+
+### 返回值
+
+`boolean`：当前 dilation 开关状态（默认 true）
+
+---
+
+## `HDR.SetVelocityFormat`
+
+切换 velocity buffer 存储格式（Phase E.14）。RG16F = 默认全精度；RG8 = 节省 4× VRAM（@ 1080p：8MB → 2MB），通过 shader 内 bias/scale 解码（精度 ≈ 2 像素 / 1080p，scale = 0.25 即 ±540px / frame）。**入参大小写敏感**。
+
+### 参数
+
+| 名称 | 类型 | 说明 |
+|------|------|------|
+| `fmt` | `string` | `"rg16f"`（默认）或 `"rg8"`（小写） |
+
+### 返回值
+
+| 状态 | 返回 |
+|------|------|
+| 切换成功（含 RT 重建） | `boolean true` |
+| 重建失败 | `boolean false` |
+| 入参非法 / 大小写错 | `nil, string err` |
+
+### 行为
+
+- HDR 已 `Enable` 时：走 `ReleaseRT + CreateRT` 重建路径，**会隐含重置 velocity history**（首帧 velocity 失效一次）
+- HDR 未 `Enable` 时：仅更新 state，下次 `Enable` 时按新格式创建
+- 无效名（如 `"rg32f"` / `"RG8"`）返 `nil, err`，**不修改 state**
+
+### 适用建议
+
+| 场景 | 推荐 |
+|------|------|
+| 桌面 / 主机 / 高端移动 | `"rg16f"`（默认） |
+| 中低端移动 / VRAM 紧张 / 1080p+ 多 RT 管线 | `"rg8"`（视觉差异 ≤ 2 像素，多数场景不可见） |
+| 极端快速运动（> ±540px / frame） | 必须 `"rg16f"`，RG8 会 clamp 饱和 |
+
+### 示例
+
+```lua
+-- 移动端切到 RG8 节省 VRAM
+local ok = Light.Graphics.HDR.SetVelocityFormat("rg8")
+if ok then
+    print("velocity format = " .. Light.Graphics.HDR.GetVelocityFormat())  --> "rg8"
+end
+
+-- 大小写敏感
+local ok2, err = Light.Graphics.HDR.SetVelocityFormat("RG8")
+print(ok2, err)
+--> nil    SetVelocityFormat: expect 'rg16f' or 'rg8', got 'RG8'
+```
+
+---
+
+## `HDR.GetVelocityFormat`
+
+### 返回值
+
+`string`：`"rg16f"`（默认）或 `"rg8"`（规范小写）
+
+---

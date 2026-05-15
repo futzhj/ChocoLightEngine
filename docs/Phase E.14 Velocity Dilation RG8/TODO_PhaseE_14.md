@@ -46,8 +46,8 @@
 
 - ✅ `samples/demo_ssr/main.lua`：HUD 行扩展为 `Velocity: <fmt> | dilation=<ON/OFF> | reproj=<...>`，K/L 按键已加
 - ✅ `scripts/smoke/hdr.lua`：§8 段已覆盖默认值/round-trip/bad-arg/case-sensitive
-- ⏳ `docs/api/Light_Graphics.md`：HDR 子表段需补 4 个 API 文档（与 Phase E.13 同样模式补完）
-- ⏳ `docs/Phase E.13 Motion Vector Velocity/TODO_PhaseE_13.md`：§3 候选清单标记 dilation/RG8 → Phase E.14 已完成
+- ✅ `docs/api/Light_Graphics.md`：新增 `Light.Graphics.HDR` 子表完整段（Phase E.3 ~ E.14 全 16 个 API + 管线总览 + 函数索引），含 Phase E.14 4 个 API 详解
+- ✅ `docs/Phase E.13 Motion Vector Velocity/TODO_PhaseE_13.md`：§3 候选清单标记 dilation/RG8 → Phase E.14 已完成
 
 ### 2.2 智能默认进一步收紧（可选）
 
