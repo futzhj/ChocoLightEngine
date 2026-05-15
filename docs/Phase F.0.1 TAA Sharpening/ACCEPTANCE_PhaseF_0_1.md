@@ -90,8 +90,8 @@
 - [x] `TODO_PhaseF_0_1.md` (下一文件)
 
 ### T5 CI
-- [ ] GitHub Actions 6/6 平台 success
-- [ ] CI 状态回填 ACCEPTANCE + FINAL + TODO
+- [x] GitHub Actions 6/6 平台 success（run [25915592135](https://github.com/futzhj/ChocoLightEngine/actions/runs/25915592135) commit `011a549`）
+- [x] CI 状态回填 ACCEPTANCE + FINAL + TODO
 
 ---
 
@@ -201,18 +201,18 @@ Phase F.0.1 **不需要任何 jitter 相关改动**：
 
 ---
 
-## 7. CI 状态（待回填）
+## 7. CI 状态
 
 | 平台 | 状态 | 状态详情 |
 |------|------|---------|
-| build-windows | ⏳ | runtime smoke 26 PASS (含 taa.lua 15 fn) + Phase E.x + F.0 零回归 |
-| build-linux | ⏳ | 纯构建 |
-| build-macos | ⏳ | 纯构建 |
-| build-android | ⏳ | 纯构建 |
-| build-ios | ⏳ | 纯构建 |
-| build-web | ⏳ | Emscripten WASM |
+| build-windows | ✅ success | runtime smoke 含 Phase F.0.1: 默认 Sharpness=0.5 / round-trip / clamp / sharpness=0 fallback 全 PASS；`Phase F.0 + F.0.1 TAA smoke: ALL TESTS PASSED` |
+| build-linux | ✅ success | 纯构建 |
+| build-macos | ✅ success | 纯构建 |
+| build-android | ✅ success | 纯构建 |
+| build-ios | ✅ success | 纯构建 |
+| build-web | ✅ success | Emscripten WASM |
 
-GitHub Run ID: `<pending>`
-Commit hash: `<pending>`
-Total duration: `<pending>`
-Date: `<pending>`
+- **GitHub Run ID**: [25915592135](https://github.com/futzhj/ChocoLightEngine/actions/runs/25915592135)
+- **Commit hash**: `011a549`（`feat(F.0.1): TAA Sharpening — 4-tap unsharp mask post-process (in-place 替代 BlitTAAToHDR)`）
+- **Total duration**: 8 分 44 秒（11:33:06 → 11:41:50 UTC）
+- **Date**: 2026-05-15

@@ -152,21 +152,21 @@ TAA blend (同 F.0)
 
 ---
 
-## 8. CI 状态（待回填）
+## 8. CI 状态
 
 | 平台 | 状态 | 备注 |
 |------|------|------|
-| build-windows | ⏳ | runtime smoke 含 taa.lua 15 fn |
-| build-linux | ⏳ | 纯构建 |
-| build-macos | ⏳ | 纯构建 |
-| build-android | ⏳ | 纯构建 |
-| build-ios | ⏳ | 纯构建 |
-| build-web | ⏳ | Emscripten WASM |
+| build-windows | ✅ success | runtime smoke 含 taa.lua 15 fn：默认 0.5 / round-trip / clamp / sharpness=0 fallback 全 PASS |
+| build-linux | ✅ success | 纯构建 |
+| build-macos | ✅ success | 纯构建 |
+| build-android | ✅ success | 纯构建 |
+| build-ios | ✅ success | 纯构建 |
+| build-web | ✅ success | Emscripten WASM |
 
-GitHub Run ID: `<pending>`
-Commit hash: `<pending>`
-Date: `<pending>`
-Total duration: `<pending>`
+- **GitHub Run ID**: [25915592135](https://github.com/futzhj/ChocoLightEngine/actions/runs/25915592135)
+- **Commit hash**: `011a549`
+- **Date**: 2026-05-15
+- **Total duration**: 8 分 44 秒（11:33:06 → 11:41:50 UTC）
 
 ---
 

@@ -5,13 +5,13 @@
 
 ---
 
-## 1. 必做（阻塞性，本 Phase 内）
+## 1. 必做（阻塞性，本 Phase 内） — 全部完成 ✅
 
-| 任务 | 操作 | 优先级 |
-|------|------|--------|
-| commit + push 代码到 main | git add + commit + push origin main | 🔴 高 |
-| 监控 GitHub Actions CI 6/6 平台 success | gh run view | 🔴 高 |
-| CI 状态回填 ACCEPTANCE / FINAL / TODO | 编辑 3 份文档 §CI 状态 | 🔴 高 |
+| 任务 | 操作 | 优先级 | 状态 |
+|------|------|--------|------|
+| commit + push 代码到 main | git commit `011a549` + git push origin main | 🔴 高 | ✅ 完成 |
+| 监控 GitHub Actions CI 6/6 平台 success | run [25915592135](https://github.com/futzhj/ChocoLightEngine/actions/runs/25915592135) — 6/6 success / 8m44s | 🔴 高 | ✅ 完成 |
+| CI 状态回填 ACCEPTANCE / FINAL / TODO | 编辑 3 份文档 §CI 状态 | 🔴 高 | ✅ 完成 |
 
 ---
 
