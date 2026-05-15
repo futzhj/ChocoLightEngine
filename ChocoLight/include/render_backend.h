@@ -1273,6 +1273,79 @@ public:
 
     /// 查询 dilation pass 当前激活状态 (用于调试 / consumer 决定绑 dilated/raw tex)
     virtual bool GetDilationPassActive() const { return false; }
+
+    // ==================== Phase F.0 — TAA Master Pipeline 虚接口 ====================
+    //
+    // 设计 (与 Phase E 系列模块同模式):
+    //   1. SupportsTAA()              — 后端能力位 (Legacy 永 false)
+    //   2. CreateTAAHistoryRT() / DeleteTAAHistoryRT() — RGBA16F × 2 ping-pong (与 sceneTex 同尺寸)
+    //   3. DrawTAAPass()              — reproject + neighborhood AABB clip + alpha blend
+    //   4. BlitTAAToHDR()             — 把 TAA 输出 blit 回 HDR sceneTex (让 Tonemap 用 TAA 后内容)
+    //
+    // Jitter 注入 (backend 双 projection state):
+    //   5. LoadJitteredProjection()       — TAA Enable 时每帧 BeginScene 前调; 后续 raster 用 jittered
+    //   6. ClearJitteredProjection()      — TAA Process 末尾调; 复位至 unjittered (下帧 BeginScene 重设)
+    //   7. IsJitteredProjectionActive()   — debug HUD 用
+    //
+    // 关键不变量:
+    //   - GetProjection(out) 始终返 unjittered projection (SSR/SSAO/SSR Temporal 零改动)
+    //   - velocity buffer 用 unjittered uCurViewProj 计算 (vertex shader 已上传)
+    //     vertex shader 内 vCurClip = uCurViewProj * (uModel * pos) 而不用 gl_Position (含 jitter)
+
+    /// 后端是否支持 TAA (RGBA16F + MRT velocity + shader 编译成功)
+    virtual bool SupportsTAA() const { return false; }
+
+    /// 创建 TAA history ping-pong RT (RGBA16F × 2, color-only, 无 depth)
+    /// @param  w, h     与 HDR sceneTex 同尺寸
+    /// @param  fbos     out: 2-element fbo array (失败时全 0)
+    /// @param  texs     out: 2-element tex array (失败时全 0)
+    /// @return true on success
+    virtual bool CreateTAAHistoryRT(int /*w*/, int /*h*/,
+                                     uint32_t* /*fbos*/, uint32_t* /*texs*/) { return false; }
+
+    /// 释放 TAA history RT (与 CreateTAAHistoryRT 配对)
+    virtual void DeleteTAAHistoryRT(uint32_t* /*fbos*/, uint32_t* /*texs*/) {}
+
+    /// 执行 TAA pass (single pass, 全屏 reproject + clip + blend)
+    /// @param curHdrTex          本帧 HDR scene (jittered raster 输出)
+    /// @param historyTex         上帧 TAA 输出 (首帧时 backend 内部用 curHdrTex 占位)
+    /// @param velocityTex        Phase E.18 dilated 优先, fallback raw velocity
+    /// @param dstFbo             本帧 TAA 输出目标 (写入新 history slot)
+    /// @param w, h               sceneTex 尺寸
+    /// @param blendAlpha         history 权重 [0.5, 0.99]
+    /// @param neighborhoodClip   1=启用 9-tap AABB clip, 0=纯 reproject+blend
+    /// @param hasHistory         0=首帧 (输出 cur 不混合), 1=累积
+    /// @param velocityDilation   0=单点 (E.18 dilated 路径), 1=inline 9-tap (fallback)
+    /// @param velocityScale      RG8 模式下 decode 尺度
+    /// @param velocityFormat     RG16F / RG8
+    virtual void DrawTAAPass(uint32_t /*curHdrTex*/, uint32_t /*historyTex*/,
+                             uint32_t /*velocityTex*/, uint32_t /*dstFbo*/,
+                             int /*w*/, int /*h*/,
+                             float /*blendAlpha*/, int /*neighborhoodClip*/,
+                             int /*hasHistory*/,
+                             bool /*velocityDilation*/,
+                             float /*velocityScale*/,
+                             VelocityFormat /*velocityFormat*/) {}
+
+    /// 把 TAA 输出 blit 回 HDR sceneTex (覆盖, 让后续 Tonemap 用 TAA 后内容)
+    /// @param srcTex    TAA 输出 tex (= history 新 slot tex)
+    /// @param dstFbo    HDR FBO (绑定的 sceneTex 是 blit 目标)
+    /// @param w, h      尺寸 (full-res)
+    virtual void BlitTAAToHDR(uint32_t /*srcTex*/, uint32_t /*dstFbo*/,
+                              int /*w*/, int /*h*/) {}
+
+    /// 设置 jittered projection matrix (TAA 启用时每帧 BeginScene 前调)
+    /// 调用后, ComputeMVP3D() 用 jitteredProjection 替代原 projection (raster 路径).
+    /// GetProjection() 仍返 unjittered (SSR/SSAO 等 view-space reconstruction 不受影响).
+    /// @param jitteredProj  16 floats (column-major)
+    virtual void LoadJitteredProjection(const float* /*jitteredProj*/) {}
+
+    /// 清除 jittered projection 模式 (复位为 unjittered raster)
+    /// TAA Process 末尾调, 让下帧 BeginScene 重新设
+    virtual void ClearJitteredProjection() {}
+
+    /// 查询当前是否启用了 jittered projection (debug HUD 用)
+    virtual bool IsJitteredProjectionActive() const { return false; }
 };
 
 // ==================== 工厂函数 ====================

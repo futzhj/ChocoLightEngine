@@ -1395,6 +1395,254 @@ print(Light.Graphics.MotionBlur.GetHalfRes())      --> true
 
 ---
 
+# Phase F.0 — TAA 主管线 (`Light.Graphics.TAA.*`)
+
+> **TAA (Temporal Anti-Aliasing) 主管线**：sub-pixel jittered projection + history 累积 + neighborhood AABB clip + alpha blend，对**整个 HDR scene** 做时序超采样与抗锯齿。
+>
+> **管线位置**：`SSAO → dilation → SSR → LensFlare → MotionBlur → TAA → Tonemap`。TAA 是 HDR linear 空间最后一个 pass，输出后直接 Tonemap。
+>
+> **Backend 双 projection 架构**：
+>   - `GetProjection()` 始终返 unjittered（SSR/SSAO/velocity 零改动）
+>   - `LoadJitteredProjection()` 由 `ApplyJitter()` 每帧 BeginScene 后注入
+>   - vertex shader 内 `vCurClip = uCurViewProj * (uModel * pos)`（用 unjittered 算 velocity，避免 jitter 污染）
+>
+> **复用 Phase E 资产**：Halton-2,3 8-sample（与 SSR Temporal 共表）+ HDR FBO velocity buffer (E.13/E.14) + dilated velocity (E.18)
+>
+> **与 SSR Temporal 关系**：完全共存（用户自负责）。同开时反射会被 temporal 两次（略过 blur），推荐启用 TAA 时手动 `Light.Graphics.SSR.SetTemporalEnabled(false)`。
+>
+> **默认 OFF**：用户主动 `Enable` 才生效（与 Phase E 所有模块一致），零回归保障。
+
+## TAA API 速查表
+
+| 类别 | 函数 | 默认值 / 说明 |
+|------|------|--------------|
+| lifecycle | `TAA.Enable(w, h)` / `Disable()` / `IsEnabled()` / `IsSupported()` / `Resize(w, h)` | 创建 RGBA16F × 2 history ping-pong RT |
+| 参数 | `SetBlendAlpha(a)` / `GetBlendAlpha()` | history 权重，clamp `[0, 1]`，**默认 0.92** |
+| 参数 | `SetNeighborhoodClip(on)` / `GetNeighborhoodClip()` | 9-tap AABB clip，**默认 true** |
+| 参数 | `SetJitterEnabled(on)` / `GetJitterEnabled()` | sub-pixel projection jitter，**默认 true** |
+| 状态 | `GetFrameCounter()` | `int` Halton 索引 `[0, 7]`（debug HUD） |
+| 状态 | `GetCurrentJitter()` | `(jx, jy)` 本帧 sub-pixel 偏移（±0.5 px） |
+
+---
+
+## `TAA.Enable`
+
+启用 TAA：创建 RGBA16F × 2 history ping-pong RT（与 sceneTex 同尺寸）。
+
+### 参数
+
+- `w` (`integer`)：宽度，需 > 0
+- `h` (`integer`)：高度，需 > 0
+
+### 返回值
+
+`boolean`：`true` = 成功；`false` = backend 不支持 / 参数非法 / RT 创建失败
+
+### 示例
+
+```lua
+local TAA = Light.Graphics.TAA
+if TAA.IsSupported() then
+    TAA.Enable(1280, 720)
+    TAA.SetBlendAlpha(0.92)
+    TAA.SetNeighborhoodClip(true)
+    TAA.SetJitterEnabled(true)
+end
+```
+
+---
+
+## `TAA.Disable`
+
+释放 history RT；下一帧管线跳过 TAA。Disable 内部自动 `ClearJitteredProjection()` 复位 backend jitter 状态。
+
+---
+
+## `TAA.IsEnabled` / `TAA.IsSupported`
+
+### 返回值
+
+- `IsEnabled()` → `boolean`：当前是否已 `Enable`
+- `IsSupported()` → `boolean`：backend 是否支持（GL33 = TAA shader 编译成功 + RGBA16F 可用）
+
+---
+
+## `TAA.Resize`
+
+调整 history RT 尺寸；内部 = `Disable + Enable`。等价于 `Enable(w, h)`（重建 RT）。
+
+### 参数
+
+- `w` (`integer`) / `h` (`integer`)：与 `Enable` 同
+
+### 返回值
+
+`boolean`：`true` 成功
+
+---
+
+## `TAA.SetBlendAlpha` / `TAA.GetBlendAlpha`
+
+history 权重 `α`：`result = mix(cur, history, α)`。
+
+### 参数
+
+- `a` (`number`)：clamp `[0, 1]`
+
+### 默认值
+
+`0.92`（略高于 SSR Temporal 的 0.9，主管线累积更稳）
+
+### 取值建议
+
+| α 值 | 视觉效果 | 适用场景 |
+|------|----------|---------|
+| 0.85 | 响应快、抖动可见 | 高速运动镜头 |
+| 0.92 | 平衡（推荐） | 通用 |
+| 0.95 | 累积稳、响应慢 | 静态/慢动作场景 |
+| 0.99 | 几乎不更新 | debug 用 |
+
+### 示例
+
+```lua
+Light.Graphics.TAA.SetBlendAlpha(0.95)        -- 慢动作高质量
+print(Light.Graphics.TAA.GetBlendAlpha())     --> 0.95
+Light.Graphics.TAA.SetBlendAlpha(2.0)         -- clamp
+print(Light.Graphics.TAA.GetBlendAlpha())     --> 1.0
+```
+
+---
+
+## `TAA.SetNeighborhoodClip` / `TAA.GetNeighborhoodClip`
+
+是否启用 9-tap AABB clip：用本帧 3×3 邻域颜色 min/max 包围盒裁剪 history，防止 ghosting / disocclusion。
+
+### 参数
+
+- `on` (`boolean`)：必须为 boolean，**严格类型检查**
+
+### 默认值
+
+`true`（业界共识：必开 clip）
+
+### 关闭后果
+
+纯 reproject + blend → 高速运动会出现拖尾/重影；仅 debug 用。
+
+### 错误处理
+
+非 boolean 返 `nil + err`：
+
+```lua
+local ok, err = Light.Graphics.TAA.SetNeighborhoodClip("yes")
+print(ok, err)  --> nil  TAA.SetNeighborhoodClip: 期望 boolean 参数
+```
+
+---
+
+## `TAA.SetJitterEnabled` / `TAA.GetJitterEnabled`
+
+sub-pixel projection jitter 开关。关闭后 TAA 退化为**纯时序 stability filter**（无 super-sampling 效果）。
+
+### 参数
+
+- `on` (`boolean`)：必须为 boolean
+
+### 默认值
+
+`true`（含 super-sampling）
+
+### 工作原理
+
+启用时每帧 BeginScene 后注入 Halton-2,3 sub-pixel 偏移到 backend `LoadJitteredProjection()`：
+- raster 路径（`gl_Position`）用 jittered projection（NDC 偏 ±0.5 px）
+- velocity 计算（`vCurClip`）用 unjittered `uCurViewProj`（保持 reproject 准确）
+- `GetProjection()` 仍返 unjittered（SSR/SSAO 零改动）
+
+### 应用场景
+
+| jitter | 效果 | 推荐场景 |
+|--------|------|---------|
+| ON | 抗锯齿 + super-sampling 效果 | 通用静态/中速场景 |
+| OFF | 仅 history 累积平滑 | 极慢运动或 disocclusion 严重场景 |
+
+---
+
+## `TAA.GetFrameCounter`
+
+### 返回值
+
+`integer`：当前帧 Halton 索引 `[0, 7]`（用于 debug HUD）
+
+---
+
+## `TAA.GetCurrentJitter`
+
+### 返回值
+
+`(number, number)`：本帧 sub-pixel jitter offset（±0.5 像素范围；jitter 关时返 `(0, 0)`）
+
+### 示例
+
+```lua
+local TAA = Light.Graphics.TAA
+local jx, jy = TAA.GetCurrentJitter()
+print(string.format("frame=%d jx=%.4f jy=%.4f", TAA.GetFrameCounter(), jx, jy))
+-- frame=3 jx=-0.2500 jy=0.1111  (Halton index 3)
+```
+
+---
+
+## TAA 完整用法示例
+
+```lua
+local Gfx = require 'Light.Graphics'
+local HDR = Gfx.HDR
+local SSR = Gfx.SSR
+local TAA = Gfx.TAA
+
+-- 1. HDR 必须先启用 (TAA 依赖 HDR sceneTex + velocity buffer)
+HDR.Enable(1280, 720)
+
+-- 2. 推荐：启用 TAA 时关 SSR Temporal (避免双 temporal 模糊反射)
+SSR.Enable(1280, 720)
+SSR.SetTemporalEnabled(false)
+
+-- 3. 启用 TAA 主管线
+if TAA.IsSupported() then
+    TAA.Enable(1280, 720)
+    TAA.SetBlendAlpha(0.92)         -- 通用平衡值
+    TAA.SetNeighborhoodClip(true)   -- 防 ghosting (默认即开)
+    TAA.SetJitterEnabled(true)      -- super-sampling 必开
+end
+
+-- 4. 主循环 (Window:__call 内自动 BeginScene + ApplyJitter)
+function App:Draw()
+    -- 用户 3D 渲染代码; jitter 由引擎透明注入
+    Gfx.SetPerspective(60, 16/9, 0.1, 100)
+    Gfx.LoadView(viewMat)
+    -- ... DrawMesh / DrawLit ... (raster 自动用 jittered projection)
+end
+
+-- 5. 反向清理
+TAA.Disable()
+SSR.Disable()
+HDR.Disable()
+```
+
+---
+
+## TAA 性能预算
+
+| 项 | 值 (1080p) |
+|----|------------|
+| TAA pass GPU 时长 | ~0.10 ms (12 fetch + 1 write/px) |
+| history RT VRAM | 2 × 1920 × 1080 × 8 byte = **16 MB** |
+| 4K 场景 history VRAM | 64 MB（移动端注意） |
+| jitter 开销 | ~0.001 ms (CPU side, NDC 矩阵改 2 元素) |
+
+---
+
 ## 完整用法示例
 
 ```lua

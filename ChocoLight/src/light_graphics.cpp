@@ -35,6 +35,7 @@
 #include "ssao_renderer.h"            // Phase E.8.2 — SSAO (屏幕空间环境光遮蔽)
 #include "ssr_renderer.h"             // Phase E.9 — SSR (屏幕空间反射)
 #include "motion_blur_renderer.h"    // Phase E.15 — Velocity-driven Motion Blur
+#include "taa_renderer.h"             // Phase F.0 — TAA 主管线
 #include <cmath>
 #include <cstring>
 
@@ -3006,6 +3007,147 @@ static const luaL_Reg mb_funcs[] = {
     {NULL, NULL}
 };
 
+// ==================== Phase F.0 — TAA Master Pipeline (Light.Graphics.TAA.*) ====================
+//   13 函数: 5 lifecycle + 2 对参数 (alpha/clip/jitter) + 2 状态查询 (frameCounter/jitter)
+//   推荐启用 TAA 时手动 Light.Graphics.SSR.SetTemporalEnabled(false) 避免双 temporal 模糊反射
+
+/// @lua_api Light.Graphics.TAA.Enable
+/// @param w integer, h integer
+/// @return boolean true=成功创建 history RT (RGBA16F × 2), false=backend 不支持/参数非法
+static int l_TAA_Enable(lua_State* L) {
+    int w = (int)luaL_checkinteger(L, 1);
+    int h = (int)luaL_checkinteger(L, 2);
+    lua_pushboolean(L, TAARenderer::Enable(w, h) ? 1 : 0);
+    return 1;
+}
+
+/// @lua_api Light.Graphics.TAA.Disable
+static int l_TAA_Disable(lua_State* L) {
+    (void)L;
+    TAARenderer::Disable();
+    return 0;
+}
+
+/// @lua_api Light.Graphics.TAA.IsEnabled
+/// @return boolean
+static int l_TAA_IsEnabled(lua_State* L) {
+    lua_pushboolean(L, TAARenderer::IsEnabled() ? 1 : 0);
+    return 1;
+}
+
+/// @lua_api Light.Graphics.TAA.IsSupported
+/// @return boolean backend 是否支持 TAA (shader 编译成功 + RGBA16F 可用)
+static int l_TAA_IsSupported(lua_State* L) {
+    lua_pushboolean(L, TAARenderer::IsSupported() ? 1 : 0);
+    return 1;
+}
+
+/// @lua_api Light.Graphics.TAA.Resize
+/// @param w integer, h integer
+/// @return boolean
+static int l_TAA_Resize(lua_State* L) {
+    int w = (int)luaL_checkinteger(L, 1);
+    int h = (int)luaL_checkinteger(L, 2);
+    lua_pushboolean(L, TAARenderer::Resize(w, h) ? 1 : 0);
+    return 1;
+}
+
+/// @lua_api Light.Graphics.TAA.SetBlendAlpha
+/// @param a number history 权重 (clamp [0, 1]; 默认 0.92, 高=累积稳/响应慢, 低=响应快/抖动)
+static int l_TAA_SetBlendAlpha(lua_State* L) {
+    float a = (float)luaL_checknumber(L, 1);
+    TAARenderer::SetBlendAlpha(a);
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+/// @lua_api Light.Graphics.TAA.GetBlendAlpha
+/// @return number
+static int l_TAA_GetBlendAlpha(lua_State* L) {
+    lua_pushnumber(L, (lua_Number)TAARenderer::GetBlendAlpha());
+    return 1;
+}
+
+/// @lua_api Light.Graphics.TAA.SetNeighborhoodClip
+/// @param on boolean true=启用 9-tap AABB clip (默认), false=纯 reproject+blend (累积更软但易 ghost)
+static int l_TAA_SetNeighborhoodClip(lua_State* L) {
+    luaL_checkany(L, 1);
+    if (!lua_isboolean(L, 1)) {
+        lua_pushnil(L);
+        lua_pushliteral(L, "TAA.SetNeighborhoodClip: 期望 boolean 参数");
+        return 2;
+    }
+    TAARenderer::SetNeighborhoodClip(lua_toboolean(L, 1) != 0);
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+/// @lua_api Light.Graphics.TAA.GetNeighborhoodClip
+/// @return boolean
+static int l_TAA_GetNeighborhoodClip(lua_State* L) {
+    lua_pushboolean(L, TAARenderer::GetNeighborhoodClip() ? 1 : 0);
+    return 1;
+}
+
+/// @lua_api Light.Graphics.TAA.SetJitterEnabled
+/// @param on boolean true=启用 sub-pixel projection jitter (默认, 含 super-sampling 效果),
+///                     false=纯时序 stability filter (无 super-sampling)
+static int l_TAA_SetJitterEnabled(lua_State* L) {
+    luaL_checkany(L, 1);
+    if (!lua_isboolean(L, 1)) {
+        lua_pushnil(L);
+        lua_pushliteral(L, "TAA.SetJitterEnabled: 期望 boolean 参数");
+        return 2;
+    }
+    TAARenderer::SetJitterEnabled(lua_toboolean(L, 1) != 0);
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+/// @lua_api Light.Graphics.TAA.GetJitterEnabled
+/// @return boolean
+static int l_TAA_GetJitterEnabled(lua_State* L) {
+    lua_pushboolean(L, TAARenderer::GetJitterEnabled() ? 1 : 0);
+    return 1;
+}
+
+/// @lua_api Light.Graphics.TAA.GetFrameCounter
+/// @return integer 当前帧 Halton 索引 (0-7, 用于 debug HUD)
+static int l_TAA_GetFrameCounter(lua_State* L) {
+    lua_pushinteger(L, (lua_Integer)TAARenderer::GetFrameCounter());
+    return 1;
+}
+
+/// @lua_api Light.Graphics.TAA.GetCurrentJitter
+/// @return number, number 本帧 sub-pixel jitter offset (±0.5 pixel, 仅 enabled+jitter 时非零)
+static int l_TAA_GetCurrentJitter(lua_State* L) {
+    float x = 0.0f, y = 0.0f;
+    TAARenderer::GetCurrentJitter(&x, &y);
+    lua_pushnumber(L, (lua_Number)x);
+    lua_pushnumber(L, (lua_Number)y);
+    return 2;
+}
+
+static const luaL_Reg taa_funcs[] = {
+    // lifecycle (5)
+    {"Enable",                l_TAA_Enable},
+    {"Disable",               l_TAA_Disable},
+    {"IsEnabled",             l_TAA_IsEnabled},
+    {"IsSupported",           l_TAA_IsSupported},
+    {"Resize",                l_TAA_Resize},
+    // params (6 = 3 对): blendAlpha + neighborhoodClip + jitterEnabled
+    {"SetBlendAlpha",         l_TAA_SetBlendAlpha},
+    {"GetBlendAlpha",         l_TAA_GetBlendAlpha},
+    {"SetNeighborhoodClip",   l_TAA_SetNeighborhoodClip},
+    {"GetNeighborhoodClip",   l_TAA_GetNeighborhoodClip},
+    {"SetJitterEnabled",      l_TAA_SetJitterEnabled},
+    {"GetJitterEnabled",      l_TAA_GetJitterEnabled},
+    // status (2): debug HUD 用
+    {"GetFrameCounter",       l_TAA_GetFrameCounter},
+    {"GetCurrentJitter",      l_TAA_GetCurrentJitter},
+    {NULL, NULL}
+};
+
 static const luaL_Reg graphics_funcs[] = {
     // --- 绘图基元 ---
     {"Draw",              l_Draw},
@@ -3132,6 +3274,11 @@ int luaopen_Light_Graphics(lua_State* L) {
         lua_createtable(L, 0, 0);
         luaL_setfuncs(L, mb_funcs, 0);
         lua_setfield(L, -2, "MotionBlur");
+
+        // Phase F.0 — TAA 子表 (Light.Graphics.TAA.*)
+        lua_createtable(L, 0, 0);
+        luaL_setfuncs(L, taa_funcs, 0);
+        lua_setfield(L, -2, "TAA");
 
         lua_rawset(L, -3);
         lua_pushstring(L, "Graphics");

@@ -27,6 +27,7 @@
 #include "batch_renderer.h"
 #include "lit_batch_renderer.h"  // Phase E.2.3 — 2D Lit 批渲染器
 #include "hdr_renderer.h"             // Phase E.3.2 — HDR 离屏管线
+#include "taa_renderer.h"             // Phase F.0 — TAA jitter injection hook
 #include "bloom_renderer.h"           // Phase E.4.2 — Bloom 后处理
 #include "auto_exposure_renderer.h"   // Phase E.5.2 — Auto Exposure (Eye Adaptation)
 #include "lens_dirt_renderer.h"       // Phase E.6.2 — Lens Dirt
@@ -518,6 +519,8 @@ static int l_Window_Open(lua_State* L) {
     SSRRenderer::Init(g_render);
     // Phase E.15: 初始化 Motion Blur (默认 autoEnable=false)
     MotionBlurRenderer::Init(g_render);
+    // Phase F.0: 初始化 TAA 主管线 (默认 autoEnable=false, 用户主动 Enable)
+    TAARenderer::Init(g_render);
 
     // 初始化音频后端
     if (!AudioBackend::Init()) {
@@ -665,6 +668,10 @@ static int l_Window_Call(lua_State* L) {
     if (LitBatchRenderer::IsInited()) LitBatchRenderer::BeginFrame();
     // Phase E.3.2: HDR 启用时切到 HDR RT (所有 Draw 绘到 RGBA16F 离屏)
     if (HDRRenderer::IsEnabled())     HDRRenderer::BeginScene();
+    // Phase F.0: TAA 启用时注入 sub-pixel jitter 到 backend (raster 用 jittered projection)
+    //   GetProjection() 仍返 unjittered → SSR/SSAO/velocity 零改动
+    //   需在 BeginScene 后 (确保 HDR FBO 已绑) + 用户 Draw 之前
+    if (TAARenderer::IsEnabled())     TAARenderer::ApplyJitter();
 
     // Draw 回调
     lua_getfield(L, 1, "Draw");
@@ -742,6 +749,8 @@ static int l_UI_Resume(lua_State* L) {
             }
             PlatformNet::Shutdown();
             AudioBackend::Shutdown();
+            // Phase F.0: TAA 依赖 HDR sceneTex + velocity + dilation; 管线最末端 → 最先关闭
+            TAARenderer::Shutdown();
             // Phase E.15: Motion Blur 依赖 HDR sceneTex + velocityTex; 最先关闭 (管线末端)
             MotionBlurRenderer::Shutdown();
             // Phase E.9: SSR 依赖 HDR RT + G-buffer normal; 最先关闭 (管线末端, 在 SSAO 之前)

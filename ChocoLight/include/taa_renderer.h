@@ -1,0 +1,106 @@
+/**
+ * @file taa_renderer.h
+ * @brief Phase F.0 — TAA (Temporal Anti-Aliasing) 主管线
+ *
+ * 对整个 HDR scene 做时序累积超采样 + neighborhood AABB clip + alpha blend。
+ * 复用 Phase E 系列已有资产：
+ *   - Halton-2,3 8-sample jitter 表 (与 SSR Temporal 共用)
+ *   - HDR FBO 关联的 velocity buffer (E.13/E.14) + dilated velocity (E.18)
+ *   - history ping-pong RT 模式 (与 SSR Temporal 同构)
+ *
+ * 集成位置 (HDR EndScene):
+ *   SSAO → dilation → SSR → LensFlare → MotionBlur → **TAA** → Tonemap
+ *
+ * Jitter 注入 (backend 双 projection):
+ *   BeginScene 后用 backend->LoadJitteredProjection(jitteredProj) 让本帧 3D raster 用 jittered;
+ *   GetProjection() 始终返 unjittered (SSR/SSAO/velocity 零改动);
+ *   Process 末尾用 ClearJitteredProjection() 复位。
+ *
+ * Lua API 入口: Light.Graphics.TAA.*
+ *
+ * 与 SSR Temporal 关系: 共存 (用户自负责); 同开时反射会被 temporal 两次。
+ *   推荐启用 TAA 时手动 Light.Graphics.SSR.SetTemporalEnabled(false)。
+ *
+ * @copyright Choco Light Engine
+ */
+#pragma once
+
+#include <cstdint>
+
+class RenderBackend;
+
+namespace TAARenderer {
+
+// ==================== 生命周期 ====================
+
+/// 初始化模块: 缓存 backend 指针 + 查询 backend->SupportsTAA() 能力位
+bool Init(RenderBackend* backend);
+
+/// 释放所有资源 (history RT + state 复位)
+void Shutdown();
+
+/// 已 Init() 过 (不等于 TAA 已 Enable)
+bool IsInited();
+
+// ==================== HDR 开关 ====================
+
+/// 启用 TAA: 创建 history ping-pong RT (RGBA16F × 2, 与 sceneTex 同尺寸)
+/// @return false 当 backend 不支持 TAA / RT 创建失败 / 参数非法
+bool Enable(int w, int h);
+
+/// 释放 history RT (state 保留, 下次 Enable 还可用)
+void Disable();
+
+bool IsEnabled();
+bool IsSupported();
+
+/// 调整尺寸: 已 Enable 时重建 RT (与 SSR/MotionBlur 同模式)
+bool Resize(int w, int h);
+
+// ==================== HDR 联动 hook ====================
+
+/// HDR Enable 自动调; autoEnable=false 时 no-op (与 Phase E 模块一致)
+void OnHDREnabled(int w, int h);
+
+/// HDR Disable 自动调; 释放 history RT
+void OnHDRDisabled();
+
+/// HDR Resize 自动调
+void OnHDRResized(int w, int h);
+
+// ==================== 主循环 hook ====================
+
+/// 在 BeginScene 之后、用户 Draw 之前调用:
+/// 若 TAA 启用 + jitter 启用, 计算本帧 Halton sub-pixel 偏移,
+/// 通过 backend->LoadJitteredProjection() 让本帧 3D raster 用 jittered projection.
+/// 用户透明 (Lua 层不需感知).
+void ApplyJitter();
+
+/// 主 pass: 在 HDR EndScene 内 MotionBlur 之后、Tonemap 之前调用.
+/// 读 cur HDR sceneTex + 上帧 history + dilated/raw velocity → 写新 history + blit 回 sceneTex.
+void Process(uint32_t hdrFbo, uint32_t hdrTex);
+
+// ==================== 参数 ====================
+
+/// history 权重 [0.5, 0.99], 默认 0.92
+void  SetBlendAlpha(float alpha);
+float GetBlendAlpha();
+
+/// 是否启用 9-tap neighborhood AABB clip (默认 true)
+void  SetNeighborhoodClip(bool on);
+bool  GetNeighborhoodClip();
+
+/// 是否启用 sub-pixel projection jitter (默认 true)
+/// 关闭后 TAA 退化为纯时序 stability filter, 无 super-sampling 效果
+void  SetJitterEnabled(bool on);
+bool  GetJitterEnabled();
+
+// ==================== 内部状态查询 (debug HUD 用) ====================
+
+/// 当前帧 Halton 索引 (% 8), 累加帧计数器低 3 位
+int  GetFrameCounter();
+
+/// 当前帧 sub-pixel jitter (±0.5 pixel 范围), 仅 jitterEnabled+enabled 时非零
+void GetCurrentJitter(float* outX, float* outY);
+
+} // namespace TAARenderer

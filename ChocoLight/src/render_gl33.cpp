@@ -125,6 +125,7 @@ layout(location=3) in vec4 aColor;
 uniform mat4 uMVP;
 uniform mat4 uModel;
 uniform mat4 uPrevViewProj;
+uniform mat4 uCurViewProj;   // Phase F.0 — unjittered cur viewProj (vCurClip 用, 保证 velocity 不含 TAA jitter)
 uniform mat4 uPrevModel;
 out vec3 vNormalW;
 out vec3 vWorldPos;
@@ -139,7 +140,7 @@ void main() {
     vWorldPos = (uModel * vec4(aPos, 1.0)).xyz;
     vTexCoord = aUV;
     vColor = aColor;
-    vCurClip = gl_Position;
+    vCurClip = uCurViewProj * (uModel * vec4(aPos, 1.0));   // Phase F.0 — unjittered (避免 gl_Position 含 TAA jitter)
     vPrevClip = uPrevViewProj * (uPrevModel * vec4(aPos, 1.0));
     // Phase E.16: 假设物体未动 (uModel = curModel)，仅留相机运动到 prevVP
     vPrevClipCameraOnly = uPrevViewProj * (uModel * vec4(aPos, 1.0));
@@ -159,6 +160,7 @@ layout(location=5) in vec4  aWeights;
 uniform mat4 uMVP;
 uniform mat4 uModel;
 uniform mat4 uPrevViewProj;
+uniform mat4 uCurViewProj;   // Phase F.0 — unjittered cur viewProj (vCurClip 用, 保证 velocity 不含 TAA jitter)
 uniform mat4 uPrevModel;
 layout(std140) uniform JointBlock {
     mat4 uJointMats[64];
@@ -190,7 +192,7 @@ void main() {
     vWorldPos   = (uModel * skinnedPos).xyz;
     vTexCoord   = aUV;
     vColor      = aColor;
-    vCurClip    = gl_Position;
+    vCurClip    = uCurViewProj * (uModel * skinnedPos);   // Phase F.0 — unjittered (避免 gl_Position 含 TAA jitter)
     vPrevClip   = uPrevViewProj * (uPrevModel * prevSkinnedPos);
     // Phase E.16: 用当前帧 skinned·morph 后位置 (物体未动假设)，仅 prevVP 取上一帧
     vPrevClipCameraOnly = uPrevViewProj * (uModel * skinnedPos);
@@ -214,6 +216,7 @@ layout(location=5) in vec4  aWeights;
 uniform mat4 uMVP;
 uniform mat4 uModel;
 uniform mat4 uPrevViewProj;
+uniform mat4 uCurViewProj;   // Phase F.0 — unjittered cur viewProj (vCurClip 用, 保证 velocity 不含 TAA jitter)
 uniform mat4 uPrevModel;
 layout(std140) uniform JointBlock {
     mat4 uJointMats[64];
@@ -268,7 +271,7 @@ void main() {
     vWorldPos   = (uModel * skinnedPos).xyz;
     vTexCoord   = aUV;
     vColor      = aColor;
-    vCurClip    = gl_Position;
+    vCurClip    = uCurViewProj * (uModel * skinnedPos);   // Phase F.0 — unjittered (避免 gl_Position 含 TAA jitter)
     vPrevClip   = uPrevViewProj * (uPrevModel * prevSkinnedPos);
     // Phase E.16: 用当前帧 skinned·morph 后位置 (物体未动假设)，仅 prevVP 取上一帧
     vPrevClipCameraOnly = uPrevViewProj * (uModel * skinnedPos);
@@ -503,6 +506,7 @@ layout(location=3) in vec4 aColor;
 uniform mat4 uMVP;
 uniform mat4 uModel;
 uniform mat4 uPrevViewProj;
+uniform mat4 uCurViewProj;   // Phase F.0 — unjittered cur viewProj (vCurClip 用, 保证 velocity 不含 TAA jitter)
 uniform mat4 uPrevModel;
 out vec3 vNormalW;
 out vec3 vWorldPos;
@@ -517,7 +521,7 @@ void main() {
     vWorldPos = (uModel * vec4(aPos, 1.0)).xyz;
     vTexCoord = aUV;
     vColor = aColor;
-    vCurClip = gl_Position;
+    vCurClip = uCurViewProj * (uModel * vec4(aPos, 1.0));   // Phase F.0 — unjittered (避免 gl_Position 含 TAA jitter)
     vPrevClip = uPrevViewProj * (uPrevModel * vec4(aPos, 1.0));
     // Phase E.16: 假设物体未动 (uModel = curModel)，仅留相机运动到 prevVP
     vPrevClipCameraOnly = uPrevViewProj * (uModel * vec4(aPos, 1.0));
@@ -537,6 +541,7 @@ layout(location=5) in vec4  aWeights;
 uniform mat4 uMVP;
 uniform mat4 uModel;
 uniform mat4 uPrevViewProj;
+uniform mat4 uCurViewProj;   // Phase F.0 — unjittered cur viewProj (vCurClip 用, 保证 velocity 不含 TAA jitter)
 uniform mat4 uPrevModel;
 layout(std140) uniform JointBlock {
     mat4 uJointMats[64];
@@ -568,7 +573,7 @@ void main() {
     vWorldPos   = (uModel * skinnedPos).xyz;
     vTexCoord   = aUV;
     vColor      = aColor;
-    vCurClip    = gl_Position;
+    vCurClip    = uCurViewProj * (uModel * skinnedPos);   // Phase F.0 — unjittered (避免 gl_Position 含 TAA jitter)
     vPrevClip   = uPrevViewProj * (uPrevModel * prevSkinnedPos);
     // Phase E.16: 用当前帧 skinned·morph 后位置 (物体未动假设)，仅 prevVP 取上一帧
     vPrevClipCameraOnly = uPrevViewProj * (uModel * skinnedPos);
@@ -589,6 +594,7 @@ layout(location=5) in vec4  aWeights;
 uniform mat4 uMVP;
 uniform mat4 uModel;
 uniform mat4 uPrevViewProj;
+uniform mat4 uCurViewProj;   // Phase F.0 — unjittered cur viewProj (vCurClip 用, 保证 velocity 不含 TAA jitter)
 uniform mat4 uPrevModel;
 layout(std140) uniform JointBlock {
     mat4 uJointMats[64];
@@ -641,7 +647,7 @@ void main() {
     vWorldPos   = (uModel * skinnedPos).xyz;
     vTexCoord   = aUV;
     vColor      = aColor;
-    vCurClip    = gl_Position;
+    vCurClip    = uCurViewProj * (uModel * skinnedPos);   // Phase F.0 — unjittered (避免 gl_Position 含 TAA jitter)
     vPrevClip   = uPrevViewProj * (uPrevModel * prevSkinnedPos);
     // Phase E.16: 用当前帧 skinned·morph 后位置 (物体未动假设)，仅 prevVP 取上一帧
     vPrevClipCameraOnly = uPrevViewProj * (uModel * skinnedPos);
@@ -2082,6 +2088,81 @@ void main() {
 }
 )";
 
+// ---- FS_TAA (GLES 3.0): Phase F.0 — TAA 主管线 reproject + neighborhood AABB clip + alpha blend ----
+//   与 SSR Temporal shader 同模式, 差异:
+//     1. 输入是 cur HDR scene tex 而非 SSR reflect
+//     2. 不依赖 depth (仅用 velocity 做 reproject)
+//     3. 不走 matrix fallback (进入 TAA 路径要求 velocity buffer 必须存在)
+static const char* FS_TAA_SOURCE = R"(#version 300 es
+precision highp float;
+precision highp sampler2D;
+in  vec2 vUV;
+out vec4 FragColor;
+
+uniform sampler2D uCurHdrTex;       // slot 0: 本帧 HDR scene (jittered raster 输出)
+uniform sampler2D uHistoryTex;      // slot 1: 上帧 TAA 输出
+uniform sampler2D uVelocityTex;     // slot 2: dilated 优先 / fallback raw velocity
+uniform vec2  uTexel;               // 1.0 / (W, H)
+uniform float uBlendAlpha;          // history 权重 [0.5, 0.99]
+uniform int   uNeighborhoodClip;    // 0=纯 reproject+blend, 1=启用 9-tap AABB clip
+uniform int   uHasHistory;          // 0=首帧 (输出 cur 不混合), 1=累积
+uniform int   uVelocityDilation;    // 0=单点采 (E.18 dilated path), 1=inline 9-tap (fallback)
+uniform int   uVelocityFormat;      // 0=RG16F, 1=RG8
+uniform float uVelocityScale;       // RG8 decode
+
+vec2 DecodeVelocity(vec2 raw) {
+    return (uVelocityFormat == 1) ? ((raw - 0.5) * (2.0 * uVelocityScale)) : raw;
+}
+
+vec2 SampleVelocity(vec2 uv) {
+    if (uVelocityDilation == 0) return DecodeVelocity(texture(uVelocityTex, uv).rg);
+    vec2 bestV = vec2(0.0);
+    float bestLen = -1.0;
+    for (int dy = -1; dy <= 1; ++dy) {
+        for (int dx = -1; dx <= 1; ++dx) {
+            vec2 v = DecodeVelocity(texture(uVelocityTex, uv + vec2(float(dx), float(dy)) * uTexel).rg);
+            float l = dot(v, v);
+            if (l > bestLen) { bestLen = l; bestV = v; }
+        }
+    }
+    return bestV;
+}
+
+void main() {
+    vec4 cur = texture(uCurHdrTex, vUV);
+    if (uHasHistory == 0) { FragColor = cur; return; }
+
+    vec2 velocity = SampleVelocity(vUV);
+    vec2 prevUV   = vUV - velocity;
+
+    if (prevUV.x < 0.0 || prevUV.x > 1.0 ||
+        prevUV.y < 0.0 || prevUV.y > 1.0) {
+        FragColor = cur;
+        return;
+    }
+
+    vec4 hist = texture(uHistoryTex, prevUV);
+
+    if (uNeighborhoodClip == 1) {
+        vec3 mn = cur.rgb;
+        vec3 mx = cur.rgb;
+        vec3 s;
+        s = texture(uCurHdrTex, vUV + uTexel * vec2(-1.0, -1.0)).rgb; mn = min(mn, s); mx = max(mx, s);
+        s = texture(uCurHdrTex, vUV + uTexel * vec2( 0.0, -1.0)).rgb; mn = min(mn, s); mx = max(mx, s);
+        s = texture(uCurHdrTex, vUV + uTexel * vec2( 1.0, -1.0)).rgb; mn = min(mn, s); mx = max(mx, s);
+        s = texture(uCurHdrTex, vUV + uTexel * vec2(-1.0,  0.0)).rgb; mn = min(mn, s); mx = max(mx, s);
+        s = texture(uCurHdrTex, vUV + uTexel * vec2( 1.0,  0.0)).rgb; mn = min(mn, s); mx = max(mx, s);
+        s = texture(uCurHdrTex, vUV + uTexel * vec2(-1.0,  1.0)).rgb; mn = min(mn, s); mx = max(mx, s);
+        s = texture(uCurHdrTex, vUV + uTexel * vec2( 0.0,  1.0)).rgb; mn = min(mn, s); mx = max(mx, s);
+        s = texture(uCurHdrTex, vUV + uTexel * vec2( 1.0,  1.0)).rgb; mn = min(mn, s); mx = max(mx, s);
+        hist.rgb = clamp(hist.rgb, mn, mx);
+    }
+
+    float alpha = clamp(uBlendAlpha, 0.0, 1.0);
+    FragColor = vec4(mix(cur.rgb, hist.rgb, alpha), 1.0);
+}
+)";
+
 // ---- FS_MOTION_BLUR (GLES 3.0): Phase E.15 per-pixel velocity blur ----
 //   1. SampleVelocityDilated 与 SSRTemporal 同算法 (3x3 max-length 邻域可选)
 //   2. E3 软限: |vel| <= screenDiagUV × 0.3 ≈ 0.4243 防极端拖尾糊死
@@ -2604,6 +2685,76 @@ void main() {
 }
 )";
 
+// ---- FS_TAA (GL 3.3): Phase F.0 — 与 GLES3 版完全等价, 仅 #version + 无 precision qualifier ----
+static const char* FS_TAA_SOURCE = R"(
+#version 330 core
+in  vec2 vUV;
+out vec4 FragColor;
+
+uniform sampler2D uCurHdrTex;       // slot 0: 本帧 HDR scene (jittered raster 输出)
+uniform sampler2D uHistoryTex;      // slot 1: 上帧 TAA 输出
+uniform sampler2D uVelocityTex;     // slot 2: dilated 优先 / fallback raw velocity
+uniform vec2  uTexel;
+uniform float uBlendAlpha;
+uniform int   uNeighborhoodClip;
+uniform int   uHasHistory;
+uniform int   uVelocityDilation;
+uniform int   uVelocityFormat;
+uniform float uVelocityScale;
+
+vec2 DecodeVelocity(vec2 raw) {
+    return (uVelocityFormat == 1) ? ((raw - 0.5) * (2.0 * uVelocityScale)) : raw;
+}
+
+vec2 SampleVelocity(vec2 uv) {
+    if (uVelocityDilation == 0) return DecodeVelocity(texture(uVelocityTex, uv).rg);
+    vec2 bestV = vec2(0.0);
+    float bestLen = -1.0;
+    for (int dy = -1; dy <= 1; ++dy) {
+        for (int dx = -1; dx <= 1; ++dx) {
+            vec2 v = DecodeVelocity(texture(uVelocityTex, uv + vec2(float(dx), float(dy)) * uTexel).rg);
+            float l = dot(v, v);
+            if (l > bestLen) { bestLen = l; bestV = v; }
+        }
+    }
+    return bestV;
+}
+
+void main() {
+    vec4 cur = texture(uCurHdrTex, vUV);
+    if (uHasHistory == 0) { FragColor = cur; return; }
+
+    vec2 velocity = SampleVelocity(vUV);
+    vec2 prevUV   = vUV - velocity;
+
+    if (prevUV.x < 0.0 || prevUV.x > 1.0 ||
+        prevUV.y < 0.0 || prevUV.y > 1.0) {
+        FragColor = cur;
+        return;
+    }
+
+    vec4 hist = texture(uHistoryTex, prevUV);
+
+    if (uNeighborhoodClip == 1) {
+        vec3 mn = cur.rgb;
+        vec3 mx = cur.rgb;
+        vec3 s;
+        s = texture(uCurHdrTex, vUV + uTexel * vec2(-1.0, -1.0)).rgb; mn = min(mn, s); mx = max(mx, s);
+        s = texture(uCurHdrTex, vUV + uTexel * vec2( 0.0, -1.0)).rgb; mn = min(mn, s); mx = max(mx, s);
+        s = texture(uCurHdrTex, vUV + uTexel * vec2( 1.0, -1.0)).rgb; mn = min(mn, s); mx = max(mx, s);
+        s = texture(uCurHdrTex, vUV + uTexel * vec2(-1.0,  0.0)).rgb; mn = min(mn, s); mx = max(mx, s);
+        s = texture(uCurHdrTex, vUV + uTexel * vec2( 1.0,  0.0)).rgb; mn = min(mn, s); mx = max(mx, s);
+        s = texture(uCurHdrTex, vUV + uTexel * vec2(-1.0,  1.0)).rgb; mn = min(mn, s); mx = max(mx, s);
+        s = texture(uCurHdrTex, vUV + uTexel * vec2( 0.0,  1.0)).rgb; mn = min(mn, s); mx = max(mx, s);
+        s = texture(uCurHdrTex, vUV + uTexel * vec2( 1.0,  1.0)).rgb; mn = min(mn, s); mx = max(mx, s);
+        hist.rgb = clamp(hist.rgb, mn, mx);
+    }
+
+    float alpha = clamp(uBlendAlpha, 0.0, 1.0);
+    FragColor = vec4(mix(cur.rgb, hist.rgb, alpha), 1.0);
+}
+)";
+
 // ---- FS_MOTION_BLUR (GL 3.3): Phase E.15 per-pixel velocity blur ----
 //   1. SampleVelocityDilated 与 SSRTemporal 同算法 (3x3 max-length 邻域可选)
 //   2. E3 软限: |vel| <= screenDiagUV × 0.3 ≈ 0.4243 防极端拖尾糊死
@@ -2758,7 +2909,9 @@ class GL33Backend : public RenderBackend {
 
     // 自管理矩阵栈
     std::vector<Mat4> matStack;
-    Mat4 projection;
+    Mat4 projection;          // Phase F.0: 原始 unjittered projection (SSR/SSAO/velocity 用)
+    Mat4 jitteredProjection;  // Phase F.0: TAA 启用时 sub-pixel jittered (raster 用)
+    bool jitterActive = false; // Phase F.0: true 时 ComputeMVP3D 用 jitteredProjection
     Mat4 modelview;
 
     // 当前绑定的纹理 (0 = 无)
@@ -3035,6 +3188,21 @@ class GL33Backend : public RenderBackend {
     //   false → 沿用 velocityDilation_ 旧逻辑 (consumer shader 内 inline 9-tap)
     bool   dilationPassActive_              = false;
 
+    // Phase F.0 — TAA Master Pipeline (single program, history ping-pong RT 由 TAARenderer 持有)
+    //   shader: FS_TAA_SOURCE (reproject + neighborhood AABB clip + alpha blend)
+    GLuint programTAA                       = 0;
+    bool   taaSupported                     = false;
+    GLint  locTAA_CurHdrTex                 = -1;   // sampler2D, slot 0
+    GLint  locTAA_HistoryTex                = -1;   // sampler2D, slot 1
+    GLint  locTAA_VelocityTex               = -1;   // sampler2D, slot 2
+    GLint  locTAA_Texel                     = -1;
+    GLint  locTAA_BlendAlpha                = -1;
+    GLint  locTAA_NeighborhoodClip          = -1;
+    GLint  locTAA_HasHistory                = -1;
+    GLint  locTAA_VelocityDilation          = -1;
+    GLint  locTAA_VelocityFormat            = -1;
+    GLint  locTAA_VelocityScale             = -1;
+
     // Phase E.2.1 — Lighting2D dirty bit cache
     // 当 state->version 与此值相等时, UploadLighting2D 跳过所有 glUniform*v 调用
     // 初值 0 + State 初值 1 保证首次调用一定 mismatch (触发首次上传)
@@ -3114,12 +3282,20 @@ class GL33Backend : public RenderBackend {
         glUniformMatrix4fv(locMVP, 1, GL_FALSE, mvp.m);
     }
 
-    // 计算 3D MVP: projection * view * modelview (含相机 transform)
-    Mat4 ComputeMVP3D() const {
-        Mat4 vm = hasView ? (viewMatrix * modelview) : modelview;
-        return projection * vm;
+    // Phase F.0: 取栅格化用的 projection (jitter active 时用 jitteredProjection, 否则原始)
+    // 用于 raster 路径 (gl_Position 计算): ComputeMVP3D / FlushMVP / BeginLit2DDraw / 用户 BindShader 自动 uMVP
+    const Mat4& ActiveProjection() const {
+        return jitterActive ? jitteredProjection : projection;
     }
 
+    // 计算 3D MVP: ActiveProjection * view * modelview (raster 路径, jitter active 时含 sub-pixel 偏移)
+    Mat4 ComputeMVP3D() const {
+        Mat4 vm = hasView ? (viewMatrix * modelview) : modelview;
+        return ActiveProjection() * vm;
+    }
+
+    // Phase F.0: 始终用 unjittered projection (velocity buffer 用, 保持 reproject 准确)
+    // vertex shader 内 vCurClip = uCurViewProj * (uModel * pos) 而不用 gl_Position (已含 jitter)
     Mat4 ComputeViewProj3D() const {
         return projection * (hasView ? viewMatrix : Mat4::Identity());
     }
@@ -3196,6 +3372,8 @@ public:
 
         // 初始矩阵
         projection = Mat4::Identity();
+        jitteredProjection = Mat4::Identity();   // Phase F.0
+        jitterActive = false;                      // Phase F.0
         modelview = Mat4::Identity();
         matStack.reserve(32);
 
@@ -3967,6 +4145,34 @@ public:
             CC::Log(CC::LOG_WARN, "GL33: Phase E.18 velocity dilation pass shader compile failed; fallback to inline 9-tap");
         }
 
+        // ---- Phase F.0 — TAA Master Pipeline shader ----
+        // 编译失败仅 taaSupported=false; TAARenderer Enable 时检测会拒绝启用 (silent fallback).
+        // 复用 VS_TONEMAP_SOURCE 全屏 quad VS, FS = FS_TAA_SOURCE
+        programTAA = buildProgram(FS_TAA_SOURCE, "TAA");
+        if (programTAA) {
+            locTAA_CurHdrTex        = glGetUniformLocation(programTAA, "uCurHdrTex");
+            locTAA_HistoryTex       = glGetUniformLocation(programTAA, "uHistoryTex");
+            locTAA_VelocityTex      = glGetUniformLocation(programTAA, "uVelocityTex");
+            locTAA_Texel            = glGetUniformLocation(programTAA, "uTexel");
+            locTAA_BlendAlpha       = glGetUniformLocation(programTAA, "uBlendAlpha");
+            locTAA_NeighborhoodClip = glGetUniformLocation(programTAA, "uNeighborhoodClip");
+            locTAA_HasHistory       = glGetUniformLocation(programTAA, "uHasHistory");
+            locTAA_VelocityDilation = glGetUniformLocation(programTAA, "uVelocityDilation");
+            locTAA_VelocityFormat   = glGetUniformLocation(programTAA, "uVelocityFormat");
+            locTAA_VelocityScale    = glGetUniformLocation(programTAA, "uVelocityScale");
+            // 一次性绑 sampler 到 texture unit (slot 0=cur HDR, slot 1=history, slot 2=velocity)
+            glUseProgram(programTAA);
+            if (locTAA_CurHdrTex   >= 0) glUniform1i(locTAA_CurHdrTex,   0);
+            if (locTAA_HistoryTex  >= 0) glUniform1i(locTAA_HistoryTex,  1);
+            if (locTAA_VelocityTex >= 0) glUniform1i(locTAA_VelocityTex, 2);
+            glUseProgram(0);
+            taaSupported = true;
+            CC::Log(CC::LOG_INFO, "GL33: Phase F.0 TAA shader compiled (program=%u)", programTAA);
+        } else {
+            taaSupported = false;
+            CC::Log(CC::LOG_WARN, "GL33: Phase F.0 TAA shader compile failed; TAA Enable 将返 false");
+        }
+
         CC::Log(CC::LOG_INFO,
                 "GL33: Phase E.6+E.7+E.8+E.9+E.10+E.11+E.12 LensFx/SSAO/SSR ready (lensDirt=%s, streak=%s, lensFlare=%s, ssao=%s, ssr=%s, ssrBlur=%s, ssrTemporal=%s; programs=[LD=%u, SB=%u, SC=%u, LFG=%u, S=%u, SB=%u, SC=%u, SSR=%u, SSRC=%u, SSRB=%u, SSRT=%u])",
                 lensDirtSupported ? "yes" : "no",
@@ -4161,6 +4367,15 @@ public:
         dilationPassActive_     = false;
         locVDilate_SrcVelocityTex = locVDilate_Texel = -1;
         locVDilate_VelocityFormat = locVDilate_VelocityScale = -1;
+
+        // Phase F.0 — TAA Master Pipeline 清理 (1 program; history ping-pong RT 由 TAARenderer 管)
+        if (programTAA) { glDeleteProgram(programTAA); programTAA = 0; }
+        taaSupported           = false;
+        jitterActive           = false;   // 同时复位 jitter state
+        locTAA_CurHdrTex       = locTAA_HistoryTex       = locTAA_VelocityTex      = -1;
+        locTAA_Texel           = locTAA_BlendAlpha       = locTAA_NeighborhoodClip = -1;
+        locTAA_HasHistory      = locTAA_VelocityDilation = -1;
+        locTAA_VelocityFormat  = locTAA_VelocityScale    = -1;
     }
 
     bool SupportsLit2D() const override { return lit2DSupported; }
@@ -6889,6 +7104,131 @@ public:
     void SetDilationPassActive(bool active) override { dilationPassActive_ = active; }
     bool GetDilationPassActive() const override     { return dilationPassActive_; }
 
+    // ==================== Phase F.0 — TAA Master Pipeline 虚接口实现 ====================
+
+    bool SupportsTAA() const override { return taaSupported; }
+
+    /// 创建 TAA history ping-pong RT (RGBA16F × 2, color-only, 无 depth)
+    /// 与 sceneTex 同尺寸; 失败时全清零返 false (TAARenderer Enable 检测会失败)
+    bool CreateTAAHistoryRT(int w, int h, uint32_t* outFbos, uint32_t* outTexs) override {
+        if (outFbos) outFbos[0] = outFbos[1] = 0;
+        if (outTexs) outTexs[0] = outTexs[1] = 0;
+        if (!taaSupported || w <= 0 || h <= 0 || !outFbos || !outTexs) return false;
+
+        for (int i = 0; i < 2; ++i) {
+            GLuint tex = 0;
+            glGenTextures(1, &tex);
+            if (!tex) { DeleteTAAHistoryRT(outFbos, outTexs); return false; }
+            glBindTexture(GL_TEXTURE_2D, tex);
+            // RGBA16F (与 HDR sceneTex 同格式), BILINEAR 让 reproject sub-pixel 采更平滑
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, w, h, 0, GL_RGBA, GL_HALF_FLOAT, nullptr);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S,     GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T,     GL_CLAMP_TO_EDGE);
+            glBindTexture(GL_TEXTURE_2D, 0);
+
+            GLuint fbo = 0;
+            glGenFramebuffers(1, &fbo);
+            if (!fbo) { glDeleteTextures(1, &tex); DeleteTAAHistoryRT(outFbos, outTexs); return false; }
+            glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
+            GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+            glBindFramebuffer(GL_FRAMEBUFFER, 0);
+            if (status != GL_FRAMEBUFFER_COMPLETE) {
+                glDeleteFramebuffers(1, &fbo);
+                glDeleteTextures(1, &tex);
+                DeleteTAAHistoryRT(outFbos, outTexs);
+                return false;
+            }
+            outFbos[i] = fbo;
+            outTexs[i] = tex;
+        }
+        return true;
+    }
+
+    /// 释放 TAA history RT (与 CreateTAAHistoryRT 配对)
+    void DeleteTAAHistoryRT(uint32_t* fbos, uint32_t* texs) override {
+        if (!fbos || !texs) return;
+        for (int i = 0; i < 2; ++i) {
+            if (fbos[i]) { GLuint id = fbos[i]; glDeleteFramebuffers(1, &id); fbos[i] = 0; }
+            if (texs[i]) { GLuint id = texs[i]; glDeleteTextures(1, &id);     texs[i] = 0; }
+        }
+    }
+
+    /// 执行 TAA pass: reproject + neighborhood AABB clip + alpha blend
+    /// Phase E.18 联动: dilationPassActive=true 时 shader 单点采 dilatedTex (绑给 velocityTex);
+    ///                  否则 consumer 走 inline 9-tap (velocityTex=raw RG16F/RG8 encoded)
+    void DrawTAAPass(uint32_t curHdrTex, uint32_t historyTex, uint32_t velocityTex, uint32_t dstFbo,
+                     int w, int h,
+                     float blendAlpha, int neighborhoodClip, int hasHistory,
+                     bool velocityDilation, float velocityScale,
+                     VelocityFormat velocityFormat) override {
+        if (!taaSupported || !programTAA) return;
+        if (!curHdrTex || !dstFbo || w <= 0 || h <= 0) return;
+
+        glBindFramebuffer(GL_FRAMEBUFFER, dstFbo);
+        glViewport(0, 0, w, h);
+        glDisable(GL_DEPTH_TEST);
+        glDisable(GL_SCISSOR_TEST);
+        glDisable(GL_BLEND);
+
+        glUseProgram(programTAA);
+        if (locTAA_Texel            >= 0) glUniform2f(locTAA_Texel, 1.0f / (float)w, 1.0f / (float)h);
+        if (locTAA_BlendAlpha       >= 0) glUniform1f(locTAA_BlendAlpha,       blendAlpha);
+        if (locTAA_NeighborhoodClip >= 0) glUniform1i(locTAA_NeighborhoodClip, neighborhoodClip);
+        if (locTAA_HasHistory       >= 0) glUniform1i(locTAA_HasHistory,       hasHistory);
+        // Phase E.18 联动: dilation pass active 时强制单点 (consumer 单点读已 decode 的 dilatedTex)
+        const int taaUVDValue = dilationPassActive_ ? 0 : (velocityDilation ? 1 : 0);
+        if (locTAA_VelocityDilation >= 0) glUniform1i(locTAA_VelocityDilation, taaUVDValue);
+        if (locTAA_VelocityFormat   >= 0) glUniform1i(locTAA_VelocityFormat,
+                                                     (velocityFormat == VelocityFormat::RG8) ? 1 : 0);
+        if (locTAA_VelocityScale    >= 0) glUniform1f(locTAA_VelocityScale,    velocityScale);
+
+        // 绑 sampler: slot 0=cur HDR, slot 1=history (空时给 cur 占位避免黑帧), slot 2=velocity
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, (GLuint)curHdrTex);
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, (GLuint)(historyTex ? historyTex : curHdrTex));
+        glActiveTexture(GL_TEXTURE2);
+        glBindTexture(GL_TEXTURE_2D, (GLuint)velocityTex);
+
+        // 全屏 quad: 复用 tonemap 的 VAO (vaoTonemap), VS 已编译为 VS_TONEMAP_SOURCE
+        glBindVertexArray(vaoTonemap);
+        glDrawArrays(GL_TRIANGLES, 0, 6);
+        glBindVertexArray(0);
+
+        // 解绑 sampler (slot 2 → 0 复位至 slot 0, 避免后续 pass 误读)
+        for (int s = 2; s >= 0; --s) {
+            glActiveTexture(GL_TEXTURE0 + s);
+            glBindTexture(GL_TEXTURE_2D, 0);
+        }
+        glUseProgram(0);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    }
+
+    /// 把 TAA 输出 blit 回 HDR sceneTex (覆盖, 让 Tonemap 用 TAA 后内容)
+    /// 直接用 glBlitFramebuffer: src=TAA history FBO, dst=HDR FBO (sceneTex 是 COLOR_ATTACHMENT0)
+    /// 注意 dstFbo 是 HDR FBO 而非裸 sceneTex; 由调用方 (TAARenderer) 传入并确保 sceneTex 是 attachment0.
+    void BlitTAAToHDR(uint32_t srcTex, uint32_t dstFbo, int w, int h) override {
+        if (!srcTex || !dstFbo || w <= 0 || h <= 0) return;
+
+        // 用临时 FBO 包 srcTex (避免要求 TAARenderer 传 FBO; 接口更对称)
+        GLuint tempFbo = 0;
+        glGenFramebuffers(1, &tempFbo);
+        if (!tempFbo) return;
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, tempFbo);
+        glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                                GL_TEXTURE_2D, (GLuint)srcTex, 0);
+        if (glCheckFramebufferStatus(GL_READ_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE) {
+            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, (GLuint)dstFbo);
+            glBlitFramebuffer(0, 0, w, h, 0, 0, w, h, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+        }
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+        glDeleteFramebuffers(1, &tempFbo);
+    }
+
     void SetNextPreviousModelMatrix(const float* prevModelMat4) override {
         if (!prevModelMat4) {
             hasNextPrevModel = false;
@@ -7022,6 +7362,29 @@ public:
     void LoadProjection(const float* projMat4) override {
         if (!projMat4) return;
         memcpy(projection.m, projMat4, sizeof(projection.m));
+        // Phase F.0: 用户重设 projection 时强制清 jitter (TAA 下帧 BeginScene 重新设)
+        jitterActive = false;
+    }
+
+    // ==================== Phase F.0 — TAA Master Pipeline 双 projection 接口 ====================
+
+    /// 设置 jittered projection 矩阵 — TAA Enable 时每帧 BeginScene 前调.
+    /// 后续 raster 路径 (ComputeMVP3D / FlushMVP / BeginLit2DDraw) 用 jitteredProjection.
+    /// GetProjection() / ComputeViewProj3D() 仍返 unjittered (SSR/SSAO/velocity 零改动).
+    void LoadJitteredProjection(const float* jitteredProj) override {
+        if (!jitteredProj) return;
+        memcpy(jitteredProjection.m, jitteredProj, sizeof(jitteredProjection.m));
+        jitterActive = true;
+    }
+
+    /// 清除 jitter 模式 — TAA Process 末尾调, 下帧 BeginScene 重新设.
+    void ClearJitteredProjection() override {
+        jitterActive = false;
+    }
+
+    /// 查询当前是否启用了 jittered projection (debug HUD 用)
+    bool IsJitteredProjectionActive() const override {
+        return jitterActive;
     }
 
     // ==================== Phase AS.4 — 材质系统 + 多光源实现 ====================

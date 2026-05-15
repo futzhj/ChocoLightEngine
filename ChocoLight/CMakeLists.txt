@@ -297,6 +297,7 @@ set(LIGHT_SOURCES
     ${CHOCO_SRC}/ssao_renderer.cpp
     ${CHOCO_SRC}/ssr_renderer.cpp
     ${CHOCO_SRC}/motion_blur_renderer.cpp
+    ${CHOCO_SRC}/taa_renderer.cpp
     ${CHOCO_SRC}/render_gl33.cpp
     ${CHOCO_SRC}/light_audio_backend.cpp
     # Phase AT — Audio 3D 空间化 + Mixer + Effects

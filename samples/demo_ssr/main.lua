@@ -385,6 +385,35 @@ while win:IsOpen() do
             (not cur) and 'SSR-only single consumer auto-skipped' or 'always run dilation pass'))
     end
 
+    -- Phase F.0 — Y: 切 TAA 主管线 ON/OFF (与 SSR Temporal 共存，推荐手动关 SSR Temporal)
+    local TAA = Gfx.TAA
+    if TAA and keyTap('y') then
+        if TAA.IsEnabled() then
+            TAA.Disable()
+            print('[demo] TAA OFF')
+        else
+            local w, h = win:GetSize()
+            local ok = TAA.Enable(w, h)
+            print(string.format('[demo] TAA Enable(%d, %d) -> %s (alpha=%.2f, clip=%s, jitter=%s)',
+                w, h, ok and 'ON' or 'FAILED',
+                TAA.GetBlendAlpha(),
+                TAA.GetNeighborhoodClip() and 'ON' or 'OFF',
+                TAA.GetJitterEnabled() and 'ON' or 'OFF'))
+            if ok and SSR.GetTemporalEnabled() then
+                print('[demo] WARN: SSR Temporal 仍启用, 反射会被 temporal 两次 (考虑 SSR.SetTemporalEnabled(false))')
+            end
+        end
+    end
+
+    -- Phase F.0 — J: 切 TAA jitter ON/OFF (关掉则退化为纯时序 stability filter, 无 super-sampling)
+    if TAA and TAA.IsEnabled() and keyTap('j') then
+        local cur = TAA.GetJitterEnabled()
+        TAA.SetJitterEnabled(not cur)
+        print(string.format('[demo] TAA Jitter: %s -> %s (%s)',
+            cur and 'ON' or 'OFF', (not cur) and 'ON' or 'OFF',
+            (not cur) and 'sub-pixel super-sampling' or 'pure temporal stability (no SS)'))
+    end
+
     -- R: reset 默认
     if keyTap('r') then
         SSR.SetMaxSteps(64); SSR.SetStepSize(0.1); SSR.SetThickness(0.5)
@@ -470,7 +499,19 @@ while win:IsOpen() do
                 MotionBlur.GetStrength(),
                 MotionBlur.GetSampleCount()))
         end
-        line('Keys: F=SSR B=Blur V=Bilateral T=Temporal 9/0=radius ,/.=sigma U/I=alpha N=reject K=Dilation L=Format M=MotionBlur ;=Mode [=MBHalfRes ]=DilHalfRes \\=AutoSkip R=reset ESC')
+        -- Phase F.0: TAA 主管线状态 (jitter + frame counter + alpha + clip)
+        local TAAhud = Gfx.TAA
+        if TAAhud then
+            local jx, jy = TAAhud.GetCurrentJitter()
+            line(string.format('TAA: %s | alpha=%.2f | clip=%s | jitter=%s | frame=%d (jx=%.3f jy=%.3f)',
+                TAAhud.IsEnabled() and 'ON' or 'OFF',
+                TAAhud.GetBlendAlpha(),
+                TAAhud.GetNeighborhoodClip() and 'ON' or 'OFF',
+                TAAhud.GetJitterEnabled() and 'ON' or 'OFF',
+                TAAhud.GetFrameCounter(),
+                jx, jy))
+        end
+        line('Keys: F=SSR B=Blur V=Bilateral T=Temporal 9/0=radius ,/.=sigma U/I=alpha N=reject K=Dilation L=Format M=MotionBlur ;=Mode [=MBHalfRes ]=DilHalfRes \\=AutoSkip Y=TAA J=TAAjitter R=reset ESC')
     end
 
     win:EndFrame()
@@ -480,6 +521,7 @@ end
 -- 4. 反向清理
 -- ============================================================================
 
+if Gfx.TAA and Gfx.TAA.IsEnabled() then Gfx.TAA.Disable() end
 if MotionBlur and MotionBlur.IsEnabled() then MotionBlur.Disable() end
 if SSR.IsEnabled() then SSR.Disable() end
 if hdrEnabled then HDR.Disable() end
