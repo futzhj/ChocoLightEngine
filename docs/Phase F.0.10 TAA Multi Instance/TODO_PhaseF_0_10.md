@@ -8,9 +8,10 @@
 
 | 任务 | 状态 |
 |------|------|
-| commit + push 代码到 main | 🔴 待办 |
-| 监控 GitHub Actions CI 6/6 success | 🔴 待办 |
-| CI 状态回填 ACCEPTANCE / FINAL / TODO | 🔴 待办 |
+| commit + push 代码到 main | ✅ 完成 (f2ab9cf) |
+| 监控 GitHub Actions CI 6/6 success | ✅ 完成 ([25938518533](https://github.com/futzhj/ChocoLightEngine/actions/runs/25938518533)) |
+| CI 状态回填 ACCEPTANCE / FINAL / TODO | ✅ 完成 |
+| 修复 CreateInstance headless smoke 兼容 | ✅ 完成 (51dbb4e) |
 
 ---
 
@@ -82,9 +83,9 @@ TAA.DestroyInstance(id2)
 
 ---
 
-## 3. CI 回填（待 T6 完成后填）
+## 3. CI 回填
 
-GitHub Run ID: `<pending>` / Commit hash: `<pending>` / Date: `<pending>`
+GitHub Run ID: [`25938518533`](https://github.com/futzhj/ChocoLightEngine/actions/runs/25938518533) / Fix commit: `51dbb4e` / Date: 2026-05-15 19:55 UTC / Result: **6/6 success**
 
 ---
 

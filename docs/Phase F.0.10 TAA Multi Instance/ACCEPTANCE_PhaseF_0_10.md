@@ -57,19 +57,26 @@
 - [x] 销毁 active 自动切回 default (0)
 - [x] 槽位可复用 (Create → Destroy → Create 返同一 id)
 
-### CI (待回填)
-- [ ] runtime smoke 40/40 fn + 16 PASS 多实例段
-- [ ] GitHub Actions 6/6 平台 success
+### CI (已验证)
+- [x] runtime smoke 40/40 fn + 16 PASS 多实例段 (Windows runtime smoke 通过)
+- [x] GitHub Actions 6/6 平台 success ([run 25938518533](https://github.com/futzhj/ChocoLightEngine/actions/runs/25938518533))
 
 ---
 
-## 4. CI 状态（待回填）
+## 4. CI 状态（已验证）
 
 | 平台 | 状态 |
 |------|------|
-| build-windows / linux / macos / android / ios / web | ⏳ |
+| build-windows | ✅ success |
+| build-linux | ✅ success |
+| build-macos | ✅ success |
+| build-android | ✅ success |
+| build-ios | ✅ success |
+| build-web | ✅ success |
 
-GitHub Run ID: `<pending>` / Commit hash: `<pending>` / Date: `<pending>`
+GitHub Run ID: [`25938518533`](https://github.com/futzhj/ChocoLightEngine/actions/runs/25938518533) (修复合集: 51dbb4e)
+F.0.10 原始 commit: `f2ab9cf` (CreateInstance 强检 inited, headless smoke 不兼容, fix `51dbb4e`)
+Date: 2026-05-15 19:55 UTC
 
 ---
 

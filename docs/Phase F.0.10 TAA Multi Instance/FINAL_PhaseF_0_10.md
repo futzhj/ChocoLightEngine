@@ -100,9 +100,23 @@ TAA.DestroyInstance(p2)
 
 ---
 
-## 5. CI 状态 (待回填)
+## 5. CI 状态
 
-GitHub Run ID: `<pending>` / Commit hash: `<pending>` / Date: `<pending>`
+| 项 | 值 |
+|----|----|
+| GitHub Run ID | [`25938518533`](https://github.com/futzhj/ChocoLightEngine/actions/runs/25938518533) |
+| Result | **6/6 platforms success** ✅ |
+| F.0.10 commit | `f2ab9cf` |
+| Fix commit | `51dbb4e` (CreateInstance 不要求 default inited, headless smoke 兼容) |
+| Date | 2026-05-15 19:55 UTC |
+
+**发现问题 + 修复**:
+- F.0.10 原始 commit `f2ab9cf` Windows runtime smoke FAIL: `First CreateInstance() must return 1, got 0`
+- 根因: `CreateInstance()` 内 `if (!g_states[0].inited) return 0` 强要求 default 槽已 Init.
+  TAARenderer::Init 由 light_ui.cpp 在 window 创建时调用, headless smoke 无 window → inited=false → CreateInstance 永返 0.
+- fix commit `51dbb4e`: CreateInstance 去掉 inited 强检, 仅分配槽位 + 复位 state.
+  新 instance 继承 default 的 backend (可能 nullptr) / supported / inited.
+  后续 Enable() 因 backend=nullptr 自然失败, 符合预期 (与 Init 单 instance 行为一致).
 
 ---
 
