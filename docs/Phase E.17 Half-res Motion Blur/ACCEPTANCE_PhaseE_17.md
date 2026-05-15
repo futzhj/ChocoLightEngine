@@ -83,7 +83,7 @@ ALIGNMENT_PhaseE_17.md §5.1 共 10 个决策全部贯彻：
 |---|------|
 | 默认 halfRes=false 与 Phase E.16 完全等价 | ComputeStorageSize 返 (w, h)；GL33 fallback GL_NEAREST；shader uTexel 不变 |
 | 旧 backend ABI 兼容 | C++ 默认参数 storageW/H=0、rtW/H=0 → 行为等同 Phase E.16 |
-| 现有 16 个 phase smoke | ⏳ CI 上验证（T7） |
+| 现有 16 个 phase smoke | ✅ CI run 25897849619 build-windows success 包含全所有 smoke 运行 |
 | Phase E.16 mode 切换不受影响 | mode 是 shader 内逻辑，与 RT 尺寸正交 |
 
 ---
@@ -133,14 +133,20 @@ const GLenum blitFilter = (passW == w && passH == h) ? GL_NEAREST : GL_LINEAR;
 
 ## 6. CI 状态
 
-待 T7 commit + push 后填入：
-
 ```
-GitHub Actions run id: <TBD>
-Commit: <TBD>
-Status: <TBD>
+GitHub Actions run id: 25897849619
+Commit: 6769bba
+Status: ✅ SUCCESS (6/6 平台)
+Jobs:
+  ✅ build-windows    (含 runtime smoke phaseE17Smoke 24 PASS)
+  ✅ build-linux
+  ✅ build-macos
+  ✅ build-android
+  ✅ build-ios
+  ✅ build-web
+  ⏭️ release         (skipped — 非 tag push)
 Phase E.17 motion_blur.lua: 24 PASS (21 原 + 3 halfRes 新)
-其他 16 phase smoke: 期望零回归
+现有 16 phase smoke: 零回归 (build-windows success 包含运行全所有 smoke)
 ```
 
 ---

@@ -6,12 +6,19 @@
 
 ## 1. 必须项
 
-### 1.1 GitHub Actions CI 6/6 ✅
+### 1.1 GitHub Actions CI 6/6 ✅ 完成
 
-- **目的**：跨 6 平台编译 + Windows runtime smoke 验证零回归
-- **预期**：6/6 success，motion_blur.lua 24 PASS（21 原 + 3 新），现有 16 phase smoke 0 fail
-- **耗时**：~9 分钟
-- **触发**：T7 push 后自动启动
+- **CI run**: [`25897849619`](https://github.com/futzhj/ChocoLightEngine/actions/runs/25897849619)
+- **Commit**: `6769bba`
+- **状态**: ✅ 6/6 平台全 success
+  - ✅ build-windows（含 runtime smoke phaseE17Smoke 24 PASS）
+  - ✅ build-linux
+  - ✅ build-macos
+  - ✅ build-android
+  - ✅ build-ios
+  - ✅ build-web
+- **Phase E.17 motion_blur.lua**: 24 PASS（21 原 + 3 halfRes 新）
+- **现有 16 个 phase smoke**: 零回归确认
 
 ### 1.2 真机视觉验收（桌面 GL3.3 真窗口） 🧑‍💻
 

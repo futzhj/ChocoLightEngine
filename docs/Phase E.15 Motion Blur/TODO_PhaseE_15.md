@@ -60,11 +60,13 @@
 - API：`Light.Graphics.MotionBlur.SetMode(0/1/2)` / `GetMode()`，默认 0 = combined 完全兼容
 - 详见 `@e:/jinyiNew/Light/docs/Phase E.16 Camera-only Motion Blur/FINAL_PhaseE_16.md`
 
-### 3.3 Phase E.17 候选（中期，1 天）
+### 3.3 Phase E.17 候选（中期，1 天）— ✅ 已完成
 
-- **1/2 分辨率 motion blur**：移动端性能优化
-- motionBlurTex 改 (w/2, h/2)；Pass2 用 bilinear filter 上采样
-- 视觉质量损失 ≤ 5%，性能 ≈ 4×
+- **1/2 分辨率 motion blur** — ✅ Phase E.17 已完成（CI run [25897849619](https://github.com/futzhj/ChocoLightEngine/actions/runs/25897849619) 6/6 green，commit `6769bba`）
+- 实施回顾：motionBlurTex 改 ((w+1)/2, (h+1)/2)；Pass2 用 GL_LINEAR 硬件 bilinear 上采样；shader 零改动（uTexel 保持全分辨率）
+- 性能：1080p Pass1 −74%、合计 −64%、VRAM −75%（8MB → 2MB）
+- API：`Light.Graphics.MotionBlur.SetHalfRes(bool)` / `GetHalfRes()`，默认 false 完全兼容
+- 详见 `@e:/jinyiNew/Light/docs/Phase E.17 Half-res Motion Blur/FINAL_PhaseE_17.md`
 
 ### 3.4 Phase E.18 候选（短期，半天）
 

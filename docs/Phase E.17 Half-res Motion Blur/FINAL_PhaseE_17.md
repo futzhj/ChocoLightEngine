@@ -128,14 +128,20 @@ Phase E.17 Half-res Motion Blur  → motionBlurTex 半分辨率，VRAM -75% 性�
 
 ## 8. CI 状态
 
-待 T7 commit + push 后填入：
-
 ```
-GitHub Actions run id: <TBD>
-Commit: <TBD>
-Status: <TBD>
+GitHub Actions run id: 25897849619
+Commit: 6769bba
+Status: ✅ SUCCESS (6/6 平台)
+Jobs:
+  ✅ build-windows    (含 runtime smoke phaseE17Smoke 24 PASS)
+  ✅ build-linux
+  ✅ build-macos
+  ✅ build-android
+  ✅ build-ios
+  ✅ build-web
+  ⏭️ release         (skipped — 非 tag push)
 Phase E.17 motion_blur.lua: 24 PASS (21 原 + 3 halfRes 新)
-其他 16 phase smoke: 期望零回归
+其他 16 个 phase smoke: 全部通过零回归
 ```
 
 ---
