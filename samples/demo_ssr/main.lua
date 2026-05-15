@@ -426,6 +426,17 @@ while win:IsOpen() do
             TAA.GetSharpness() > 0 and '4-tap unsharp mask' or 'pure blit (zero ALU)'))
     end
 
+    -- Phase F.0.4 — G: 切 TAA anti-flicker (Karis luma-weighted blend) ON/OFF
+    --   off → F.0 纯 alpha blend (低亮部行为完全等价); on → Karis 压制 firefly 闪烁
+    if TAA and TAA.IsEnabled() and TAA.SetAntiFlicker and keyTap('g') then
+        local cur = TAA.GetAntiFlicker()
+        TAA.SetAntiFlicker(not cur)
+        print(string.format('[demo] TAA AntiFlicker: %s -> %s (%s)',
+            cur and 'ON' or 'OFF',
+            TAA.GetAntiFlicker() and 'ON' or 'OFF',
+            TAA.GetAntiFlicker() and 'Karis luma weighting (压制 firefly)' or 'pure alpha blend (F.0 行为)'))
+    end
+
     -- R: reset 默认
     if keyTap('r') then
         SSR.SetMaxSteps(64); SSR.SetStepSize(0.1); SSR.SetThickness(0.5)
@@ -511,22 +522,24 @@ while win:IsOpen() do
                 MotionBlur.GetStrength(),
                 MotionBlur.GetSampleCount()))
         end
-        -- Phase F.0+F.0.1: TAA 主管线状态 (jitter + frame counter + alpha + clip + sharpness)
+        -- Phase F.0+F.0.1+F.0.4: TAA 主管线状态 (jitter + frame counter + alpha + clip + sharpness + antiFlicker)
         local TAAhud = Gfx.TAA
         if TAAhud then
             local jx, jy = TAAhud.GetCurrentJitter()
             local sharp = TAAhud.GetSharpness and TAAhud.GetSharpness() or 0
-            line(string.format('TAA: %s | alpha=%.2f | clip=%s | jitter=%s | sharp=%.2f (%s) | frame=%d (jx=%.3f jy=%.3f)',
+            local af    = TAAhud.GetAntiFlicker and TAAhud.GetAntiFlicker() or false
+            line(string.format('TAA: %s | alpha=%.2f | clip=%s | jitter=%s | sharp=%.2f (%s) | AF=%s | frame=%d (jx=%.3f jy=%.3f)',
                 TAAhud.IsEnabled() and 'ON' or 'OFF',
                 TAAhud.GetBlendAlpha(),
                 TAAhud.GetNeighborhoodClip() and 'ON' or 'OFF',
                 TAAhud.GetJitterEnabled() and 'ON' or 'OFF',
                 sharp,
                 sharp > 0 and 'sharpen pass' or 'pure blit',
+                af and 'ON' or 'OFF',                    -- Phase F.0.4
                 TAAhud.GetFrameCounter(),
                 jx, jy))
         end
-        line('Keys: F=SSR B=Blur V=Bilateral T=Temporal 9/0=radius ,/.=sigma U/I=alpha N=reject K=Dilation L=Format M=MotionBlur ;=Mode [=MBHalfRes ]=DilHalfRes \\=AutoSkip Y=TAA J=TAAjitter H=TAAsharp R=reset ESC')
+        line('Keys: F=SSR B=Blur V=Bilateral T=Temporal 9/0=radius ,/.=sigma U/I=alpha N=reject K=Dilation L=Format M=MotionBlur ;=Mode [=MBHalfRes ]=DilHalfRes \\=AutoSkip Y=TAA J=TAAjitter H=TAAsharp G=TAAAF R=reset ESC')
     end
 
     win:EndFrame()

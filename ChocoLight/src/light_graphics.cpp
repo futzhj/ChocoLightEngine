@@ -3129,6 +3129,30 @@ static int l_TAA_GetSharpness(lua_State* L) {
     return 1;
 }
 
+/// @lua_api Light.Graphics.TAA.SetAntiFlicker
+/// @param on boolean Karis luma weighting blend 开关 (默认 true)
+///                   true  = Karis 加权 blend (压制 firefly 闪烁, 与 sharpening 配合)
+///                   false = 纯 alpha blend (Phase F.0 原始行为)
+/// 错误处理: 非 boolean 返回 nil + 错误信息 (与 SetNeighborhoodClip / SetJitterEnabled 同模式)
+static int l_TAA_SetAntiFlicker(lua_State* L) {
+    luaL_checkany(L, 1);
+    if (!lua_isboolean(L, 1)) {
+        lua_pushnil(L);
+        lua_pushliteral(L, "TAA.SetAntiFlicker: 期望 boolean 参数");
+        return 2;
+    }
+    TAARenderer::SetAntiFlicker(lua_toboolean(L, 1) != 0);
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+/// @lua_api Light.Graphics.TAA.GetAntiFlicker
+/// @return boolean
+static int l_TAA_GetAntiFlicker(lua_State* L) {
+    lua_pushboolean(L, TAARenderer::GetAntiFlicker() ? 1 : 0);
+    return 1;
+}
+
 /// @lua_api Light.Graphics.TAA.GetFrameCounter
 /// @return integer 当前帧 Halton 索引 (0-7, 用于 debug HUD)
 static int l_TAA_GetFrameCounter(lua_State* L) {
@@ -3163,6 +3187,9 @@ static const luaL_Reg taa_funcs[] = {
     // Phase F.0.1 — sharpness (2 = 1 对): 4-tap unsharp mask, clamp [0, 2], 默认 0.5
     {"SetSharpness",          l_TAA_SetSharpness},
     {"GetSharpness",          l_TAA_GetSharpness},
+    // Phase F.0.4 — anti-flicker (2 = 1 对): Karis luma-weighted blend, 默认 true
+    {"SetAntiFlicker",        l_TAA_SetAntiFlicker},
+    {"GetAntiFlicker",        l_TAA_GetAntiFlicker},
     // status (2): debug HUD 用
     {"GetFrameCounter",       l_TAA_GetFrameCounter},
     {"GetCurrentJitter",      l_TAA_GetCurrentJitter},

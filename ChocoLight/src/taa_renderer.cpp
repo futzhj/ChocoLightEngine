@@ -58,6 +58,7 @@ struct State {
     bool     neighborhoodClip = true;        // 默认启用 9-tap AABB clip
     bool     jitterEnabled    = true;        // TAA Enable 时随之拉起 jitter
     float    sharpness        = 0.5f;        // Phase F.0.1: 4-tap unsharp mask 强度 [0, 2], 默认 0.5
+    bool     antiFlicker      = true;        // Phase F.0.4: Karis luma weighting blend, 默认启用
 
     // jitter state
     uint64_t frameCounter   = 0;
@@ -258,7 +259,8 @@ void Process(uint32_t hdrFbo, uint32_t hdrTex) {
                             g.hasHistory ? 1 : 0,
                             g.backend->GetVelocityDilation(),
                             g.backend->GetVelocityScale(),
-                            g.backend->GetActiveVelocityFormat());
+                            g.backend->GetActiveVelocityFormat(),
+                            g.antiFlicker ? 1 : 0);     // Phase F.0.4
 
     // Phase F.0.1: sharpness > 0 走 4-tap unsharp mask sharpen pass (in-place 写回 sceneTex);
     //              否则保持 F.0 纯 blit 路径 (零 ALU 开销)
@@ -288,6 +290,10 @@ bool  GetNeighborhoodClip()        { return g.neighborhoodClip; }
 
 void  SetSharpness(float s) { g.sharpness = clampf(s, 0.0f, 2.0f); }
 float GetSharpness()         { return g.sharpness; }
+
+// Phase F.0.4 — Anti-flicker filter (Karis luma-weighted blend) 开关
+void  SetAntiFlicker(bool on) { g.antiFlicker = on; }
+bool  GetAntiFlicker()         { return g.antiFlicker; }
 
 void  SetJitterEnabled(bool on) {
     g.jitterEnabled = on;

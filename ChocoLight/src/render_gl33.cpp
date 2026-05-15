@@ -2109,6 +2109,7 @@ uniform int   uHasHistory;          // 0=首帧 (输出 cur 不混合), 1=累积
 uniform int   uVelocityDilation;    // 0=单点采 (E.18 dilated path), 1=inline 9-tap (fallback)
 uniform int   uVelocityFormat;      // 0=RG16F, 1=RG8
 uniform float uVelocityScale;       // RG8 decode
+uniform int   uAntiFlicker;         // Phase F.0.4: 0=纯 alpha blend, 1=Karis luma-weighted blend
 
 vec2 DecodeVelocity(vec2 raw) {
     return (uVelocityFormat == 1) ? ((raw - 0.5) * (2.0 * uVelocityScale)) : raw;
@@ -2159,7 +2160,21 @@ void main() {
     }
 
     float alpha = clamp(uBlendAlpha, 0.0, 1.0);
-    FragColor = vec4(mix(cur.rgb, hist.rgb, alpha), 1.0);
+    if (uAntiFlicker == 1) {
+        // Phase F.0.4: Karis luma weighting (Brian Karis, UE4 2014 SIGGRAPH "High Quality Temporal Supersampling")
+        // 高 luma 像素赋予较低权重, 压制 firefly 在时序累积中被放大的闪烁伪影.
+        // Rec.709 luma 与 ACES tonemap 同基准.
+        float lumaCur  = dot(cur.rgb,  vec3(0.2126, 0.7152, 0.0722));
+        float lumaHist = dot(hist.rgb, vec3(0.2126, 0.7152, 0.0722));
+        float wCur  = 1.0 / (1.0 + lumaCur);
+        float wHist = 1.0 / (1.0 + lumaHist);
+        float wc = wCur  * (1.0 - alpha);
+        float wh = wHist * alpha;
+        FragColor = vec4((cur.rgb * wc + hist.rgb * wh) / (wc + wh), 1.0);
+    } else {
+        // Phase F.0 原始 blend (低 luma 区域与 Karis 路径几乎同结果)
+        FragColor = vec4(mix(cur.rgb, hist.rgb, alpha), 1.0);
+    }
 }
 )";
 
@@ -2730,6 +2745,7 @@ uniform int   uHasHistory;
 uniform int   uVelocityDilation;
 uniform int   uVelocityFormat;
 uniform float uVelocityScale;
+uniform int   uAntiFlicker;         // Phase F.0.4: 0=纯 alpha blend, 1=Karis luma-weighted blend
 
 vec2 DecodeVelocity(vec2 raw) {
     return (uVelocityFormat == 1) ? ((raw - 0.5) * (2.0 * uVelocityScale)) : raw;
@@ -2780,7 +2796,18 @@ void main() {
     }
 
     float alpha = clamp(uBlendAlpha, 0.0, 1.0);
-    FragColor = vec4(mix(cur.rgb, hist.rgb, alpha), 1.0);
+    if (uAntiFlicker == 1) {
+        // Phase F.0.4: Karis luma weighting — 高 luma 像素降权重压制 firefly 闪烁
+        float lumaCur  = dot(cur.rgb,  vec3(0.2126, 0.7152, 0.0722));
+        float lumaHist = dot(hist.rgb, vec3(0.2126, 0.7152, 0.0722));
+        float wCur  = 1.0 / (1.0 + lumaCur);
+        float wHist = 1.0 / (1.0 + lumaHist);
+        float wc = wCur  * (1.0 - alpha);
+        float wh = wHist * alpha;
+        FragColor = vec4((cur.rgb * wc + hist.rgb * wh) / (wc + wh), 1.0);
+    } else {
+        FragColor = vec4(mix(cur.rgb, hist.rgb, alpha), 1.0);
+    }
 }
 )";
 
@@ -3257,6 +3284,7 @@ class GL33Backend : public RenderBackend {
     GLint  locTAA_VelocityDilation          = -1;
     GLint  locTAA_VelocityFormat            = -1;
     GLint  locTAA_VelocityScale             = -1;
+    GLint  locTAA_AntiFlicker               = -1;   // Phase F.0.4: 0/1 上传 Karis weighting 开关
 
     // Phase F.0.1 — TAA Sharpening (4-tap unsharp mask, 复用 SupportsTAA 能力位)
     //   shader: FS_SHARPEN_SOURCE (uInputTex + uTexelSize + uSharpness)
@@ -4222,6 +4250,7 @@ public:
             locTAA_VelocityDilation = glGetUniformLocation(programTAA, "uVelocityDilation");
             locTAA_VelocityFormat   = glGetUniformLocation(programTAA, "uVelocityFormat");
             locTAA_VelocityScale    = glGetUniformLocation(programTAA, "uVelocityScale");
+            locTAA_AntiFlicker      = glGetUniformLocation(programTAA, "uAntiFlicker");  // Phase F.0.4
             // 一次性绑 sampler 到 texture unit (slot 0=cur HDR, slot 1=history, slot 2=velocity)
             glUseProgram(programTAA);
             if (locTAA_CurHdrTex   >= 0) glUniform1i(locTAA_CurHdrTex,   0);
@@ -4455,6 +4484,7 @@ public:
         locTAA_Texel           = locTAA_BlendAlpha       = locTAA_NeighborhoodClip = -1;
         locTAA_HasHistory      = locTAA_VelocityDilation = -1;
         locTAA_VelocityFormat  = locTAA_VelocityScale    = -1;
+        locTAA_AntiFlicker     = -1;   // Phase F.0.4 reset
 
         // Phase F.0.1 — TAA Sharpening 清理
         if (programSharpen) { glDeleteProgram(programSharpen); programSharpen = 0; }
@@ -7246,7 +7276,8 @@ public:
                      int w, int h,
                      float blendAlpha, int neighborhoodClip, int hasHistory,
                      bool velocityDilation, float velocityScale,
-                     VelocityFormat velocityFormat) override {
+                     VelocityFormat velocityFormat,
+                     int antiFlicker) override {
         if (!taaSupported || !programTAA) return;
         if (!curHdrTex || !dstFbo || w <= 0 || h <= 0) return;
 
@@ -7267,6 +7298,8 @@ public:
         if (locTAA_VelocityFormat   >= 0) glUniform1i(locTAA_VelocityFormat,
                                                      (velocityFormat == VelocityFormat::RG8) ? 1 : 0);
         if (locTAA_VelocityScale    >= 0) glUniform1f(locTAA_VelocityScale,    velocityScale);
+        // Phase F.0.4: Karis luma weighting blend 开关 (0=纯 alpha blend, 1=Karis)
+        if (locTAA_AntiFlicker      >= 0) glUniform1i(locTAA_AntiFlicker,      antiFlicker);
 
         // 绑 sampler: slot 0=cur HDR, slot 1=history (空时给 cur 占位避免黑帧), slot 2=velocity
         glActiveTexture(GL_TEXTURE0);

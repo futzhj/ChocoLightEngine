@@ -1318,6 +1318,8 @@ public:
     /// @param velocityDilation   0=单点 (E.18 dilated 路径), 1=inline 9-tap (fallback)
     /// @param velocityScale      RG8 模式下 decode 尺度
     /// @param velocityFormat     RG16F / RG8
+    /// @param antiFlicker        Phase F.0.4: 0=纯 alpha blend (F.0 行为), 1=Karis luma-weighted blend
+    ///                           高 luma 像素降权重压制 firefly 闪烁; 默认 1 与 F.0.1 sharpening 配合自然
     virtual void DrawTAAPass(uint32_t /*curHdrTex*/, uint32_t /*historyTex*/,
                              uint32_t /*velocityTex*/, uint32_t /*dstFbo*/,
                              int /*w*/, int /*h*/,
@@ -1325,7 +1327,8 @@ public:
                              int /*hasHistory*/,
                              bool /*velocityDilation*/,
                              float /*velocityScale*/,
-                             VelocityFormat /*velocityFormat*/) {}
+                             VelocityFormat /*velocityFormat*/,
+                             int /*antiFlicker*/ = 1) {}
 
     /// 把 TAA 输出 blit 回 HDR sceneTex (覆盖, 让后续 Tonemap 用 TAA 后内容)
     /// @param srcTex    TAA 输出 tex (= history 新 slot tex)

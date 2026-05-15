@@ -1,12 +1,14 @@
--- Phase F.0 + F.0.1 smoke: Light.Graphics.TAA (Temporal Anti-Aliasing master pipeline surface)
+-- Phase F.0 + F.0.1 + F.0.4 smoke: Light.Graphics.TAA (Temporal Anti-Aliasing master pipeline surface)
 --
--- API coverage (15 functions = F.0 13 + F.0.1 2):
+-- API coverage (17 functions = F.0 13 + F.0.1 2 + F.0.4 2):
 --   Lifecycle 5: Enable / Disable / IsEnabled / IsSupported / Resize
 --   Params     6: SetBlendAlpha / GetBlendAlpha (clamp [0, 1], default 0.92)
 --                 SetNeighborhoodClip / GetNeighborhoodClip (default true)
 --                 SetJitterEnabled / GetJitterEnabled (default true)
 --   Phase F.0.1 — Sharpening 2: SetSharpness / GetSharpness (clamp [0, 2], default 0.5)
 --                                4-tap unsharp mask, 0=blit fallback, > 0 启用 sharpen pass
+--   Phase F.0.4 — Anti-flicker 2: SetAntiFlicker / GetAntiFlicker (boolean, default true)
+--                                  Karis luma-weighted blend, false = 纯 alpha blend (F.0 原始)
 --   Status     2: GetFrameCounter (Halton index 0..7, debug HUD)
 --                 GetCurrentJitter (returns 2 numbers, sub-pixel offset)
 --
@@ -44,6 +46,7 @@ local fn_names = {
     "SetNeighborhoodClip", "GetNeighborhoodClip",
     "SetJitterEnabled", "GetJitterEnabled",
     "SetSharpness", "GetSharpness",        -- Phase F.0.1
+    "SetAntiFlicker", "GetAntiFlicker",    -- Phase F.0.4
     "GetFrameCounter", "GetCurrentJitter",
 }
 for _, k in ipairs(fn_names) do
@@ -115,6 +118,16 @@ if math.abs(def_sharp - 0.5) > 1e-4 then
     fail("Default GetSharpness must be 0.5, got " .. tostring(def_sharp))
 end
 pass("Default Sharpness = 0.5 (Phase F.0.1)")
+
+-- Phase F.0.4: AntiFlicker default true (Karis luma weighting blend)
+local def_af = TAA.GetAntiFlicker()
+if type(def_af) ~= "boolean" then
+    fail("GetAntiFlicker should return boolean, got " .. type(def_af))
+end
+if def_af ~= true then
+    fail("Default GetAntiFlicker must be true, got " .. tostring(def_af))
+end
+pass("Default AntiFlicker = true (Phase F.0.4)")
 
 -- ============================================================
 -- 4) Set/Get round-trip — BlendAlpha
@@ -231,6 +244,51 @@ pass("Sharpness = 0 路径 ok (Process 内部应走 BlitTAAToHDR 原路径)")
 TAA.SetSharpness(0.5)
 
 -- ============================================================
+-- 6.6) Phase F.0.4 — AntiFlicker round-trip + type-error
+-- ============================================================
+
+TAA.SetAntiFlicker(false)
+if TAA.GetAntiFlicker() ~= false then
+    fail("AntiFlicker round-trip false failed")
+end
+TAA.SetAntiFlicker(true)
+if TAA.GetAntiFlicker() ~= true then
+    fail("AntiFlicker round-trip true failed")
+end
+pass("AntiFlicker round-trip ok")
+
+-- type-error: number / string 都应返回 nil + err (与 SetNeighborhoodClip / SetJitterEnabled 同模式)
+local af_r1, af_r2 = TAA.SetAntiFlicker(1)
+if af_r1 ~= nil or type(af_r2) ~= "string" then
+    fail("SetAntiFlicker with number should return nil + err string")
+end
+pass("SetAntiFlicker type-error rejected (number)")
+
+local af_r3, af_r4 = TAA.SetAntiFlicker("yes")
+if af_r3 ~= nil or type(af_r4) ~= "string" then
+    fail("SetAntiFlicker with string should return nil + err string")
+end
+pass("SetAntiFlicker type-error rejected (string)")
+
+-- 确保失败调用未改变状态
+if TAA.GetAntiFlicker() ~= true then
+    fail("Failed SetAntiFlicker should not change state")
+end
+pass("AntiFlicker state preserved on failed call")
+
+-- 与 sharpening 共存验证 (两者可任意组合)
+TAA.SetAntiFlicker(true)
+TAA.SetSharpness(0.8)
+if TAA.GetAntiFlicker() ~= true or math.abs(TAA.GetSharpness() - 0.8) > 1e-4 then
+    fail("AntiFlicker + Sharpness coexist failed")
+end
+pass("AntiFlicker(true) + Sharpness(0.8) coexist ok (Karis blend + 4-tap sharpen 双启)")
+
+-- 复位 default
+TAA.SetSharpness(0.5)
+TAA.SetAntiFlicker(true)
+
+-- ============================================================
 -- 7) Status query — GetFrameCounter / GetCurrentJitter
 -- ============================================================
 
@@ -314,12 +372,13 @@ else
 end
 
 print("")
-print("=== Phase F.0 + F.0.1 TAA smoke: ALL TESTS PASSED ===")
-print("Functions covered: " .. #fn_names .. " / 15")
+print("=== Phase F.0 + F.0.1 + F.0.4 TAA smoke: ALL TESTS PASSED ===")
+print("Functions covered: " .. #fn_names .. " / 17")
 print("Highlights:")
-print("  - default OFF, alpha=0.92, neighborhoodClip=true, jitterEnabled=true, sharpness=0.5")
+print("  - default OFF, alpha=0.92, neighborhoodClip=true, jitterEnabled=true, sharpness=0.5, antiFlicker=true")
 print("  - clamp: BlendAlpha [0, 1], Sharpness [0, 2]")
-print("  - type-error: SetNeighborhoodClip / SetJitterEnabled reject non-boolean")
+print("  - type-error: SetNeighborhoodClip / SetJitterEnabled / SetAntiFlicker reject non-boolean")
 print("  - status: GetFrameCounter [0, 7], GetCurrentJitter in ±0.5 px range")
 print("  - coexistence: TAA toggle does not affect SSR Temporal state")
 print("  - Phase F.0.1: 4-tap unsharp mask, sharpness=0 走 blit fallback (零 ALU)")
+print("  - Phase F.0.4: Karis luma-weighted blend, antiFlicker=false 走 F.0 纯 alpha blend")

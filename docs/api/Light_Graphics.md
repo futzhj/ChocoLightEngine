@@ -1412,7 +1412,7 @@ print(Light.Graphics.MotionBlur.GetHalfRes())      --> true
 >
 > **默认 OFF**：用户主动 `Enable` 才生效（与 Phase E 所有模块一致），零回归保障。
 
-## TAA API 速查表（共 15 函数 = F.0 13 + F.0.1 2）
+## TAA API 速查表（共 17 函数 = F.0 13 + F.0.1 2 + F.0.4 2）
 
 | 类别 | 函数 | 默认值 / 说明 |
 |------|------|--------------|
@@ -1421,6 +1421,7 @@ print(Light.Graphics.MotionBlur.GetHalfRes())      --> true
 | 参数 | `SetNeighborhoodClip(on)` / `GetNeighborhoodClip()` | 9-tap AABB clip，**默认 true** |
 | 参数 | `SetJitterEnabled(on)` / `GetJitterEnabled()` | sub-pixel projection jitter，**默认 true** |
 | 参数 (F.0.1) | `SetSharpness(s)` / `GetSharpness()` | 4-tap unsharp mask，clamp `[0, 2]`，**默认 0.5**（0=blit fallback） |
+| 参数 (F.0.4) | `SetAntiFlicker(on)` / `GetAntiFlicker()` | Karis luma weighting blend，**默认 true**（false=F.0 纯 alpha blend） |
 | 状态 | `GetFrameCounter()` | `int` Halton 索引 `[0, 7]`（debug HUD） |
 | 状态 | `GetCurrentJitter()` | `(jx, jy)` 本帧 sub-pixel 偏移（±0.5 px） |
 
@@ -1610,6 +1611,79 @@ TAA.SetSharpness(3.0)                     -- clamp
 print(TAA.GetSharpness())                 --> 2.0
 
 TAA.SetSharpness(0)                       -- 关闭锐化 (走纯 blit)
+```
+
+---
+
+## `TAA.SetAntiFlicker` / `TAA.GetAntiFlicker`
+
+**Phase F.0.4** — Anti-flicker filter (Karis luma-weighted blend)，压制 firefly 在时序累积中的闪烁伪影。
+
+### 参数
+
+- `on` (`boolean`)：`true` 启用 Karis weighting / `false` 走 F.0 纯 alpha blend
+
+### 默认值
+
+`true`（与 F.0.1 sharpening 配合使用收益更佳）
+
+### 错误处理
+
+非 boolean 返 `nil + err`（与 `SetNeighborhoodClip` / `SetJitterEnabled` 同模式）：
+
+```lua
+local ok, err = Light.Graphics.TAA.SetAntiFlicker("yes")
+print(ok, err)  --> nil  TAA.SetAntiFlicker: 期望 boolean 参数
+```
+
+### 算法
+
+参考 Brian Karis (UE4 2014 SIGGRAPH "High Quality Temporal Supersampling")：
+
+```
+lumaCur  = dot(cur,  Rec709)
+lumaHist = dot(hist, Rec709)
+wCur  = 1 / (1 + lumaCur)
+wHist = 1 / (1 + lumaHist)
+result = (cur * wCur * (1-α) + hist * wHist * α) / (wCur*(1-α) + wHist*α)
+```
+
+高 luma 像素被赋予较低权重，使得 firefly 在时序累积中被"稀释"而非"放大"。
+
+### 作用范围
+
+| luma_history | Karis 影响 | 说明 |
+|--------------|------------|------|
+| `0` (黑色) | 零 | wCur=wHist=1，退化为 `mix(cur, hist, α)`、与 F.0 同结果 |
+| `0.5` (中等亮) | 微弱 | < 1/256 LDR 灯零级的影响 |
+| `10` (HDR 高光) | 中等 | wHist≈0.091，稍压低 history |
+| `100` (极端 firefly) | 强烈 | wHist≈0.01， history 被有效压制 |
+
+**零视觉副作用**：对低/中等 luma 几乎不改变行为，仅对极端高 luma firefly 起抑制作用。
+
+### 性能
+
++0.01 ms @ 1080p（2 dot + 4 div + 1 div / px）。`uAntiFlicker=0` 走 shader 内 if 分支跳过 luma 计算，零 ALU 回退。
+
+### 推荐配合
+
+与 Phase F.0.1 sharpening 配合使用收益最佳，特别是 `sharpness > 1.0` 时 sharpening 加剧的 firefly 会被 Karis weighting 抑制。
+
+### 示例
+
+```lua
+local TAA = Light.Graphics.TAA
+
+-- 默认：anti-flicker on + sharpness 0.5。
+TAA.SetAntiFlicker(true)
+TAA.SetSharpness(0.5)
+
+-- 调高锐化，Karis weighting 负责压住可能被放大的 firefly
+TAA.SetSharpness(1.2)
+TAA.SetAntiFlicker(true)
+
+-- 需要严格复现 F.0 原始行为 (走纯 alpha blend)
+TAA.SetAntiFlicker(false)
 ```
 
 ---

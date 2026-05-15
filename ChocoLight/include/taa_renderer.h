@@ -102,6 +102,14 @@ bool  GetJitterEnabled();
 void  SetSharpness(float s);
 float GetSharpness();
 
+/// Phase F.0.4 — Anti-flicker filter (Karis luma weighting blend), 默认 true
+/// 算法: 高 luma 像素在 history blend 阶段赋予低权重，压制 firefly 闪烁伪影
+/// false = 纯 alpha blend (Phase F.0 原始行为, 低亮部与 Karis 路径几乎同结果)
+/// 与 F.0.1 sharpening 配合使用收益更佳 (sharpness > 1.0 时 firefly 加剧问题)
+/// 性能: +0.01ms @ 1080p (2 dot + 4 div + 1 div / px)
+void  SetAntiFlicker(bool on);
+bool  GetAntiFlicker();
+
 // ==================== 内部状态查询 (debug HUD 用) ====================
 
 /// 当前帧 Halton 索引 (% 8), 累加帧计数器低 3 位
