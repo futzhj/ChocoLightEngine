@@ -84,19 +84,19 @@ end
 
 ---
 
-## 6. CI 回填（待 T5 完成后填）
+## 6. CI 回填 ✅ 已完成
 
 | 字段 | 值 |
 |------|---|
-| GitHub Run ID | `<pending>` |
-| Commit hash | `<pending>` |
-| 6/6 平台状态 | `<pending>` |
-| Total duration | `<pending>` |
-| Date | `<pending>` |
+| GitHub Run ID | [25915592135](https://github.com/futzhj/ChocoLightEngine/actions/runs/25915592135)（代码主 commit）<br>[25916027105](https://github.com/futzhj/ChocoLightEngine/actions/runs/25916027105)（docs 回填 commit） |
+| Commit hash | `011a549`（代码+文档）+ `e46e5a5`（CI 回填） |
+| 6/6 平台状态 | ✅ build-windows / build-linux / build-macos / build-android / build-ios / build-web 全部 success |
+| Total duration | 8 分 44 秒（代码 commit）|
+| Date | 2026-05-15 |
 
-回填后同步更新：
-- `ACCEPTANCE_PhaseF_0_1.md` 第 7 章
-- `FINAL_PhaseF_0_1.md` 第 8 章
+同步更新：
+- ✅ `ACCEPTANCE_PhaseF_0_1.md` §7
+- ✅ `FINAL_PhaseF_0_1.md` §8
 
 ---
 
