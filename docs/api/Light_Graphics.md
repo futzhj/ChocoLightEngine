@@ -1412,7 +1412,7 @@ print(Light.Graphics.MotionBlur.GetHalfRes())      --> true
 >
 > **默认 OFF**：用户主动 `Enable` 才生效（与 Phase E 所有模块一致），零回归保障。
 
-## TAA API 速查表（共 17 函数 = F.0 13 + F.0.1 2 + F.0.4 2）
+## TAA API 速查表（共 19 函数 = F.0 13 + F.0.1 2 + F.0.2 2 + F.0.4 2）
 
 | 类别 | 函数 | 默认值 / 说明 |
 |------|------|--------------|
@@ -1422,6 +1422,7 @@ print(Light.Graphics.MotionBlur.GetHalfRes())      --> true
 | 参数 | `SetJitterEnabled(on)` / `GetJitterEnabled()` | sub-pixel projection jitter，**默认 true** |
 | 参数 (F.0.1) | `SetSharpness(s)` / `GetSharpness()` | 4-tap unsharp mask，clamp `[0, 2]`，**默认 0.5**（0=blit fallback） |
 | 参数 (F.0.4) | `SetAntiFlicker(on)` / `GetAntiFlicker()` | Karis luma weighting blend，**默认 true**（false=F.0 纯 alpha blend） |
+| 参数 (F.0.2) | `SetClipMode(mode)` / `GetClipMode()` | `"rgb"` / `"ycocg"` (大小写不敏感)，**默认 `"ycocg"`**（`"rgb"`=F.0 三通道） |
 | 状态 | `GetFrameCounter()` | `int` Halton 索引 `[0, 7]`（debug HUD） |
 | 状态 | `GetCurrentJitter()` | `(jx, jy)` 本帧 sub-pixel 偏移（±0.5 px） |
 
@@ -1684,6 +1685,90 @@ TAA.SetAntiFlicker(true)
 
 -- 需要严格复现 F.0 原始行为 (走纯 alpha blend)
 TAA.SetAntiFlicker(false)
+```
+
+---
+
+## `TAA.SetClipMode` / `TAA.GetClipMode`
+
+**Phase F.0.2** — 9-tap AABB clip 色彩空间选择。
+
+### 参数
+
+- `mode` (`string`)：`"rgb"` / `"ycocg"` (大小写不敏感, 存储时规范化小写)
+
+### 默认值
+
+`"ycocg"`（F.0.2 主题默认启用新算法，F.0 行为仍可通过 `SetClipMode("rgb")` 复现）
+
+### 错误处理
+
+非 string / 未识别值 返 `nil + err`（与 `HDR.SetVelocityFormat` 同模式）：
+
+```lua
+local ok, err = Light.Graphics.TAA.SetClipMode("abc")
+print(ok, err)  --> nil  TAA.SetClipMode: 未识别的 mode 'abc' (期望 'rgb' / 'ycocg')
+
+local ok2, err2 = Light.Graphics.TAA.SetClipMode(123)
+print(ok2, err2)  --> nil  TAA.SetClipMode: 期望 string 参数 ('rgb' / 'ycocg')
+```
+
+### 算法 — YCoCg lift 形式转换
+
+与 FXAA / Inside / UE5 同一标准：
+
+```glsl
+// RGB → YCoCg (1/4, 1/2, 1/4 系数默认 lift, integer-reversible)
+Y  =  0.25 R + 0.5 G + 0.25 B   // 亮度
+Co =  0.5  R         - 0.5  B   // 橙蓝色度
+Cg = -0.25 R + 0.5 G - 0.25 B   // 绿品色度
+
+// YCoCg → RGB (lift 反变换)
+R = Y + Co - Cg
+G = Y      + Cg
+B = Y - Co - Cg
+```
+
+9-tap AABB clip 不变 (仍是 3×3 邻域 + cur)，仅在 YCoCg 空间 min/max。
+
+### RGB vs YCoCg 对比
+
+| 场景 | RGB AABB | YCoCg AABB |
+|------|----------|------------|
+| 重复色块 (低色度) | 完全同结果 (Y 占主) | 同 |
+| 高色度边缘 (红↔蓝) | 可能三通道各自被 clip 产生伪影 | 色度独立保护，边缘更鲁棒 |
+| HDR 高光 spike | RGB 三通道独立 min/max | Y 通道 clip 起主要作用 |
+| 过渡色 (黄↔绿) | RGB clip 可能拉偏色调 | Co/Cg 独立保护色调 |
+
+### 性能
+
+- `"rgb"` 路径：0 ALU 增量（与 F.0 完全同路径）
+- `"ycocg"` 路径：+0.05 ms @ 1080p (11 mat3 mul ≈ 165 ALU/px)
+
+### 推荐配合
+
+与 Phase F.0.4 anti-flicker 独立互补：F.0.2 clip 阶段限制 history 譬明范围，F.0.4 blend 阶段压制 high-luma 权重，两者同启为推荐默认。
+
+### 示例
+
+```lua
+local TAA = Light.Graphics.TAA
+
+-- 默认：clipMode="ycocg"。
+print(TAA.GetClipMode())                 --> ycocg
+
+-- 严格复现 F.0 行为 (RGB clip)
+TAA.SetClipMode("rgb")
+print(TAA.GetClipMode())                 --> rgb
+
+-- 大小写不敏感
+TAA.SetClipMode("YCoCg")
+print(TAA.GetClipMode())                 --> ycocg (规范化)
+
+-- 默认推荐设置
+TAA.SetClipMode("ycocg")
+TAA.SetAntiFlicker(true)
+TAA.SetSharpness(0.5)
 ```
 
 ---

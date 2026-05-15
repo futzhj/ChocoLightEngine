@@ -59,6 +59,7 @@ struct State {
     bool     jitterEnabled    = true;        // TAA Enable 时随之拉起 jitter
     float    sharpness        = 0.5f;        // Phase F.0.1: 4-tap unsharp mask 强度 [0, 2], 默认 0.5
     bool     antiFlicker      = true;        // Phase F.0.4: Karis luma weighting blend, 默认启用
+    int      clipMode         = 1;           // Phase F.0.2: 0=RGB AABB (F.0 行为), 1=YCoCg AABB (默认)
 
     // jitter state
     uint64_t frameCounter   = 0;
@@ -260,7 +261,8 @@ void Process(uint32_t hdrFbo, uint32_t hdrTex) {
                             g.backend->GetVelocityDilation(),
                             g.backend->GetVelocityScale(),
                             g.backend->GetActiveVelocityFormat(),
-                            g.antiFlicker ? 1 : 0);     // Phase F.0.4
+                            g.antiFlicker ? 1 : 0,      // Phase F.0.4
+                            g.clipMode);                // Phase F.0.2
 
     // Phase F.0.1: sharpness > 0 走 4-tap unsharp mask sharpen pass (in-place 写回 sceneTex);
     //              否则保持 F.0 纯 blit 路径 (零 ALU 开销)
@@ -294,6 +296,33 @@ float GetSharpness()         { return g.sharpness; }
 // Phase F.0.4 — Anti-flicker filter (Karis luma-weighted blend) 开关
 void  SetAntiFlicker(bool on) { g.antiFlicker = on; }
 bool  GetAntiFlicker()         { return g.antiFlicker; }
+
+// Phase F.0.2 — 9-tap AABB clip 色彩空间
+// 大小写不敏感解析："rgb" / "RGB" / "Rgb" → 0; "ycocg" / "YCoCg" / "YCOCG" → 1
+// 未识别字符串静默保持当前 state (错误提示在 Lua 层返 nil+err)
+static int parseClipMode_(const char* mode) {
+    if (!mode) return -1;
+    // 手写 case-insensitive 判别 (避免引入 <strings.h> / strcasecmp 跨平台问题)
+    auto eq = [](const char* a, const char* b) {
+        while (*a && *b) {
+            char ca = (*a >= 'A' && *a <= 'Z') ? (char)(*a + 32) : *a;
+            char cb = (*b >= 'A' && *b <= 'Z') ? (char)(*b + 32) : *b;
+            if (ca != cb) return false;
+            ++a; ++b;
+        }
+        return *a == '\0' && *b == '\0';
+    };
+    if (eq(mode, "rgb"))   return 0;
+    if (eq(mode, "ycocg")) return 1;
+    return -1;
+}
+void SetClipMode(const char* mode) {
+    int parsed = parseClipMode_(mode);
+    if (parsed >= 0) g.clipMode = parsed;   // 仅识别到才写入, 其他静默保持
+}
+const char* GetClipMode() {
+    return (g.clipMode == 0) ? "rgb" : "ycocg";
+}
 
 void  SetJitterEnabled(bool on) {
     g.jitterEnabled = on;

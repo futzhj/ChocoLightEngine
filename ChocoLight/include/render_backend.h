@@ -1320,6 +1320,8 @@ public:
     /// @param velocityFormat     RG16F / RG8
     /// @param antiFlicker        Phase F.0.4: 0=纯 alpha blend (F.0 行为), 1=Karis luma-weighted blend
     ///                           高 luma 像素降权重压制 firefly 闪烁; 默认 1 与 F.0.1 sharpening 配合自然
+    /// @param clipMode           Phase F.0.2: 0=RGB AABB clip (F.0 行为), 1=YCoCg AABB clip
+    ///                           YCoCg 在亮度+色度独立约束, 对色彩边缘比 RGB 更鲁棒 (UE5 / Inside 主流方案)
     virtual void DrawTAAPass(uint32_t /*curHdrTex*/, uint32_t /*historyTex*/,
                              uint32_t /*velocityTex*/, uint32_t /*dstFbo*/,
                              int /*w*/, int /*h*/,
@@ -1328,7 +1330,8 @@ public:
                              bool /*velocityDilation*/,
                              float /*velocityScale*/,
                              VelocityFormat /*velocityFormat*/,
-                             int /*antiFlicker*/ = 1) {}
+                             int /*antiFlicker*/ = 1,
+                             int /*clipMode*/    = 1) {}
 
     /// 把 TAA 输出 blit 回 HDR sceneTex (覆盖, 让后续 Tonemap 用 TAA 后内容)
     /// @param srcTex    TAA 输出 tex (= history 新 slot tex)

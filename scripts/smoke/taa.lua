@@ -1,6 +1,6 @@
--- Phase F.0 + F.0.1 + F.0.4 smoke: Light.Graphics.TAA (Temporal Anti-Aliasing master pipeline surface)
+-- Phase F.0 + F.0.1 + F.0.2 + F.0.4 smoke: Light.Graphics.TAA (Temporal Anti-Aliasing master pipeline surface)
 --
--- API coverage (17 functions = F.0 13 + F.0.1 2 + F.0.4 2):
+-- API coverage (19 functions = F.0 13 + F.0.1 2 + F.0.2 2 + F.0.4 2):
 --   Lifecycle 5: Enable / Disable / IsEnabled / IsSupported / Resize
 --   Params     6: SetBlendAlpha / GetBlendAlpha (clamp [0, 1], default 0.92)
 --                 SetNeighborhoodClip / GetNeighborhoodClip (default true)
@@ -9,6 +9,8 @@
 --                                4-tap unsharp mask, 0=blit fallback, > 0 启用 sharpen pass
 --   Phase F.0.4 — Anti-flicker 2: SetAntiFlicker / GetAntiFlicker (boolean, default true)
 --                                  Karis luma-weighted blend, false = 纯 alpha blend (F.0 原始)
+--   Phase F.0.2 — Clip mode  2: SetClipMode / GetClipMode ("rgb"/"ycocg", default "ycocg")
+--                                  YCoCg lift 转换 + AABB clip, 对色彩边缘更鲁棒
 --   Status     2: GetFrameCounter (Halton index 0..7, debug HUD)
 --                 GetCurrentJitter (returns 2 numbers, sub-pixel offset)
 --
@@ -47,6 +49,7 @@ local fn_names = {
     "SetJitterEnabled", "GetJitterEnabled",
     "SetSharpness", "GetSharpness",        -- Phase F.0.1
     "SetAntiFlicker", "GetAntiFlicker",    -- Phase F.0.4
+    "SetClipMode", "GetClipMode",          -- Phase F.0.2
     "GetFrameCounter", "GetCurrentJitter",
 }
 for _, k in ipairs(fn_names) do
@@ -128,6 +131,16 @@ if def_af ~= true then
     fail("Default GetAntiFlicker must be true, got " .. tostring(def_af))
 end
 pass("Default AntiFlicker = true (Phase F.0.4)")
+
+-- Phase F.0.2: ClipMode default "ycocg" (YCoCg AABB clip)
+local def_cm = TAA.GetClipMode()
+if type(def_cm) ~= "string" then
+    fail("GetClipMode should return string, got " .. type(def_cm))
+end
+if def_cm ~= "ycocg" then
+    fail("Default GetClipMode must be 'ycocg', got '" .. tostring(def_cm) .. "'")
+end
+pass("Default ClipMode = 'ycocg' (Phase F.0.2)")
 
 -- ============================================================
 -- 4) Set/Get round-trip — BlendAlpha
@@ -289,6 +302,84 @@ TAA.SetSharpness(0.5)
 TAA.SetAntiFlicker(true)
 
 -- ============================================================
+-- 6.7) Phase F.0.2 — ClipMode round-trip + case-insensitive + invalid value
+-- ============================================================
+
+-- Round-trip “rgb” / “ycocg” (小写名主路径)
+TAA.SetClipMode("rgb")
+if TAA.GetClipMode() ~= "rgb" then
+    fail("ClipMode round-trip 'rgb' failed, got '" .. tostring(TAA.GetClipMode()) .. "'")
+end
+TAA.SetClipMode("ycocg")
+if TAA.GetClipMode() ~= "ycocg" then
+    fail("ClipMode round-trip 'ycocg' failed, got '" .. tostring(TAA.GetClipMode()) .. "'")
+end
+pass("ClipMode round-trip ok ('rgb' / 'ycocg')")
+
+-- 大小写不敏感：“RGB” / “YCoCg” / “YCOCG” / “Rgb” 都应被接受
+for _, v in ipairs({"RGB", "YCoCg", "YCOCG", "Rgb"}) do
+    local ok = TAA.SetClipMode(v)
+    if ok ~= true then
+        fail("ClipMode case-insensitive failed for input '" .. v .. "': SetClipMode returned " .. tostring(ok))
+    end
+end
+-- 最后一个是 "Rgb" → 应该返 "rgb" (规范化存储)
+if TAA.GetClipMode() ~= "rgb" then
+    fail("ClipMode after 'Rgb' should normalize to 'rgb', got '" .. tostring(TAA.GetClipMode()) .. "'")
+end
+pass("ClipMode case-insensitive ok ('RGB'/'YCoCg'/'YCOCG'/'Rgb' → normalized)")
+
+-- 非法字符串 返 nil + err
+local cm_r1, cm_r2 = TAA.SetClipMode("abc")
+if cm_r1 ~= nil or type(cm_r2) ~= "string" then
+    fail("SetClipMode with invalid string 'abc' should return nil + err")
+end
+pass("SetClipMode invalid value 'abc' rejected (nil+err)")
+
+local cm_r3, cm_r4 = TAA.SetClipMode("")
+if cm_r3 ~= nil or type(cm_r4) ~= "string" then
+    fail("SetClipMode with empty string should return nil + err")
+end
+pass("SetClipMode empty string rejected (nil+err)")
+
+-- 非 string 返 nil + err (与 SetVelocityFormat 同模式)
+local cm_r5, cm_r6 = TAA.SetClipMode(123)
+if cm_r5 ~= nil or type(cm_r6) ~= "string" then
+    fail("SetClipMode with number should return nil + err")
+end
+pass("SetClipMode type-error rejected (number)")
+
+local cm_r7, cm_r8 = TAA.SetClipMode(true)
+if cm_r7 ~= nil or type(cm_r8) ~= "string" then
+    fail("SetClipMode with boolean should return nil + err")
+end
+pass("SetClipMode type-error rejected (boolean)")
+
+-- 确保失败调用未改变状态
+TAA.SetClipMode("ycocg")   -- 先重置到默认
+TAA.SetClipMode("abc")     -- 该失败
+if TAA.GetClipMode() ~= "ycocg" then
+    fail("Failed SetClipMode should not change state")
+end
+pass("ClipMode state preserved on failed call")
+
+-- F.0.1 + F.0.2 + F.0.4 三启共存验证 (sharpening + clip mode + anti-flicker 同时生效)
+TAA.SetSharpness(0.8)
+TAA.SetAntiFlicker(true)
+TAA.SetClipMode("ycocg")
+if math.abs(TAA.GetSharpness() - 0.8) > 1e-4
+   or TAA.GetAntiFlicker() ~= true
+   or TAA.GetClipMode() ~= "ycocg" then
+    fail("F.0.1 + F.0.2 + F.0.4 三启共存 failed")
+end
+pass("Sharpness=0.8 + AntiFlicker=true + ClipMode='ycocg' 三启共存 ok")
+
+-- 复位 default
+TAA.SetSharpness(0.5)
+TAA.SetAntiFlicker(true)
+TAA.SetClipMode("ycocg")
+
+-- ============================================================
 -- 7) Status query — GetFrameCounter / GetCurrentJitter
 -- ============================================================
 
@@ -372,13 +463,14 @@ else
 end
 
 print("")
-print("=== Phase F.0 + F.0.1 + F.0.4 TAA smoke: ALL TESTS PASSED ===")
-print("Functions covered: " .. #fn_names .. " / 17")
+print("=== Phase F.0 + F.0.1 + F.0.2 + F.0.4 TAA smoke: ALL TESTS PASSED ===")
+print("Functions covered: " .. #fn_names .. " / 19")
 print("Highlights:")
-print("  - default OFF, alpha=0.92, neighborhoodClip=true, jitterEnabled=true, sharpness=0.5, antiFlicker=true")
+print("  - default OFF, alpha=0.92, neighborhoodClip=true, jitterEnabled=true, sharpness=0.5, antiFlicker=true, clipMode='ycocg'")
 print("  - clamp: BlendAlpha [0, 1], Sharpness [0, 2]")
-print("  - type-error: SetNeighborhoodClip / SetJitterEnabled / SetAntiFlicker reject non-boolean")
+print("  - type-error: SetNeighborhoodClip / SetJitterEnabled / SetAntiFlicker reject non-boolean; SetClipMode reject non-string / invalid value")
 print("  - status: GetFrameCounter [0, 7], GetCurrentJitter in ±0.5 px range")
 print("  - coexistence: TAA toggle does not affect SSR Temporal state")
 print("  - Phase F.0.1: 4-tap unsharp mask, sharpness=0 走 blit fallback (零 ALU)")
 print("  - Phase F.0.4: Karis luma-weighted blend, antiFlicker=false 走 F.0 纯 alpha blend")
+print("  - Phase F.0.2: YCoCg AABB clip, clipMode='rgb' 走 F.0 三通道 RGB clip (零 ALU 增量)")

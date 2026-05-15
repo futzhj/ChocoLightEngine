@@ -522,16 +522,18 @@ while win:IsOpen() do
                 MotionBlur.GetStrength(),
                 MotionBlur.GetSampleCount()))
         end
-        -- Phase F.0+F.0.1+F.0.4: TAA 主管线状态 (jitter + frame counter + alpha + clip + sharpness + antiFlicker)
+        -- Phase F.0+F.0.1+F.0.2+F.0.4: TAA 主管线状态 (jitter + frame counter + alpha + clip + sharpness + antiFlicker + clipMode)
         local TAAhud = Gfx.TAA
         if TAAhud then
             local jx, jy = TAAhud.GetCurrentJitter()
-            local sharp = TAAhud.GetSharpness and TAAhud.GetSharpness() or 0
-            local af    = TAAhud.GetAntiFlicker and TAAhud.GetAntiFlicker() or false
-            line(string.format('TAA: %s | alpha=%.2f | clip=%s | jitter=%s | sharp=%.2f (%s) | AF=%s | frame=%d (jx=%.3f jy=%.3f)',
+            local sharp  = TAAhud.GetSharpness and TAAhud.GetSharpness() or 0
+            local af     = TAAhud.GetAntiFlicker and TAAhud.GetAntiFlicker() or false
+            local cmode  = TAAhud.GetClipMode and TAAhud.GetClipMode() or 'rgb'  -- Phase F.0.2
+            line(string.format('TAA: %s | alpha=%.2f | clip=%s/%s | jitter=%s | sharp=%.2f (%s) | AF=%s | frame=%d (jx=%.3f jy=%.3f)',
                 TAAhud.IsEnabled() and 'ON' or 'OFF',
                 TAAhud.GetBlendAlpha(),
                 TAAhud.GetNeighborhoodClip() and 'ON' or 'OFF',
+                cmode,                                   -- Phase F.0.2: rgb / ycocg
                 TAAhud.GetJitterEnabled() and 'ON' or 'OFF',
                 sharp,
                 sharp > 0 and 'sharpen pass' or 'pure blit',

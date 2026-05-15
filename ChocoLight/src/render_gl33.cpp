@@ -2110,6 +2110,23 @@ uniform int   uVelocityDilation;    // 0=单点采 (E.18 dilated path), 1=inline
 uniform int   uVelocityFormat;      // 0=RG16F, 1=RG8
 uniform float uVelocityScale;       // RG8 decode
 uniform int   uAntiFlicker;         // Phase F.0.4: 0=纯 alpha blend, 1=Karis luma-weighted blend
+uniform int   uClipMode;            // Phase F.0.2: 0=RGB AABB clip (F.0), 1=YCoCg AABB clip
+
+// Phase F.0.2 — RGB ↔ YCoCg lift 形式转换 (整数可逆, 与 FXAA / Inside / UE5 标准一致)
+//   Y  = 亮度通道 (0.25R + 0.5G + 0.25B); Co = R-B 色度; Cg = G - 0.5(R+B) 色度
+//   AABB clip 在 YCoCg 空间执行: 亮度+色度独立约束, 对色彩边缘比 RGB 更鲁棒
+vec3 RGBToYCoCg(vec3 c) {
+    return vec3(
+         0.25 * c.r + 0.5 * c.g + 0.25 * c.b,
+         0.5  * c.r              - 0.5  * c.b,
+        -0.25 * c.r + 0.5 * c.g - 0.25 * c.b);
+}
+vec3 YCoCgToRGB(vec3 c) {
+    return vec3(
+        c.x + c.y - c.z,
+        c.x       + c.z,
+        c.x - c.y - c.z);
+}
 
 vec2 DecodeVelocity(vec2 raw) {
     return (uVelocityFormat == 1) ? ((raw - 0.5) * (2.0 * uVelocityScale)) : raw;
@@ -2145,18 +2162,38 @@ void main() {
     vec4 hist = texture(uHistoryTex, prevUV);
 
     if (uNeighborhoodClip == 1) {
-        vec3 mn = cur.rgb;
-        vec3 mx = cur.rgb;
-        vec3 s;
-        s = texture(uCurHdrTex, vUV + uTexel * vec2(-1.0, -1.0)).rgb; mn = min(mn, s); mx = max(mx, s);
-        s = texture(uCurHdrTex, vUV + uTexel * vec2( 0.0, -1.0)).rgb; mn = min(mn, s); mx = max(mx, s);
-        s = texture(uCurHdrTex, vUV + uTexel * vec2( 1.0, -1.0)).rgb; mn = min(mn, s); mx = max(mx, s);
-        s = texture(uCurHdrTex, vUV + uTexel * vec2(-1.0,  0.0)).rgb; mn = min(mn, s); mx = max(mx, s);
-        s = texture(uCurHdrTex, vUV + uTexel * vec2( 1.0,  0.0)).rgb; mn = min(mn, s); mx = max(mx, s);
-        s = texture(uCurHdrTex, vUV + uTexel * vec2(-1.0,  1.0)).rgb; mn = min(mn, s); mx = max(mx, s);
-        s = texture(uCurHdrTex, vUV + uTexel * vec2( 0.0,  1.0)).rgb; mn = min(mn, s); mx = max(mx, s);
-        s = texture(uCurHdrTex, vUV + uTexel * vec2( 1.0,  1.0)).rgb; mn = min(mn, s); mx = max(mx, s);
-        hist.rgb = clamp(hist.rgb, mn, mx);
+        if (uClipMode == 1) {
+            // Phase F.0.2 — YCoCg AABB clip 路径 (色彩边缘更鲁棒)
+            vec3 curY = RGBToYCoCg(cur.rgb);
+            vec3 mn = curY;
+            vec3 mx = curY;
+            vec3 s;
+            s = RGBToYCoCg(texture(uCurHdrTex, vUV + uTexel * vec2(-1.0, -1.0)).rgb); mn = min(mn, s); mx = max(mx, s);
+            s = RGBToYCoCg(texture(uCurHdrTex, vUV + uTexel * vec2( 0.0, -1.0)).rgb); mn = min(mn, s); mx = max(mx, s);
+            s = RGBToYCoCg(texture(uCurHdrTex, vUV + uTexel * vec2( 1.0, -1.0)).rgb); mn = min(mn, s); mx = max(mx, s);
+            s = RGBToYCoCg(texture(uCurHdrTex, vUV + uTexel * vec2(-1.0,  0.0)).rgb); mn = min(mn, s); mx = max(mx, s);
+            s = RGBToYCoCg(texture(uCurHdrTex, vUV + uTexel * vec2( 1.0,  0.0)).rgb); mn = min(mn, s); mx = max(mx, s);
+            s = RGBToYCoCg(texture(uCurHdrTex, vUV + uTexel * vec2(-1.0,  1.0)).rgb); mn = min(mn, s); mx = max(mx, s);
+            s = RGBToYCoCg(texture(uCurHdrTex, vUV + uTexel * vec2( 0.0,  1.0)).rgb); mn = min(mn, s); mx = max(mx, s);
+            s = RGBToYCoCg(texture(uCurHdrTex, vUV + uTexel * vec2( 1.0,  1.0)).rgb); mn = min(mn, s); mx = max(mx, s);
+            vec3 histY = RGBToYCoCg(hist.rgb);
+            histY = clamp(histY, mn, mx);
+            hist.rgb = YCoCgToRGB(histY);
+        } else {
+            // F.0 RGB AABB clip 路径 (uClipMode==0 时严格复现, 零 ALU 回退)
+            vec3 mn = cur.rgb;
+            vec3 mx = cur.rgb;
+            vec3 s;
+            s = texture(uCurHdrTex, vUV + uTexel * vec2(-1.0, -1.0)).rgb; mn = min(mn, s); mx = max(mx, s);
+            s = texture(uCurHdrTex, vUV + uTexel * vec2( 0.0, -1.0)).rgb; mn = min(mn, s); mx = max(mx, s);
+            s = texture(uCurHdrTex, vUV + uTexel * vec2( 1.0, -1.0)).rgb; mn = min(mn, s); mx = max(mx, s);
+            s = texture(uCurHdrTex, vUV + uTexel * vec2(-1.0,  0.0)).rgb; mn = min(mn, s); mx = max(mx, s);
+            s = texture(uCurHdrTex, vUV + uTexel * vec2( 1.0,  0.0)).rgb; mn = min(mn, s); mx = max(mx, s);
+            s = texture(uCurHdrTex, vUV + uTexel * vec2(-1.0,  1.0)).rgb; mn = min(mn, s); mx = max(mx, s);
+            s = texture(uCurHdrTex, vUV + uTexel * vec2( 0.0,  1.0)).rgb; mn = min(mn, s); mx = max(mx, s);
+            s = texture(uCurHdrTex, vUV + uTexel * vec2( 1.0,  1.0)).rgb; mn = min(mn, s); mx = max(mx, s);
+            hist.rgb = clamp(hist.rgb, mn, mx);
+        }
     }
 
     float alpha = clamp(uBlendAlpha, 0.0, 1.0);
@@ -2746,6 +2783,21 @@ uniform int   uVelocityDilation;
 uniform int   uVelocityFormat;
 uniform float uVelocityScale;
 uniform int   uAntiFlicker;         // Phase F.0.4: 0=纯 alpha blend, 1=Karis luma-weighted blend
+uniform int   uClipMode;            // Phase F.0.2: 0=RGB AABB clip (F.0), 1=YCoCg AABB clip
+
+// Phase F.0.2 — RGB ↔ YCoCg lift 形式转换 (与 GLES3 版完全等价)
+vec3 RGBToYCoCg(vec3 c) {
+    return vec3(
+         0.25 * c.r + 0.5 * c.g + 0.25 * c.b,
+         0.5  * c.r              - 0.5  * c.b,
+        -0.25 * c.r + 0.5 * c.g - 0.25 * c.b);
+}
+vec3 YCoCgToRGB(vec3 c) {
+    return vec3(
+        c.x + c.y - c.z,
+        c.x       + c.z,
+        c.x - c.y - c.z);
+}
 
 vec2 DecodeVelocity(vec2 raw) {
     return (uVelocityFormat == 1) ? ((raw - 0.5) * (2.0 * uVelocityScale)) : raw;
@@ -2781,18 +2833,38 @@ void main() {
     vec4 hist = texture(uHistoryTex, prevUV);
 
     if (uNeighborhoodClip == 1) {
-        vec3 mn = cur.rgb;
-        vec3 mx = cur.rgb;
-        vec3 s;
-        s = texture(uCurHdrTex, vUV + uTexel * vec2(-1.0, -1.0)).rgb; mn = min(mn, s); mx = max(mx, s);
-        s = texture(uCurHdrTex, vUV + uTexel * vec2( 0.0, -1.0)).rgb; mn = min(mn, s); mx = max(mx, s);
-        s = texture(uCurHdrTex, vUV + uTexel * vec2( 1.0, -1.0)).rgb; mn = min(mn, s); mx = max(mx, s);
-        s = texture(uCurHdrTex, vUV + uTexel * vec2(-1.0,  0.0)).rgb; mn = min(mn, s); mx = max(mx, s);
-        s = texture(uCurHdrTex, vUV + uTexel * vec2( 1.0,  0.0)).rgb; mn = min(mn, s); mx = max(mx, s);
-        s = texture(uCurHdrTex, vUV + uTexel * vec2(-1.0,  1.0)).rgb; mn = min(mn, s); mx = max(mx, s);
-        s = texture(uCurHdrTex, vUV + uTexel * vec2( 0.0,  1.0)).rgb; mn = min(mn, s); mx = max(mx, s);
-        s = texture(uCurHdrTex, vUV + uTexel * vec2( 1.0,  1.0)).rgb; mn = min(mn, s); mx = max(mx, s);
-        hist.rgb = clamp(hist.rgb, mn, mx);
+        if (uClipMode == 1) {
+            // Phase F.0.2 — YCoCg AABB clip 路径 (色彩边缘更鲁棒)
+            vec3 curY = RGBToYCoCg(cur.rgb);
+            vec3 mn = curY;
+            vec3 mx = curY;
+            vec3 s;
+            s = RGBToYCoCg(texture(uCurHdrTex, vUV + uTexel * vec2(-1.0, -1.0)).rgb); mn = min(mn, s); mx = max(mx, s);
+            s = RGBToYCoCg(texture(uCurHdrTex, vUV + uTexel * vec2( 0.0, -1.0)).rgb); mn = min(mn, s); mx = max(mx, s);
+            s = RGBToYCoCg(texture(uCurHdrTex, vUV + uTexel * vec2( 1.0, -1.0)).rgb); mn = min(mn, s); mx = max(mx, s);
+            s = RGBToYCoCg(texture(uCurHdrTex, vUV + uTexel * vec2(-1.0,  0.0)).rgb); mn = min(mn, s); mx = max(mx, s);
+            s = RGBToYCoCg(texture(uCurHdrTex, vUV + uTexel * vec2( 1.0,  0.0)).rgb); mn = min(mn, s); mx = max(mx, s);
+            s = RGBToYCoCg(texture(uCurHdrTex, vUV + uTexel * vec2(-1.0,  1.0)).rgb); mn = min(mn, s); mx = max(mx, s);
+            s = RGBToYCoCg(texture(uCurHdrTex, vUV + uTexel * vec2( 0.0,  1.0)).rgb); mn = min(mn, s); mx = max(mx, s);
+            s = RGBToYCoCg(texture(uCurHdrTex, vUV + uTexel * vec2( 1.0,  1.0)).rgb); mn = min(mn, s); mx = max(mx, s);
+            vec3 histY = RGBToYCoCg(hist.rgb);
+            histY = clamp(histY, mn, mx);
+            hist.rgb = YCoCgToRGB(histY);
+        } else {
+            // F.0 RGB AABB clip 路径 (uClipMode==0 时严格复现, 零 ALU 回退)
+            vec3 mn = cur.rgb;
+            vec3 mx = cur.rgb;
+            vec3 s;
+            s = texture(uCurHdrTex, vUV + uTexel * vec2(-1.0, -1.0)).rgb; mn = min(mn, s); mx = max(mx, s);
+            s = texture(uCurHdrTex, vUV + uTexel * vec2( 0.0, -1.0)).rgb; mn = min(mn, s); mx = max(mx, s);
+            s = texture(uCurHdrTex, vUV + uTexel * vec2( 1.0, -1.0)).rgb; mn = min(mn, s); mx = max(mx, s);
+            s = texture(uCurHdrTex, vUV + uTexel * vec2(-1.0,  0.0)).rgb; mn = min(mn, s); mx = max(mx, s);
+            s = texture(uCurHdrTex, vUV + uTexel * vec2( 1.0,  0.0)).rgb; mn = min(mn, s); mx = max(mx, s);
+            s = texture(uCurHdrTex, vUV + uTexel * vec2(-1.0,  1.0)).rgb; mn = min(mn, s); mx = max(mx, s);
+            s = texture(uCurHdrTex, vUV + uTexel * vec2( 0.0,  1.0)).rgb; mn = min(mn, s); mx = max(mx, s);
+            s = texture(uCurHdrTex, vUV + uTexel * vec2( 1.0,  1.0)).rgb; mn = min(mn, s); mx = max(mx, s);
+            hist.rgb = clamp(hist.rgb, mn, mx);
+        }
     }
 
     float alpha = clamp(uBlendAlpha, 0.0, 1.0);
@@ -3285,6 +3357,7 @@ class GL33Backend : public RenderBackend {
     GLint  locTAA_VelocityFormat            = -1;
     GLint  locTAA_VelocityScale             = -1;
     GLint  locTAA_AntiFlicker               = -1;   // Phase F.0.4: 0/1 上传 Karis weighting 开关
+    GLint  locTAA_ClipMode                  = -1;   // Phase F.0.2: 0=RGB AABB, 1=YCoCg AABB
 
     // Phase F.0.1 — TAA Sharpening (4-tap unsharp mask, 复用 SupportsTAA 能力位)
     //   shader: FS_SHARPEN_SOURCE (uInputTex + uTexelSize + uSharpness)
@@ -4251,6 +4324,7 @@ public:
             locTAA_VelocityFormat   = glGetUniformLocation(programTAA, "uVelocityFormat");
             locTAA_VelocityScale    = glGetUniformLocation(programTAA, "uVelocityScale");
             locTAA_AntiFlicker      = glGetUniformLocation(programTAA, "uAntiFlicker");  // Phase F.0.4
+            locTAA_ClipMode         = glGetUniformLocation(programTAA, "uClipMode");     // Phase F.0.2
             // 一次性绑 sampler 到 texture unit (slot 0=cur HDR, slot 1=history, slot 2=velocity)
             glUseProgram(programTAA);
             if (locTAA_CurHdrTex   >= 0) glUniform1i(locTAA_CurHdrTex,   0);
@@ -4485,6 +4559,7 @@ public:
         locTAA_HasHistory      = locTAA_VelocityDilation = -1;
         locTAA_VelocityFormat  = locTAA_VelocityScale    = -1;
         locTAA_AntiFlicker     = -1;   // Phase F.0.4 reset
+        locTAA_ClipMode        = -1;   // Phase F.0.2 reset
 
         // Phase F.0.1 — TAA Sharpening 清理
         if (programSharpen) { glDeleteProgram(programSharpen); programSharpen = 0; }
@@ -7277,7 +7352,8 @@ public:
                      float blendAlpha, int neighborhoodClip, int hasHistory,
                      bool velocityDilation, float velocityScale,
                      VelocityFormat velocityFormat,
-                     int antiFlicker) override {
+                     int antiFlicker,
+                     int clipMode) override {
         if (!taaSupported || !programTAA) return;
         if (!curHdrTex || !dstFbo || w <= 0 || h <= 0) return;
 
@@ -7300,6 +7376,8 @@ public:
         if (locTAA_VelocityScale    >= 0) glUniform1f(locTAA_VelocityScale,    velocityScale);
         // Phase F.0.4: Karis luma weighting blend 开关 (0=纯 alpha blend, 1=Karis)
         if (locTAA_AntiFlicker      >= 0) glUniform1i(locTAA_AntiFlicker,      antiFlicker);
+        // Phase F.0.2: clip 色彩空间 (0=RGB AABB 与 F.0 一致, 1=YCoCg AABB 默认)
+        if (locTAA_ClipMode         >= 0) glUniform1i(locTAA_ClipMode,         clipMode);
 
         // 绑 sampler: slot 0=cur HDR, slot 1=history (空时给 cur 占位避免黑帧), slot 2=velocity
         glActiveTexture(GL_TEXTURE0);

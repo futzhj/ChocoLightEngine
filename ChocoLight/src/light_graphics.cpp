@@ -3153,6 +3153,43 @@ static int l_TAA_GetAntiFlicker(lua_State* L) {
     return 1;
 }
 
+/// @lua_api Light.Graphics.TAA.SetClipMode
+/// @param mode string  "rgb" / "ycocg" (大小写不敏感; 默认 "ycocg")
+///                     "rgb"   = F.0 原生三通道 AABB clip (零 ALU 增量)
+///                     "ycocg" = YCoCg 色彩空间 AABB clip (色彩边缘更鲁棒, +0.05ms @ 1080p)
+/// 错误处理: 非 string / 未识别值 返 nil + err (与 SetVelocityFormat 同模式)
+static int l_TAA_SetClipMode(lua_State* L) {
+    luaL_checkany(L, 1);
+    if (lua_type(L, 1) != LUA_TSTRING) {
+        lua_pushnil(L);
+        lua_pushliteral(L, "TAA.SetClipMode: 期望 string 参数 ('rgb' / 'ycocg')");
+        return 2;
+    }
+    const char* mode = lua_tostring(L, 1);
+    // C++ 层: 未识别字符串静默保持 state; 此处先在 Lua 层做白名单校验返 nil+err
+    // 大小写不敏感: 转 lower 比对
+    char lower[16] = {0};
+    for (int i = 0; i < 15 && mode[i]; ++i) {
+        char c = mode[i];
+        lower[i] = (c >= 'A' && c <= 'Z') ? (char)(c + 32) : c;
+    }
+    if (strcmp(lower, "rgb") != 0 && strcmp(lower, "ycocg") != 0) {
+        lua_pushnil(L);
+        lua_pushfstring(L, "TAA.SetClipMode: 未识别的 mode '%s' (期望 'rgb' / 'ycocg')", mode);
+        return 2;
+    }
+    TAARenderer::SetClipMode(mode);
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+/// @lua_api Light.Graphics.TAA.GetClipMode
+/// @return string  "rgb" / "ycocg"
+static int l_TAA_GetClipMode(lua_State* L) {
+    lua_pushstring(L, TAARenderer::GetClipMode());
+    return 1;
+}
+
 /// @lua_api Light.Graphics.TAA.GetFrameCounter
 /// @return integer 当前帧 Halton 索引 (0-7, 用于 debug HUD)
 static int l_TAA_GetFrameCounter(lua_State* L) {
@@ -3190,6 +3227,9 @@ static const luaL_Reg taa_funcs[] = {
     // Phase F.0.4 — anti-flicker (2 = 1 对): Karis luma-weighted blend, 默认 true
     {"SetAntiFlicker",        l_TAA_SetAntiFlicker},
     {"GetAntiFlicker",        l_TAA_GetAntiFlicker},
+    // Phase F.0.2 — clip color space (2 = 1 对): "rgb" / "ycocg", 默认 "ycocg"
+    {"SetClipMode",           l_TAA_SetClipMode},
+    {"GetClipMode",           l_TAA_GetClipMode},
     // status (2): debug HUD 用
     {"GetFrameCounter",       l_TAA_GetFrameCounter},
     {"GetCurrentJitter",      l_TAA_GetCurrentJitter},

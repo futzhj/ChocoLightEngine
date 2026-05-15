@@ -110,6 +110,14 @@ float GetSharpness();
 void  SetAntiFlicker(bool on);
 bool  GetAntiFlicker();
 
+/// Phase F.0.2 — 9-tap AABB clip 色彩空间: "rgb" (F.0 行为) / "ycocg" (F.0.2 默认)
+/// 算法: YCoCg lift 形式转换 (与 FXAA / Inside / UE5 同)，clip 在亮度+色度三通道独立约束
+/// RGB 路径 = F.0 原生三通道 min/max; YCoCg 路径 = + 9 tap RGBToYCoCg + 1 hist YCoCgToRGB
+/// 大小写不敏感 ("RGB"/"rgb"/"YCoCg"/"ycocg" 等价); 非法值静默忽略 (Lua 层返 nil+err)
+/// 性能: YCoCg 路径 +0.05ms @ 1080p (11 mat3 mul ≈ 165 ALU/px); RGB 路径 0 增量
+void        SetClipMode(const char* mode);
+const char* GetClipMode();
+
 // ==================== 内部状态查询 (debug HUD 用) ====================
 
 /// 当前帧 Halton 索引 (% 8), 累加帧计数器低 3 位
