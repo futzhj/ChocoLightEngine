@@ -65,6 +65,8 @@ struct State {
     float    varianceGamma    = 1.0f;        // Phase F.0.3: variance clip 收紧系数 γ (Salvi 2016 / UE5 默认 1.0)
     bool     halfResHistory   = false;       // Phase F.0.5: history RT 半分辨率 (默认 false, 零回归)
     int      sharpenMode      = 0;           // Phase F.0.6: 0=unsharp (F.0.1 默认 4-tap) / 1=cas (5-tap AMD FSR1)
+    float    motionGamma      = 1.5f;        // Phase F.0.8: motion-adaptive 高速区域 γ (UE5 高级形式, [0, 4])
+    bool     motionAdaptiveGamma = false;    // Phase F.0.8: 默认 OFF (零回归, F.0.3 单 γ 行为)
 
     // jitter state
     uint64_t frameCounter   = 0;
@@ -285,7 +287,9 @@ void Process(uint32_t hdrFbo, uint32_t hdrTex) {
                             g.backend->GetActiveVelocityFormat(),
                             g.antiFlicker ? 1 : 0,      // Phase F.0.4
                             g.clipMode,                 // Phase F.0.2/F.0.3
-                            g.varianceGamma);           // Phase F.0.3
+                            g.varianceGamma,            // Phase F.0.3 (static γ)
+                            g.motionGamma,              // Phase F.0.8 (motion γ)
+                            g.motionAdaptiveGamma ? 1 : 0); // Phase F.0.8 (开关)
 
     // Phase F.0.1/F.0.6: sharpness > 0 走 sharpen pass (in-place 写回 sceneTex);
     //                    否则保持 F.0 纯 blit 路径 (零 ALU 开销)
@@ -422,6 +426,14 @@ void SetSharpenMode(const char* mode) {
 const char* GetSharpenMode() {
     return (g.sharpenMode == 1) ? "cas" : "unsharp";
 }
+
+// Phase F.0.8 — motion-adaptive γ 双值 (static + motion) + 开关
+// motionGamma clamp [0, 4] (与 varianceGamma 同范围); 默认 1.5 (UE5 推荐)
+void  SetMotionGamma(float g_motion) { g.motionGamma = clampf(g_motion, 0.0f, 4.0f); }
+float GetMotionGamma()                { return g.motionGamma; }
+// motionAdaptive 默认 false; 切换即生效 (下一帧 shader 走 motion-adaptive 分支)
+void  SetMotionAdaptive(bool on) { g.motionAdaptiveGamma = on; }
+bool  GetMotionAdaptive()         { return g.motionAdaptiveGamma; }
 
 void  SetJitterEnabled(bool on) {
     g.jitterEnabled = on;

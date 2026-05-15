@@ -1412,7 +1412,7 @@ print(Light.Graphics.MotionBlur.GetHalfRes())      --> true
 >
 > **默认 OFF**：用户主动 `Enable` 才生效（与 Phase E 所有模块一致），零回归保障。
 
-## TAA API 速查表（共 25 函数 = F.0 13 + F.0.1 2 + F.0.2 2 + F.0.3 2 + F.0.4 2 + F.0.5 2 + F.0.6 2）
+## TAA API 速查表（共 29 函数 = F.0 13 + F.0.1 2 + F.0.2 2 + F.0.3 2 + F.0.4 2 + F.0.5 2 + F.0.6 2 + F.0.8 4）
 
 | 类别 | 函数 | 默认值 / 说明 |
 |------|------|--------------|
@@ -1426,6 +1426,8 @@ print(Light.Graphics.MotionBlur.GetHalfRes())      --> true
 | 参数 (F.0.3) | `SetVarianceGamma(γ)` / `GetVarianceGamma()` | variance clip 收紧系数 γ，clamp `[0, 4]`，**默认 1.0**（仅 `"variance"` 生效） |
 | 参数 (F.0.5) | `SetHalfResHistory(on)` / `GetHalfResHistory()` | history RT 半分辨率，**默认 false**（零回归）；ON 时 VRAM -75% / TAA pass 像素 -75% |
 | 参数 (F.0.6) | `SetSharpenMode(mode)` / `GetSharpenMode()` | sharpen 算法：`"unsharp"` (F.0.1, [0,2]) / `"cas"` (AMD FSR1, [0,1])，**默认 `"unsharp"`** |
+| 参数 (F.0.8) | `SetMotionGamma(γ)` / `GetMotionGamma()` | motion-adaptive 高速区域 γ，clamp `[0, 4]`，**默认 1.5**（UE5 推荐） |
+| 参数 (F.0.8) | `SetMotionAdaptive(on)` / `GetMotionAdaptive()` | motion-adaptive γ 开关，**默认 false**（零回归）；仅 `ClipMode=="variance"` 生效 |
 | 状态 | `GetFrameCounter()` | `int` Halton 索引 `[0, 7]`（debug HUD） |
 | 状态 | `GetCurrentJitter()` | `(jx, jy)` 本帧 sub-pixel 偏移（±0.5 px） |
 
@@ -2068,6 +2070,88 @@ TAA.SetAntiFlicker(true)
 TAA.SetSharpness(0.8)
 TAA.SetHalfResHistory(true)
 TAA.SetSharpenMode("cas")                   -- 六启共存
+```
+
+---
+
+## `TAA.SetMotionGamma` / `TAA.GetMotionGamma` / `TAA.SetMotionAdaptive` / `TAA.GetMotionAdaptive`
+
+**Phase F.0.8** — Motion-Adaptive Variance γ (UE5 高级形式)。仅 `ClipMode=="variance"` 且 `MotionAdaptive==true` 时生效，按每像素 velocity 长度在 `varianceGamma` (静止) 与 `motionGamma` (高速) 间 lerp。
+
+### 参数
+
+- `SetMotionGamma(γ)`：float，motion-adaptive 高速区域 γ，clamp `[0, 4]`。默认 `1.5` (UE5 推荐)。
+- `SetMotionAdaptive(on)`：boolean，开关。默认 `false` (零回归，与 F.0.3 单 γ 行为一致)。
+
+### 错误处理
+
+- `SetMotionGamma`：非 number raise error (`luaL_checknumber`)
+- `SetMotionAdaptive`：非 boolean raise error (`luaL_checktype TBOOLEAN`)
+
+### 算法原理
+
+```
+shader 内 (仅 uClipMode==2 && uMotionAdaptiveGamma==1):
+    velLen = length(velocity)             // 已 sample 的 reproject velocity (UV 单位)
+    motionFactor = clamp(velLen / (4 * uTexel.x), 0, 1)   // 4 px UV 完全 motion
+    dynGamma = mix(uVarianceGamma, uMotionGamma, motionFactor)   // linear lerp
+    clip = [m1 - dynGamma*σ, m1 + dynGamma*σ]
+```
+
+### motion factor 表 (默认 varγ=1.0 / motγ=1.5)
+
+| velocity 长度 | motionFactor | dynGamma | 效果 |
+|--------------|--------------|----------|------|
+| 0 px | 0.0 | 1.0 (= varγ) | 严格 clip, 防 ghost |
+| 1 px | 0.25 | 1.125 | 略宽容 |
+| 2 px | 0.5 | 1.25 | 中等 |
+| 3 px | 0.75 | 1.375 | 偏宽容 |
+| 4+ px | 1.0 | 1.5 (= motγ) | 宽容 clip, 防 trail |
+
+### 推荐场景
+
+| 场景 | motγ 设置 | MotionAdaptive |
+|------|----------|---------------|
+| 静态场景 (象棋 / 台机调询) | 任意 | OFF (F.0.3 不变即可) |
+| 中等运动 (三人称动作) | `1.5` | **ON** 推荐 (UE5 默认) |
+| 快节奏 (FPS / 赛车 / 动作) | `2.0` | **ON** (减少 trail) |
+| HDR 强光 + 高速 | `1.5` | **ON + AntiFlicker** (雙件云御) |
+
+### 示例
+
+```lua
+local TAA = Light.Graphics.TAA
+
+-- 默认 (零回归，与 F.0.3 单 γ 行为一致)
+print(TAA.GetMotionAdaptive())            --> false
+print(TAA.GetMotionGamma())               --> 1.5
+
+-- 中等运动场景：启用 motion-adaptive (UE5 默认)
+TAA.SetClipMode("variance")               -- 必须 variance 才生效
+TAA.SetVarianceGamma(1.0)                 -- 静止 γ (严格)
+TAA.SetMotionGamma(1.5)                   -- 高速 γ (宽容)
+TAA.SetMotionAdaptive(true)
+
+-- 快节奏场景：提高 motion γ 进一步减 trail
+TAA.SetMotionGamma(2.0)
+
+-- clamp 验证
+TAA.SetMotionGamma(10.0)
+print(TAA.GetMotionGamma())               --> 4.0
+
+-- 状态独立：切换 motion-adaptive 不影响其他参数
+TAA.SetMotionAdaptive(false)
+print(TAA.GetMotionGamma())               --> 4.0 (仍保留上次设置)
+
+-- 与 Phase F.0.x 七启共存
+TAA.SetClipMode("variance")
+TAA.SetVarianceGamma(1.0)
+TAA.SetAntiFlicker(true)
+TAA.SetSharpness(0.8)
+TAA.SetHalfResHistory(true)
+TAA.SetSharpenMode("cas")
+TAA.SetMotionGamma(1.5)
+TAA.SetMotionAdaptive(true)               -- 七启共存
 ```
 
 ---

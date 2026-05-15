@@ -153,6 +153,18 @@ bool GetHalfResHistory();
 void SetSharpenMode(const char* mode);
 const char* GetSharpenMode();
 
+/// Phase F.0.8 — Motion-Adaptive Variance γ (UE5 高级形式)
+/// 仅 ClipMode=="variance" 时生效; clipMode=="rgb"/"ycocg" 时 motionGamma uniform 上传但 shader 内不读
+/// 静止区域 (|vel| ≈ 0) → 用 varianceGamma (严防 ghost)
+/// 高速运动 (|vel| > 4 px) → lerp 到 motionGamma (宽容防 trail)
+/// motionFactor = clamp(length(velocity) / (4 * texel.x), 0, 1); linear lerp
+/// 默认 motionGamma = 1.5 (UE5 推荐), motionAdaptiveGamma = false (零回归)
+/// motionGamma clamp [0, 4] (与 varianceGamma 同范围)
+void  SetMotionGamma(float gammaMotion);
+float GetMotionGamma();
+void  SetMotionAdaptive(bool on);
+bool  GetMotionAdaptive();
+
 // ==================== 内部状态查询 (debug HUD 用) ====================
 
 /// 当前帧 Halton 索引 (% 8), 累加帧计数器低 3 位

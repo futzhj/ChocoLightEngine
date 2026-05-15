@@ -2112,6 +2112,8 @@ uniform float uVelocityScale;       // RG8 decode
 uniform int   uAntiFlicker;         // Phase F.0.4: 0=纯 alpha blend, 1=Karis luma-weighted blend
 uniform int   uClipMode;            // Phase F.0.2/F.0.3: 0=RGB AABB, 1=YCoCg AABB, 2=YCoCg variance
 uniform float uVarianceGamma;       // Phase F.0.3: variance clip 收紧系数 γ (Salvi 2016 / UE5 推荐 1.0, [0, 4])
+uniform float uMotionGamma;         // Phase F.0.8: motion-adaptive 高速区域 γ (UE5 高级形式, 默认 1.5, [0, 4])
+uniform int   uMotionAdaptiveGamma; // Phase F.0.8: 0=仅用 uVarianceGamma (F.0.3 行为), 1=按 velocity 长度 lerp 两 γ
 
 // Phase F.0.2 — RGB ↔ YCoCg lift 形式转换 (整数可逆, 与 FXAA / Inside / UE5 标准一致)
 //   Y  = 亮度通道 (0.25R + 0.5G + 0.25B); Co = R-B 色度; Cg = G - 0.5(R+B) 色度
@@ -2181,8 +2183,16 @@ void main() {
             vec3 m1    = sum   * (1.0 / 9.0);
             vec3 m2    = sumSq * (1.0 / 9.0);
             vec3 sigma = sqrt(max(m2 - m1 * m1, vec3(0.0)));    // König-Huygens 公式, max(0) 防浮点负数
-            vec3 mn    = m1 - uVarianceGamma * sigma;
-            vec3 mx    = m1 + uVarianceGamma * sigma;
+            // Phase F.0.8: motion-adaptive γ — 静止区域用 static γ (严防 ghost), 高速运动用 motion γ (宽容防 trail)
+            // motionFactor = clamp(|vel| / (4 px UV), 0, 1); 0=静 → mix 返 static, 1=高速 → mix 返 motion
+            float dynGamma = uVarianceGamma;
+            if (uMotionAdaptiveGamma == 1) {
+                float velLen = length(velocity);
+                float motionFactor = clamp(velLen / (uTexel.x * 4.0), 0.0, 1.0);
+                dynGamma = mix(uVarianceGamma, uMotionGamma, motionFactor);
+            }
+            vec3 mn    = m1 - dynGamma * sigma;
+            vec3 mx    = m1 + dynGamma * sigma;
             vec3 histY = clamp(RGBToYCoCg(hist.rgb), mn, mx);
             hist.rgb   = YCoCgToRGB(histY);
         } else if (uClipMode == 1) {
@@ -3488,6 +3498,8 @@ class GL33Backend : public RenderBackend {
     GLint  locTAA_AntiFlicker               = -1;   // Phase F.0.4: 0/1 上传 Karis weighting 开关
     GLint  locTAA_ClipMode                  = -1;   // Phase F.0.2/F.0.3: 0=RGB AABB, 1=YCoCg AABB, 2=YCoCg variance
     GLint  locTAA_VarianceGamma             = -1;   // Phase F.0.3: variance clip 收紧系数 γ (仅 clipMode==2 生效)
+    GLint  locTAA_MotionGamma               = -1;   // Phase F.0.8: motion-adaptive 高速区域 γ (仅 motionAdaptive==1 生效)
+    GLint  locTAA_MotionAdaptiveGamma       = -1;   // Phase F.0.8: 0=仅用 varianceGamma (F.0.3 行为), 1=按 vel 长度 lerp 两 γ
 
     // Phase F.0.1 — TAA Sharpening (4-tap unsharp mask, 复用 SupportsTAA 能力位)
     //   shader: FS_SHARPEN_SOURCE (uInputTex + uTexelSize + uSharpness)
@@ -4464,6 +4476,8 @@ public:
             locTAA_AntiFlicker      = glGetUniformLocation(programTAA, "uAntiFlicker");     // Phase F.0.4
             locTAA_ClipMode         = glGetUniformLocation(programTAA, "uClipMode");        // Phase F.0.2/F.0.3
             locTAA_VarianceGamma    = glGetUniformLocation(programTAA, "uVarianceGamma");   // Phase F.0.3
+            locTAA_MotionGamma         = glGetUniformLocation(programTAA, "uMotionGamma");          // Phase F.0.8
+            locTAA_MotionAdaptiveGamma = glGetUniformLocation(programTAA, "uMotionAdaptiveGamma");  // Phase F.0.8
             // 一次性绑 sampler 到 texture unit (slot 0=cur HDR, slot 1=history, slot 2=velocity)
             glUseProgram(programTAA);
             if (locTAA_CurHdrTex   >= 0) glUniform1i(locTAA_CurHdrTex,   0);
@@ -4716,6 +4730,8 @@ public:
         locTAA_AntiFlicker     = -1;   // Phase F.0.4 reset
         locTAA_ClipMode        = -1;   // Phase F.0.2 reset
         locTAA_VarianceGamma   = -1;   // Phase F.0.3 reset
+        locTAA_MotionGamma         = -1;   // Phase F.0.8 reset
+        locTAA_MotionAdaptiveGamma = -1;   // Phase F.0.8 reset
 
         // Phase F.0.1 — TAA Sharpening 清理
         if (programSharpen) { glDeleteProgram(programSharpen); programSharpen = 0; }
@@ -7514,7 +7530,10 @@ public:
                      VelocityFormat velocityFormat,
                      int   antiFlicker,
                      int   clipMode,
-                     float varianceGamma) override {
+                     float varianceGamma,
+                     float motionGamma,                  // Phase F.0.8
+                     int   motionAdaptiveGamma) override // Phase F.0.8
+    {
         if (!taaSupported || !programTAA) return;
         if (!curHdrTex || !dstFbo || w <= 0 || h <= 0) return;
 
@@ -7541,6 +7560,9 @@ public:
         if (locTAA_ClipMode         >= 0) glUniform1i(locTAA_ClipMode,         clipMode);
         // Phase F.0.3: variance clip 收紧系数 γ (仅 clipMode==2 生效，调用方已 clamp [0, 4])
         if (locTAA_VarianceGamma    >= 0) glUniform1f(locTAA_VarianceGamma,    varianceGamma);
+        // Phase F.0.8: motion-adaptive γ — 高速区域 γ + 开关 (仅 motionAdaptive==1 && clipMode==2 生效)
+        if (locTAA_MotionGamma         >= 0) glUniform1f(locTAA_MotionGamma,         motionGamma);
+        if (locTAA_MotionAdaptiveGamma >= 0) glUniform1i(locTAA_MotionAdaptiveGamma, motionAdaptiveGamma);
 
         // 绑 sampler: slot 0=cur HDR, slot 1=history (空时给 cur 占位避免黑帧), slot 2=velocity
         glActiveTexture(GL_TEXTURE0);

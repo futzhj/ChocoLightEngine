@@ -3272,6 +3272,44 @@ static int l_TAA_GetSharpenMode(lua_State* L) {
     return 1;
 }
 
+/// @lua_api Light.Graphics.TAA.SetMotionGamma
+/// @param gamma number Phase F.0.8 — motion-adaptive 高速区域 γ (UE5 高级形式)
+///                     仅 ClipMode=="variance" && MotionAdaptive==true 生效
+///                     clamp [0, 4]; 默认 1.5 (UE5 推荐)
+///                     静止 (|vel|≈0) → 用 varianceGamma; 高速 (>4px) → lerp 到 motionGamma
+static int l_TAA_SetMotionGamma(lua_State* L) {
+    float g_motion = (float)luaL_checknumber(L, 1);
+    TAARenderer::SetMotionGamma(g_motion);
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+/// @lua_api Light.Graphics.TAA.GetMotionGamma
+/// @return number motion-adaptive 高速区域 γ (默认 1.5)
+static int l_TAA_GetMotionGamma(lua_State* L) {
+    lua_pushnumber(L, (lua_Number)TAARenderer::GetMotionGamma());
+    return 1;
+}
+
+/// @lua_api Light.Graphics.TAA.SetMotionAdaptive
+/// @param flag boolean Phase F.0.8 — motion-adaptive γ 开关
+///                     true = 按 |velocity| 长度 lerp varianceGamma 与 motionGamma
+///                     false = 仅用 varianceGamma (F.0.3 行为, 默认零回归)
+///                     仅 ClipMode=="variance" 时实际有效果 (其他 clipMode 时 uniform 上传但不读)
+static int l_TAA_SetMotionAdaptive(lua_State* L) {
+    luaL_checktype(L, 1, LUA_TBOOLEAN);
+    TAARenderer::SetMotionAdaptive(lua_toboolean(L, 1) != 0);
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+/// @lua_api Light.Graphics.TAA.GetMotionAdaptive
+/// @return boolean motion-adaptive γ 开关 (默认 false)
+static int l_TAA_GetMotionAdaptive(lua_State* L) {
+    lua_pushboolean(L, TAARenderer::GetMotionAdaptive() ? 1 : 0);
+    return 1;
+}
+
 /// @lua_api Light.Graphics.TAA.GetFrameCounter
 /// @return integer 当前帧 Halton 索引 (0-7, 用于 debug HUD)
 static int l_TAA_GetFrameCounter(lua_State* L) {
@@ -3321,6 +3359,11 @@ static const luaL_Reg taa_funcs[] = {
     // Phase F.0.6 — sharpen mode (2 = 1 对): "unsharp" (F.0.1 默认) / "cas" (AMD FSR1)
     {"SetSharpenMode",        l_TAA_SetSharpenMode},
     {"GetSharpenMode",        l_TAA_GetSharpenMode},
+    // Phase F.0.8 — motion-adaptive γ (4 = 2 对): UE5 高级形式, motion γ + 开关, 默认 false (零回归)
+    {"SetMotionGamma",        l_TAA_SetMotionGamma},
+    {"GetMotionGamma",        l_TAA_GetMotionGamma},
+    {"SetMotionAdaptive",     l_TAA_SetMotionAdaptive},
+    {"GetMotionAdaptive",     l_TAA_GetMotionAdaptive},
     // status (2): debug HUD 用
     {"GetFrameCounter",       l_TAA_GetFrameCounter},
     {"GetCurrentJitter",      l_TAA_GetCurrentJitter},

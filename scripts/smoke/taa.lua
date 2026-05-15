@@ -1,6 +1,6 @@
--- Phase F.0 + F.0.1 + F.0.2 + F.0.3 + F.0.4 + F.0.5 + F.0.6 smoke: Light.Graphics.TAA (Temporal Anti-Aliasing master pipeline surface)
+-- Phase F.0 + F.0.1 + F.0.2 + F.0.3 + F.0.4 + F.0.5 + F.0.6 + F.0.8 smoke: Light.Graphics.TAA (Temporal Anti-Aliasing master pipeline surface)
 --
--- API coverage (25 functions = F.0 13 + F.0.1 2 + F.0.2 2 + F.0.3 2 + F.0.4 2 + F.0.5 2 + F.0.6 2):
+-- API coverage (29 functions = F.0 13 + F.0.1 2 + F.0.2 2 + F.0.3 2 + F.0.4 2 + F.0.5 2 + F.0.6 2 + F.0.8 4):
 --   Lifecycle 5: Enable / Disable / IsEnabled / IsSupported / Resize
 --   Params     6: SetBlendAlpha / GetBlendAlpha (clamp [0, 1], default 0.92)
 --                 SetNeighborhoodClip / GetNeighborhoodClip (default true)
@@ -19,6 +19,10 @@
 --   Phase F.0.6 — Sharpen mode 2: SetSharpenMode / GetSharpenMode ("unsharp"/"cas", default "unsharp")
 --                                    "unsharp" = F.0.1 4-tap unsharp mask (sharpness [0,2])
 --                                    "cas"     = AMD FidelityFX FSR1 5-tap CAS (sharpness [0,1] internal clamp)
+--   Phase F.0.8 — Motion-adaptive γ 4: SetMotionGamma / GetMotionGamma (clamp [0, 4], default 1.5)
+--                                       SetMotionAdaptive / GetMotionAdaptive (boolean, default false)
+--                                       UE5 高级形式: 静止区域 γ=varianceGamma, 高速区域 lerp 到 motionGamma
+--                                       仅 ClipMode=="variance" 生效; 默认关零回归
 --   Status     2: GetFrameCounter (Halton index 0..7, debug HUD)
 --                 GetCurrentJitter (returns 2 numbers, sub-pixel offset)
 --
@@ -61,6 +65,8 @@ local fn_names = {
     "SetVarianceGamma", "GetVarianceGamma",        -- Phase F.0.3
     "SetHalfResHistory", "GetHalfResHistory",      -- Phase F.0.5
     "SetSharpenMode", "GetSharpenMode",            -- Phase F.0.6
+    "SetMotionGamma", "GetMotionGamma",            -- Phase F.0.8
+    "SetMotionAdaptive", "GetMotionAdaptive",      -- Phase F.0.8
     "GetFrameCounter", "GetCurrentJitter",
 }
 for _, k in ipairs(fn_names) do
@@ -676,6 +682,129 @@ TAA.SetHalfResHistory(false)
 TAA.SetSharpenMode("unsharp")
 
 -- ============================================================
+-- 6.11) Phase F.0.8 — Motion-Adaptive Variance γ (UE5 高级形式)
+-- ============================================================
+
+-- 6.11.1) MotionGamma 默认 = 1.5 (UE5 推荐)
+local def_mg = TAA.GetMotionGamma()
+if type(def_mg) ~= "number" then
+    fail("GetMotionGamma should return number, got " .. type(def_mg))
+end
+if math.abs(def_mg - 1.5) > 1e-4 then
+    fail("Default GetMotionGamma must be 1.5 (UE5 推荐), got " .. tostring(def_mg))
+end
+pass("Default MotionGamma = 1.5 (Phase F.0.8 UE5 推荐)")
+
+-- 6.11.2) MotionAdaptive 默认 = false (零回归)
+local def_ma = TAA.GetMotionAdaptive()
+if type(def_ma) ~= "boolean" then
+    fail("GetMotionAdaptive should return boolean, got " .. type(def_ma))
+end
+if def_ma ~= false then
+    fail("Default GetMotionAdaptive must be false (零回归), got " .. tostring(def_ma))
+end
+pass("Default MotionAdaptive = false (Phase F.0.8 零回归)")
+
+-- 6.11.3) MotionGamma round-trip
+TAA.SetMotionGamma(2.5)
+if math.abs(TAA.GetMotionGamma() - 2.5) > 1e-4 then
+    fail("MotionGamma round-trip 2.5 failed, got " .. tostring(TAA.GetMotionGamma()))
+end
+pass("MotionGamma round-trip 2.5 ok")
+
+TAA.SetMotionGamma(0.0)
+if math.abs(TAA.GetMotionGamma() - 0.0) > 1e-4 then fail("MotionGamma round-trip 0.0 failed") end
+pass("MotionGamma round-trip 0.0 ok")
+
+-- 6.11.4) MotionGamma clamp [0, 4]
+TAA.SetMotionGamma(-1.0)
+if math.abs(TAA.GetMotionGamma() - 0.0) > 1e-4 then
+    fail("MotionGamma clamp [-1.0 → 0.0] failed, got " .. tostring(TAA.GetMotionGamma()))
+end
+pass("MotionGamma clamp lower [-1 → 0] ok")
+
+TAA.SetMotionGamma(10.0)
+if math.abs(TAA.GetMotionGamma() - 4.0) > 1e-4 then
+    fail("MotionGamma clamp [10 → 4] failed, got " .. tostring(TAA.GetMotionGamma()))
+end
+pass("MotionGamma clamp upper [10 → 4] ok")
+
+-- 6.11.5) MotionGamma type-error
+local mg_ok, mg_err = pcall(TAA.SetMotionGamma, "not-a-number")
+if mg_ok then fail("SetMotionGamma with string should raise error") end
+pass("MotionGamma type-error rejected (string) [" .. tostring(mg_err):sub(1, 60) .. "...]")
+
+-- 6.11.6) MotionAdaptive round-trip
+TAA.SetMotionAdaptive(true)
+if TAA.GetMotionAdaptive() ~= true then fail("MotionAdaptive round-trip true failed") end
+pass("MotionAdaptive round-trip true ok")
+
+TAA.SetMotionAdaptive(false)
+if TAA.GetMotionAdaptive() ~= false then fail("MotionAdaptive round-trip false failed") end
+pass("MotionAdaptive round-trip false ok")
+
+-- 6.11.7) MotionAdaptive type-error (luaL_checktype TBOOLEAN)
+local ma_ok1, ma_err1 = pcall(TAA.SetMotionAdaptive, "true")
+if ma_ok1 then fail("SetMotionAdaptive(string) should raise error") end
+pass("MotionAdaptive type-error rejected (string)")
+
+local ma_ok2, ma_err2 = pcall(TAA.SetMotionAdaptive, 1)
+if ma_ok2 then fail("SetMotionAdaptive(number) should raise error") end
+pass("MotionAdaptive type-error rejected (number)")
+
+-- 6.11.8) 状态独立验证: 切换 motion-adaptive 不影响其他参数
+local a_before  = TAA.GetBlendAlpha()
+local cm_before = TAA.GetClipMode()
+local sh_before = TAA.GetSharpness()
+local vg_before = TAA.GetVarianceGamma()
+local hr_before = TAA.GetHalfResHistory()
+local sm_before = TAA.GetSharpenMode()
+
+TAA.SetMotionAdaptive(true)
+TAA.SetMotionGamma(2.0)
+TAA.SetMotionAdaptive(false)
+TAA.SetMotionGamma(1.5)         -- 复位
+
+if math.abs(TAA.GetBlendAlpha()  - a_before)  > 1e-4
+   or TAA.GetClipMode()           ~= cm_before
+   or math.abs(TAA.GetSharpness() - sh_before) > 1e-4
+   or math.abs(TAA.GetVarianceGamma() - vg_before) > 1e-4
+   or TAA.GetHalfResHistory()     ~= hr_before
+   or TAA.GetSharpenMode()        ~= sm_before then
+    fail("MotionAdaptive/MotionGamma toggle should not affect alpha/clipMode/sharpness/varianceGamma/halfRes/sharpenMode")
+end
+pass("MotionAdaptive/MotionGamma 切换不影响其他参数 (状态独立)")
+
+-- 6.11.9) F.0.1 + F.0.2 + F.0.3 + F.0.4 + F.0.5 + F.0.6 + F.0.8 七启共存验证
+TAA.SetSharpness(0.5)
+TAA.SetAntiFlicker(true)
+TAA.SetClipMode("variance")
+TAA.SetVarianceGamma(1.0)
+TAA.SetHalfResHistory(true)
+TAA.SetSharpenMode("cas")
+TAA.SetMotionGamma(1.5)
+TAA.SetMotionAdaptive(true)
+if math.abs(TAA.GetSharpness() - 0.5) > 1e-4
+   or TAA.GetAntiFlicker() ~= true
+   or TAA.GetClipMode() ~= "variance"
+   or math.abs(TAA.GetVarianceGamma() - 1.0) > 1e-4
+   or TAA.GetHalfResHistory() ~= true
+   or TAA.GetSharpenMode() ~= "cas"
+   or math.abs(TAA.GetMotionGamma() - 1.5) > 1e-4
+   or TAA.GetMotionAdaptive() ~= true then
+    fail("F.0.1 + F.0.2 + F.0.3 + F.0.4 + F.0.5 + F.0.6 + F.0.8 七启共存 failed")
+end
+pass("Sharpness=0.5 + AntiFlicker=true + ClipMode='variance' + VarianceGamma=1.0 + HalfResHistory=true + SharpenMode='cas' + MotionGamma=1.5 + MotionAdaptive=true 七启共存 ok")
+
+-- 复位 default
+TAA.SetClipMode("ycocg")
+TAA.SetVarianceGamma(1.0)
+TAA.SetHalfResHistory(false)
+TAA.SetSharpenMode("unsharp")
+TAA.SetMotionGamma(1.5)
+TAA.SetMotionAdaptive(false)
+
+-- ============================================================
 -- 7) Status query — GetFrameCounter / GetCurrentJitter
 -- ============================================================
 
@@ -759,13 +888,14 @@ else
 end
 
 print("")
-print("=== Phase F.0 + F.0.1 + F.0.2 + F.0.3 + F.0.4 + F.0.5 + F.0.6 TAA smoke: ALL TESTS PASSED ===")
-print("Functions covered: " .. #fn_names .. " / 25")
+print("=== Phase F.0 + F.0.1 + F.0.2 + F.0.3 + F.0.4 + F.0.5 + F.0.6 + F.0.8 TAA smoke: ALL TESTS PASSED ===")
+print("Functions covered: " .. #fn_names .. " / 29")
 print("Highlights:")
-print("  - default OFF, alpha=0.92, neighborhoodClip=true, jitterEnabled=true, sharpness=0.5, antiFlicker=true, clipMode='ycocg', varianceGamma=1.0, halfResHistory=false, sharpenMode='unsharp'")
-print("  - clamp: BlendAlpha [0, 1], Sharpness [0, 2], VarianceGamma [0, 4]")
-print("  - type-error: SetNeighborhoodClip / SetJitterEnabled / SetAntiFlicker / SetHalfResHistory reject non-boolean; SetClipMode / SetSharpenMode reject non-string / invalid value; SetVarianceGamma reject non-number")
+print("  - default OFF, alpha=0.92, neighborhoodClip=true, jitterEnabled=true, sharpness=0.5, antiFlicker=true, clipMode='ycocg', varianceGamma=1.0, halfResHistory=false, sharpenMode='unsharp', motionGamma=1.5, motionAdaptive=false")
+print("  - clamp: BlendAlpha [0, 1], Sharpness [0, 2], VarianceGamma [0, 4], MotionGamma [0, 4]")
+print("  - type-error: SetNeighborhoodClip / SetJitterEnabled / SetAntiFlicker / SetHalfResHistory / SetMotionAdaptive reject non-boolean; SetClipMode / SetSharpenMode reject non-string / invalid value; SetVarianceGamma / SetMotionGamma reject non-number")
 print("  - Phase F.0.6: 5-tap CAS (AMD FSR1) vs 4-tap unsharp; CAS contrast-adaptive + HDR safe; sharpenMode='cas' -> peak ∈ [-1/8, -1/5] @ sharpness ∈ [0, 1]")
+print("  - Phase F.0.8: motion-adaptive γ (UE5 高级), 静止区域=varianceGamma严防ghost / 高速区域lerp到motionGamma宽容防trail; 仅 ClipMode='variance' 生效")
 print("  - status: GetFrameCounter [0, 7], GetCurrentJitter in ±0.5 px range")
 print("  - coexistence: TAA toggle does not affect SSR Temporal state")
 print("  - Phase F.0.1: 4-tap unsharp mask, sharpness=0 走 blit fallback (零 ALU)")

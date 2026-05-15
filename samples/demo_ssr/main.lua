@@ -462,6 +462,20 @@ while win:IsOpen() do
                             or 'F.0.1 4-tap unsharp mask (默认)'))
     end
 
+    -- Phase F.0.8 — Q: motion-adaptive γ ON/OFF (UE5 高级形式, 仅 ClipMode='variance' 生效)
+    --   ON  → 静止区域 γ=varianceGamma 严防 ghost; 高速 γ=motionGamma 宽容防 trail
+    --   OFF → F.0.3 行为 (全屏单 γ = varianceGamma)
+    if TAA and TAA.IsEnabled() and TAA.SetMotionAdaptive and keyTap('q') then
+        local cur = TAA.GetMotionAdaptive()
+        TAA.SetMotionAdaptive(not cur)
+        local mg = TAA.GetMotionGamma and TAA.GetMotionGamma() or 1.5
+        local vg = TAA.GetVarianceGamma()
+        print(string.format('[demo] TAA MotionAdaptive: %s -> %s (varG=%.2f, motG=%.2f)',
+            cur and 'ON' or 'OFF',
+            TAA.GetMotionAdaptive() and 'ON' or 'OFF',
+            vg, mg))
+    end
+
     -- R: reset 默认
     if keyTap('r') then
         SSR.SetMaxSteps(64); SSR.SetStepSize(0.1); SSR.SetThickness(0.5)
@@ -547,7 +561,7 @@ while win:IsOpen() do
                 MotionBlur.GetStrength(),
                 MotionBlur.GetSampleCount()))
         end
-        -- Phase F.0+F.0.1+F.0.2+F.0.3+F.0.4+F.0.5+F.0.6: TAA 主管线状态 (jitter + frame counter + alpha + clip + sharpness + antiFlicker + clipMode + varianceGamma + halfResHistory + sharpenMode)
+        -- Phase F.0+F.0.1+F.0.2+F.0.3+F.0.4+F.0.5+F.0.6+F.0.8: TAA 主管线状态 (jitter + frame counter + alpha + clip + sharpness + antiFlicker + clipMode + varianceGamma + halfResHistory + sharpenMode + motionAdaptive)
         local TAAhud = Gfx.TAA
         if TAAhud then
             local jx, jy = TAAhud.GetCurrentJitter()
@@ -556,10 +570,16 @@ while win:IsOpen() do
             local cmode  = TAAhud.GetClipMode and TAAhud.GetClipMode() or 'ycocg'        -- Phase F.0.2/F.0.3 默认 ycocg
             local hr     = TAAhud.GetHalfResHistory and TAAhud.GetHalfResHistory() or false  -- Phase F.0.5
             local smode  = TAAhud.GetSharpenMode and TAAhud.GetSharpenMode() or 'unsharp'    -- Phase F.0.6
-            -- Phase F.0.3: 仅 ClipMode=="variance" 时在 HUD 添加 vg=γ 字段避免垃圾信息
+            local madapt = TAAhud.GetMotionAdaptive and TAAhud.GetMotionAdaptive() or false  -- Phase F.0.8
+            -- Phase F.0.3 + F.0.8: variance 模式下 HUD 添加 γ 字段; F.0.8 开启时额外显示 motionγ
             local cmodeStr = cmode
             if cmode == 'variance' and TAAhud.GetVarianceGamma then
-                cmodeStr = string.format('variance(γ=%.2f)', TAAhud.GetVarianceGamma())
+                if madapt and TAAhud.GetMotionGamma then
+                    cmodeStr = string.format('variance(sγ=%.2f mγ=%.2f)',
+                                             TAAhud.GetVarianceGamma(), TAAhud.GetMotionGamma())
+                else
+                    cmodeStr = string.format('variance(γ=%.2f)', TAAhud.GetVarianceGamma())
+                end
             end
             -- Phase F.0.6: sharp 字段后加 mode 后缀 (unsharp/cas)
             local sharpStr = (sharp > 0) and string.format('%.2f/%s', sharp, smode)
@@ -576,7 +596,7 @@ while win:IsOpen() do
                 TAAhud.GetFrameCounter(),
                 jx, jy))
         end
-        line('Keys: F=SSR B=Blur V=Bilateral T=Temporal 9/0=radius ,/.=sigma U/I=alpha N=reject K=Dilation L=Format M=MotionBlur ;=Mode [=MBHalfRes ]=DilHalfRes \\=AutoSkip Y=TAA J=TAAjitter H=TAAsharp G=TAAAF X=TAAHalfRes Z=TAASharpenMode R=reset ESC')
+        line('Keys: F=SSR B=Blur V=Bilateral T=Temporal 9/0=radius ,/.=sigma U/I=alpha N=reject K=Dilation L=Format M=MotionBlur ;=Mode [=MBHalfRes ]=DilHalfRes \\=AutoSkip Y=TAA J=TAAjitter H=TAAsharp G=TAAAF X=TAAHalfRes Z=TAASharpenMode Q=TAAMotionAdapt R=reset ESC')
     end
 
     win:EndFrame()
