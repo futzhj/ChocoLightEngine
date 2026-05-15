@@ -476,6 +476,20 @@ while win:IsOpen() do
             vg, mg))
     end
 
+    -- Phase F.0.9 — P: 在 'bilinear' (F.0.5 默认) / 'bicubic' (Catmull-Rom 9-tap) 上采样之间切换
+    --   仅 sharpness=0 && halfRes=true 时实际生效 (sharpen pass 路径不受影响)
+    if TAA and TAA.IsEnabled() and TAA.SetUpscaleMode and keyTap('p') then
+        local cur = TAA.GetUpscaleMode()
+        local nxt = (cur == 'bilinear') and 'bicubic' or 'bilinear'
+        TAA.SetUpscaleMode(nxt)
+        local sh = TAA.GetSharpness()
+        local hr = TAA.GetHalfResHistory()
+        local active = (sh <= 0.0001) and hr  -- 实际生效条件
+        print(string.format('[demo] TAA UpscaleMode: %s -> %s (实际生效=%s, sharp=%.2f, halfRes=%s)',
+            cur, nxt, active and 'YES' or 'NO (需 sharp=0 + halfRes=ON)',
+            sh, hr and 'ON' or 'OFF'))
+    end
+
     -- R: reset 默认
     if keyTap('r') then
         SSR.SetMaxSteps(64); SSR.SetStepSize(0.1); SSR.SetThickness(0.5)
@@ -581,9 +595,16 @@ while win:IsOpen() do
                     cmodeStr = string.format('variance(γ=%.2f)', TAAhud.GetVarianceGamma())
                 end
             end
-            -- Phase F.0.6: sharp 字段后加 mode 后缀 (unsharp/cas)
-            local sharpStr = (sharp > 0) and string.format('%.2f/%s', sharp, smode)
-                                          or string.format('%.2f/blit', sharp)
+            -- Phase F.0.9: sharp=0 路径额外显示 upscale mode (bil/bic), 仅 halfRes=true 时实际上采样
+            local umode  = TAAhud.GetUpscaleMode and TAAhud.GetUpscaleMode() or 'bilinear'
+            local umodeShort = (umode == 'bicubic') and 'bic' or 'bil'
+            -- Phase F.0.6: sharp 字段后加 mode 后缀 (unsharp/cas) 或 blit/upscale (sharp=0)
+            local sharpStr
+            if sharp > 0 then
+                sharpStr = string.format('%.2f/%s', sharp, smode)
+            else
+                sharpStr = string.format('%.2f/blit-%s', sharp, umodeShort)
+            end
             line(string.format('TAA: %s | alpha=%.2f | clip=%s/%s | jitter=%s | sharp=%s | AF=%s | halfRes=%s | frame=%d (jx=%.3f jy=%.3f)',
                 TAAhud.IsEnabled() and 'ON' or 'OFF',
                 TAAhud.GetBlendAlpha(),
@@ -596,7 +617,7 @@ while win:IsOpen() do
                 TAAhud.GetFrameCounter(),
                 jx, jy))
         end
-        line('Keys: F=SSR B=Blur V=Bilateral T=Temporal 9/0=radius ,/.=sigma U/I=alpha N=reject K=Dilation L=Format M=MotionBlur ;=Mode [=MBHalfRes ]=DilHalfRes \\=AutoSkip Y=TAA J=TAAjitter H=TAAsharp G=TAAAF X=TAAHalfRes Z=TAASharpenMode Q=TAAMotionAdapt R=reset ESC')
+        line('Keys: F=SSR B=Blur V=Bilateral T=Temporal 9/0=radius ,/.=sigma U/I=alpha N=reject K=Dilation L=Format M=MotionBlur ;=Mode [=MBHalfRes ]=DilHalfRes \\=AutoSkip Y=TAA J=TAAjitter H=TAAsharp G=TAAAF X=TAAHalfRes Z=TAASharpenMode Q=TAAMotionAdapt P=TAAUpscale R=reset ESC')
     end
 
     win:EndFrame()

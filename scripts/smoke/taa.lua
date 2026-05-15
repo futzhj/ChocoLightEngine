@@ -1,6 +1,6 @@
--- Phase F.0 + F.0.1 + F.0.2 + F.0.3 + F.0.4 + F.0.5 + F.0.6 + F.0.8 smoke: Light.Graphics.TAA (Temporal Anti-Aliasing master pipeline surface)
+-- Phase F.0 + F.0.1 + F.0.2 + F.0.3 + F.0.4 + F.0.5 + F.0.6 + F.0.8 + F.0.9 smoke: Light.Graphics.TAA (Temporal Anti-Aliasing master pipeline surface)
 --
--- API coverage (29 functions = F.0 13 + F.0.1 2 + F.0.2 2 + F.0.3 2 + F.0.4 2 + F.0.5 2 + F.0.6 2 + F.0.8 4):
+-- API coverage (31 functions = F.0 13 + F.0.1 2 + F.0.2 2 + F.0.3 2 + F.0.4 2 + F.0.5 2 + F.0.6 2 + F.0.8 4 + F.0.9 2):
 --   Lifecycle 5: Enable / Disable / IsEnabled / IsSupported / Resize
 --   Params     6: SetBlendAlpha / GetBlendAlpha (clamp [0, 1], default 0.92)
 --                 SetNeighborhoodClip / GetNeighborhoodClip (default true)
@@ -23,6 +23,10 @@
 --                                       SetMotionAdaptive / GetMotionAdaptive (boolean, default false)
 --                                       UE5 高级形式: 静止区域 γ=varianceGamma, 高速区域 lerp 到 motionGamma
 --                                       仅 ClipMode=="variance" 生效; 默认关零回归
+--   Phase F.0.9 — Custom upsampler 2: SetUpscaleMode / GetUpscaleMode ("bilinear"/"bicubic", default "bilinear")
+--                                       "bilinear" = F.0.5 GL_LINEAR stretch (零回归)
+--                                       "bicubic"  = Catmull-Rom 9-tap (Sigggraph 2018 Filmic SMAA)
+--                                       仅 sharpness=0 && halfResHistory=true 时实际生效
 --   Status     2: GetFrameCounter (Halton index 0..7, debug HUD)
 --                 GetCurrentJitter (returns 2 numbers, sub-pixel offset)
 --
@@ -67,6 +71,7 @@ local fn_names = {
     "SetSharpenMode", "GetSharpenMode",            -- Phase F.0.6
     "SetMotionGamma", "GetMotionGamma",            -- Phase F.0.8
     "SetMotionAdaptive", "GetMotionAdaptive",      -- Phase F.0.8
+    "SetUpscaleMode", "GetUpscaleMode",            -- Phase F.0.9
     "GetFrameCounter", "GetCurrentJitter",
 }
 for _, k in ipairs(fn_names) do
@@ -805,6 +810,121 @@ TAA.SetMotionGamma(1.5)
 TAA.SetMotionAdaptive(false)
 
 -- ============================================================
+-- 6.12) Phase F.0.9 — Custom Upsampler ("bilinear" / "bicubic" Catmull-Rom)
+-- ============================================================
+
+-- 6.12.1) UpscaleMode 默认 = "bilinear" (零回归)
+local def_um = TAA.GetUpscaleMode()
+if type(def_um) ~= "string" then
+    fail("GetUpscaleMode should return string, got " .. type(def_um))
+end
+if def_um ~= "bilinear" then
+    fail("Default GetUpscaleMode must be 'bilinear' (零回归), got '" .. tostring(def_um) .. "'")
+end
+pass("Default UpscaleMode = 'bilinear' (Phase F.0.9 零回归)")
+
+-- 6.12.2) round-trip
+local um_set1 = TAA.SetUpscaleMode("bicubic")
+if um_set1 ~= true then fail("SetUpscaleMode('bicubic') should return true") end
+if TAA.GetUpscaleMode() ~= "bicubic" then fail("Round-trip 'bicubic' failed") end
+pass("UpscaleMode round-trip 'bicubic' ok")
+
+TAA.SetUpscaleMode("bilinear")
+if TAA.GetUpscaleMode() ~= "bilinear" then fail("Round-trip 'bilinear' failed") end
+pass("UpscaleMode round-trip 'bilinear' ok")
+
+-- 6.12.3) 大小写不敏感
+TAA.SetUpscaleMode("BICUBIC")
+if TAA.GetUpscaleMode() ~= "bicubic" then fail("Case-insensitive 'BICUBIC' failed") end
+pass("UpscaleMode case-insensitive 'BICUBIC' → 'bicubic' ok")
+
+TAA.SetUpscaleMode("BiCuBiC")
+if TAA.GetUpscaleMode() ~= "bicubic" then fail("Case-insensitive 'BiCuBiC' failed") end
+pass("UpscaleMode case-insensitive 'BiCuBiC' → 'bicubic' ok")
+
+TAA.SetUpscaleMode("BILINEAR")
+if TAA.GetUpscaleMode() ~= "bilinear" then fail("Case-insensitive 'BILINEAR' failed") end
+pass("UpscaleMode case-insensitive 'BILINEAR' → 'bilinear' ok")
+
+-- 6.12.4) invalid 返 nil + err, state 不变
+TAA.SetUpscaleMode("bicubic")        -- 先设为 bicubic
+local um_inv_ok, um_inv_err = TAA.SetUpscaleMode("foo")
+if um_inv_ok ~= nil then
+    fail("SetUpscaleMode('foo') should return nil, got " .. tostring(um_inv_ok))
+end
+if type(um_inv_err) ~= "string" or not um_inv_err:find("foo") then
+    fail("SetUpscaleMode('foo') should err with 'foo' mentioned, got '" .. tostring(um_inv_err) .. "'")
+end
+if TAA.GetUpscaleMode() ~= "bicubic" then
+    fail("After invalid mode, state must remain 'bicubic', got '" .. TAA.GetUpscaleMode() .. "'")
+end
+pass("UpscaleMode invalid 'foo' → nil+err, state 不变 ok")
+
+-- 6.12.5) type-error
+local um_ok1, um_err1 = TAA.SetUpscaleMode(123)
+if um_ok1 ~= nil then fail("SetUpscaleMode(123) should return nil") end
+pass("UpscaleMode type-error rejected (number)")
+
+local um_ok2 = TAA.SetUpscaleMode(true)
+if um_ok2 ~= nil then fail("SetUpscaleMode(true) should return nil") end
+pass("UpscaleMode type-error rejected (boolean)")
+
+-- 6.12.6) 状态独立验证: 切 upscaleMode 不影响其他参数
+TAA.SetUpscaleMode("bilinear")  -- 复位
+local a_before  = TAA.GetBlendAlpha()
+local cm_before = TAA.GetClipMode()
+local sh_before = TAA.GetSharpness()
+local hr_before = TAA.GetHalfResHistory()
+local sm_before = TAA.GetSharpenMode()
+local ma_before = TAA.GetMotionAdaptive()
+
+TAA.SetUpscaleMode("bicubic")
+TAA.SetUpscaleMode("bilinear")
+TAA.SetUpscaleMode("bicubic")
+
+if math.abs(TAA.GetBlendAlpha()  - a_before)  > 1e-4
+   or TAA.GetClipMode()           ~= cm_before
+   or math.abs(TAA.GetSharpness() - sh_before) > 1e-4
+   or TAA.GetHalfResHistory()     ~= hr_before
+   or TAA.GetSharpenMode()        ~= sm_before
+   or TAA.GetMotionAdaptive()     ~= ma_before then
+    fail("UpscaleMode toggle should not affect alpha/clipMode/sharpness/halfRes/sharpenMode/motionAdaptive")
+end
+pass("UpscaleMode 切换不影响其他参数 (状态独立)")
+
+-- 6.12.7) F.0.1+F.0.2+F.0.3+F.0.4+F.0.5+F.0.6+F.0.8+F.0.9 八启共存
+TAA.SetSharpness(0.5)
+TAA.SetAntiFlicker(true)
+TAA.SetClipMode("variance")
+TAA.SetVarianceGamma(1.0)
+TAA.SetHalfResHistory(true)
+TAA.SetSharpenMode("cas")
+TAA.SetMotionGamma(1.5)
+TAA.SetMotionAdaptive(true)
+TAA.SetUpscaleMode("bicubic")
+if math.abs(TAA.GetSharpness() - 0.5) > 1e-4
+   or TAA.GetAntiFlicker() ~= true
+   or TAA.GetClipMode() ~= "variance"
+   or math.abs(TAA.GetVarianceGamma() - 1.0) > 1e-4
+   or TAA.GetHalfResHistory() ~= true
+   or TAA.GetSharpenMode() ~= "cas"
+   or math.abs(TAA.GetMotionGamma() - 1.5) > 1e-4
+   or TAA.GetMotionAdaptive() ~= true
+   or TAA.GetUpscaleMode() ~= "bicubic" then
+    fail("F.0.1+F.0.2+F.0.3+F.0.4+F.0.5+F.0.6+F.0.8+F.0.9 八启共存 failed")
+end
+pass("Sharpness=0.5 + AntiFlicker=true + ClipMode='variance' + VarianceGamma=1.0 + HalfResHistory=true + SharpenMode='cas' + MotionAdaptive=true + UpscaleMode='bicubic' 八启共存 ok")
+
+-- 复位 default
+TAA.SetClipMode("ycocg")
+TAA.SetVarianceGamma(1.0)
+TAA.SetHalfResHistory(false)
+TAA.SetSharpenMode("unsharp")
+TAA.SetMotionGamma(1.5)
+TAA.SetMotionAdaptive(false)
+TAA.SetUpscaleMode("bilinear")
+
+-- ============================================================
 -- 7) Status query — GetFrameCounter / GetCurrentJitter
 -- ============================================================
 
@@ -888,14 +1008,15 @@ else
 end
 
 print("")
-print("=== Phase F.0 + F.0.1 + F.0.2 + F.0.3 + F.0.4 + F.0.5 + F.0.6 + F.0.8 TAA smoke: ALL TESTS PASSED ===")
-print("Functions covered: " .. #fn_names .. " / 29")
+print("=== Phase F.0 + F.0.1 + F.0.2 + F.0.3 + F.0.4 + F.0.5 + F.0.6 + F.0.8 + F.0.9 TAA smoke: ALL TESTS PASSED ===")
+print("Functions covered: " .. #fn_names .. " / 31")
 print("Highlights:")
 print("  - default OFF, alpha=0.92, neighborhoodClip=true, jitterEnabled=true, sharpness=0.5, antiFlicker=true, clipMode='ycocg', varianceGamma=1.0, halfResHistory=false, sharpenMode='unsharp', motionGamma=1.5, motionAdaptive=false")
 print("  - clamp: BlendAlpha [0, 1], Sharpness [0, 2], VarianceGamma [0, 4], MotionGamma [0, 4]")
 print("  - type-error: SetNeighborhoodClip / SetJitterEnabled / SetAntiFlicker / SetHalfResHistory / SetMotionAdaptive reject non-boolean; SetClipMode / SetSharpenMode reject non-string / invalid value; SetVarianceGamma / SetMotionGamma reject non-number")
 print("  - Phase F.0.6: 5-tap CAS (AMD FSR1) vs 4-tap unsharp; CAS contrast-adaptive + HDR safe; sharpenMode='cas' -> peak ∈ [-1/8, -1/5] @ sharpness ∈ [0, 1]")
 print("  - Phase F.0.8: motion-adaptive γ (UE5 高级), 静止区域=varianceGamma严防ghost / 高速区域lerp到motionGamma宽容防trail; 仅 ClipMode='variance' 生效")
+print("  - Phase F.0.9: Catmull-Rom 9-tap bicubic 上采样 (Sigggraph 2018 Filmic SMAA), -50% blur vs bilinear; 仅 sharpness=0 && halfRes=true 生效")
 print("  - status: GetFrameCounter [0, 7], GetCurrentJitter in ±0.5 px range")
 print("  - coexistence: TAA toggle does not affect SSR Temporal state")
 print("  - Phase F.0.1: 4-tap unsharp mask, sharpness=0 走 blit fallback (零 ALU)")

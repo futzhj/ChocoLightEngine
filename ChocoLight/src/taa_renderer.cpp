@@ -67,6 +67,7 @@ struct State {
     int      sharpenMode      = 0;           // Phase F.0.6: 0=unsharp (F.0.1 默认 4-tap) / 1=cas (5-tap AMD FSR1)
     float    motionGamma      = 1.5f;        // Phase F.0.8: motion-adaptive 高速区域 γ (UE5 高级形式, [0, 4])
     bool     motionAdaptiveGamma = false;    // Phase F.0.8: 默认 OFF (零回归, F.0.3 单 γ 行为)
+    int      upscaleMode      = 0;           // Phase F.0.9: 0=bilinear (F.0.5 默认) / 1=bicubic Catmull-Rom
 
     // jitter state
     uint64_t frameCounter   = 0;
@@ -310,9 +311,18 @@ void Process(uint32_t hdrFbo, uint32_t hdrTex) {
                                           g.width, g.height, g.sharpness);
         }
     } else {
-        g.backend->BlitTAAToHDR(g.historyTexs[writeIdx], hdrFbo,
-                                 g.historyW, g.historyH,    // Phase F.0.5: src = history RT 实际尺寸
-                                 g.width,    g.height);     // Phase F.0.5: dst = sceneTex full-res
+        // Phase F.0.9: sharpness=0 路径—— halfRes && upscaleMode==1 走 Catmull-Rom bicubic上采样
+        //                                  其他走 F.0.5 老 BlitTAAToHDR (bilinear stretch 或 1:1 nearest)
+        // 仅 halfRes=true 时需要上采样品质提升 (full-res 时 1:1 blit 零 ALU)
+        if (g.halfResHistory && g.upscaleMode == 1) {
+            g.backend->DrawTAAUpscalePass(g.historyTexs[writeIdx], hdrFbo,
+                                           g.historyW, g.historyH,    // src = half-res
+                                           g.width,    g.height);     // dst = full-res
+        } else {
+            g.backend->BlitTAAToHDR(g.historyTexs[writeIdx], hdrFbo,
+                                     g.historyW, g.historyH,    // Phase F.0.5: src = history RT 实际尺寸
+                                     g.width,    g.height);     // Phase F.0.5: dst = sceneTex full-res
+        }
     }
 
     // 状态推进
@@ -434,6 +444,31 @@ float GetMotionGamma()                { return g.motionGamma; }
 // motionAdaptive 默认 false; 切换即生效 (下一帧 shader 走 motion-adaptive 分支)
 void  SetMotionAdaptive(bool on) { g.motionAdaptiveGamma = on; }
 bool  GetMotionAdaptive()         { return g.motionAdaptiveGamma; }
+
+// Phase F.0.9 — Custom upsampler ("bilinear" 默认 / "bicubic" Catmull-Rom 9-tap)
+// 仅 sharpness=0 && halfRes=true 时生效; 复用 parseClipMode_ 手写 case-insensitive 模式
+static int parseUpscaleMode_(const char* mode) {
+    if (!mode) return -1;
+    auto eq = [](const char* a, const char* b) {
+        while (*a && *b) {
+            char ca = (*a >= 'A' && *a <= 'Z') ? (char)(*a + 32) : *a;
+            char cb = (*b >= 'A' && *b <= 'Z') ? (char)(*b + 32) : *b;
+            if (ca != cb) return false;
+            ++a; ++b;
+        }
+        return *a == '\0' && *b == '\0';
+    };
+    if (eq(mode, "bilinear")) return 0;
+    if (eq(mode, "bicubic"))  return 1;
+    return -1;
+}
+void SetUpscaleMode(const char* mode) {
+    int parsed = parseUpscaleMode_(mode);
+    if (parsed >= 0) g.upscaleMode = parsed;   // 仅识别到才写入 (与 SetClipMode/SetSharpenMode 同模式)
+}
+const char* GetUpscaleMode() {
+    return (g.upscaleMode == 1) ? "bicubic" : "bilinear";
+}
 
 void  SetJitterEnabled(bool on) {
     g.jitterEnabled = on;

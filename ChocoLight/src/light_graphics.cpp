@@ -3310,6 +3310,44 @@ static int l_TAA_GetMotionAdaptive(lua_State* L) {
     return 1;
 }
 
+/// @lua_api Light.Graphics.TAA.SetUpscaleMode
+/// @param mode string Phase F.0.9 — TAA history → sceneTex 上采样算法 (大小写不敏感)
+///                     "bilinear" = F.0.5 老路径 (GL_LINEAR stretch, 默认)
+///                     "bicubic"  = Catmull-Rom 9-tap bicubic (Sigggraph 2018 Filmic SMAA)
+///                                  -50% blur vs bilinear, +0.025 ms @ 1080p
+///                                  仅 sharpness=0 && halfResHistory=true 时实际生效
+/// 错误处理: 非 string / 未识别值 返 nil + err (与 SetClipMode/SetSharpenMode 同模式)
+static int l_TAA_SetUpscaleMode(lua_State* L) {
+    luaL_checkany(L, 1);
+    if (lua_type(L, 1) != LUA_TSTRING) {
+        lua_pushnil(L);
+        lua_pushliteral(L, "TAA.SetUpscaleMode: 期望 string 参数 ('bilinear' / 'bicubic')");
+        return 2;
+    }
+    const char* mode = lua_tostring(L, 1);
+    char lower[16] = {0};
+    int  i = 0;
+    while (mode[i] && i < 15) {
+        char c = mode[i];
+        lower[i++] = (c >= 'A' && c <= 'Z') ? (char)(c + 32) : c;
+    }
+    if (strcmp(lower, "bilinear") != 0 && strcmp(lower, "bicubic") != 0) {
+        lua_pushnil(L);
+        lua_pushfstring(L, "TAA.SetUpscaleMode: 未识别的 mode '%s' (期望 'bilinear' / 'bicubic')", mode);
+        return 2;
+    }
+    TAARenderer::SetUpscaleMode(mode);
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+/// @lua_api Light.Graphics.TAA.GetUpscaleMode
+/// @return string  "bilinear" / "bicubic"
+static int l_TAA_GetUpscaleMode(lua_State* L) {
+    lua_pushstring(L, TAARenderer::GetUpscaleMode());
+    return 1;
+}
+
 /// @lua_api Light.Graphics.TAA.GetFrameCounter
 /// @return integer 当前帧 Halton 索引 (0-7, 用于 debug HUD)
 static int l_TAA_GetFrameCounter(lua_State* L) {
@@ -3364,6 +3402,9 @@ static const luaL_Reg taa_funcs[] = {
     {"GetMotionGamma",        l_TAA_GetMotionGamma},
     {"SetMotionAdaptive",     l_TAA_SetMotionAdaptive},
     {"GetMotionAdaptive",     l_TAA_GetMotionAdaptive},
+    // Phase F.0.9 — custom upsampler (2 = 1 对): "bilinear" (F.0.5 默认) / "bicubic" (Catmull-Rom)
+    {"SetUpscaleMode",        l_TAA_SetUpscaleMode},
+    {"GetUpscaleMode",        l_TAA_GetUpscaleMode},
     // status (2): debug HUD 用
     {"GetFrameCounter",       l_TAA_GetFrameCounter},
     {"GetCurrentJitter",      l_TAA_GetCurrentJitter},

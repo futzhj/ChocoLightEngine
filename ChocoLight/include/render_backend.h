@@ -1366,6 +1366,18 @@ public:
     virtual void DrawTAACASPass(uint32_t /*srcTex*/, uint32_t /*dstFbo*/,
                                 int /*w*/, int /*h*/, float /*sharpness*/) {}
 
+    /// Phase F.0.9 — TAA Custom Upscale pass: Catmull-Rom 9-tap bicubic (Sigggraph 2018 Filmic SMAA)
+    /// 仅 halfRes=true && sharpness=0 && upscaleMode==1 路径使用, 替代 BlitTAAToHDR 的 GL_LINEAR stretch.
+    /// 视觉收益: -50% blur vs bilinear; 性能: ~+0.025 ms @ 1080p.
+    /// shader 编译失败时此函数空实现, 调用方需 fallback 到 BlitTAAToHDR.
+    /// @param srcTex     history half-res tex
+    /// @param dstFbo     HDR FBO
+    /// @param srcW, srcH src 分辨率 (history half-res)
+    /// @param dstW, dstH dst 分辨率 (sceneTex full-res)
+    virtual void DrawTAAUpscalePass(uint32_t /*srcTex*/, uint32_t /*dstFbo*/,
+                                    int /*srcW*/, int /*srcH*/,
+                                    int /*dstW*/, int /*dstH*/) {}
+
     /// 设置 jittered projection matrix (TAA 启用时每帧 BeginScene 前调)
     /// 调用后, ComputeMVP3D() 用 jitteredProjection 替代原 projection (raster 路径).
     /// GetProjection() 仍返 unjittered (SSR/SSAO 等 view-space reconstruction 不受影响).

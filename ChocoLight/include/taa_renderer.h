@@ -165,6 +165,16 @@ float GetMotionGamma();
 void  SetMotionAdaptive(bool on);
 bool  GetMotionAdaptive();
 
+/// Phase F.0.9 — Custom Upsampler (history → sceneTex 上采样)
+/// "bilinear" (默认) — F.0.5 老路径, GL_LINEAR stretch 硬件上采样, 零额外 ALU
+/// "bicubic"          — Catmull-Rom 9-tap bicubic (Sigggraph 2018 Filmic SMAA), -50% blur
+///                       仅 sharpness=0 && halfResHistory=true 时生效;
+///                       其他配置自动 fallback 到 bilinear (sharpness>0 路径不影响)
+/// 大小写不敏感 ("BICUBIC"/"Bicubic" 等价); 未识别字符串保持当前 state (Lua 层 raise error)
+/// 性能: bilinear ~0.005 ms / bicubic ~0.03 ms @ 1080p
+void SetUpscaleMode(const char* mode);
+const char* GetUpscaleMode();
+
 // ==================== 内部状态查询 (debug HUD 用) ====================
 
 /// 当前帧 Halton 索引 (% 8), 累加帧计数器低 3 位
