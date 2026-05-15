@@ -80,6 +80,16 @@ void ApplyJitter();
 /// 读 cur HDR sceneTex + 上帧 history + dilated/raw velocity → 写新 history + blit 回 sceneTex.
 void Process(uint32_t hdrFbo, uint32_t hdrTex);
 
+/// Phase F.0.10.2 — region 变体, 用于 split-screen 多 instance 在同一 HDR fbo 内独立 TAA.
+/// rgnW/rgnH > 0 时: 全部 backend pass 走 scissor 限制写入到子矩形, BlitTAAToHDR 走 dst rect 子矩形.
+/// rgnW/rgnH <= 0 时: 等价于无参 Process (零回归).
+/// 仅限 hdrFbo / hdrTex 是全 size (sceneW × sceneH); 每个 instance 自己 Enable 与 region 同 size 的 history.
+/// 典型用法: instance1 Enable(W/2, H); instance2 Enable(W/2, H);
+///           HDR.BeginScene → 画 player1 (viewport 左半) → 切 instance1; ProcessRegion(0,0,W/2,H);
+///                          → 画 player2 (viewport 右半) → 切 instance2; ProcessRegion(W/2,0,W/2,H);
+void Process(uint32_t hdrFbo, uint32_t hdrTex,
+             int rgnX, int rgnY, int rgnW, int rgnH);
+
 // ==================== 参数 ====================
 
 /// history 权重 [0.5, 0.99], 默认 0.92

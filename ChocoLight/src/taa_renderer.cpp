@@ -292,6 +292,14 @@ void ApplyJitter() {
 // ==================== 管线 Process ====================
 
 void Process(uint32_t hdrFbo, uint32_t hdrTex) {
+    // 老接口: 全屏 process, 转发到 region 版本 (rgn=0 → 等价无 scissor 全屏)
+    Process(hdrFbo, hdrTex, 0, 0, 0, 0);
+}
+
+// Phase F.0.10.2 — region 变体: rgnW/rgnH > 0 时启用 GL_SCISSOR_TEST 限制写入子矩形
+// 与无参 Process 共用同一份累积/blit 逻辑, 仅多透传 region 4 参数到 backend
+void Process(uint32_t hdrFbo, uint32_t hdrTex,
+             int rgnX, int rgnY, int rgnW, int rgnH) {
     if (!g.enabled || !g.supported || !g.backend) {
         // 即使未启用, 也复位 backend jitter (防御性: ApplyJitter 后用户切关 TAA)
         if (g.backend) g.backend->ClearJitteredProjection();
@@ -312,6 +320,7 @@ void Process(uint32_t hdrFbo, uint32_t hdrTex) {
 
     // Phase F.0.5: TAA pass viewport = history RT 实际尺寸 (halfRes 时为 w/2, 否则为 w)
     //              shader 内邻域 sample 用 vUV 归一化 [0,1], sceneTex GL_LINEAR 自动 box-filter 预采样
+    // Phase F.0.10.2: rgnX/Y/W/H 透传到 backend, rgnW/rgnH=0 时 backend 内部跳过 scissor (零回归)
     g.backend->DrawTAAPass(hdrTex,
                             g.historyTexs[readIdx],
                             velocityTex,
@@ -327,7 +336,8 @@ void Process(uint32_t hdrFbo, uint32_t hdrTex) {
                             g.clipMode,                 // Phase F.0.2/F.0.3
                             g.varianceGamma,            // Phase F.0.3 (static γ)
                             g.motionGamma,              // Phase F.0.8 (motion γ)
-                            g.motionAdaptiveGamma ? 1 : 0); // Phase F.0.8 (开关)
+                            g.motionAdaptiveGamma ? 1 : 0, // Phase F.0.8 (开关)
+                            rgnX, rgnY, rgnW, rgnH);    // Phase F.0.10.2 region
 
     // Phase F.0.1/F.0.6/F.0.12: sharpness > 0 走 sharpen pass (in-place 写回 sceneTex);
     //                    否则保持 F.0 纯 blit 路径 (零 ALU 开销)
@@ -349,16 +359,19 @@ void Process(uint32_t hdrFbo, uint32_t hdrTex) {
             // Phase F.0.12: RCAS sharpness 接受完整 [0, 2] (FSR2 标准); 超出则 saturate 到 2.0
             const float rcasS = (effSharpness > 2.0f) ? 2.0f : effSharpness;
             g.backend->DrawTAARCASPass(g.historyTexs[writeIdx], hdrFbo,
-                                        g.width, g.height, rcasS);
+                                        g.width, g.height, rcasS,
+                                        rgnX, rgnY, rgnW, rgnH);    // Phase F.0.10.2
         } else if (g.sharpenMode == 1) {
             // Phase F.0.6: CAS sharpness clamp [0, 1] (FSR1 标准); 超出则 saturate 到 1.0
             const float casS = (effSharpness > 1.0f) ? 1.0f : effSharpness;
             g.backend->DrawTAACASPass(g.historyTexs[writeIdx], hdrFbo,
-                                       g.width, g.height, casS);
+                                       g.width, g.height, casS,
+                                       rgnX, rgnY, rgnW, rgnH);     // Phase F.0.10.2
         } else {
             // Phase F.0.1: unsharp mask, sharpness 接受完整 [0, 2] 范围
             g.backend->DrawTAASharpenPass(g.historyTexs[writeIdx], hdrFbo,
-                                          g.width, g.height, effSharpness);
+                                          g.width, g.height, effSharpness,
+                                          rgnX, rgnY, rgnW, rgnH);  // Phase F.0.10.2
         }
     } else {
         // Phase F.0.9/F.0.14: sharpness=0 路径—— halfRes && upscaleMode 三选一
@@ -369,15 +382,18 @@ void Process(uint32_t hdrFbo, uint32_t hdrTex) {
         if (g.halfResHistory && g.upscaleMode == 1) {
             g.backend->DrawTAAUpscalePass(g.historyTexs[writeIdx], hdrFbo,
                                            g.historyW, g.historyH,    // src = half-res
-                                           g.width,    g.height);     // dst = full-res
+                                           g.width,    g.height,      // dst = full-res
+                                           rgnX, rgnY, rgnW, rgnH);   // Phase F.0.10.2
         } else if (g.halfResHistory && g.upscaleMode == 2) {
             g.backend->DrawTAALanczosPass(g.historyTexs[writeIdx], hdrFbo,
                                            g.historyW, g.historyH,
-                                           g.width,    g.height);
+                                           g.width,    g.height,
+                                           rgnX, rgnY, rgnW, rgnH);   // Phase F.0.10.2
         } else {
             g.backend->BlitTAAToHDR(g.historyTexs[writeIdx], hdrFbo,
                                      g.historyW, g.historyH,    // Phase F.0.5: src = history RT 实际尺寸
-                                     g.width,    g.height);     // Phase F.0.5: dst = sceneTex full-res
+                                     g.width,    g.height,      // Phase F.0.5: dst = sceneTex full-res
+                                     rgnX, rgnY, rgnW, rgnH);   // Phase F.0.10.2
         }
     }
 

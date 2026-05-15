@@ -1336,6 +1336,8 @@ public:
     /// @param motionGamma        Phase F.0.8: motion-adaptive 高速区域 γ (UE5 高级形式), 仅 clipMode==2 && motionAdaptiveGamma==1 生效
     ///                           默认 1.5; 调用方应 clamp 到 [0, 4]; 静止区域用 varianceGamma, 高速运动 lerp 至 motionGamma
     /// @param motionAdaptiveGamma Phase F.0.8: 0=仅用 varianceGamma (F.0.3 行为, 零回归), 1=按 |velocity| 长度 lerp 两 γ
+    /// Phase F.0.10.2 — 可选 region 限制 (split-screen): rgnW/rgnH > 0 时启用 glScissor 写入区域;
+    /// 默认 0/0/0/0 = 全屏 (零回归)。rgnX/rgnY 是 dst FBO 坐标 (GL origin = 左下), 与 SetViewport 同语义。
     virtual void DrawTAAPass(uint32_t /*curHdrTex*/, uint32_t /*historyTex*/,
                              uint32_t /*velocityTex*/, uint32_t /*dstFbo*/,
                              int /*w*/, int /*h*/,
@@ -1348,7 +1350,11 @@ public:
                              int   /*clipMode*/           = 1,
                              float /*varianceGamma*/      = 1.0f,
                              float /*motionGamma*/        = 1.5f,   // Phase F.0.8 default = 1.5
-                             int   /*motionAdaptiveGamma*/= 0)      // Phase F.0.8 default = OFF (零回归)
+                             int   /*motionAdaptiveGamma*/= 0,      // Phase F.0.8 default = OFF (零回归)
+                             int   /*rgnX*/               = 0,      // Phase F.0.10.2: 区域 X (0 = 不限制)
+                             int   /*rgnY*/               = 0,      // Phase F.0.10.2: 区域 Y
+                             int   /*rgnW*/               = 0,      // Phase F.0.10.2: 区域 W (<=0 = 全屏)
+                             int   /*rgnH*/               = 0)      // Phase F.0.10.2: 区域 H
                              {}
 
     /// 把 TAA 输出 blit 回 HDR sceneTex (覆盖, 让后续 Tonemap 用 TAA 后内容)
@@ -1357,9 +1363,14 @@ public:
     /// @param srcW, srcH  src 尺寸 (history RT 实际尺寸，可能为 half-res，Phase F.0.5)
     /// @param dstW, dstH  dst 尺寸 (sceneTex 尺寸，full-res)；默认 0=与 src 同尺寸 (向后兼容老调用)
     /// Phase F.0.5: src/dst 尺寸不同时自动走 GL_LINEAR stretch (上采样)；同尺寸保持 GL_NEAREST (零回归)
+    /// Phase F.0.10.2 — 可选 region 限制: rgnW/rgnH > 0 时只 blit 到 dst 的 (rgnX,rgnY,rgnW,rgnH) 子区域;
+    /// 实现用 glBlitFramebuffer 的 dst rect 直接定位 (不依赖 scissor, 避免老 GL 行为差异)。
+    /// region 启用时 srcW/srcH 仍是 src 全 size, dst 矩形 = (rgnX, rgnY, rgnX+rgnW, rgnY+rgnH)。
     virtual void BlitTAAToHDR(uint32_t /*srcTex*/, uint32_t /*dstFbo*/,
                               int /*srcW*/, int /*srcH*/,
-                              int /*dstW*/ = 0, int /*dstH*/ = 0) {}
+                              int /*dstW*/ = 0, int /*dstH*/ = 0,
+                              int /*rgnX*/ = 0, int /*rgnY*/ = 0,    // Phase F.0.10.2
+                              int /*rgnW*/ = 0, int /*rgnH*/ = 0) {}
 
     /// Phase F.0.1 — TAA Sharpen pass: 4-tap unsharp mask, 替代 BlitTAAToHDR (in-place 写回 sceneTex)
     /// 调用方在 sharpness > 0 时调; sharpness <= 0 时直接走 BlitTAAToHDR (零 ALU 开销).
@@ -1369,7 +1380,9 @@ public:
     /// @param w, h       尺寸 (full-res)
     /// @param sharpness  unsharp mask 强度, 推荐 [0, 2]; 已由调用方 clamp
     virtual void DrawTAASharpenPass(uint32_t /*srcTex*/, uint32_t /*dstFbo*/,
-                                    int /*w*/, int /*h*/, float /*sharpness*/) {}
+                                    int /*w*/, int /*h*/, float /*sharpness*/,
+                                    int /*rgnX*/ = 0, int /*rgnY*/ = 0,    // Phase F.0.10.2
+                                    int /*rgnW*/ = 0, int /*rgnH*/ = 0) {}
 
     /// Phase F.0.6 — TAA CAS pass: 5-tap contrast-adaptive sharpening (AMD FidelityFX FSR1)
     /// 与 F.0.1 unsharp 共存, 用户通过 SetSharpenMode("cas"/"unsharp") 切换.
@@ -1379,7 +1392,9 @@ public:
     /// @param w, h       尺寸 (full-res)
     /// @param sharpness  CAS [0, 1] (FSR1 标准): 0→peak=-1/8 弱, 1→peak=-1/5 强; 已由调用方 clamp
     virtual void DrawTAACASPass(uint32_t /*srcTex*/, uint32_t /*dstFbo*/,
-                                int /*w*/, int /*h*/, float /*sharpness*/) {}
+                                int /*w*/, int /*h*/, float /*sharpness*/,
+                                int /*rgnX*/ = 0, int /*rgnY*/ = 0,    // Phase F.0.10.2
+                                int /*rgnW*/ = 0, int /*rgnH*/ = 0) {}
 
     /// Phase F.0.12 — TAA RCAS pass: 5-tap robust contrast-adaptive sharpening (AMD FidelityFX FSR2)
     /// FSR1 CAS 的高级形式: noise detection (range<1/64 跳过) + edge protection (lobe sqrt 限制).
@@ -1390,7 +1405,9 @@ public:
     /// @param w, h       尺寸 (full-res)
     /// @param sharpness  RCAS [0, 2] (FSR2 标准): 0→peak=-1/16 弱, 2→peak=-1/4 强; 已由调用方 clamp
     virtual void DrawTAARCASPass(uint32_t /*srcTex*/, uint32_t /*dstFbo*/,
-                                 int /*w*/, int /*h*/, float /*sharpness*/) {}
+                                 int /*w*/, int /*h*/, float /*sharpness*/,
+                                 int /*rgnX*/ = 0, int /*rgnY*/ = 0,    // Phase F.0.10.2
+                                 int /*rgnW*/ = 0, int /*rgnH*/ = 0) {}
 
     /// Phase F.0.14 — TAA Lanczos-2 25-tap 5x5 上采样 (高画质替代 F.0.9 Catmull-Rom)
     /// 仅 halfRes=true && sharpness=0 && upscaleMode==2 (lanczos) 路径使用
@@ -1404,7 +1421,9 @@ public:
     /// @param dstW, dstH dst 分辨率 (sceneTex full-res)
     virtual void DrawTAALanczosPass(uint32_t /*srcTex*/, uint32_t /*dstFbo*/,
                                     int /*srcW*/, int /*srcH*/,
-                                    int /*dstW*/, int /*dstH*/) {}
+                                    int /*dstW*/, int /*dstH*/,
+                                    int /*rgnX*/ = 0, int /*rgnY*/ = 0,    // Phase F.0.10.2
+                                    int /*rgnW*/ = 0, int /*rgnH*/ = 0) {}
 
     /// Phase F.0.9 — TAA Custom Upscale pass: Catmull-Rom 9-tap bicubic (Sigggraph 2018 Filmic SMAA)
     /// 仅 halfRes=true && sharpness=0 && upscaleMode==1 路径使用, 替代 BlitTAAToHDR 的 GL_LINEAR stretch.
@@ -1416,7 +1435,9 @@ public:
     /// @param dstW, dstH dst 分辨率 (sceneTex full-res)
     virtual void DrawTAAUpscalePass(uint32_t /*srcTex*/, uint32_t /*dstFbo*/,
                                     int /*srcW*/, int /*srcH*/,
-                                    int /*dstW*/, int /*dstH*/) {}
+                                    int /*dstW*/, int /*dstH*/,
+                                    int /*rgnX*/ = 0, int /*rgnY*/ = 0,    // Phase F.0.10.2
+                                    int /*rgnW*/ = 0, int /*rgnH*/ = 0) {}
 
     /// 设置 jittered projection matrix (TAA 启用时每帧 BeginScene 前调)
     /// 调用后, ComputeMVP3D() 用 jitteredProjection 替代原 projection (raster 路径).

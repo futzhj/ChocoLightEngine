@@ -7946,8 +7946,10 @@ public:
                      int   antiFlicker,
                      int   clipMode,
                      float varianceGamma,
-                     float motionGamma,                  // Phase F.0.8
-                     int   motionAdaptiveGamma) override // Phase F.0.8
+                     float motionGamma,                   // Phase F.0.8
+                     int   motionAdaptiveGamma,           // Phase F.0.8
+                     int rgnX, int rgnY,                  // Phase F.0.10.2: split-screen region
+                     int rgnW, int rgnH) override         // Phase F.0.10.2: rgnW<=0 时全屏 (零回归)
     {
         if (!taaSupported || !programTAA) return;
         if (!curHdrTex || !dstFbo || w <= 0 || h <= 0) return;
@@ -7955,8 +7957,16 @@ public:
         glBindFramebuffer(GL_FRAMEBUFFER, dstFbo);
         glViewport(0, 0, w, h);
         glDisable(GL_DEPTH_TEST);
-        glDisable(GL_SCISSOR_TEST);
         glDisable(GL_BLEND);
+        // Phase F.0.10.2: region 启用时 scissor 限制写入到子矩形, 让该 instance 只更新它的 region
+        // 全屏路径 (rgnW/rgnH<=0) 仍走 glDisable, 与 F.0 ~ F.0.14 行为一致
+        const bool useScissor = (rgnW > 0 && rgnH > 0);
+        if (useScissor) {
+            glEnable(GL_SCISSOR_TEST);
+            glScissor(rgnX, rgnY, rgnW, rgnH);
+        } else {
+            glDisable(GL_SCISSOR_TEST);
+        }
 
         glUseProgram(programTAA);
         if (locTAA_Texel            >= 0) glUniform2f(locTAA_Texel, 1.0f / (float)w, 1.0f / (float)h);
@@ -7998,20 +8008,30 @@ public:
             glBindTexture(GL_TEXTURE_2D, 0);
         }
         glUseProgram(0);
+        // Phase F.0.10.2: 退出前关 scissor, 避免影响后续 pass
+        if (useScissor) glDisable(GL_SCISSOR_TEST);
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
     }
 
     /// Phase F.0.1 — TAA Sharpen pass: 4-tap unsharp mask, 替代 BlitTAAToHDR (in-place 写回 sceneTex)
     /// shader 编译失败时调用方应回落到 BlitTAAToHDR; sharpness <= 0 由调用方在 CPU 端跳过.
     void DrawTAASharpenPass(uint32_t srcTex, uint32_t dstFbo,
-                            int w, int h, float sharpness) override {
+                            int w, int h, float sharpness,
+                            int rgnX, int rgnY, int rgnW, int rgnH) override {  // Phase F.0.10.2: region
         if (!programSharpen || !srcTex || !dstFbo || w <= 0 || h <= 0) return;
 
         glBindFramebuffer(GL_FRAMEBUFFER, dstFbo);
         glViewport(0, 0, w, h);
         glDisable(GL_DEPTH_TEST);
-        glDisable(GL_SCISSOR_TEST);
         glDisable(GL_BLEND);
+        // Phase F.0.10.2: region 启用时 scissor 限制 sharpen 写回到子矩形 (history 仍按全屏采)
+        const bool useScissor = (rgnW > 0 && rgnH > 0);
+        if (useScissor) {
+            glEnable(GL_SCISSOR_TEST);
+            glScissor(rgnX, rgnY, rgnW, rgnH);
+        } else {
+            glDisable(GL_SCISSOR_TEST);
+        }
 
         glUseProgram(programSharpen);
         if (locSharpen_TexelSize >= 0) glUniform2f(locSharpen_TexelSize, 1.0f / (float)w, 1.0f / (float)h);
@@ -8030,6 +8050,7 @@ public:
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, 0);
         glUseProgram(0);
+        if (useScissor) glDisable(GL_SCISSOR_TEST);   // Phase F.0.10.2: 复位
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
     }
 
@@ -8042,14 +8063,22 @@ public:
     /// @param dstW, dstH dst 分辨率 (sceneTex full-res)
     void DrawTAAUpscalePass(uint32_t srcTex, uint32_t dstFbo,
                             int srcW, int srcH,
-                            int dstW, int dstH) override {
+                            int dstW, int dstH,
+                            int rgnX, int rgnY, int rgnW, int rgnH) override {   // Phase F.0.10.2
         if (!programBicubicUpscale || !srcTex || !dstFbo || srcW <= 0 || srcH <= 0 || dstW <= 0 || dstH <= 0) return;
 
         glBindFramebuffer(GL_FRAMEBUFFER, dstFbo);
         glViewport(0, 0, dstW, dstH);
         glDisable(GL_DEPTH_TEST);
-        glDisable(GL_SCISSOR_TEST);
         glDisable(GL_BLEND);
+        // Phase F.0.10.2: region 启用时 scissor 限制 upscale 写回到子矩形
+        const bool useScissor = (rgnW > 0 && rgnH > 0);
+        if (useScissor) {
+            glEnable(GL_SCISSOR_TEST);
+            glScissor(rgnX, rgnY, rgnW, rgnH);
+        } else {
+            glDisable(GL_SCISSOR_TEST);
+        }
 
         glUseProgram(programBicubicUpscale);
         // uTexel = 1 / src 分辨率 (Catmull-Rom 在 src 纹素空间采样)
@@ -8065,6 +8094,7 @@ public:
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, 0);
         glUseProgram(0);
+        if (useScissor) glDisable(GL_SCISSOR_TEST);   // Phase F.0.10.2: 复位
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
     }
 
@@ -8077,14 +8107,22 @@ public:
     /// @param dstW, dstH dst 分辨率
     void DrawTAALanczosPass(uint32_t srcTex, uint32_t dstFbo,
                             int srcW, int srcH,
-                            int dstW, int dstH) override {
+                            int dstW, int dstH,
+                            int rgnX, int rgnY, int rgnW, int rgnH) override {   // Phase F.0.10.2
         if (!programLanczosUpscale || !srcTex || !dstFbo || srcW <= 0 || srcH <= 0 || dstW <= 0 || dstH <= 0) return;
 
         glBindFramebuffer(GL_FRAMEBUFFER, dstFbo);
         glViewport(0, 0, dstW, dstH);
         glDisable(GL_DEPTH_TEST);
-        glDisable(GL_SCISSOR_TEST);
         glDisable(GL_BLEND);
+        // Phase F.0.10.2: region 启用时 scissor 限制 lanczos 写回到子矩形
+        const bool useScissor = (rgnW > 0 && rgnH > 0);
+        if (useScissor) {
+            glEnable(GL_SCISSOR_TEST);
+            glScissor(rgnX, rgnY, rgnW, rgnH);
+        } else {
+            glDisable(GL_SCISSOR_TEST);
+        }
 
         glUseProgram(programLanczosUpscale);
         // uTexel = 1 / src 分辨率 (Lanczos 在 src 纹素空间 5x5 采样)
@@ -8100,6 +8138,7 @@ public:
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, 0);
         glUseProgram(0);
+        if (useScissor) glDisable(GL_SCISSOR_TEST);   // Phase F.0.10.2: 复位
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
     }
 
@@ -8108,14 +8147,22 @@ public:
     /// FSR2 robust 增强: noise detection (range<1/64 跳过) + edge protection (lobe sqrt 限制).
     /// shader 编译失败时静默 no-op (TAARenderer 层 fallback 走 BlitTAAToHDR).
     void DrawTAARCASPass(uint32_t srcTex, uint32_t dstFbo,
-                         int w, int h, float sharpness) override {
+                         int w, int h, float sharpness,
+                         int rgnX, int rgnY, int rgnW, int rgnH) override {   // Phase F.0.10.2
         if (!programRCAS || !srcTex || !dstFbo || w <= 0 || h <= 0) return;
 
         glBindFramebuffer(GL_FRAMEBUFFER, dstFbo);
         glViewport(0, 0, w, h);
         glDisable(GL_DEPTH_TEST);
-        glDisable(GL_SCISSOR_TEST);
         glDisable(GL_BLEND);
+        // Phase F.0.10.2: region 启用时 scissor 限制 RCAS 写回到子矩形
+        const bool useScissor = (rgnW > 0 && rgnH > 0);
+        if (useScissor) {
+            glEnable(GL_SCISSOR_TEST);
+            glScissor(rgnX, rgnY, rgnW, rgnH);
+        } else {
+            glDisable(GL_SCISSOR_TEST);
+        }
 
         glUseProgram(programRCAS);
         if (locRCAS_TexelSize >= 0) glUniform2f(locRCAS_TexelSize, 1.0f / (float)w, 1.0f / (float)h);
@@ -8132,6 +8179,7 @@ public:
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, 0);
         glUseProgram(0);
+        if (useScissor) glDisable(GL_SCISSOR_TEST);   // Phase F.0.10.2: 复位
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
     }
 
@@ -8139,14 +8187,22 @@ public:
     /// 与 F.0.1 unsharp 同接口; sharpness ∈ [0, 1] (FSR1 标准范围, 调用方负责 clamp).
     /// shader 编译失败时静默 no-op (TAARenderer 层 fallback 走 BlitTAAToHDR).
     void DrawTAACASPass(uint32_t srcTex, uint32_t dstFbo,
-                        int w, int h, float sharpness) override {
+                        int w, int h, float sharpness,
+                        int rgnX, int rgnY, int rgnW, int rgnH) override {   // Phase F.0.10.2
         if (!programCAS || !srcTex || !dstFbo || w <= 0 || h <= 0) return;
 
         glBindFramebuffer(GL_FRAMEBUFFER, dstFbo);
         glViewport(0, 0, w, h);
         glDisable(GL_DEPTH_TEST);
-        glDisable(GL_SCISSOR_TEST);
         glDisable(GL_BLEND);
+        // Phase F.0.10.2: region 启用时 scissor 限制 CAS 写回到子矩形
+        const bool useScissor = (rgnW > 0 && rgnH > 0);
+        if (useScissor) {
+            glEnable(GL_SCISSOR_TEST);
+            glScissor(rgnX, rgnY, rgnW, rgnH);
+        } else {
+            glDisable(GL_SCISSOR_TEST);
+        }
 
         glUseProgram(programCAS);
         if (locCAS_TexelSize >= 0) glUniform2f(locCAS_TexelSize, 1.0f / (float)w, 1.0f / (float)h);
@@ -8162,6 +8218,7 @@ public:
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, 0);
         glUseProgram(0);
+        if (useScissor) glDisable(GL_SCISSOR_TEST);   // Phase F.0.10.2: 复位
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
     }
 
@@ -8171,11 +8228,24 @@ public:
     /// Phase F.0.5: src/dst 尺寸不同时走 GL_LINEAR stretch (history half-res → sceneTex full-res 上采样)
     void BlitTAAToHDR(uint32_t srcTex, uint32_t dstFbo,
                       int srcW, int srcH,
-                      int dstW = 0, int dstH = 0) override {
+                      int dstW = 0, int dstH = 0,
+                      int rgnX = 0, int rgnY = 0,                 // Phase F.0.10.2
+                      int rgnW = 0, int rgnH = 0) override {
         if (!srcTex || !dstFbo || srcW <= 0 || srcH <= 0) return;
         // dstW/dstH=0 → 退化为 src 同 dst (Phase F.0 老行为)
         if (dstW <= 0) dstW = srcW;
         if (dstH <= 0) dstH = srcH;
+
+        // Phase F.0.10.2: region 启用时, 用 dst rect 直接定位子矩形, src 仍是全 size
+        // src 矩形 → dst 矩形: GL_LINEAR stretch 处理尺寸不匹配
+        const bool useRegion = (rgnW > 0 && rgnH > 0);
+        int srcX0 = 0, srcY0 = 0, srcX1 = srcW, srcY1 = srcH;
+        int dstX0 = 0, dstY0 = 0, dstX1 = dstW, dstY1 = dstH;
+        if (useRegion) {
+            dstX0 = rgnX;        dstY0 = rgnY;
+            dstX1 = rgnX + rgnW; dstY1 = rgnY + rgnH;
+            // src 仍是全 size (instance 自己的 history 是 region-size, 全采样)
+        }
 
         // 用临时 FBO 包 srcTex (避免要求 TAARenderer 传 FBO; 接口更对称)
         GLuint tempFbo = 0;
@@ -8188,8 +8258,14 @@ public:
             glBindFramebuffer(GL_DRAW_FRAMEBUFFER, (GLuint)dstFbo);
             // Phase F.0.5: 尺寸相同走 GL_NEAREST (1:1 拷贝, 零回归);
             //              尺寸不同走 GL_LINEAR (bilinear stretch, half→full 上采样)
-            const GLenum filter = (srcW == dstW && srcH == dstH) ? GL_NEAREST : GL_LINEAR;
-            glBlitFramebuffer(0, 0, srcW, srcH, 0, 0, dstW, dstH,
+            // Phase F.0.10.2: region 用 dst rect 偏移; src 全 size → dst region 1:1 / stretch
+            const int srcRW = srcX1 - srcX0;
+            const int srcRH = srcY1 - srcY0;
+            const int dstRW = dstX1 - dstX0;
+            const int dstRH = dstY1 - dstY0;
+            const GLenum filter = (srcRW == dstRW && srcRH == dstRH) ? GL_NEAREST : GL_LINEAR;
+            glBlitFramebuffer(srcX0, srcY0, srcX1, srcY1,
+                              dstX0, dstY0, dstX1, dstY1,
                               GL_COLOR_BUFFER_BIT, filter);
         }
         glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
