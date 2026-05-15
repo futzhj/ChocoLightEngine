@@ -96,19 +96,20 @@ Light.Graphics.HDR.SetVelocityDilationHalfRes(false)
 
 ---
 
-## 6. CI 回填（待 T7 完成后填）
+## 6. CI 回填（已完成）
 
 | 字段 | 值 |
 |------|---|
-| GitHub Run ID | `<pending>` |
-| Commit hash | `<pending>` |
-| 6/6 平台状态 | `<pending>` |
-| Total duration | `<pending>` |
+| GitHub Run ID | [`25901596673`](https://github.com/futzhj/ChocoLightEngine/actions/runs/25901596673) |
+| Commit hash | `254984f` |
+| 6/6 平台状态 | ✅ all success |
+| Total duration | **6 min** |
+| Date | 2026-05-15 05:14 UTC → 05:20 UTC |
 
-回填后同步更新：
-- `ACCEPTANCE_PhaseE_18_1.md` 第 7 章
-- `FINAL_PhaseE_18_1.md` 第 8 章
-- `docs/Phase E.18 Independent Velocity Dilation Pass/TODO_PhaseE_18.md` 标记 E.18.1 已完成
+已同步更新：
+- ✅ `ACCEPTANCE_PhaseE_18_1.md` 第 7 章
+- ✅ `FINAL_PhaseE_18_1.md` 第 8 章
+- ⏳ `docs/Phase E.18 Independent Velocity Dilation Pass/TODO_PhaseE_18.md` 标记 E.18.1 已完成（本提交）
 
 ---
 

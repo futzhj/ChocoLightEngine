@@ -23,8 +23,15 @@
 
 ## 3. 未来候选（future candidates）
 
-### Phase E.18.1 — dilation pass 半分辨率（VRAM/perf 优化）
+### Phase E.18.1 — dilation pass 半分辨率（VRAM/perf 优化）— ✅ 已完成
 
+- ✅ Phase E.18.1 已完成（CI run [25901596673](https://github.com/futzhj/ChocoLightEngine/actions/runs/25901596673) 6/6 green，commit `254984f`）
+- 实施回顾：backend 接口 `CreateVelocityDilateRT` / `DrawVelocityDilate` 扩 sw/sh 参数；HDRRenderer 增 `dilationHalfRes` state + `ComputeDilationStorageSize`/`ReleaseDilationRT`/`RebuildDilationRT` 内部辅助；Lua API `HDR.SetVelocityDilationHalfRes` / `GetVelocityDilationHalfRes` 默认 false
+- 性能：VRAM -75% (1080p dilated RT 16MB→4MB)、dilation pass 自身 perf +4× (fragment count -75%)
+- 视觉：max-filter 邻域物理覆盖由 3 raw px 扩到 6 raw px (自动鲁棒)
+- 详见 `@e:/jinyiNew/Light/docs/Phase E.18.1 Velocity Dilation Half-res/FINAL_PhaseE_18_1.md`
+
+**原候选方案**（保留参考）：
 - **方案**：dilatedVelocityTex 改半分辨率 `((w+1)/2, (h+1)/2)`
 - **收益**：VRAM -75%、dilation pass 性能 +4×
 - **风险**：邻域物理覆盖减半（uTexel 翻倍），可能 1-px 错配伪影回升；consumer 单点采时硬件 bilinear 上采可能引入轻微模糊

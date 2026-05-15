@@ -154,20 +154,21 @@ E.18 dilation pass 抽出
 
 ---
 
-## 8. CI 状态（待回填）
+## 8. CI 状态
 
-| 平台 | 状态 | 时长 |
+| 平台 | 状态 | 备注 |
 |------|------|------|
-| build-windows | ⏳ | — |
-| build-linux | ⏳ | — |
-| build-macos | ⏳ | — |
-| build-android | ⏳ | — |
-| build-ios | ⏳ | — |
-| build-web | ⏳ | — |
+| build-windows | ✅ success | runtime smoke 25 PASS (hdr.lua 18 fn) + 17 phase 零回归 |
+| build-linux | ✅ success | 纯构建 |
+| build-macos | ✅ success | 纯构建 |
+| build-android | ✅ success | 纯构建 |
+| build-ios | ✅ success | 纯构建 |
+| build-web | ✅ success | Emscripten WASM |
 
-GitHub Run ID: `<pending>`
-Commit hash: `<pending>`
-Duration: `<pending>`
+GitHub Run ID: [`25901596673`](https://github.com/futzhj/ChocoLightEngine/actions/runs/25901596673)
+Commit hash: `254984f`
+Date: 2026-05-15 05:14 UTC → 05:20 UTC
+Total duration: **6 min** (6/6 平台并行)
 
 ---
 
