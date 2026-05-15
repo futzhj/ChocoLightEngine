@@ -567,22 +567,21 @@ void GetCurrentJitter(float* outX, float* outY) {
 //   - 不能销毁 id=0 (default), 不能 SetActiveInstance(无效 id)
 
 int CreateInstance() {
-    // default 槽必须已 Init (新 instance 继承 backend ptr)
-    if (!g_states[0].inited) {
-        CC::Log(CC::LOG_WARN, "TAARenderer::CreateInstance: 模块未 Init, 拒绝创建");
-        return 0;
-    }
+    // Phase F.0.10: CreateInstance 仅分配槽位 + 复位 state, 不要求 default Init() 完成
+    // (Init 由 light_ui 在 window 创建时调用; headless smoke 环境也能创建 instance,
+    //  仅后续 Enable() 因 backend=nullptr 失败, 这是符合预期的)
     // 找第一个空闲槽 (跳过 [0])
     for (int i = 1; i < MAX_INSTANCES; ++i) {
         if (!g_slot_in_use[i]) {
-            // 复位为干净 default state (struct 默认值), 然后写入 backend
+            // 复位为干净 default state (struct 默认值), 然后继承 default 的 backend / supported / inited
             g_states[i] = State{};
-            g_states[i].backend   = g_states[0].backend;
+            g_states[i].backend   = g_states[0].backend;     // 可能为 nullptr (headless 环境)
             g_states[i].supported = g_states[0].supported;
-            g_states[i].inited    = true;
+            g_states[i].inited    = g_states[0].inited;
             g_slot_in_use[i] = true;
             ++g_count;
-            CC::Log(CC::LOG_INFO, "TAARenderer::CreateInstance: 创建 instance id=%d (count=%d)", i, g_count);
+            CC::Log(CC::LOG_INFO, "TAARenderer::CreateInstance: 创建 instance id=%d (count=%d, inited=%d)",
+                    i, g_count, g_states[0].inited ? 1 : 0);
             return i;
         }
     }
