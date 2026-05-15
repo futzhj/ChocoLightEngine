@@ -7487,8 +7487,14 @@ public:
     /// 把 TAA 输出 blit 回 HDR sceneTex (覆盖, 让 Tonemap 用 TAA 后内容)
     /// 直接用 glBlitFramebuffer: src=TAA history FBO, dst=HDR FBO (sceneTex 是 COLOR_ATTACHMENT0)
     /// 注意 dstFbo 是 HDR FBO 而非裸 sceneTex; 由调用方 (TAARenderer) 传入并确保 sceneTex 是 attachment0.
-    void BlitTAAToHDR(uint32_t srcTex, uint32_t dstFbo, int w, int h) override {
-        if (!srcTex || !dstFbo || w <= 0 || h <= 0) return;
+    /// Phase F.0.5: src/dst 尺寸不同时走 GL_LINEAR stretch (history half-res → sceneTex full-res 上采样)
+    void BlitTAAToHDR(uint32_t srcTex, uint32_t dstFbo,
+                      int srcW, int srcH,
+                      int dstW = 0, int dstH = 0) override {
+        if (!srcTex || !dstFbo || srcW <= 0 || srcH <= 0) return;
+        // dstW/dstH=0 → 退化为 src 同 dst (Phase F.0 老行为)
+        if (dstW <= 0) dstW = srcW;
+        if (dstH <= 0) dstH = srcH;
 
         // 用临时 FBO 包 srcTex (避免要求 TAARenderer 传 FBO; 接口更对称)
         GLuint tempFbo = 0;
@@ -7499,7 +7505,11 @@ public:
                                 GL_TEXTURE_2D, (GLuint)srcTex, 0);
         if (glCheckFramebufferStatus(GL_READ_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE) {
             glBindFramebuffer(GL_DRAW_FRAMEBUFFER, (GLuint)dstFbo);
-            glBlitFramebuffer(0, 0, w, h, 0, 0, w, h, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+            // Phase F.0.5: 尺寸相同走 GL_NEAREST (1:1 拷贝, 零回归);
+            //              尺寸不同走 GL_LINEAR (bilinear stretch, half→full 上采样)
+            const GLenum filter = (srcW == dstW && srcH == dstH) ? GL_NEAREST : GL_LINEAR;
+            glBlitFramebuffer(0, 0, srcW, srcH, 0, 0, dstW, dstH,
+                              GL_COLOR_BUFFER_BIT, filter);
         }
         glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);

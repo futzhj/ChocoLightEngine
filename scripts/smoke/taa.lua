@@ -1,6 +1,6 @@
--- Phase F.0 + F.0.1 + F.0.2 + F.0.3 + F.0.4 smoke: Light.Graphics.TAA (Temporal Anti-Aliasing master pipeline surface)
+-- Phase F.0 + F.0.1 + F.0.2 + F.0.3 + F.0.4 + F.0.5 smoke: Light.Graphics.TAA (Temporal Anti-Aliasing master pipeline surface)
 --
--- API coverage (21 functions = F.0 13 + F.0.1 2 + F.0.2 2 + F.0.3 2 + F.0.4 2):
+-- API coverage (23 functions = F.0 13 + F.0.1 2 + F.0.2 2 + F.0.3 2 + F.0.4 2 + F.0.5 2):
 --   Lifecycle 5: Enable / Disable / IsEnabled / IsSupported / Resize
 --   Params     6: SetBlendAlpha / GetBlendAlpha (clamp [0, 1], default 0.92)
 --                 SetNeighborhoodClip / GetNeighborhoodClip (default true)
@@ -14,6 +14,8 @@
 --                                       “variance” = Salvi 2016 / UE5 default: clip = [mean - γσ, mean + γσ]
 --   Phase F.0.3 — Variance gamma 2: SetVarianceGamma / GetVarianceGamma (clamp [0, 4], default 1.0)
 --                                       仅 ClipMode=="variance" 生效; γ 越小 clip 越严
+--   Phase F.0.5 — Half-res 2: SetHalfResHistory / GetHalfResHistory (boolean, default false)
+--                              true: history RT (w/2, h/2), VRAM -75%; 零回归 (默认 OFF)
 --   Status     2: GetFrameCounter (Halton index 0..7, debug HUD)
 --                 GetCurrentJitter (returns 2 numbers, sub-pixel offset)
 --
@@ -54,6 +56,7 @@ local fn_names = {
     "SetAntiFlicker", "GetAntiFlicker",            -- Phase F.0.4
     "SetClipMode", "GetClipMode",                  -- Phase F.0.2/F.0.3
     "SetVarianceGamma", "GetVarianceGamma",        -- Phase F.0.3
+    "SetHalfResHistory", "GetHalfResHistory",      -- Phase F.0.5
     "GetFrameCounter", "GetCurrentJitter",
 }
 for _, k in ipairs(fn_names) do
@@ -471,6 +474,95 @@ TAA.SetClipMode("ycocg")
 TAA.SetVarianceGamma(1.0)
 
 -- ============================================================
+-- 6.9) Phase F.0.5 — Half-res history RT
+-- ============================================================
+
+-- 默认值 = false (零回归, 与 F.0/0.1/0.2/0.3/0.4 行为一致)
+local def_hr = TAA.GetHalfResHistory()
+if type(def_hr) ~= "boolean" then
+    fail("GetHalfResHistory should return boolean, got " .. type(def_hr))
+end
+if def_hr ~= false then
+    fail("Default GetHalfResHistory must be false (零回归), got " .. tostring(def_hr))
+end
+pass("Default HalfResHistory = false (Phase F.0.5 零回归)")
+
+-- round-trip: false → true → false
+local hr_set1 = TAA.SetHalfResHistory(true)
+if hr_set1 ~= true then
+    fail("SetHalfResHistory(true) should return true, got " .. tostring(hr_set1))
+end
+if TAA.GetHalfResHistory() ~= true then
+    fail("Round-trip true failed, got " .. tostring(TAA.GetHalfResHistory()))
+end
+pass("HalfResHistory round-trip true ok")
+
+TAA.SetHalfResHistory(false)
+if TAA.GetHalfResHistory() ~= false then
+    fail("Round-trip false failed, got " .. tostring(TAA.GetHalfResHistory()))
+end
+pass("HalfResHistory round-trip false ok")
+
+-- type-error: 非 boolean 报错 (与 SetNeighborhoodClip / SetJitterEnabled / SetAntiFlicker 同模式)
+local hr_ok1, hr_err1 = pcall(TAA.SetHalfResHistory, "true")
+if hr_ok1 then
+    fail("SetHalfResHistory with string should raise error")
+end
+pass("SetHalfResHistory type-error rejected (string) [" .. tostring(hr_err1):sub(1, 60) .. "...]")
+
+local hr_ok2, hr_err2 = pcall(TAA.SetHalfResHistory, 1)
+if hr_ok2 then
+    fail("SetHalfResHistory with number should raise error")
+end
+pass("SetHalfResHistory type-error rejected (number)")
+
+local hr_ok3, hr_err3 = pcall(TAA.SetHalfResHistory, nil)
+if hr_ok3 then
+    fail("SetHalfResHistory with nil should raise error")
+end
+pass("SetHalfResHistory type-error rejected (nil)")
+
+-- 状态独立验证: 切换 halfRes 不影响 alpha / clipMode / sharpness / antiFlicker
+local a_before  = TAA.GetBlendAlpha()
+local cm_before = TAA.GetClipMode()
+local sh_before = TAA.GetSharpness()
+local af_before = TAA.GetAntiFlicker()
+local vg_before = TAA.GetVarianceGamma()
+
+TAA.SetHalfResHistory(true)
+TAA.SetHalfResHistory(false)
+TAA.SetHalfResHistory(true)
+
+if math.abs(TAA.GetBlendAlpha()  - a_before)  > 1e-4
+   or TAA.GetClipMode()           ~= cm_before
+   or math.abs(TAA.GetSharpness() - sh_before) > 1e-4
+   or TAA.GetAntiFlicker()        ~= af_before
+   or math.abs(TAA.GetVarianceGamma() - vg_before) > 1e-4 then
+    fail("HalfResHistory toggle should not affect alpha/clipMode/sharpness/antiFlicker/varianceGamma")
+end
+pass("HalfResHistory 切换不影响其他参数 (状态独立)")
+
+-- F.0.1 + F.0.2 + F.0.3 + F.0.4 + F.0.5 五启共存验证
+TAA.SetSharpness(0.5)
+TAA.SetAntiFlicker(true)
+TAA.SetClipMode("variance")
+TAA.SetVarianceGamma(1.5)
+TAA.SetHalfResHistory(true)
+if math.abs(TAA.GetSharpness() - 0.5) > 1e-4
+   or TAA.GetAntiFlicker() ~= true
+   or TAA.GetClipMode() ~= "variance"
+   or math.abs(TAA.GetVarianceGamma() - 1.5) > 1e-4
+   or TAA.GetHalfResHistory() ~= true then
+    fail("F.0.1 + F.0.2 + F.0.3 + F.0.4 + F.0.5 五启共存 failed")
+end
+pass("Sharpness=0.5 + AntiFlicker=true + ClipMode='variance' + VarianceGamma=1.5 + HalfResHistory=true 五启共存 ok")
+
+-- 复位 default
+TAA.SetClipMode("ycocg")
+TAA.SetVarianceGamma(1.0)
+TAA.SetHalfResHistory(false)
+
+-- ============================================================
 -- 7) Status query — GetFrameCounter / GetCurrentJitter
 -- ============================================================
 
@@ -554,15 +646,16 @@ else
 end
 
 print("")
-print("=== Phase F.0 + F.0.1 + F.0.2 + F.0.3 + F.0.4 TAA smoke: ALL TESTS PASSED ===")
-print("Functions covered: " .. #fn_names .. " / 21")
+print("=== Phase F.0 + F.0.1 + F.0.2 + F.0.3 + F.0.4 + F.0.5 TAA smoke: ALL TESTS PASSED ===")
+print("Functions covered: " .. #fn_names .. " / 23")
 print("Highlights:")
-print("  - default OFF, alpha=0.92, neighborhoodClip=true, jitterEnabled=true, sharpness=0.5, antiFlicker=true, clipMode='ycocg', varianceGamma=1.0")
+print("  - default OFF, alpha=0.92, neighborhoodClip=true, jitterEnabled=true, sharpness=0.5, antiFlicker=true, clipMode='ycocg', varianceGamma=1.0, halfResHistory=false")
 print("  - clamp: BlendAlpha [0, 1], Sharpness [0, 2], VarianceGamma [0, 4]")
-print("  - type-error: SetNeighborhoodClip / SetJitterEnabled / SetAntiFlicker reject non-boolean; SetClipMode reject non-string / invalid value; SetVarianceGamma reject non-number")
+print("  - type-error: SetNeighborhoodClip / SetJitterEnabled / SetAntiFlicker / SetHalfResHistory reject non-boolean; SetClipMode reject non-string / invalid value; SetVarianceGamma reject non-number")
 print("  - status: GetFrameCounter [0, 7], GetCurrentJitter in ±0.5 px range")
 print("  - coexistence: TAA toggle does not affect SSR Temporal state")
 print("  - Phase F.0.1: 4-tap unsharp mask, sharpness=0 走 blit fallback (零 ALU)")
 print("  - Phase F.0.4: Karis luma-weighted blend, antiFlicker=false 走 F.0 纯 alpha blend")
 print("  - Phase F.0.2: YCoCg AABB clip, clipMode='rgb' 走 F.0 三通道 RGB clip (零 ALU 增量)")
 print("  - Phase F.0.3: variance clip = mean ± γσ (Salvi 2016 / UE5), 优于 AABB 的 single-outlier 鲁棒性")
+print("  - Phase F.0.5: half-res history RT (w/2,h/2), VRAM -75% (1080p 33.2MB→8.3MB; 4K 132.7MB→33.2MB), 默认 OFF")

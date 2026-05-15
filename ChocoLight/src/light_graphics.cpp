@@ -3213,6 +3213,26 @@ static int l_TAA_GetVarianceGamma(lua_State* L) {
     return 1;
 }
 
+/// @lua_api Light.Graphics.TAA.SetHalfResHistory
+/// @param flag boolean Phase F.0.5 — TAA history RT 半分辨率开关
+///                     true = history RT 改 (w/2, h/2)，VRAM -75%、TAA pass 像素 -75%
+///                     false = full-res (与 Phase F.0/F.0.1/F.0.2/F.0.3/F.0.4 一致，默认)
+///                     已 Enable 时切换 → 立即重建 RT + invalidate hasHistory
+/// @return true on success（错误统一通过 luaL_check 抛错）
+static int l_TAA_SetHalfResHistory(lua_State* L) {
+    luaL_checktype(L, 1, LUA_TBOOLEAN);
+    TAARenderer::SetHalfResHistory(lua_toboolean(L, 1) != 0);
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+/// @lua_api Light.Graphics.TAA.GetHalfResHistory
+/// @return boolean 当前 history RT 是否半分辨率
+static int l_TAA_GetHalfResHistory(lua_State* L) {
+    lua_pushboolean(L, TAARenderer::GetHalfResHistory() ? 1 : 0);
+    return 1;
+}
+
 /// @lua_api Light.Graphics.TAA.GetFrameCounter
 /// @return integer 当前帧 Halton 索引 (0-7, 用于 debug HUD)
 static int l_TAA_GetFrameCounter(lua_State* L) {
@@ -3256,6 +3276,9 @@ static const luaL_Reg taa_funcs[] = {
     // Phase F.0.3 — variance gamma (2 = 1 对): 仅 ClipMode=="variance" 生效, clamp [0, 4], 默认 1.0
     {"SetVarianceGamma",      l_TAA_SetVarianceGamma},
     {"GetVarianceGamma",      l_TAA_GetVarianceGamma},
+    // Phase F.0.5 — half-res history (2 = 1 对): VRAM -75%, 默认 false (零回归)
+    {"SetHalfResHistory",     l_TAA_SetHalfResHistory},
+    {"GetHalfResHistory",     l_TAA_GetHalfResHistory},
     // status (2): debug HUD 用
     {"GetFrameCounter",       l_TAA_GetFrameCounter},
     {"GetCurrentJitter",      l_TAA_GetCurrentJitter},

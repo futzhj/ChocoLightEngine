@@ -437,6 +437,18 @@ while win:IsOpen() do
             TAA.GetAntiFlicker() and 'Karis luma weighting (压制 firefly)' or 'pure alpha blend (F.0 行为)'))
     end
 
+    -- Phase F.0.5 — X: 切 TAA history RT 半分辨率 ON/OFF
+    --   on  → history RT (w/2, h/2), VRAM -75%, history bilinear 上采样
+    --   off → full-res (零回归, 与 F.0/0.1/0.2/0.3/0.4 行为一致)
+    if TAA and TAA.IsEnabled() and TAA.SetHalfResHistory and keyTap('x') then
+        local cur = TAA.GetHalfResHistory()
+        TAA.SetHalfResHistory(not cur)
+        print(string.format('[demo] TAA HalfResHistory: %s -> %s (VRAM %s)',
+            cur and 'ON' or 'OFF',
+            TAA.GetHalfResHistory() and 'ON' or 'OFF',
+            TAA.GetHalfResHistory() and '-75%' or 'baseline'))
+    end
+
     -- R: reset 默认
     if keyTap('r') then
         SSR.SetMaxSteps(64); SSR.SetStepSize(0.1); SSR.SetThickness(0.5)
@@ -522,19 +534,20 @@ while win:IsOpen() do
                 MotionBlur.GetStrength(),
                 MotionBlur.GetSampleCount()))
         end
-        -- Phase F.0+F.0.1+F.0.2+F.0.3+F.0.4: TAA 主管线状态 (jitter + frame counter + alpha + clip + sharpness + antiFlicker + clipMode + varianceGamma)
+        -- Phase F.0+F.0.1+F.0.2+F.0.3+F.0.4+F.0.5: TAA 主管线状态 (jitter + frame counter + alpha + clip + sharpness + antiFlicker + clipMode + varianceGamma + halfResHistory)
         local TAAhud = Gfx.TAA
         if TAAhud then
             local jx, jy = TAAhud.GetCurrentJitter()
             local sharp  = TAAhud.GetSharpness and TAAhud.GetSharpness() or 0
             local af     = TAAhud.GetAntiFlicker and TAAhud.GetAntiFlicker() or false
             local cmode  = TAAhud.GetClipMode and TAAhud.GetClipMode() or 'ycocg'        -- Phase F.0.2/F.0.3 默认 ycocg
+            local hr     = TAAhud.GetHalfResHistory and TAAhud.GetHalfResHistory() or false  -- Phase F.0.5
             -- Phase F.0.3: 仅 ClipMode=="variance" 时在 HUD 添加 vg=γ 字段避免垃圾信息
             local cmodeStr = cmode
             if cmode == 'variance' and TAAhud.GetVarianceGamma then
                 cmodeStr = string.format('variance(γ=%.2f)', TAAhud.GetVarianceGamma())
             end
-            line(string.format('TAA: %s | alpha=%.2f | clip=%s/%s | jitter=%s | sharp=%.2f (%s) | AF=%s | frame=%d (jx=%.3f jy=%.3f)',
+            line(string.format('TAA: %s | alpha=%.2f | clip=%s/%s | jitter=%s | sharp=%.2f (%s) | AF=%s | halfRes=%s | frame=%d (jx=%.3f jy=%.3f)',
                 TAAhud.IsEnabled() and 'ON' or 'OFF',
                 TAAhud.GetBlendAlpha(),
                 TAAhud.GetNeighborhoodClip() and 'ON' or 'OFF',
@@ -543,10 +556,11 @@ while win:IsOpen() do
                 sharp,
                 sharp > 0 and 'sharpen pass' or 'pure blit',
                 af and 'ON' or 'OFF',                    -- Phase F.0.4
+                hr and 'ON' or 'OFF',                    -- Phase F.0.5
                 TAAhud.GetFrameCounter(),
                 jx, jy))
         end
-        line('Keys: F=SSR B=Blur V=Bilateral T=Temporal 9/0=radius ,/.=sigma U/I=alpha N=reject K=Dilation L=Format M=MotionBlur ;=Mode [=MBHalfRes ]=DilHalfRes \\=AutoSkip Y=TAA J=TAAjitter H=TAAsharp G=TAAAF R=reset ESC')
+        line('Keys: F=SSR B=Blur V=Bilateral T=Temporal 9/0=radius ,/.=sigma U/I=alpha N=reject K=Dilation L=Format M=MotionBlur ;=Mode [=MBHalfRes ]=DilHalfRes \\=AutoSkip Y=TAA J=TAAjitter H=TAAsharp G=TAAAF X=TAAHalfRes R=reset ESC')
     end
 
     win:EndFrame()

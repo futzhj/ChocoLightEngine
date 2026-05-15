@@ -44,8 +44,10 @@ struct State {
     bool     enabled        = false;
     bool     autoEnable     = false;        // 与 Phase E 模块一致, 用户主动 Enable
 
-    int      width          = 0;
+    int      width          = 0;            // sceneTex 全分辨率 (用户 Enable 传入, BlitTAAToHDR/Sharpen 输出用)
     int      height         = 0;
+    int      historyW       = 0;            // Phase F.0.5: history RT 实际分辨率 (halfRes 时 = w/2, 否则 = w)
+    int      historyH       = 0;            // 同上
 
     // history ping-pong (与 SSR Temporal / Motion Blur 同模式)
     uint32_t historyFbos[2] = {0, 0};
@@ -61,6 +63,7 @@ struct State {
     bool     antiFlicker      = true;        // Phase F.0.4: Karis luma weighting blend, 默认启用
     int      clipMode         = 1;           // Phase F.0.2/F.0.3: 0=RGB AABB / 1=YCoCg AABB (默认) / 2=YCoCg variance
     float    varianceGamma    = 1.0f;        // Phase F.0.3: variance clip 收紧系数 γ (Salvi 2016 / UE5 默认 1.0)
+    bool     halfResHistory   = false;       // Phase F.0.5: history RT 半分辨率 (默认 false, 零回归)
 
     // jitter state
     uint64_t frameCounter   = 0;
@@ -71,6 +74,14 @@ struct State {
 static State g;
 
 // ==================== 内部资源管理 ====================
+
+/// Phase F.0.5: 计算 history RT 实际尺寸 (halfRes 时 = sceneW/2, 否则 = sceneW)
+/// max(., 1) 防御极端小 sceneTex 除以 2 变 0 的边界条件
+static int historySize_(int sceneSize, bool halfRes) {
+    if (!halfRes) return sceneSize;
+    const int half = sceneSize / 2;
+    return half > 0 ? half : 1;
+}
 
 /// 释放 history RT (与 backend 配对)
 static void ReleaseRT() {
@@ -84,20 +95,28 @@ static void ReleaseRT() {
     g.curJitterX    = 0.0f;
     g.curJitterY    = 0.0f;
     g.width = g.height = 0;
+    g.historyW = g.historyH = 0;
 }
 
-/// 分配 history RT (RGBA16F × 2, 与 sceneTex 同尺寸)
-static bool AllocateRT(int w, int h) {
-    if (!g.backend || w <= 0 || h <= 0) return false;
-    if (!g.backend->CreateTAAHistoryRT(w, h, g.historyFbos, g.historyTexs)) {
-        CC::Log(CC::LOG_WARN, "TAARenderer: CreateTAAHistoryRT failed (%dx%d)", w, h);
+/// 分配 history RT
+/// @param sceneW/sceneH sceneTex 全分辨率 (用户传入)
+/// Phase F.0.5: history RT 实际尺寸 = halfResHistory ? (w/2,h/2) : (w,h)
+static bool AllocateRT(int sceneW, int sceneH) {
+    if (!g.backend || sceneW <= 0 || sceneH <= 0) return false;
+    const int hw = historySize_(sceneW, g.halfResHistory);
+    const int hh = historySize_(sceneH, g.halfResHistory);
+    if (!g.backend->CreateTAAHistoryRT(hw, hh, g.historyFbos, g.historyTexs)) {
+        CC::Log(CC::LOG_WARN, "TAARenderer: CreateTAAHistoryRT failed (history=%dx%d, scene=%dx%d, halfRes=%d)",
+                hw, hh, sceneW, sceneH, g.halfResHistory ? 1 : 0);
         return false;
     }
     g.historyIdx   = 0;
     g.hasHistory   = false;
     g.frameCounter = 0;
-    g.width  = w;
-    g.height = h;
+    g.width    = sceneW;
+    g.height   = sceneH;
+    g.historyW = hw;
+    g.historyH = hh;
     return true;
 }
 
@@ -250,12 +269,13 @@ void Process(uint32_t hdrFbo, uint32_t hdrTex) {
     const uint32_t rawV      = g.backend->GetHDRVelocityTex(hdrFbo);
     const uint32_t velocityTex = dilatedV ? dilatedV : rawV;
 
-    // 跑 TAA shader: 输出到 historyFbos[writeIdx]
+    // Phase F.0.5: TAA pass viewport = history RT 实际尺寸 (halfRes 时为 w/2, 否则为 w)
+    //              shader 内邻域 sample 用 vUV 归一化 [0,1], sceneTex GL_LINEAR 自动 box-filter 预采样
     g.backend->DrawTAAPass(hdrTex,
                             g.historyTexs[readIdx],
                             velocityTex,
                             g.historyFbos[writeIdx],
-                            g.width, g.height,
+                            g.historyW, g.historyH,     // Phase F.0.5: history RT 尺寸 (可能为 half-res)
                             g.blendAlpha,
                             g.neighborhoodClip ? 1 : 0,
                             g.hasHistory ? 1 : 0,
@@ -268,11 +288,16 @@ void Process(uint32_t hdrFbo, uint32_t hdrTex) {
 
     // Phase F.0.1: sharpness > 0 走 4-tap unsharp mask sharpen pass (in-place 写回 sceneTex);
     //              否则保持 F.0 纯 blit 路径 (零 ALU 开销)
+    // Phase F.0.5:
+    //   Sharpen: viewport=full-res, srcTex (history) GL_LINEAR sample 自动上采样→不需传 history 尺寸
+    //   Blit:    src(history half-res) → dst(sceneTex full-res), backend 内检测尺寸不同走 GL_LINEAR stretch
     if (g.sharpness > 0.0f) {
         g.backend->DrawTAASharpenPass(g.historyTexs[writeIdx], hdrFbo,
                                      g.width, g.height, g.sharpness);
     } else {
-        g.backend->BlitTAAToHDR(g.historyTexs[writeIdx], hdrFbo, g.width, g.height);
+        g.backend->BlitTAAToHDR(g.historyTexs[writeIdx], hdrFbo,
+                                 g.historyW, g.historyH,    // Phase F.0.5: src = history RT 实际尺寸
+                                 g.width,    g.height);     // Phase F.0.5: dst = sceneTex full-res
     }
 
     // 状态推进
@@ -335,6 +360,29 @@ const char* GetClipMode() {
 // Phase F.0.3 — Variance clip 收紧系数 γ, clamp [0, 4]
 void  SetVarianceGamma(float gamma) { g.varianceGamma = clampf(gamma, 0.0f, 4.0f); }
 float GetVarianceGamma()             { return g.varianceGamma; }
+
+// Phase F.0.5 — history RT 半分辨率开关
+// 切换时立即重建 RT (避免分辨率不匹配的 reproject 花屏一帧)
+// enabled=false 时仅修改 state, 下次 Enable 自动用新 halfRes 设置
+void SetHalfResHistory(bool on) {
+    if (on == g.halfResHistory) return;          // 早退: 无变化
+    g.halfResHistory = on;
+    if (!g.enabled) return;                       // 未启用: 下次 Enable 自动使用新 state
+    // 运行时切换: 重建 history RT 到新分辨率
+    const int sceneW = g.width;
+    const int sceneH = g.height;
+    if (sceneW <= 0 || sceneH <= 0) return;
+    ReleaseRT();
+    if (!AllocateRT(sceneW, sceneH)) {
+        CC::Log(CC::LOG_WARN, "TAARenderer::SetHalfResHistory: 重建 RT 失败, TAA 已禁用");
+        g.enabled = false;
+        return;
+    }
+    // hasHistory 已被 AllocateRT 重置为 false (避免老分辨率 history 被 reproject)
+    CC::Log(CC::LOG_INFO, "TAARenderer::SetHalfResHistory: %s, history RT = %dx%d (scene = %dx%d)",
+            on ? "ON" : "OFF", g.historyW, g.historyH, sceneW, sceneH);
+}
+bool GetHalfResHistory() { return g.halfResHistory; }
 
 void  SetJitterEnabled(bool on) {
     g.jitterEnabled = on;

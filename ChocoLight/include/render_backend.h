@@ -1339,9 +1339,12 @@ public:
     /// 把 TAA 输出 blit 回 HDR sceneTex (覆盖, 让后续 Tonemap 用 TAA 后内容)
     /// @param srcTex    TAA 输出 tex (= history 新 slot tex)
     /// @param dstFbo    HDR FBO (绑定的 sceneTex 是 blit 目标)
-    /// @param w, h      尺寸 (full-res)
+    /// @param srcW, srcH  src 尺寸 (history RT 实际尺寸，可能为 half-res，Phase F.0.5)
+    /// @param dstW, dstH  dst 尺寸 (sceneTex 尺寸，full-res)；默认 0=与 src 同尺寸 (向后兼容老调用)
+    /// Phase F.0.5: src/dst 尺寸不同时自动走 GL_LINEAR stretch (上采样)；同尺寸保持 GL_NEAREST (零回归)
     virtual void BlitTAAToHDR(uint32_t /*srcTex*/, uint32_t /*dstFbo*/,
-                              int /*w*/, int /*h*/) {}
+                              int /*srcW*/, int /*srcH*/,
+                              int /*dstW*/ = 0, int /*dstH*/ = 0) {}
 
     /// Phase F.0.1 — TAA Sharpen pass: 4-tap unsharp mask, 替代 BlitTAAToHDR (in-place 写回 sceneTex)
     /// 调用方在 sharpness > 0 时调; sharpness <= 0 时直接走 BlitTAAToHDR (零 ALU 开销).

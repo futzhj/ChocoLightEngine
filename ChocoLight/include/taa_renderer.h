@@ -127,6 +127,20 @@ const char* GetClipMode();
 void  SetVarianceGamma(float gamma);   // clamp [0, 4]
 float GetVarianceGamma();
 
+/// Phase F.0.5 — TAA history RT 是否半分辨率 (默认 false, 零回归)
+/// 算法: history RT 尺寸 = (w/2, h/2), VRAM -75%; TAA pass viewport=(w/2, h/2);
+///       BlitTAAToHDR 自动 GL_LINEAR stretch 上采样 history → sceneTex (full-res);
+///       Sharpen pass 不变 (走 fragment shader 上采样, sample srcTex 自动 GL_LINEAR)
+/// 视觉影响: history bilinear 上采样引入 ~1px 模糊, 默认 sharpness=0.5 完全弥补;
+///          邻域 clip 在 box-filtered 邻域上做, firefly 反而被预压制
+/// 性能: VRAM -75% (1080p 33.2MB → 8.3MB; 4K 132.7MB → 33.2MB)
+///       TAA pass -75% 像素 (~0.04ms vs 0.10ms); Blit +0.01ms (stretch);
+///       Sharpen 不变. 总体 ~0.09ms vs 0.13ms (-30%)
+/// 切换时机: 立即重建 history RT + invalidate hasHistory (避免分辨率不匹配 reproject 花屏)
+/// 推荐场景: 移动 4K / VRAM 紧张 / 长开 TAA 项目; 静态高端不必启用
+void SetHalfResHistory(bool on);
+bool GetHalfResHistory();
+
 // ==================== 内部状态查询 (debug HUD 用) ====================
 
 /// 当前帧 Halton 索引 (% 8), 累加帧计数器低 3 位

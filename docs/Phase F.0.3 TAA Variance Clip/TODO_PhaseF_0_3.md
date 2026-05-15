@@ -9,9 +9,9 @@
 
 | 任务 | 操作 | 优先级 |
 |------|------|--------|
-| commit + push 代码到 main | git add + commit + push origin main | 🔴 高 |
-| 监控 GitHub Actions CI 6/6 平台 success | gh run view | 🔴 高 |
-| CI 状态回填 ACCEPTANCE / FINAL / TODO | 编辑 3 份文档 §CI 状态 | 🔴 高 |
+| commit + push 代码到 main | ✅ 完成 (commit `15b0db7`) |
+| 监控 GitHub Actions CI 6/6 平台 success | ✅ 完成 (Run 25927812437) |
+| CI 状态回填 ACCEPTANCE / FINAL / TODO | ✅ 完成 |
 
 ---
 
@@ -93,15 +93,14 @@ end
 
 | 字段 | 值 |
 |------|---|
-| GitHub Run ID | `<pending>` |
-| Commit hash | `<pending>` |
-| 6/6 平台状态 | `<pending>` |
-| Total duration | `<pending>` |
-| Date | `<pending>` |
+| GitHub Run ID | `25927812437` |
+| Commit hash | `15b0db7` |
+| 6/6 平台状态 | ✅ 全部 success |
+| Date | `2026-05-15` |
 
-回填后同步更新：
-- `ACCEPTANCE_PhaseF_0_3.md` 第 7 章
-- `FINAL_PhaseF_0_3.md` 第 8 章
+回填完成 ✅:
+- `ACCEPTANCE_PhaseF_0_3.md` 第 7 章 已更新
+- `FINAL_PhaseF_0_3.md` 第 8 章 已更新
 
 ---
 
@@ -118,4 +117,4 @@ Phase F.0.3 实施完整，**无阻塞性遗留**。主要交付：
 - 与 F.0.1 sharpening 完全正交 (作用不同 pipeline 阶段)
 - smoke 21 fn / demo HUD 条件 γ / docs 同步更新
 
-**下一步**：T6 commit + push + CI 验证 6/6 平台 success。
+**状态**: ✅ 全部交付完成，CI 6/6 平台验证通过。
