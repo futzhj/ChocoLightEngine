@@ -178,21 +178,21 @@ Functions covered: 19 / 19
 
 ---
 
-## 8. CI 状态（待回填）
+## 8. CI 状态（已回填）
 
 | 平台 | 状态 | 备注 |
 |------|------|------|
-| build-windows | ⏳ | runtime smoke 含 taa.lua 19 fn |
-| build-linux | ⏳ | 纯构建 |
-| build-macos | ⏳ | 纯构建 |
-| build-android | ⏳ | 纯构建 |
-| build-ios | ⏳ | 纯构建 |
-| build-web | ⏳ | Emscripten WASM |
+| build-windows | ✅ success | runtime smoke 19 fn + ClipMode 11 PASS + ALL TESTS PASSED |
+| build-linux | ✅ success | 纯构建 |
+| build-macos | ✅ success | 纯构建 |
+| build-android | ✅ success | 纯构建 |
+| build-ios | ✅ success | 纯构建 |
+| build-web | ✅ success | Emscripten WASM |
 
-GitHub Run ID: `<pending>`
-Commit hash: `<pending>`
-Date: `<pending>`
-Total duration: `<pending>`
+GitHub Run ID: `25919166211`
+Commit hash: `919d44f`
+Date: `2026-05-15`
+Total duration: `7m 42s`
 
 ---
 

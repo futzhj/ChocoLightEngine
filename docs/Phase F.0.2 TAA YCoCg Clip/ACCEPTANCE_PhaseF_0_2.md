@@ -81,9 +81,9 @@
 - [x] `TODO_PhaseF_0_2.md` (下一文件)
 
 ### T5 CI
-- [ ] GitHub Actions 6/6 平台 success
-- [ ] Windows runtime smoke 11 个 F.0.2 PASS + Functions covered 19/19
-- [ ] CI 状态回填 ACCEPTANCE + FINAL + TODO
+- [x] GitHub Actions 6/6 平台 success
+- [x] Windows runtime smoke 11 个 F.0.2 PASS + Functions covered 19/19
+- [x] CI 状态回填 ACCEPTANCE + FINAL + TODO
 
 ---
 
@@ -189,18 +189,37 @@ Phase F.0 + F.0.1 + F.0.2 + F.0.4 TAA smoke: ALL TESTS PASSED
 
 ---
 
-## 7. CI 状态（待回填）
+## 7. CI 状态（已回填）
 
 | 平台 | 状态 | 状态详情 |
 |------|------|---------|
-| build-windows | ⏳ | runtime smoke 含 taa.lua 19 fn + ClipMode 11 新 PASS + 三启共存 |
-| build-linux | ⏳ | 纯构建 |
-| build-macos | ⏳ | 纯构建 |
-| build-android | ⏳ | 纯构建 |
-| build-ios | ⏳ | 纯构建 |
-| build-web | ⏳ | Emscripten WASM |
+| build-windows | ✅ success | runtime smoke 19 fn + 11 新 ClipMode PASS + ALL TESTS PASSED |
+| build-linux | ✅ success | 纯构建 |
+| build-macos | ✅ success | 纯构建 |
+| build-android | ✅ success | 纯构建 |
+| build-ios | ✅ success | 纯构建 |
+| build-web | ✅ success | Emscripten WASM |
 
-GitHub Run ID: `<pending>`
-Commit hash: `<pending>`
-Total duration: `<pending>`
-Date: `<pending>`
+GitHub Run ID: `25919166211`
+Commit hash: `919d44f`
+Total duration: `7m 42s` (13:00:34Z → 13:08:16Z)
+Date: `2026-05-15`
+
+### Windows runtime smoke 验证日志
+
+```
+PASS: Default ClipMode = 'ycocg' (Phase F.0.2)
+PASS: ClipMode round-trip ok ('rgb' / 'ycocg')
+PASS: ClipMode case-insensitive ok ('RGB'/'YCoCg'/'YCOCG'/'Rgb' → normalized)
+PASS: SetClipMode invalid value 'abc' rejected (nil+err)
+PASS: SetClipMode empty string rejected (nil+err)
+PASS: SetClipMode type-error rejected (number)
+PASS: SetClipMode type-error rejected (boolean)
+PASS: ClipMode state preserved on failed call
+PASS: Sharpness=0.8 + AntiFlicker=true + ClipMode='ycocg' 三启共存 ok
+=== Phase F.0 + F.0.1 + F.0.2 + F.0.4 TAA smoke: ALL TESTS PASSED ===
+Functions covered: 19 / 19
+  - default OFF, alpha=0.92, neighborhoodClip=true, jitterEnabled=true, sharpness=0.5, antiFlicker=true, clipMode='ycocg'
+  - type-error: SetNeighborhoodClip / SetJitterEnabled / SetAntiFlicker reject non-boolean; SetClipMode reject non-string / invalid value
+  - Phase F.0.2: YCoCg AABB clip, clipMode='rgb' 走 F.0 三通道 RGB clip (零 ALU 增量)
+```

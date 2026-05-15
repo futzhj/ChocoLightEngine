@@ -5,13 +5,13 @@
 
 ---
 
-## 1. 必做（阻塞性，本 Phase 内）
+## 1. 已完成 ✅
 
-| 任务 | 操作 | 优先级 |
-|------|------|--------|
-| commit + push 代码到 main | git add + commit + push origin main | 🔴 高 |
-| 监控 GitHub Actions CI 6/6 平台 success | gh run view | 🔴 高 |
-| CI 状态回填 ACCEPTANCE / FINAL / TODO | 编辑 3 份文档 §CI 状态 | 🔴 高 |
+| 任务 | 操作 | 状态 |
+|------|------|------|
+| commit + push 代码到 main | commit `919d44f` 已推送 origin/main | ✅ |
+| 监控 GitHub Actions CI 6/6 平台 success | Run `25919166211` 6/6 success (7m 42s) | ✅ |
+| CI 状态回填 ACCEPTANCE / FINAL / TODO | 3 份文档均已回填 CI 详情 | ✅ |
 
 ---
 
@@ -86,18 +86,18 @@ end
 
 ---
 
-## 6. CI 回填（待 T5 完成后填）
+## 6. CI 回填（已完成）
 
 | 字段 | 值 |
 |------|---|
-| GitHub Run ID | `<pending>` |
-| Commit hash | `<pending>` |
-| 6/6 平台状态 | `<pending>` |
-| Total duration | `<pending>` |
-| Date | `<pending>` |
+| GitHub Run ID | `25919166211` |
+| Commit hash | `919d44f` |
+| 6/6 平台状态 | ✅ ALL SUCCESS (windows / linux / macos / android / ios / web) |
+| Total duration | `7m 42s` (13:00:34Z → 13:08:16Z) |
+| Date | `2026-05-15` |
 
-回填后同步更新：
-- `ACCEPTANCE_PhaseF_0_2.md` 第 7 章
+同步回填到：
+- `ACCEPTANCE_PhaseF_0_2.md` 第 7 章 + 附加 Windows runtime smoke 验证日志
 - `FINAL_PhaseF_0_2.md` 第 8 章
 
 ---
@@ -114,4 +114,8 @@ Phase F.0.2 实施完整，**无阻塞性遗留**。主要交付：
 - 与 F.0.1 sharpening 完全正交 (作用不同 pipeline 阶段)
 - smoke 19 fn / demo HUD / docs 同步更新
 
-**下一步**：T5 commit + push + CI 验证 6/6 平台 success。
+**下一步**：Phase F.0.2 全面交付完成。用户可选择下一期候选项：
+- **Phase F.0.5** Half-res TAA history RT (VRAM -75%, 3h, 推荐)
+- **Phase F.0.7** Split-screen A/B demo (轻量验证工具, 2h)
+- **Phase F.0.3** Variance clipping (clip 替代算法, F.0.2 已覆盖多数需求, 优先级较低, 3h)
+- **Phase F.0.6** 5-tap CAS sharpening (替代 F.0.1 4-tap, AMD FSR2 算法, 4h)
