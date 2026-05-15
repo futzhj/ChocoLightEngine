@@ -1,39 +1,46 @@
 -- ============================================================================
--- ChocoLight Phase F.0.10.2 — True Physical Split-Screen with Independent TAA
+-- ChocoLight Phase F.0.10.4 — True Physical Split-Screen with Independent
+--                              TAA + Bloom + SSR + MotionBlur (per-region)
 -- ============================================================================
--- 演示**真物理 split-screen**: 同一帧内左半屏渲染 player 1, 右半屏渲染 player 2,
--- 双 TAA instance 各自独立 history, 真正的同帧双 TAA (vs F.0.10.1 demo_taa_split 是
--- timeline cycle).
+-- F.0.10.2 交付了双 TAA instance 同帧 split-screen。
+-- F.0.10.3 交付了 Bloom / SSR / MotionBlur 的 region 化 (3 个 .Process(rgn) Lua API).
+-- F.0.10.4 (本 demo) 把 F.0.10.3 的成果同屏站台化: 双 player 各自不同后处理 profile.
 --
--- 实现要点 (F.0.10.2 新增 API):
---   1) HDR.SetAutoTAA(false)               -- 关 EndScene 自动 TAA
---   2) Graphics.SetViewport(x, y, w, h)    -- 限制 raster 到子区域 (双 viewport 关键)
---   3) TAA.Process(rgnX, rgnY, rgnW, rgnH) -- 手动 region TAA process (per-instance)
---   4) TAA.SetActiveInstance(id) + ApplyJitter() — 双 instance jitter 独立
+-- 双 player 后处理对比 profile (视觉差异明显):
+--   Player 1 (左, "电影感冲击"): RCAS 强锐 + 强 Bloom + 中速 SSR + 强 MotionBlur
+--   Player 2 (右, "高清细腻"):   Lanczos halfRes + 轻 Bloom + 高质 temporal SSR + 无 MotionBlur
 --
--- 每帧流程:
---   HDR.BeginScene()                                  -- 全屏清屏 (HDR fbo)
+-- F.0.10.3 新增 API 起作用点:
+--   1) HDR.SetAutoBloom(false)                                -- 关 EndScene 自动全屏 Bloom
+--   2) HDR.SetAutoSSR(false)                                  -- 关 EndScene 自动全屏 SSR
+--   3) HDR.SetAutoMotionBlur(false)                           -- 关 EndScene 自动全屏 MB
+--   4) Bloom.Process(rgnX, rgnY, rgnW, rgnH)                  -- 手动 region Bloom
+--   5) SSR.Process(rgnX, rgnY, rgnW, rgnH)                    -- 手动 region SSR
+--   6) MotionBlur.Process(rgnX, rgnY, rgnW, rgnH)             -- 手动 region MB
 --
---   -- Player 1 (左半屏)
---   Graphics.SetViewport(0, 0, W/2, H)
---   TAA.SetActiveInstance(1); TAA.ApplyJitter()       -- 用 instance 1 的 jitter
---   Gfx.SetCamera(player1_eye, player1_at)
---   -- ... draw scene from player 1 view ...
---   TAA.Process(0, 0, W/2, H)                          -- scissor 限定 instance 1 history 仅左半
+-- F.0.10.2 已有 API:
+--   HDR.SetAutoTAA(false) + TAA.Process(rgn) + Gfx.SetViewport + TAA.SetActiveInstance
 --
---   -- Player 2 (右半屏)
---   Graphics.SetViewport(W/2, 0, W/2, H)
---   TAA.SetActiveInstance(2); TAA.ApplyJitter()       -- 用 instance 2 的 jitter
---   Gfx.SetCamera(player2_eye, player2_at)
---   -- ... draw scene from player 2 view ...
---   TAA.Process(W/2, 0, W/2, H)                        -- scissor 限定 instance 2 history 仅右半
+-- 每帧流程 (per region):
+--   HDR.BeginScene()                          -- BeginFrame 自动调 (全屏清 HDR fbo)
 --
---   Graphics.SetViewport(0, 0, W, H)                   -- 复位全屏 (HDR.EndScene 全屏 tonemap)
---   HDR.EndScene()                                     -- bloom + tonemap (auto-TAA 已关)
+--   -- Player 1 (左半屏, x=0, w=HALF_W)
+--   Gfx.SetViewport(0, 0, HALF_W, WIN_H)
+--   TAA.SetActiveInstance(p1_id); TAA.ApplyJitter()
+--   drawScene(player1_camera)                 -- raster into HDR fbo 左半区域
+--   Bloom.Process(0, 0, HALF_W, WIN_H)        -- 1❶ Bloom (顺序同 HDR.EndScene auto 路径)
+--   SSR.Process(0, 0, HALF_W, WIN_H)          -- 2❷ SSR
+--   MotionBlur.Process(0, 0, HALF_W, WIN_H)   -- 3❸ MotionBlur
+--   TAA.Process(0, 0, HALF_W, WIN_H)          -- 4❹ TAA history (双 instance 隔离)
+--
+--   -- Player 2 (右半屏, x=HALF_W, w=HALF_W) — 同理, 但 profile 不同
+--   ...
+--
+--   Gfx.SetViewport(0, 0, WIN_W, WIN_H)       -- 复位 (HDR.EndScene tonemap 仍全屏)
+--   HDR.EndScene()                            -- 仅 tonemap (auto-Bloom/SSR/MB/TAA 均 off)
 --
 -- 控制:
---   方向键 / WASD : 移动 player 1 / player 2 视角 (待后续扩展)
---   R             : 重置两个 instance history (Disable + Enable)
+--   R             : 重置两个 instance history
 --   ESC           : 退出
 -- ============================================================================
 
@@ -69,6 +76,7 @@ local function api_missing(t, name)
     return false
 end
 
+-- F.0.10.2 基础 API 依赖
 if api_missing(TAA, 'CreateInstance')
 or api_missing(TAA, 'SetActiveInstance')
 or api_missing(TAA, 'Process')                  -- F.0.10.2 新增
@@ -79,7 +87,25 @@ or api_missing(Gfx, 'SetViewport') then         -- F.0.10.2 Phase 1
     return
 end
 
-print('==== ChocoLight Phase F.0.10.2 True Physical Split-Screen Demo ====')
+-- F.0.10.3 新 API 依赖 (Bloom/SSR/MB region 化) — 未启时降级成 F.0.10.2 纯 TAA 演示
+local Bloom = Gfx.Bloom
+local SSR   = Gfx.SSR
+local MB    = Gfx.MotionBlur
+local hasF10_3 = (type(Bloom) == 'table') and (type(SSR) == 'table') and (type(MB) == 'table')
+             and (not api_missing(Bloom, 'Process'))
+             and (not api_missing(SSR,   'Process'))
+             and (not api_missing(MB,    'Process'))
+             and (not api_missing(HDR, 'SetAutoBloom'))
+             and (not api_missing(HDR, 'SetAutoSSR'))
+             and (not api_missing(HDR, 'SetAutoMotionBlur'))
+if hasF10_3 then
+    print('[demo_taa_split2] Phase F.0.10.3 API ready (Bloom/SSR/MB region + HDR.SetAuto*)')
+else
+    print('[demo_taa_split2] Phase F.0.10.3 API not full (demo 降级为 F.0.10.2 纯 TAA)')
+end
+
+print('==== ChocoLight Phase F.0.10.4 True Physical Split-Screen Demo ====')
+print('  (TAA + Bloom + SSR + MotionBlur all per-region with different profiles)')
 print('[demo_taa_split2] Backend          = ' .. tostring(Gfx.GetBackendName and Gfx.GetBackendName() or '?'))
 print('[demo_taa_split2] HDR.IsSupported  = ' .. tostring(HDR.IsSupported()))
 print('[demo_taa_split2] TAA.IsSupported  = ' .. tostring(TAA.IsSupported()))
@@ -87,11 +113,12 @@ print('[demo_taa_split2] Initial autoTAA  = ' .. tostring(HDR.GetAutoTAA()))
 
 -- ============================================================================
 -- Headless API 探针: 在 Window 不可用 / Window.Open 失败时都跑 (CI smoke 路径)
+-- F.0.10.4 拓展: 补 Bloom/SSR/MB region API 探针
 -- ============================================================================
 local function run_headless_api_probe()
     print('[demo_taa_split2] running headless API probe (no window)')
 
-    -- 检查 HDR.SetAutoTAA round-trip
+    -- F.0.10.2 检查 HDR.SetAutoTAA round-trip
     HDR.SetAutoTAA(false)
     if HDR.GetAutoTAA() ~= false then
         print('  FAIL: SetAutoTAA(false) round-trip failed')
@@ -100,7 +127,7 @@ local function run_headless_api_probe()
     end
     HDR.SetAutoTAA(true)
 
-    -- TAA.Process 在 HDR 未启用时返 nil + err
+    -- F.0.10.2 TAA.Process 在 HDR 未启用时返 nil + err
     local ok, err = TAA.Process(0, 0, 100, 100)
     if ok == nil and type(err) == 'string' then
         print('  PASS: TAA.Process(region) headless returns nil + err: ' .. err)
@@ -114,6 +141,42 @@ local function run_headless_api_probe()
     print(string.format('  CreateInstance x2 -> %s, %s', tostring(id1), tostring(id2)))
     if id1 then TAA.DestroyInstance(id1) end
     if id2 then TAA.DestroyInstance(id2) end
+
+    -- F.0.10.4 新增: Bloom / SSR / MB region API 探针
+    if hasF10_3 then
+        -- HDR.SetAutoBloom round-trip
+        HDR.SetAutoBloom(false)
+        if HDR.GetAutoBloom() ~= false then print('  FAIL: SetAutoBloom round-trip')
+        else                                print('  PASS: HDR.SetAutoBloom(false) round-trip ok') end
+        HDR.SetAutoBloom(true)
+
+        -- HDR.SetAutoSSR round-trip
+        HDR.SetAutoSSR(false)
+        if HDR.GetAutoSSR() ~= false then print('  FAIL: SetAutoSSR round-trip')
+        else                              print('  PASS: HDR.SetAutoSSR(false) round-trip ok') end
+        HDR.SetAutoSSR(true)
+
+        -- HDR.SetAutoMotionBlur round-trip
+        HDR.SetAutoMotionBlur(false)
+        if HDR.GetAutoMotionBlur() ~= false then print('  FAIL: SetAutoMotionBlur round-trip')
+        else                                     print('  PASS: HDR.SetAutoMotionBlur(false) round-trip ok') end
+        HDR.SetAutoMotionBlur(true)
+
+        -- Bloom/SSR/MB.Process 在 HDR 未启时返 nil + err
+        local function probe_process(name, fn)
+            local r, e = fn(0, 0, 100, 100)
+            if r == nil and type(e) == 'string' then
+                print(string.format('  PASS: %s.Process(region) headless returns nil + err: %s', name, e))
+            else
+                print(string.format('  FAIL: %s.Process expected nil + err, got %s', name, tostring(r)))
+            end
+        end
+        probe_process('Bloom', Bloom.Process)
+        probe_process('SSR',   SSR.Process)
+        probe_process('MB',    MB.Process)
+    else
+        print('  SKIP: F.0.10.3 API not present (legacy build)')
+    end
 end
 
 if not UI or not UI.Window then
@@ -125,7 +188,7 @@ end
 local Window = UI.Window
 local WIN_W, WIN_H = 1280, 540
 local pok, win, err = pcall(function()
-    return Window.Open(WIN_W, WIN_H, 'Phase F.0.10.2 - True Physical Split-Screen TAA Demo')
+    return Window.Open(WIN_W, WIN_H, 'Phase F.0.10.4 - True Physical Split-Screen: TAA+Bloom+SSR+MB per-region')
 end)
 if not pok then
     -- Window.Open 抛异常 (常因 no GL context, CI headless 环境典型情况)
@@ -211,6 +274,30 @@ print('[demo_taa_split2] HDR.Enable = ' .. tostring(hdrEnabled))
 HDR.SetAutoTAA(false)
 print('[demo_taa_split2] HDR.SetAutoTAA(false) -- 手动控 TAA (双 instance per-region)')
 
+-- F.0.10.3 关键: 关 auto-Bloom/SSR/MB, 让本 demo 手动 Process(rgn) 控时序 (双 player 不同 profile)
+-- 任一启用失败都自动降级 (老路径全屏 auto)
+local bloomEnabled, ssrEnabled, mbEnabled = false, false, false
+if hasF10_3 and hdrEnabled then
+    -- Bloom: 开启 + 关 auto (后续每帧手动 region Process)
+    if Bloom.IsSupported() and Bloom.Enable(WIN_W, WIN_H) then
+        bloomEnabled = true
+        HDR.SetAutoBloom(false)
+        print('[demo_taa_split2] Bloom enabled + SetAutoBloom(false) -- 手动 region Bloom')
+    end
+    -- SSR: 开启 + 关 auto
+    if SSR.IsSupported() and SSR.Enable(WIN_W, WIN_H) then
+        ssrEnabled = true
+        HDR.SetAutoSSR(false)
+        print('[demo_taa_split2] SSR enabled + SetAutoSSR(false) -- 手动 region SSR')
+    end
+    -- MotionBlur: 开启 + 关 auto (默认 autoEnable=false, 但显式关掉避免日后默认变更影响)
+    if MB.IsSupported() and MB.Enable(WIN_W, WIN_H) then
+        mbEnabled = true
+        HDR.SetAutoMotionBlur(false)
+        print('[demo_taa_split2] MotionBlur enabled + SetAutoMotionBlur(false) -- 手动 region MB')
+    end
+end
+
 if type(Gfx.SetPerspective) == 'function' then
     -- aspect ratio = HALF_W / WIN_H (因为每半屏是独立 viewport, 各自 16:9 比例的一半)
     Gfx.SetPerspective(60, HALF_W / WIN_H, 0.1, 100.0)
@@ -257,6 +344,45 @@ end
 setup_p1()
 setup_p2()
 TAA.SetActiveInstance(0)                  -- 切回 default 备用
+
+-- ============================================================================
+-- F.0.10.4 — 双 player 后处理 profile (注意: Bloom/SSR/MB 是 *全局* 状态,
+-- 不像 TAA 那样有 multi-instance, 所以本 demo 通过"每帧切换 profile"实现差异化:
+--   切到 player 1 渲染前 -> apply_player1_postfx_profile()
+--   切到 player 2 渲染前 -> apply_player2_postfx_profile()
+-- 后处理参数切换 < 1us, 不影响性能)
+-- ============================================================================
+local function apply_p1_postfx_profile()
+    -- Player 1: 电影感冲击 — 强 Bloom + 中速 SSR + 强 MotionBlur
+    if bloomEnabled then
+        Bloom.SetIntensity(1.5)          -- 强辉光
+        Bloom.SetThreshold(0.8)          -- 低阈值: 中等亮度也起辉
+        Bloom.SetRadius(1.5)             -- 大半径 (更扩散)
+    end
+    if ssrEnabled then
+        SSR.SetIntensity(0.6)            -- 中等强度反射
+        if SSR.SetTemporalEnabled then SSR.SetTemporalEnabled(false) end  -- 关 temporal (老化感)
+    end
+    if mbEnabled then
+        MB.SetStrength(0.8)              -- 强 motion blur (电影感运动模糊)
+        MB.SetSampleCount(12)            -- 高样本数 (减 artifact)
+    end
+end
+local function apply_p2_postfx_profile()
+    -- Player 2: 高清细腻 — 轻 Bloom + 高质 temporal SSR + 无 MotionBlur
+    if bloomEnabled then
+        Bloom.SetIntensity(0.4)          -- 轻辉光 (突出 cube/bar 细节)
+        Bloom.SetThreshold(1.5)          -- 高阈值: 仅最亮区起辉
+        Bloom.SetRadius(0.8)             -- 小半径 (更集中)
+    end
+    if ssrEnabled then
+        SSR.SetIntensity(1.0)            -- 强反射
+        if SSR.SetTemporalEnabled then SSR.SetTemporalEnabled(true)  end  -- 开 temporal 降噪
+    end
+    if mbEnabled then
+        MB.SetStrength(0.0)              -- 关 motion blur (静止感)
+    end
+end
 
 -- ============================================================================
 -- 主循环
@@ -349,6 +475,14 @@ while win:IsOpen() do
         Gfx.SetCamera(2.5, 3.0, 5.5, 0.0, 0.6, 0.0)
     end
     drawScene()
+    -- F.0.10.4 — 后处理流水线 region 化 (顺序与 HDR.EndScene auto 路径一致):
+    --   Bloom -> SSR -> MotionBlur -> TAA
+    if bloomEnabled or ssrEnabled or mbEnabled then
+        apply_p1_postfx_profile()
+        if bloomEnabled then Bloom.Process(0, 0, HALF_W, WIN_H)      end
+        if ssrEnabled   then SSR.Process(0, 0, HALF_W, WIN_H)        end
+        if mbEnabled    then MB.Process(0, 0, HALF_W, WIN_H)         end
+    end
     TAA.Process(0, 0, HALF_W, WIN_H)    -- region TAA: 仅更新左半 instance 1 history
 
     -- ===== Player 2 (右半屏) =====
@@ -360,9 +494,16 @@ while win:IsOpen() do
         Gfx.SetCamera(-3.5, 1.0, 3.0, 0.0, 0.8, 0.0)
     end
     drawScene()
+    -- F.0.10.4 — 后处理 region 化, p2 profile (高清细腻, 顺序同上)
+    if bloomEnabled or ssrEnabled or mbEnabled then
+        apply_p2_postfx_profile()
+        if bloomEnabled then Bloom.Process(HALF_W, 0, HALF_W, WIN_H) end
+        if ssrEnabled   then SSR.Process(HALF_W, 0, HALF_W, WIN_H)   end
+        if mbEnabled    then MB.Process(HALF_W, 0, HALF_W, WIN_H)    end
+    end
     TAA.Process(HALF_W, 0, HALF_W, WIN_H) -- region TAA: 仅更新右半 instance 2 history
 
-    -- 复位全屏 viewport, HDR.EndScene 走 bloom + 全屏 tonemap (auto-TAA 已 off)
+    -- 复位全屏 viewport, HDR.EndScene 仅做 tonemap (auto-Bloom/SSR/MB/TAA 已全部 off)
     Gfx.SetViewport(0, 0, WIN_W, WIN_H)
     TAA.SetActiveInstance(0)              -- 切回 default 避免污染下次
 
@@ -370,30 +511,54 @@ while win:IsOpen() do
     if win.DrawText then
         local y = 8
         local line = function(s) win:DrawText(8, y, s, 1, 1, 1, 1); y = y + 16 end
-        line('===== Phase F.0.10.2 True Physical Split-Screen Demo =====')
+        line('===== Phase F.0.10.4 True Physical Split-Screen Demo =====')
+        line('  (TAA + Bloom + SSR + MotionBlur all per-region)')
         line(string.format('Window: %dx%d | Half: %dx%d', WIN_W, WIN_H, HALF_W, WIN_H))
-        line(string.format('Player 1 (LEFT, id=%d):  RCAS sharpen=1.2 (F.0.12 strong)', p1_id))
-        line(string.format('Player 2 (RIGHT, id=%d): Lanczos halfRes (F.0.14 hi-quality upscale)', p2_id))
-        line(string.format('HDR.GetAutoTAA = %s (false = manual region TAA per frame)',
-            tostring(HDR.GetAutoTAA())))
-        line(string.format('Instance count = %d (default + p1 + p2)', TAA.GetInstanceCount()))
-        -- 右半文字 (展示 split-screen 边界)
-        win:DrawText(HALF_W + 8, 8, '[P2 viewport: Lanczos high-quality]', 0.5, 1, 0.5, 1)
+        line(string.format('  TAA      : auto=%s, instances=%d',
+            tostring(HDR.GetAutoTAA()), TAA.GetInstanceCount()))
+        if hasF10_3 then
+            line(string.format('  Bloom    : enabled=%s, autoBloom=%s',
+                tostring(bloomEnabled), tostring(HDR.GetAutoBloom())))
+            line(string.format('  SSR      : enabled=%s, autoSSR=%s',
+                tostring(ssrEnabled), tostring(HDR.GetAutoSSR())))
+            line(string.format('  Motion B.: enabled=%s, autoMB=%s',
+                tostring(mbEnabled), tostring(HDR.GetAutoMotionBlur())))
+        else
+            line('  [F.0.10.3 API unavailable, falling back to TAA-only demo]')
+        end
+        line('')
+        line(string.format('P1 (LEFT,  id=%d): RCAS sharp + STRONG bloom + mid SSR + STRONG MB', p1_id))
+        line(string.format('P2 (RIGHT, id=%d): Lanczos     + light bloom  + temporal SSR + NO MB', p2_id))
         line('Keys: R = reset both history | ESC = quit')
+        -- 右半 banner (突出 split-screen 边界)
+        win:DrawText(HALF_W + 8, 8, '[P2: hi-quality side]', 0.5, 1, 0.5, 1)
     end
 
     win:EndFrame()
 end
 
 -- ============================================================================
--- 清理 (反向)
+-- 清理 (反向, 顺序: TAA 实例 -> 4 个 auto 开关复位 -> 4 个 Disable -> mesh)
 -- ============================================================================
 TAA.SetActiveInstance(0)
 if p1_id then TAA.DestroyInstance(p1_id) end
 if p2_id then TAA.DestroyInstance(p2_id) end
-HDR.SetAutoTAA(true)                      -- 复位默认 (避免其他 demo 受影响)
+
+-- 复位 4 个 auto 开关到默认 (避免其他 demo 受影响)
+HDR.SetAutoTAA(true)
+if hasF10_3 then
+    HDR.SetAutoBloom(true)
+    HDR.SetAutoSSR(true)
+    HDR.SetAutoMotionBlur(true)
+end
+
+-- 反向 Disable (TAA -> MB -> SSR -> Bloom -> HDR)
 if TAA.IsEnabled() then TAA.Disable() end
-if hdrEnabled    then HDR.Disable()  end
+if mbEnabled     then MB.Disable()    end
+if ssrEnabled    then SSR.Disable()   end
+if bloomEnabled  then Bloom.Disable() end
+if hdrEnabled    then HDR.Disable()   end
+
 if cubeMesh      then cubeMesh:Delete()  end
 if barMesh       then barMesh:Delete()   end
 if planeMesh     then planeMesh:Delete() end
