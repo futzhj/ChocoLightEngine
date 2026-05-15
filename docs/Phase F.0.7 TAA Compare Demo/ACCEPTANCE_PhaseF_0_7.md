@@ -70,8 +70,8 @@
 
 ### T3 CI
 - [x] `lightc -p main.lua` Exit 0
-- [ ] GitHub Actions 6/6 平台 success (待回填)
-- [ ] CI 状态回填 ACCEPTANCE + FINAL + TODO (待回填)
+- [x] GitHub Actions 6/6 平台 success (Run 25930638608, 9m41s)
+- [x] CI 状态回填 ACCEPTANCE + FINAL + TODO
 
 ---
 
@@ -132,18 +132,18 @@ ChocoLight 的 `win:DrawText` 字体可能不包含 γ / σ / × 等 Unicode 符
 
 ---
 
-## 6. CI 状态（待回填）
+## 6. CI 状态 (✅ 全部通过)
 
 | 平台 | 状态 | 状态详情 |
 |------|------|---------|
-| build-windows | ⏳ | demo lua 通过 lightc -p 语法检查（CI 已包含 samples/*/main.lua 路径自动检查） |
-| build-linux | ⏳ | 纯构建 |
-| build-macos | ⏳ | 纯构建 |
-| build-android | ⏳ | 纯构建 |
-| build-ios | ⏳ | 纯构建 |
-| build-web | ⏳ | Emscripten WASM |
+| build-windows | ✅ success | demo lua 通过 lightc -p 语法检查 |
+| build-linux | ✅ success | 纯构建 |
+| build-macos | ✅ success | 纯构建 |
+| build-android | ✅ success | 纯构建 |
+| build-ios | ✅ success | 纯构建 |
+| build-web | ✅ success | Emscripten WASM |
 
-GitHub Run ID: `<pending>`
-Commit hash: `<pending>`
-Total duration: `<pending>`
-Date: `<pending>`
+GitHub Run ID: [25930638608](https://github.com/futzhj/ChocoLightEngine/actions/runs/25930638608)
+Commit hash: `a858a29`
+Total duration: `9m41s` (17:02:31 → 17:12:12 UTC)
+Date: `2026-05-15`
