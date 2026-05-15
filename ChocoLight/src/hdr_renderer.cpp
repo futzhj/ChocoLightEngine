@@ -47,18 +47,43 @@ struct State {
     // dilation 默认 ON；backend 实际状态在 backend.velocityDilation_，本缓存供 Get 使用
     bool           velocityDilation = true;
     VelocityFormat velocityFormat   = VelocityFormat::RG16F;
+
+    // Phase E.18 — Independent Velocity Dilation Pass RT (与 HDR FBO 同生命周期)
+    // 创建条件: backend->SupportsVelocityDilation() && velocityTex 存在 (CreateRT 内判定)
+    // 内容:     9-tap max-length 后已 decode 的 RG16F float velocity
+    // 消费:     MotionBlurRenderer / SSRRenderer 走单点采样
+    uint32_t       dilatedVelocityFbo       = 0;  // combined velocity dilation 输出 fbo
+    uint32_t       dilatedVelocityTex       = 0;  // 与 g.fbo velocityTex 同尺寸 RG16F
+    uint32_t       dilatedCameraVelocityFbo = 0;  // camera-only dilation 输出 fbo (与 cameraVelocityTex 同条件)
+    uint32_t       dilatedCameraVelocityTex = 0;
 };
 
 static State g;
 
 // 内部辅助: 释放 RT 资源 (不改 exposure/gamma)
 void ReleaseRT() {
-    if (g.backend && (g.fbo || g.sceneTex)) {
-        g.backend->DeleteHDRFBO(g.fbo, g.sceneTex);
+    if (g.backend) {
+        // Phase E.18: 先释放 dilation RT (与 HDR FBO 同生命周期, 在 raw velocityTex 释放前清)
+        if (g.dilatedVelocityFbo || g.dilatedVelocityTex) {
+            g.backend->DeleteVelocityDilateRT(g.dilatedVelocityFbo, g.dilatedVelocityTex);
+        }
+        if (g.dilatedCameraVelocityFbo || g.dilatedCameraVelocityTex) {
+            g.backend->DeleteVelocityDilateRT(g.dilatedCameraVelocityFbo, g.dilatedCameraVelocityTex);
+        }
+        // 通知 backend dilation pass 已停用 (consumer 自动回 fallback)
+        g.backend->SetDilationPassActive(false);
+
+        if (g.fbo || g.sceneTex) {
+            g.backend->DeleteHDRFBO(g.fbo, g.sceneTex);
+        }
     }
-    g.fbo = 0;
-    g.sceneTex = 0;
-    g.width = 0;
+    g.fbo                     = 0;
+    g.sceneTex                = 0;
+    g.dilatedVelocityFbo      = 0;
+    g.dilatedVelocityTex      = 0;
+    g.dilatedCameraVelocityFbo = 0;
+    g.dilatedCameraVelocityTex = 0;
+    g.width  = 0;
     g.height = 0;
     if (g.backend) g.backend->ResetVelocityHistory();
 }
@@ -91,6 +116,33 @@ bool CreateRT(int w, int h) {
     g.backend->ResetVelocityHistory();
     // Phase E.14: 同步 dilation 状态到 backend (Init 之后可能被用户 Set 过)
     g.backend->SetVelocityDilation(g.velocityDilation);
+
+    // Phase E.18: 若 backend 支持 dilation pass 且 raw velocityTex 已创建,
+    //             同时创建 dilatedVelocityFbo/Tex (combined 始终; camera-only 与 cameraVelocityTex 同条件).
+    //             创建失败 silent fallback — EndScene 内 dilation pass 自动 skip,
+    //             consumer 走 inline 9-tap 旧路径 (零回归).
+    if (g.backend->SupportsVelocityDilation() && velocityTex) {
+        uint32_t dilatedTex = 0;
+        const uint32_t dilatedFbo = g.backend->CreateVelocityDilateRT(w, h, &dilatedTex);
+        if (dilatedFbo && dilatedTex) {
+            g.dilatedVelocityFbo = dilatedFbo;
+            g.dilatedVelocityTex = dilatedTex;
+            CC::Log(CC::LOG_INFO,
+                    "HDRRenderer: Phase E.18 dilated combined velocity RT created (%dx%d, fbo=%u, tex=%u)",
+                    w, h, dilatedFbo, dilatedTex);
+        }
+        if (cameraVelocityTex) {
+            uint32_t dilatedCamTex = 0;
+            const uint32_t dilatedCamFbo = g.backend->CreateVelocityDilateRT(w, h, &dilatedCamTex);
+            if (dilatedCamFbo && dilatedCamTex) {
+                g.dilatedCameraVelocityFbo = dilatedCamFbo;
+                g.dilatedCameraVelocityTex = dilatedCamTex;
+                CC::Log(CC::LOG_INFO,
+                        "HDRRenderer: Phase E.18 dilated camera velocity RT created (%dx%d, fbo=%u, tex=%u)",
+                        w, h, dilatedCamFbo, dilatedCamTex);
+            }
+        }
+    }
     return true;
 }
 
@@ -300,6 +352,31 @@ void EndScene() {
     // SSAO 主要作用在几何体阴调, 与机 Bloom/AE 有轻微交互但可接受
     SSAORenderer::Process(g.fbo, g.sceneTex);
 
+    // Phase E.18 — Independent Velocity Dilation Pass (在 SSR / MotionBlur 之前)
+    //   条件: velocityDilation 开启 && backend 支持 && dilated RT 创建成功
+    //   作用: 对 raw velocityTex/cameraVelocityTex 做一次 9-tap max-length,
+    //         后续 SSR Temporal / Motion Blur shader 走单点采样 (避免重复 9-tap)
+    //   失败兜底: dilation RT 不存在或 raw velocityTex=0 → dilationActive=false,
+    //             consumer fallback inline 9-tap (零回归)
+    bool dilationActive = false;
+    if (g.velocityDilation && g.backend->SupportsVelocityDilation()) {
+        const uint32_t rawCombined = g.backend->GetHDRVelocityTex(g.fbo);
+        if (rawCombined && g.dilatedVelocityFbo) {
+            g.backend->DrawVelocityDilate(rawCombined, g.dilatedVelocityFbo, g.width, g.height);
+            dilationActive = true;
+        }
+        // camera-only dilation 与 cameraVelocityTex 同条件 (MotionBlur mode=1/2 才用)
+        const uint32_t rawCamera = g.backend->GetHDRCameraVelocityTex(g.fbo);
+        if (rawCamera && g.dilatedCameraVelocityFbo) {
+            g.backend->DrawVelocityDilate(rawCamera, g.dilatedCameraVelocityFbo, g.width, g.height);
+            // dilationActive 已在 combined 时置 true; camera-only 单独失败不影响
+        }
+    }
+    // 通知 backend: dilation pass 当前帧是否激活 → 影响 SSRTemporal/MotionBlur uVelocityDilation 上传
+    g.backend->SetDilationPassActive(dilationActive);
+    // dilation pass 改了 FBO 绑定, 复位回 default fb (后续模块自己 bind 各自 fbo)
+    g.backend->UnbindFBO();
+
     // Phase E.9 — SSR (屏幕空间反射, 加性写入 HDR; 在 SSAO 之后、Bloom 之前)
     // SSR 反射需要看到 SSAO 修正后的 HDR 调 (阴部在反射中仍为暗); Bloom 取反射 + AO HDR 提亮.
     // 内部自检 IsEnabled/IsSupported; 未启用时 no-op. 缺 G-buffer normal 时 silent skip + once warn.
@@ -356,6 +433,21 @@ uint32_t GetVelocityTexture() {
 uint32_t GetCameraVelocityTexture() {
     return (g.backend && g.fbo) ? g.backend->GetHDRCameraVelocityTex(g.fbo) : 0;
 }
+
+/// Phase E.18 — 查询 dilated combined velocity tex
+/// 仅在 dilation pass 当前帧实际执行 (backend->GetDilationPassActive()=true) 时返非 0
+/// 消费者据此决定绑 dilatedTex 还是 fallback raw velocityTex
+uint32_t GetDilatedVelocityTexture() {
+    if (!g.backend || !g.fbo) return 0;
+    return g.backend->GetDilationPassActive() ? g.dilatedVelocityTex : 0;
+}
+
+/// Phase E.18 — 查询 dilated camera-only velocity tex (同上)
+uint32_t GetDilatedCameraVelocityTexture() {
+    if (!g.backend || !g.fbo) return 0;
+    return g.backend->GetDilationPassActive() ? g.dilatedCameraVelocityTex : 0;
+}
+
 int      GetWidth()        { return g.width; }
 int      GetHeight()       { return g.height; }
 

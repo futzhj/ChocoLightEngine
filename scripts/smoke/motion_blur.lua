@@ -1,4 +1,4 @@
--- Phase E.15+E.16+E.17 smoke: Light.Graphics.MotionBlur (velocity-driven motion blur surface)
+-- Phase E.15+E.16+E.17+E.18 smoke: Light.Graphics.MotionBlur (velocity-driven motion blur surface)
 --
 -- API coverage (15 functions):
 --   Lifecycle 5: Enable / Disable / IsEnabled / IsSupported / Resize
@@ -9,6 +9,14 @@
 --                 0=combined / 1=camera_only / 2=object_only
 --   Phase E.17 2: SetHalfRes / GetHalfRes (default false)
 --                 true=half-res (VRAM -75%, perf ~4x)
+--
+-- Phase E.18 behavior upgrade (no new API; reuses HDR.SetVelocityDilation):
+--   - Velocity 9-tap max-length dilation moved to an independent HDR EndScene pass.
+--   - When HDR.SetVelocityDilation(true) (default) AND backend supports dilation pass,
+--     SSR Temporal + Motion Blur consumers share one pre-dilated velocity tex,
+--     skipping inline 9-tap (~50% velocity-fetch savings in multi-consumer scenes).
+--   - Backward compatible: consumer falls back to raw velocity + inline 9-tap when
+--     dilation pass unsupported / RT creation failed.
 --
 -- Headless guard: same as hdr.lua. Enable() MUST either
 --   (a) return false cleanly when no GL ctx (typical) OR

@@ -144,6 +144,17 @@ uint32_t GetVelocityTexture();
 /// Enable 未调 / 后端不支持 / CreateHDRFBO 未传 outCameraVelocityTex 时 = 0
 uint32_t GetCameraVelocityTexture();
 
+/// Phase E.18 — 当前 HDR RT 的 dilated combined-velocity 纹理 id
+/// EndScene 内 dilation pass 输出, 与 raw velocityTex 同尺寸 RG16F, 已 decode 的 float
+/// 消费者 (MotionBlur / SSR Temporal) 优先取此 tex 走单点采样, fallback 到 GetVelocityTexture
+/// 返 0: dilation pass 未支持 / dilation 未开启 / Enable 未调 / dilatedFbo 创建失败
+uint32_t GetDilatedVelocityTexture();
+
+/// Phase E.18 — 当前 HDR RT 的 dilated camera-only velocity 纹理 id
+/// 与 GetDilatedVelocityTexture 同, 但对应 camera-only velocity (Phase E.16 双 MRT)
+/// 返 0: dilation pass 未支持 / 未开启 / cameraVelocityTex 未创建 / dilatedCameraFbo 创建失败
+uint32_t GetDilatedCameraVelocityTexture();
+
 // ==================== Phase E.14 — Velocity dilation + 存储格式切换 ====================
 
 /// dilation 开关：SSRTemporal 采样 velocity 时是否用 3x3 max-length 邻域（默认 ON）

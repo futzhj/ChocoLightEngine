@@ -1208,6 +1208,63 @@ public:
                                  float /*strength*/, int /*sampleCount*/,
                                  int /*mode*/,
                                  int /*rtW*/ = 0, int /*rtH*/ = 0) {}  // ★ Phase E.17
+
+    // ==================== Phase E.18 — Independent Velocity Dilation Pass ====================
+    //
+    // 背景: Phase E.14 起, SSR Temporal / Motion Blur shader 各自内嵌 9-tap max-length
+    //       dilation, 双消费者场景下同一 velocityTex 被重复 9-tap, 浪费 GPU.
+    //
+    // 方案: 抽出独立 dilation pass — 在 HDR EndScene 内对 raw velocityTex 做一次 9-tap
+    //       max-length, 输出 dilatedVelocityTex (RG16F, 始终 decode 后的 float), 后续
+    //       SSR Temporal / Motion Blur shader 走单点采样路径 (uVelocityDilation=0).
+    //
+    // 资源:
+    //   - dilatedVelocityFbo/Tex      与 raw velocityTex 同尺寸 (full-res), RG16F
+    //   - dilatedCameraVelocityFbo/Tex 与 cameraVelocityTex 同条件 (Phase E.16 双 MRT)
+    //   - 创建在 HDRRenderer::CreateRT, 释放在 ReleaseRT
+    //
+    // 状态:
+    //   - dilationPassActive_ (backend 内部字段, 每帧 EndScene 由 HDRRenderer 设置)
+    //   - true:  DrawSSRTemporal/DrawMotionBlur 内强制 uVelocityDilation=0 (单点采样)
+    //   - false: 沿用 Phase E.14 行为 (shader 内 9-tap inline)
+    //
+    // Consumer fallback:
+    //   - dilationPassActive=true  → consumer 绑 dilatedTex
+    //   - dilationPassActive=false → consumer 绑 rawTex (兼容旧路径)
+
+    /// 后端是否支持 velocity dilation pass (GL33 = shader 编译成功才 true)
+    virtual bool SupportsVelocityDilation() const { return false; }
+
+    /// 创建 velocity dilation ping-pong RT (RG16F, color-only, 无 depth)
+    /// @param  w, h    与 velocityTex 同尺寸 (full-res, 即使 motion blur 半分辨率也用全尺寸)
+    /// @param  outTex  返回 GL tex id (失败为 0)
+    /// @return GL fbo id (失败为 0); 失败时 outTex 也保证为 0
+    /// @note   dilatedTex 永远 RG16F (无视 raw velocity format); shader 内统一 decode 写 float
+    virtual uint32_t CreateVelocityDilateRT(int /*w*/, int /*h*/, uint32_t* outTex) {
+        if (outTex) *outTex = 0;
+        return 0;
+    }
+
+    /// 释放 velocity dilation RT (与 CreateVelocityDilateRT 配对)
+    virtual void DeleteVelocityDilateRT(uint32_t /*fbo*/, uint32_t /*tex*/) {}
+
+    /// 执行 dilation pass (single pass, 全屏 9-tap max-length)
+    /// @param srcVelocityTex  输入 (RG16F 或 RG8, shader 内据 velocityFormat decode)
+    /// @param dstFbo          dilation 输出 fbo (绑定 dilatedTex)
+    /// @param w, h            full-res 尺寸 (viewport)
+    /// @note  shader 内据 backend 当前 velocityFormat/Scale state decode raw,
+    ///        最终写入 dilatedTex (RG16F float)
+    virtual void DrawVelocityDilate(uint32_t /*srcVelocityTex*/,
+                                     uint32_t /*dstFbo*/,
+                                     int /*w*/, int /*h*/) {}
+
+    /// 设置 dilation pass 当前帧是否激活 (HDRRenderer EndScene 每帧调用)
+    /// true  → SSR Temporal / Motion Blur shader 强制 uVelocityDilation=0 (单点)
+    /// false → 沿用 SetVelocityDilation 配置 (shader 内 inline 9-tap)
+    virtual void SetDilationPassActive(bool /*active*/) {}
+
+    /// 查询 dilation pass 当前激活状态 (用于调试 / consumer 决定绑 dilated/raw tex)
+    virtual bool GetDilationPassActive() const { return false; }
 };
 
 // ==================== 工厂函数 ====================

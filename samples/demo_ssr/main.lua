@@ -428,7 +428,8 @@ while win:IsOpen() do
             SSR.GetRejectionMode(),
             SSR.GetRejectionMode() == 1 and 'neighborhood' or 'depth'))
         -- Phase E.13/E.14: velocity buffer 与 Temporal SSR 联动；显示 dilation/format 状态
-        line(string.format('Velocity: %s | dilation=%s | reproj=%s',
+        -- Phase E.18: dilation=ON 时 HDR EndScene 内做独立 9-tap pass，SSR/MB 共享 dilatedTex
+        line(string.format('Velocity: %s | dilation=%s (E.18 shared pass) | reproj=%s',
             HDR.GetVelocityFormat(),
             HDR.GetVelocityDilation() and 'ON' or 'OFF',
             SSR.GetTemporalEnabled() and 'velocity-first' or 'idle (Temporal OFF)'))

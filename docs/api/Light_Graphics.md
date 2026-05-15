@@ -791,7 +791,17 @@ print(Light.Graphics.HDR.GetTonemapper())  --> "aces"（回退）
 
 ## `HDR.SetVelocityDilation`
 
-控制 SSRTemporal shader 是否对 velocity buffer 做 **3x3 max-length 邻域采样**（Phase E.14）。开启可抑制几何边缘的 1 像素错配伪影；关闭可省 8 次 texture fetch / pixel。**默认 ON**。
+控制 velocity buffer **3x3 max-length 邻域采样**（dilation）开关。开启可抑制几何边缘的 1 像素错配伪影；关闭可省 8 次 texture fetch / pixel。**默认 ON**。
+
+> **Phase E.18 行为升级（自动透明）**
+>
+> dilation 算法已从 SSRTemporal / Motion Blur shader 内 inline 9-tap 抽出为 **独立的 HDR EndScene pass**（FBO=`dilatedVelocityFbo`, RG16F）。当后端支持且 dilation=ON 时，HDR EndScene 内会：
+>
+> 1. 在 SSR / Motion Blur 之前对 raw velocityTex 做一次 9-tap max-length；
+> 2. SSR Temporal + Motion Blur consumer 共享 `dilatedTex` 走 **单点采样路径**；
+> 3. 多消费者场景下节省约 50% velocity fetch（同一像素由 9 次 → 1 次共享）。
+>
+> 后端不支持或 dilation pass RT 创建失败时，consumer **自动 fallback 到 raw velocityTex + inline 9-tap**（零回归）。本 API 语义/默认值/Lua 行为完全保持向后兼容。
 
 ### 参数
 
@@ -809,14 +819,26 @@ print(Light.Graphics.HDR.GetTonemapper())  --> "aces"（回退）
 ### 行为
 
 - 不重建 RT，仅修改后端状态
-- 下一帧 SSRTemporal draw 立即生效（无延迟）
-- 仅影响 SSRTemporal pass；其他消费者（如未来的 motion blur）可能不读 dilation 标志
+- 下一帧 HDR EndScene 立即生效：
+  - dilation=ON + backend 支持 dilation pass → 共享 dilated pass 路径
+  - dilation=ON + backend 不支持 → 沿用 inline 9-tap
+  - dilation=OFF → 单点采样（最便宜）
+
+### 性能 / VRAM 收益（Phase E.18）
+
+| 场景 | E.17 inline 9-tap | E.18 共享 dilation pass | 节省 |
+|------|-------------------|------------------------|------|
+| 仅 SSR Temporal | 9 fetch / pixel | 9 (dilate) + 1 (sample) = 10 | ❌ 略负（建议关 dilation pass） |
+| 仅 Motion Blur | 9 × N samples (1..32) | 9 + N | 大幅 ✓ |
+| SSR + Motion Blur 同开 | 9 × 2 + 9 × N | 9 + 1 + N | **~50%** ✓ |
+
+VRAM 开销：1× `dilatedVelocityTex` (RG16F, full-res) + 可选 1× `dilatedCameraVelocityTex`（与 `cameraVelocityTex` 同条件）。1080p 下约 8MB / RT。
 
 ### 示例
 
 ```lua
 if Light.Graphics.HDR.SetVelocityDilation(false) then
-    print("dilation disabled, perf++")
+    print("dilation disabled, perf++ (但几何边缘 1px 错配可能可见)")
 end
 
 local ok, err = Light.Graphics.HDR.SetVelocityDilation("yes")  -- 类型错

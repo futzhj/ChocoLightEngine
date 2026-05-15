@@ -226,12 +226,19 @@ void Process(uint32_t hdrFbo, uint32_t hdrTex) {
     if (!g.fbo || !g.tex) return;
 
     // velocity buffer 来源: HDRRenderer 提供
-    uint32_t velocityTex = HDRRenderer::GetVelocityTexture();
+    // Phase E.18: 优先取 dilated tex (HDR EndScene 已做过 9-tap), shader 走单点采路径;
+    //             dilated 不可用时 fallback 到 raw velocityTex (shader 内 inline 9-tap)
+    const uint32_t dilatedTex = HDRRenderer::GetDilatedVelocityTexture();
+    const uint32_t rawTex     = HDRRenderer::GetVelocityTexture();
+    const uint32_t velocityTex = dilatedTex ? dilatedTex : rawTex;
     if (!velocityTex) return;   // 后端不支持 velocity buffer 或 HDR 未启 → silent skip
 
     // Phase E.16 — 取 camera-only velocity (mode=1/2 需；mode=0 也传入 backend 作为占位)
     // 不存在时 backend safeMode 会自动 fallback 到 mode=0。
-    uint32_t cameraVelocityTex = HDRRenderer::GetCameraVelocityTexture();
+    // Phase E.18: camera-only velocity 同样优先取 dilated, fallback raw
+    const uint32_t dilatedCamTex   = HDRRenderer::GetDilatedCameraVelocityTexture();
+    const uint32_t rawCamTex       = HDRRenderer::GetCameraVelocityTexture();
+    const uint32_t cameraVelocityTex = dilatedCamTex ? dilatedCamTex : rawCamTex;
 
     // Phase E.17 — 计算 motionBlurTex 实际尺寸 (full-res 时 == g.width/g.height)
     int rtW = 0, rtH = 0;

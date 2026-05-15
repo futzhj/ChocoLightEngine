@@ -19,6 +19,7 @@
 
 #include "ssr_renderer.h"
 #include "render_backend.h"
+#include "hdr_renderer.h"     // Phase E.18 — 取 dilated velocity tex
 #include "light.h"   // CC::Log
 
 #include <cstring>
@@ -416,10 +417,16 @@ void Process(uint32_t hdrFbo, uint32_t hdrTex) {
             Mat4Mul(g.prevViewProj, invCurViewProj, reprojMat);
 
             // Phase E.14: 透传 dilation / scale / format，让 SSRTemporal shader 选解码 + 邻域路径
+            // Phase E.18: 优先取 dilated velocity (HDR EndScene 已做过 9-tap),
+            //             shader 内 uVelocityDilation 由 backend 据 dilationPassActive_ 自动置 0;
+            //             dilated 不可用时 fallback raw velocityTex (shader 内 inline 9-tap)
+            const uint32_t dilatedVTex = HDRRenderer::GetDilatedVelocityTexture();
+            const uint32_t rawVTex     = g.backend->GetHDRVelocityTex(hdrFbo);
+            const uint32_t velocityTex = dilatedVTex ? dilatedVTex : rawVTex;
             g.backend->DrawSSRTemporal(g.reflectTex,
                                        g.historyTexs[readIdx],
                                        g.depthTex,
-                                       g.backend->GetHDRVelocityTex(hdrFbo),
+                                       velocityTex,
                                        g.historyFbos[writeIdx],
                                        g.srcW, g.srcH,
                                        reprojMat, invProj,

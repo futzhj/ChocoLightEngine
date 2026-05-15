@@ -2172,6 +2172,46 @@ void main() {
 }
 )";
 
+// ---- FS_VELOCITY_DILATE (GLES 3.0): Phase E.18 独立 velocity dilation pass ----
+//   1. 输入 raw velocityTex (RG16F 或 RG8 encoded, 由 uVelocityFormat 控制)
+//   2. 9-tap max-length 邻域: 取 (-1,-1)..(1,1) 9 个像素中 length² 最大的 velocity
+//   3. 输出 dilatedTex (RG16F, 始终 decode 后的 float, 后续 consumer 单点采可直读)
+//   4. 算法与 FS_SSR_TEMPORAL / FS_MOTION_BLUR 内的 SampleVelocityDilated 完全等价
+//      (将 inline 9-tap 抽出为独立 pass, 多消费者场景下避免重复计算)
+static const char* FS_VELOCITY_DILATE_SOURCE = R"(#version 300 es
+precision highp float;
+precision highp sampler2D;
+in  vec2 vUV;
+out vec4 FragColor;
+
+uniform sampler2D uSrcVelocityTex;   // raw velocity (RG16F 或 RG8 encoded), slot 0
+uniform vec2  uTexel;                // 1.0 / vec2(W, H) — full-res, 决定 9-tap 物理覆盖范围
+uniform int   uVelocityFormat;       // 0 = RG16F (raw直存); 1 = RG8 (encoded)
+uniform float uVelocityScale;        // RG8 解码 scale (默认 0.25)
+
+// 与 FS_SSR_TEMPORAL / FS_MOTION_BLUR 完全一致的 decode 函数
+vec2 DecodeVelocity(vec2 raw) {
+    return (uVelocityFormat == 1) ? ((raw - 0.5) * (2.0 * uVelocityScale)) : raw;
+}
+
+void main() {
+    // 9-tap max-length dilation: 几何边缘取邻域最大速度, 抑制 1-px 错配伪影
+    // 注意: 输出永远为 decode 后的 float (RG16F), shader 后端 consumer 单点读不再 decode
+    vec2 bestV = vec2(0.0);
+    float bestLen = -1.0;
+    for (int dy = -1; dy <= 1; ++dy) {
+        for (int dx = -1; dx <= 1; ++dx) {
+            vec2 v = DecodeVelocity(
+                texture(uSrcVelocityTex, vUV + vec2(float(dx), float(dy)) * uTexel).rg);
+            float l = dot(v, v);
+            if (l > bestLen) { bestLen = l; bestV = v; }
+        }
+    }
+    // dilatedTex 始终 RG16F: .rg = 已 decode 的 float velocity, .b/.a 无意义置 0/1
+    FragColor = vec4(bestV, 0.0, 1.0);
+}
+)";
+
 #else  // 桌面 GL 3.3 Core
 
 // ---- FS_SSAO (GL 3.3): 同 GLES3 算法 ----
@@ -2653,6 +2693,38 @@ void main() {
 }
 )";
 
+// ---- FS_VELOCITY_DILATE (GL 3.3): Phase E.18 独立 velocity dilation pass ----
+// 与 GLES3 版完全等价, 仅 #version + 无 precision qualifier
+static const char* FS_VELOCITY_DILATE_SOURCE = R"(
+#version 330 core
+in  vec2 vUV;
+out vec4 FragColor;
+
+uniform sampler2D uSrcVelocityTex;   // raw velocity (RG16F 或 RG8 encoded), slot 0
+uniform vec2  uTexel;                // 1.0 / vec2(W, H) — full-res, 决定 9-tap 物理覆盖
+uniform int   uVelocityFormat;       // 0 = RG16F (raw直存); 1 = RG8 (encoded)
+uniform float uVelocityScale;        // RG8 解码 scale (默认 0.25)
+
+vec2 DecodeVelocity(vec2 raw) {
+    return (uVelocityFormat == 1) ? ((raw - 0.5) * (2.0 * uVelocityScale)) : raw;
+}
+
+void main() {
+    // 9-tap max-length dilation: 邻域 (-1,-1)..(1,1), 按 length² 取最大 velocity
+    vec2 bestV = vec2(0.0);
+    float bestLen = -1.0;
+    for (int dy = -1; dy <= 1; ++dy) {
+        for (int dx = -1; dx <= 1; ++dx) {
+            vec2 v = DecodeVelocity(
+                texture(uSrcVelocityTex, vUV + vec2(float(dx), float(dy)) * uTexel).rg);
+            float l = dot(v, v);
+            if (l > bestLen) { bestLen = l; bestV = v; }
+        }
+    }
+    FragColor = vec4(bestV, 0.0, 1.0);   // dilatedTex.rg = decode 后的 float
+}
+)";
+
 #endif
 
 // Phase AS.2 — Mesh GPU 资源 (Phase AX 扩展加 morph delta texture)
@@ -2949,6 +3021,19 @@ class GL33Backend : public RenderBackend {
     GLint  locMB_VelocityFormat         = -1;
     GLint  locMB_VelocityScale          = -1;
     GLint  locMB_Mode                   = -1;   // ★ E.16: 0=combined / 1=camera / 2=object
+
+    // Phase E.18 — 独立 Velocity Dilation Pass (9-tap max-length 抽出为单 pass, 多 consumer 共享)
+    // 与 motion blur 同模式: 单 program, RT 由 HDRRenderer 持有 (CreateVelocityDilateRT 返 fbo+tex)
+    GLuint programVelocityDilate            = 0;
+    bool   velocityDilateSupported          = false;
+    GLint  locVDilate_SrcVelocityTex        = -1;   // sampler2D, slot 0
+    GLint  locVDilate_Texel                 = -1;   // 1.0 / (w, h)
+    GLint  locVDilate_VelocityFormat        = -1;   // 0=RG16F / 1=RG8
+    GLint  locVDilate_VelocityScale         = -1;   // RG8 decode scale
+    // Phase E.18 — dilation pass active 状态 (每帧 EndScene 由 HDRRenderer 设置)
+    //   true  → DrawSSRTemporal/DrawMotionBlur 内强制 uVelocityDilation=0 (consumer 单点采)
+    //   false → 沿用 velocityDilation_ 旧逻辑 (consumer shader 内 inline 9-tap)
+    bool   dilationPassActive_              = false;
 
     // Phase E.2.1 — Lighting2D dirty bit cache
     // 当 state->version 与此值相等时, UploadLighting2D 跳过所有 glUniform*v 调用
@@ -3861,6 +3946,27 @@ public:
             motionBlurSupported = false;
         }
 
+        // ---- Phase E.18 — Independent Velocity Dilation Pass shader ----
+        // 编译失败仅 velocityDilateSupported=false; HDRRenderer 走 inline 9-tap fallback.
+        // 复用 VS_TONEMAP_SOURCE 全屏 quad VS, FS = FS_VELOCITY_DILATE_SOURCE
+        programVelocityDilate = buildProgram(FS_VELOCITY_DILATE_SOURCE, "VelocityDilate");
+        if (programVelocityDilate) {
+            locVDilate_SrcVelocityTex  = glGetUniformLocation(programVelocityDilate, "uSrcVelocityTex");
+            locVDilate_Texel           = glGetUniformLocation(programVelocityDilate, "uTexel");
+            locVDilate_VelocityFormat  = glGetUniformLocation(programVelocityDilate, "uVelocityFormat");
+            locVDilate_VelocityScale   = glGetUniformLocation(programVelocityDilate, "uVelocityScale");
+            // 一次性绑 sampler 到 slot 0
+            glUseProgram(programVelocityDilate);
+            if (locVDilate_SrcVelocityTex >= 0) glUniform1i(locVDilate_SrcVelocityTex, 0);
+            glUseProgram(0);
+            velocityDilateSupported = true;
+            CC::Log(CC::LOG_INFO, "GL33: Phase E.18 velocity dilation pass shader compiled (program=%u)",
+                    programVelocityDilate);
+        } else {
+            velocityDilateSupported = false;
+            CC::Log(CC::LOG_WARN, "GL33: Phase E.18 velocity dilation pass shader compile failed; fallback to inline 9-tap");
+        }
+
         CC::Log(CC::LOG_INFO,
                 "GL33: Phase E.6+E.7+E.8+E.9+E.10+E.11+E.12 LensFx/SSAO/SSR ready (lensDirt=%s, streak=%s, lensFlare=%s, ssao=%s, ssr=%s, ssrBlur=%s, ssrTemporal=%s; programs=[LD=%u, SB=%u, SC=%u, LFG=%u, S=%u, SB=%u, SC=%u, SSR=%u, SSRC=%u, SSRB=%u, SSRT=%u])",
                 lensDirtSupported ? "yes" : "no",
@@ -4048,6 +4154,13 @@ public:
         locMB_SceneTex = locMB_VelocityTex = locMB_CameraVelocityTex = locMB_Texel = -1;
         locMB_Strength = locMB_SampleCount = -1;
         locMB_VelocityDilation = locMB_VelocityFormat = locMB_VelocityScale = locMB_Mode = -1;
+
+        // Phase E.18 — Velocity Dilation Pass 清理 (1 program; ping-pong RT 由 HDRRenderer 管)
+        if (programVelocityDilate) { glDeleteProgram(programVelocityDilate); programVelocityDilate = 0; }
+        velocityDilateSupported = false;
+        dilationPassActive_     = false;
+        locVDilate_SrcVelocityTex = locVDilate_Texel = -1;
+        locVDilate_VelocityFormat = locVDilate_VelocityScale = -1;
     }
 
     bool SupportsLit2D() const override { return lit2DSupported; }
@@ -5750,7 +5863,11 @@ public:
         if (locSSRTemporal_HasHistory    >= 0) glUniform1i(locSSRTemporal_HasHistory,    hasHistory);
         if (locSSRTemporal_HasVelocityTex >= 0) glUniform1i(locSSRTemporal_HasVelocityTex, velocityTex ? 1 : 0);
         // Phase E.14 — dilation / format / scale uniform 上传
-        if (locSSRTemporal_VelocityDilation >= 0) glUniform1i(locSSRTemporal_VelocityDilation, velocityDilation ? 1 : 0);
+        // Phase E.18: 若 dilation pass 已执行 (dilationPassActive_=true), shader 单点采 dilatedTex,
+        //             强制 uVelocityDilation=0 (跳过 shader 内 inline 9-tap);
+        //             否则沿用 velocityDilation 旧逻辑 (shader 内 inline 9-tap)
+        const int ssrUVDValue = dilationPassActive_ ? 0 : (velocityDilation ? 1 : 0);
+        if (locSSRTemporal_VelocityDilation >= 0) glUniform1i(locSSRTemporal_VelocityDilation, ssrUVDValue);
         if (locSSRTemporal_VelocityFormat   >= 0) glUniform1i(locSSRTemporal_VelocityFormat,   (velocityFormat == VelocityFormat::RG8) ? 1 : 0);
         if (locSSRTemporal_VelocityScale    >= 0) glUniform1f(locSSRTemporal_VelocityScale,    velocityScale);
 
@@ -6624,7 +6741,11 @@ public:
         if (locMB_Strength    >= 0) glUniform1f(locMB_Strength, strength);
         if (locMB_SampleCount >= 0) glUniform1i(locMB_SampleCount, sampleCount);
         // Phase E.14 联动: 实时取 backend 的 dilation/format/scale
-        if (locMB_VelocityDilation >= 0) glUniform1i(locMB_VelocityDilation, velocityDilation_ ? 1 : 0);
+        // Phase E.18: 若 dilation pass 已执行 (dilationPassActive_=true), motion blur shader 单点采 dilatedTex,
+        //             强制 uVelocityDilation=0 (跳过 shader 内 inline 9-tap);
+        //             否则沿用 velocityDilation_ 旧逻辑
+        const int mbUVDValue = dilationPassActive_ ? 0 : (velocityDilation_ ? 1 : 0);
+        if (locMB_VelocityDilation >= 0) glUniform1i(locMB_VelocityDilation, mbUVDValue);
         if (locMB_VelocityFormat   >= 0) glUniform1i(locMB_VelocityFormat,
                                                     (activeVelocityFormat_ == VelocityFormat::RG8) ? 1 : 0);
         if (locMB_VelocityScale    >= 0) glUniform1f(locMB_VelocityScale, kVelocityScaleDefault);
@@ -6663,6 +6784,105 @@ public:
         glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
     }
+
+    // ==================== Phase E.18 — Velocity Dilation Pass 虚接口实现 ====================
+
+    bool SupportsVelocityDilation() const override { return velocityDilateSupported; }
+
+    /// 创建 dilation pass ping-pong RT (RG16F, color-only, 无 depth)
+    /// 与 motion blur RT 同模式; dilatedTex.rg = shader 内已 decode 的 float velocity
+    /// w/h 必须与 srcVelocityTex 同尺寸 (full-res), 即使 motion blur 半分辨率也用全尺寸
+    uint32_t CreateVelocityDilateRT(int w, int h, uint32_t* outTex) override {
+        if (outTex) *outTex = 0;
+        if (!velocityDilateSupported || w <= 0 || h <= 0 || !outTex) return 0;
+
+        GLuint fbo = 0, tex = 0;
+        glGenFramebuffers(1, &fbo);
+        glGenTextures(1, &tex);
+        if (!fbo || !tex) {
+            if (fbo) glDeleteFramebuffers(1, &fbo);
+            if (tex) glDeleteTextures(1, &tex);
+            return 0;
+        }
+
+        glBindTexture(GL_TEXTURE_2D, tex);
+        // dilatedTex 永远 RG16F (无视 raw velocity format), shader 内 decode 后直存 float
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RG16F, w, h, 0, GL_RG, GL_FLOAT, nullptr);
+        // bilinear: consumer 单点采 sub-pixel 时硬件 filter 平滑;
+        // CLAMP_TO_EDGE: 边界采样不引入 wrap artifact
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S,     GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T,     GL_CLAMP_TO_EDGE);
+
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
+        GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glBindTexture(GL_TEXTURE_2D, 0);
+
+        if (status != GL_FRAMEBUFFER_COMPLETE) {
+            CC::Log(CC::LOG_WARN,
+                    "GL33: Phase E.18 Velocity Dilate FBO incomplete (status=0x%X), %dx%d",
+                    status, w, h);
+            glDeleteFramebuffers(1, &fbo);
+            glDeleteTextures(1, &tex);
+            return 0;
+        }
+
+        *outTex = (uint32_t)tex;
+        return (uint32_t)fbo;
+    }
+
+    void DeleteVelocityDilateRT(uint32_t fbo, uint32_t tex) override {
+        if (fbo) { GLuint f = (GLuint)fbo; glDeleteFramebuffers(1, &f); }
+        if (tex) { GLuint t = (GLuint)tex; glDeleteTextures(1, &t);     }
+    }
+
+    /// 执行 dilation pass — 全屏 9-tap max-length 单 pass
+    ///   shader 内据 backend velocityFormat 状态 decode raw velocity,
+    ///   输出写入 dilatedTex (RG16F, 已 decode 的 float)
+    void DrawVelocityDilate(uint32_t srcVelocityTex, uint32_t dstFbo, int w, int h) override {
+        if (!velocityDilateSupported || !programVelocityDilate) return;
+        if (!srcVelocityTex || !dstFbo || w <= 0 || h <= 0) return;
+
+        // 全分辨率 viewport (与 srcVelocityTex 同尺寸)
+        glBindFramebuffer(GL_FRAMEBUFFER, (GLuint)dstFbo);
+        glViewport(0, 0, w, h);
+        glDisable(GL_BLEND);
+        glDisable(GL_DEPTH_TEST);
+        glDisable(GL_CULL_FACE);
+        glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+
+        glUseProgram(programVelocityDilate);
+        // uTexel = 1.0 / vec2(W, H) — full-res, 决定 9-tap 邻域物理覆盖 (与 SSR/MB inline 9-tap 一致)
+        if (locVDilate_Texel          >= 0) glUniform2f(locVDilate_Texel, 1.0f / (float)w, 1.0f / (float)h);
+        // 据 backend 当前 velocityFormat 状态告知 shader 如何 decode raw (RG16F 直存 / RG8 反编码)
+        if (locVDilate_VelocityFormat >= 0) glUniform1i(locVDilate_VelocityFormat,
+                                                       (activeVelocityFormat_ == VelocityFormat::RG8) ? 1 : 0);
+        if (locVDilate_VelocityScale  >= 0) glUniform1f(locVDilate_VelocityScale, kVelocityScaleDefault);
+
+        // 绑 src raw velocity 到 slot 0
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, (GLuint)srcVelocityTex);
+
+        // 全屏三角 (复用 vaoTonemap, 6 顶点 = 2 三角形)
+        glBindVertexArray(vaoTonemap);
+        glDrawArrays(GL_TRIANGLES, 0, 6);
+        glBindVertexArray(0);
+
+        // 状态复位
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        glUseProgram(0);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    }
+
+    /// dilation pass 当前帧激活态 — HDRRenderer EndScene 每帧调用
+    /// true  → DrawSSRTemporal / DrawMotionBlur 内强制 uVelocityDilation=0 (consumer 单点采 dilatedTex)
+    /// false → 沿用 velocityDilation_ 旧逻辑 (consumer shader 内 inline 9-tap)
+    void SetDilationPassActive(bool active) override { dilationPassActive_ = active; }
+    bool GetDilationPassActive() const override     { return dilationPassActive_; }
 
     void SetNextPreviousModelMatrix(const float* prevModelMat4) override {
         if (!prevModelMat4) {
