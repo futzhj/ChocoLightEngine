@@ -1412,7 +1412,7 @@ print(Light.Graphics.MotionBlur.GetHalfRes())      --> true
 >
 > **默认 OFF**：用户主动 `Enable` 才生效（与 Phase E 所有模块一致），零回归保障。
 
-## TAA API 速查表（共 23 函数 = F.0 13 + F.0.1 2 + F.0.2 2 + F.0.3 2 + F.0.4 2 + F.0.5 2）
+## TAA API 速查表（共 25 函数 = F.0 13 + F.0.1 2 + F.0.2 2 + F.0.3 2 + F.0.4 2 + F.0.5 2 + F.0.6 2）
 
 | 类别 | 函数 | 默认值 / 说明 |
 |------|------|--------------|
@@ -1425,6 +1425,7 @@ print(Light.Graphics.MotionBlur.GetHalfRes())      --> true
 | 参数 (F.0.2/F.0.3) | `SetClipMode(mode)` / `GetClipMode()` | `"rgb"` / `"ycocg"` / `"variance"` (大小写不敏感)，**默认 `"ycocg"`** |
 | 参数 (F.0.3) | `SetVarianceGamma(γ)` / `GetVarianceGamma()` | variance clip 收紧系数 γ，clamp `[0, 4]`，**默认 1.0**（仅 `"variance"` 生效） |
 | 参数 (F.0.5) | `SetHalfResHistory(on)` / `GetHalfResHistory()` | history RT 半分辨率，**默认 false**（零回归）；ON 时 VRAM -75% / TAA pass 像素 -75% |
+| 参数 (F.0.6) | `SetSharpenMode(mode)` / `GetSharpenMode()` | sharpen 算法：`"unsharp"` (F.0.1, [0,2]) / `"cas"` (AMD FSR1, [0,1])，**默认 `"unsharp"`** |
 | 状态 | `GetFrameCounter()` | `int` Halton 索引 `[0, 7]`（debug HUD） |
 | 状态 | `GetCurrentJitter()` | `(jx, jy)` 本帧 sub-pixel 偏移（±0.5 px） |
 
@@ -1959,6 +1960,114 @@ TAA.SetVarianceGamma(1.0)
 TAA.SetAntiFlicker(true)
 TAA.SetSharpness(0.8)
 TAA.SetHalfResHistory(true)                  -- 五启共存
+```
+
+---
+
+## `TAA.SetSharpenMode` / `TAA.GetSharpenMode`
+
+**Phase F.0.6** — sharpen 算法切换：F.0.1 4-tap unsharp mask vs AMD FidelityFX FSR1 5-tap CAS。
+
+### 参数
+
+- `mode` (`string`)：`"unsharp"` / `"cas"`（大小写不敏感）
+  - **`"unsharp"`**（默认）— F.0.1 4-tap unsharp mask。`sharpened = c + (c - avg4) * sharpness`。sharpness 范围 `[0, 2]`。简单锐化，全局匀匀强度。
+  - **`"cas"`** — AMD FidelityFX FSR1 5-tap contrast-adaptive sharpening。sharpness 范围 `[0, 1]`（FSR1 标准，内部 clamp）。contrast-adaptive：低对比区域不锐化（不锁牍噪点）。
+
+### 默认值
+
+`"unsharp"`（零回归，与 Phase F.0.1 行为完全一致）
+
+### 错误处理
+
+与 `SetClipMode` 同模式：非 string / 未识别值 返 `nil + err` (state 不变)：
+
+```lua
+local ok, err = pcall(Light.Graphics.TAA.SetSharpenMode, 123)
+-- ok=true, err=nil  (为获得 nil+err 不走 pcall)
+
+local ok2, err2 = Light.Graphics.TAA.SetSharpenMode(123)
+print(ok2, err2)  --> nil  TAA.SetSharpenMode: 期望 string 参数 ('unsharp' / 'cas')
+
+local ok3, err3 = Light.Graphics.TAA.SetSharpenMode("foo")
+print(ok3, err3)  --> nil  TAA.SetSharpenMode: 未识别的 mode 'foo' (期望 'unsharp' / 'cas')
+```
+
+### 两个算法对比
+
+| 特性 | F.0.1 unsharp mask | F.0.6 CAS |
+|------|-------------------|----------|
+| sample 数 | 5 (center + N/S/E/W) | 5 (同) |
+| ALU 数 | ~6 | ~12 |
+| **对比度自适应** | ❌ 均匀强度 | ✅ ampRGB 缩放 |
+| **低对比区域** | ⚠️ 可能锁牍噪点 | ✅ 不锐化 |
+| **HDR firefly** | ⚠️ 加剧 | ✅ HDR safe (clamp ≥0) |
+| **sharpness 范围** | [0, 2] | [0, 1] (FSR1 标准，内部 clamp) |
+| **性能 1080p** | ~0.03 ms | ~0.05 ms (+0.02 ms) |
+| **边缘锐度** | ⭐⭐⭐ | ⭐⭐⭐⭐ |
+| **平滑区域** | ⭐⭐ | ⭐⭐⭐⭐⭐ (无噪点) |
+
+### 算法原理 (CAS)
+
+```
+Step 1 — 5-tap fetch: a = center, b = N, c = S, d = W, e = E
+Step 2 — 邻域 min/max (per channel): mnRGB = min(a,b,c,d,e); mxRGB = max(...)
+Step 3 — dynamic range: ampRGB = sqrt(clamp(min(mnRGB, mnRGB2) / mxRGB, 0, 1))
+Step 4 — peak: peak = -1 / mix(8, 5, sharpness)  // ∈ [-1/8, -1/5]
+Step 5 — 加权: rcpW = 1 / (4*ampRGB*peak + 1); sum = a + (b+c+d+e) * ampRGB*peak
+Step 6 — HDR safe: max(sum * rcpW, 0)
+```
+
+### sharpness 语义差异
+
+**重要提醒**：sharpness 字段在两个 mode 中完全独立含义：
+
+- **`"unsharp"` `sharpness=0.5`** → 中等强度 4-tap 锐化
+- **`"cas"` `sharpness=0.5`** → peak=-1/6.5，中等 contrast-adaptive 锐化
+- **`"cas"` `sharpness=2.0`** → 内部 clamp 到 1.0，等同 sharpness=1.0 最强化
+
+不可直接同值比较 (5e "unsharp 0.5" 、 "cas 0.5" 视觉强度不同)。
+
+### 推荐场景
+
+| 场景 | 推荐 mode |
+|------|----------|
+| 低对比场景 (天空 / 雾 / 阴影) | **`"cas"`** (不锁牍噪点) |
+| HDR 强高光场景 (金属 / 灯光) | **`"cas"`** (HDR safe 防 firefly 加剧) |
+| 高丝节贴图场景 (PBR / 7件调被) | `"unsharp"` 又 `"cas"` 都可 |
+| 低端移动设备 | `"unsharp"` (少 ALU) |
+| 桌面 / 中高端移动 | **`"cas"`** 推荐 |
+| 纯粉 / 2D 场景 | `"unsharp"` (低对比表现不明显) |
+
+### 示例
+
+```lua
+local TAA = Light.Graphics.TAA
+
+-- 默认：unsharp (F.0.1 行为)
+print(TAA.GetSharpenMode())                 --> unsharp
+
+-- 切到 CAS (HDR 强高光推荐)
+TAA.SetSharpenMode("cas")
+TAA.SetSharpness(0.6)                       -- CAS 范围 [0, 1], 0.6 = 中高强度
+print(TAA.GetSharpenMode())                 --> cas
+
+-- 大小写不敏感
+TAA.SetSharpenMode("CAS")
+print(TAA.GetSharpenMode())                 --> cas (同模式)
+
+-- invalid 返 nil+err, state 不变
+local ok, err = TAA.SetSharpenMode("foo")
+print(ok, err)                              --> nil  TAA.SetSharpenMode: 未识别的 mode 'foo' (...)
+print(TAA.GetSharpenMode())                 --> cas (仍保持上个有效值)
+
+-- 与 Phase F.0.x 任意设置同启 (六启共存)
+TAA.SetClipMode("variance")
+TAA.SetVarianceGamma(1.0)
+TAA.SetAntiFlicker(true)
+TAA.SetSharpness(0.8)
+TAA.SetHalfResHistory(true)
+TAA.SetSharpenMode("cas")                   -- 六启共存
 ```
 
 ---

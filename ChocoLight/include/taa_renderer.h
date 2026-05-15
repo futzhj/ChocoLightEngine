@@ -141,6 +141,18 @@ float GetVarianceGamma();
 void SetHalfResHistory(bool on);
 bool GetHalfResHistory();
 
+/// Phase F.0.6 — TAA Sharpen Mode (4-tap unsharp mask vs 5-tap CAS)
+/// "unsharp" (默认) — F.0.1 4-tap unsharp mask, sharpness ∈ [0, 2], ~0.03 ms
+/// "cas"             — AMD FidelityFX FSR1 5-tap contrast-adaptive sharpening
+///                     sharpness ∈ [0, 1] (FSR1 标准范围, TAARenderer 内部 clamp 到 1)
+///                     contrast-adaptive: 平滑区域不锁牰 + HDR safe + perceptual gamma
+///                     性能: ~0.05 ms (+0.02 ms vs unsharp)
+/// 大小写不敏感: "CAS" / "Cas" / "cas" 等价; "unsharp" / "Unsharp" / "UNSHARP" 等价
+/// 未识别字符串保持当前 state (Lua 层 raise error 提示)
+/// shader 切换零开销, sharpness 字段共享 (语义按 mode 自适应)
+void SetSharpenMode(const char* mode);
+const char* GetSharpenMode();
+
 // ==================== 内部状态查询 (debug HUD 用) ====================
 
 /// 当前帧 Halton 索引 (% 8), 累加帧计数器低 3 位

@@ -449,6 +449,19 @@ while win:IsOpen() do
             TAA.GetHalfResHistory() and '-75%' or 'baseline'))
     end
 
+    -- Phase F.0.6 — Z: 在 'unsharp' (F.0.1 4-tap) / 'cas' (AMD FSR1 5-tap) 之间切换
+    --   unsharp → sharpness 语义 [0, 2], 平滑区域也被锐化 (可能出现噪点)
+    --   cas     → sharpness 语义 [0, 1] (内部 clamp), contrast-adaptive 低对比区域不锐化
+    if TAA and TAA.IsEnabled() and TAA.SetSharpenMode and keyTap('z') then
+        local cur = TAA.GetSharpenMode()
+        local nxt = (cur == 'unsharp') and 'cas' or 'unsharp'
+        TAA.SetSharpenMode(nxt)
+        print(string.format('[demo] TAA SharpenMode: %s -> %s (%s)',
+            cur, nxt,
+            (nxt == 'cas') and 'AMD FSR1 5-tap CAS, HDR safe + contrast-adaptive'
+                            or 'F.0.1 4-tap unsharp mask (默认)'))
+    end
+
     -- R: reset 默认
     if keyTap('r') then
         SSR.SetMaxSteps(64); SSR.SetStepSize(0.1); SSR.SetThickness(0.5)
@@ -534,7 +547,7 @@ while win:IsOpen() do
                 MotionBlur.GetStrength(),
                 MotionBlur.GetSampleCount()))
         end
-        -- Phase F.0+F.0.1+F.0.2+F.0.3+F.0.4+F.0.5: TAA 主管线状态 (jitter + frame counter + alpha + clip + sharpness + antiFlicker + clipMode + varianceGamma + halfResHistory)
+        -- Phase F.0+F.0.1+F.0.2+F.0.3+F.0.4+F.0.5+F.0.6: TAA 主管线状态 (jitter + frame counter + alpha + clip + sharpness + antiFlicker + clipMode + varianceGamma + halfResHistory + sharpenMode)
         local TAAhud = Gfx.TAA
         if TAAhud then
             local jx, jy = TAAhud.GetCurrentJitter()
@@ -542,25 +555,28 @@ while win:IsOpen() do
             local af     = TAAhud.GetAntiFlicker and TAAhud.GetAntiFlicker() or false
             local cmode  = TAAhud.GetClipMode and TAAhud.GetClipMode() or 'ycocg'        -- Phase F.0.2/F.0.3 默认 ycocg
             local hr     = TAAhud.GetHalfResHistory and TAAhud.GetHalfResHistory() or false  -- Phase F.0.5
+            local smode  = TAAhud.GetSharpenMode and TAAhud.GetSharpenMode() or 'unsharp'    -- Phase F.0.6
             -- Phase F.0.3: 仅 ClipMode=="variance" 时在 HUD 添加 vg=γ 字段避免垃圾信息
             local cmodeStr = cmode
             if cmode == 'variance' and TAAhud.GetVarianceGamma then
                 cmodeStr = string.format('variance(γ=%.2f)', TAAhud.GetVarianceGamma())
             end
-            line(string.format('TAA: %s | alpha=%.2f | clip=%s/%s | jitter=%s | sharp=%.2f (%s) | AF=%s | halfRes=%s | frame=%d (jx=%.3f jy=%.3f)',
+            -- Phase F.0.6: sharp 字段后加 mode 后缀 (unsharp/cas)
+            local sharpStr = (sharp > 0) and string.format('%.2f/%s', sharp, smode)
+                                          or string.format('%.2f/blit', sharp)
+            line(string.format('TAA: %s | alpha=%.2f | clip=%s/%s | jitter=%s | sharp=%s | AF=%s | halfRes=%s | frame=%d (jx=%.3f jy=%.3f)',
                 TAAhud.IsEnabled() and 'ON' or 'OFF',
                 TAAhud.GetBlendAlpha(),
                 TAAhud.GetNeighborhoodClip() and 'ON' or 'OFF',
                 cmodeStr,                                -- Phase F.0.2/F.0.3: rgb / ycocg / variance(γ=N)
                 TAAhud.GetJitterEnabled() and 'ON' or 'OFF',
-                sharp,
-                sharp > 0 and 'sharpen pass' or 'pure blit',
+                sharpStr,                                -- Phase F.0.6: 值/mode
                 af and 'ON' or 'OFF',                    -- Phase F.0.4
                 hr and 'ON' or 'OFF',                    -- Phase F.0.5
                 TAAhud.GetFrameCounter(),
                 jx, jy))
         end
-        line('Keys: F=SSR B=Blur V=Bilateral T=Temporal 9/0=radius ,/.=sigma U/I=alpha N=reject K=Dilation L=Format M=MotionBlur ;=Mode [=MBHalfRes ]=DilHalfRes \\=AutoSkip Y=TAA J=TAAjitter H=TAAsharp G=TAAAF X=TAAHalfRes R=reset ESC')
+        line('Keys: F=SSR B=Blur V=Bilateral T=Temporal 9/0=radius ,/.=sigma U/I=alpha N=reject K=Dilation L=Format M=MotionBlur ;=Mode [=MBHalfRes ]=DilHalfRes \\=AutoSkip Y=TAA J=TAAjitter H=TAAsharp G=TAAAF X=TAAHalfRes Z=TAASharpenMode R=reset ESC')
     end
 
     win:EndFrame()

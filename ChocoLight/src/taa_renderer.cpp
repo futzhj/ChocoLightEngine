@@ -64,6 +64,7 @@ struct State {
     int      clipMode         = 1;           // Phase F.0.2/F.0.3: 0=RGB AABB / 1=YCoCg AABB (默认) / 2=YCoCg variance
     float    varianceGamma    = 1.0f;        // Phase F.0.3: variance clip 收紧系数 γ (Salvi 2016 / UE5 默认 1.0)
     bool     halfResHistory   = false;       // Phase F.0.5: history RT 半分辨率 (默认 false, 零回归)
+    int      sharpenMode      = 0;           // Phase F.0.6: 0=unsharp (F.0.1 默认 4-tap) / 1=cas (5-tap AMD FSR1)
 
     // jitter state
     uint64_t frameCounter   = 0;
@@ -286,14 +287,24 @@ void Process(uint32_t hdrFbo, uint32_t hdrTex) {
                             g.clipMode,                 // Phase F.0.2/F.0.3
                             g.varianceGamma);           // Phase F.0.3
 
-    // Phase F.0.1: sharpness > 0 走 4-tap unsharp mask sharpen pass (in-place 写回 sceneTex);
-    //              否则保持 F.0 纯 blit 路径 (零 ALU 开销)
+    // Phase F.0.1/F.0.6: sharpness > 0 走 sharpen pass (in-place 写回 sceneTex);
+    //                    否则保持 F.0 纯 blit 路径 (零 ALU 开销)
+    // Phase F.0.6: sharpenMode 切分支—— 0=unsharp (4-tap F.0.1) / 1=cas (5-tap AMD FSR1)
+    //   sharpness 字段语义不同: unsharp [0, 2] / cas [0, 1] (各自后端 shader 需本身范围 clamp)
     // Phase F.0.5:
     //   Sharpen: viewport=full-res, srcTex (history) GL_LINEAR sample 自动上采样→不需传 history 尺寸
     //   Blit:    src(history half-res) → dst(sceneTex full-res), backend 内检测尺寸不同走 GL_LINEAR stretch
     if (g.sharpness > 0.0f) {
-        g.backend->DrawTAASharpenPass(g.historyTexs[writeIdx], hdrFbo,
-                                     g.width, g.height, g.sharpness);
+        if (g.sharpenMode == 1) {
+            // Phase F.0.6: CAS sharpness clamp [0, 1] (FSR1 标准); 超出则 saturate 到 1.0
+            const float casS = (g.sharpness > 1.0f) ? 1.0f : g.sharpness;
+            g.backend->DrawTAACASPass(g.historyTexs[writeIdx], hdrFbo,
+                                       g.width, g.height, casS);
+        } else {
+            // Phase F.0.1: unsharp mask, sharpness 接受完整 [0, 2] 范围
+            g.backend->DrawTAASharpenPass(g.historyTexs[writeIdx], hdrFbo,
+                                          g.width, g.height, g.sharpness);
+        }
     } else {
         g.backend->BlitTAAToHDR(g.historyTexs[writeIdx], hdrFbo,
                                  g.historyW, g.historyH,    // Phase F.0.5: src = history RT 实际尺寸
@@ -383,6 +394,34 @@ void SetHalfResHistory(bool on) {
             on ? "ON" : "OFF", g.historyW, g.historyH, sceneW, sceneH);
 }
 bool GetHalfResHistory() { return g.halfResHistory; }
+
+// Phase F.0.6 — Sharpen mode ("unsharp" 4-tap F.0.1 / "cas" 5-tap AMD FSR1)
+// 大小写不敏感解析: "unsharp" → 0 / "cas" → 1; 未识别静默保持当前 state (Lua 层 raise error)
+// 仅修改 mode 字段, 不重建 RT (shader 在 backend 内部切分支)
+// 复用 parseClipMode_ 的 lambda 模式, 避免 strcasecmp 跨平台问题 (Windows MSVC 无此函数, 需 _stricmp)
+static int parseSharpenMode_(const char* mode) {
+    if (!mode) return -1;
+    auto eq = [](const char* a, const char* b) {
+        while (*a && *b) {
+            char ca = (*a >= 'A' && *a <= 'Z') ? (char)(*a + 32) : *a;
+            char cb = (*b >= 'A' && *b <= 'Z') ? (char)(*b + 32) : *b;
+            if (ca != cb) return false;
+            ++a; ++b;
+        }
+        return *a == '\0' && *b == '\0';
+    };
+    if (eq(mode, "unsharp")) return 0;
+    if (eq(mode, "cas"))     return 1;
+    return -1;
+}
+void SetSharpenMode(const char* mode) {
+    int parsed = parseSharpenMode_(mode);
+    if (parsed >= 0) g.sharpenMode = parsed;   // 仅识别到才写入 (与 SetClipMode 同模式)
+}
+// 返回不可变 C 字符串供 Lua/HUD 使用 (taa_funcs ABI 要求 const char*)
+const char* GetSharpenMode() {
+    return (g.sharpenMode == 1) ? "cas" : "unsharp";
+}
 
 void  SetJitterEnabled(bool on) {
     g.jitterEnabled = on;

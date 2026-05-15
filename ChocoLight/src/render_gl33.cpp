@@ -2267,6 +2267,50 @@ void main() {
 }
 )";
 
+// ---- FS_CAS (GLES 3.0): Phase F.0.6 — TAA 后 5-tap CAS 锐化 (AMD FidelityFX FSR1) ----
+//   算法: contrast-adaptive sharpening, 邻域 min/max 计算 dynamic range 自动减弱低对比
+//   优势 vs F.0.1 unsharp: 平滑区域不锁牰 (无噪点放大) + HDR firefly 友好 + perceptual gamma
+//   性能: 5 fetch + ~12 ALU/px ≈ 0.05 ms @ 1080p (+0.02 ms vs F.0.1)
+//   sharpness ∈ [0, 1] (FSR1 标准): 0 → peak=-1/8 弱锐化, 1 → peak=-1/5 强锐化
+static const char* FS_CAS_SOURCE = R"(#version 300 es
+precision highp float;
+precision highp sampler2D;
+in  vec2 vUV;
+out vec4 FragColor;
+
+uniform sampler2D uInputTex;       // slot 0: TAA blend 输出
+uniform vec2  uTexelSize;          // 1.0 / vec2(W, H)
+uniform float uSharpness;          // CAS [0, 1]
+
+void main() {
+    vec3 c = texture(uInputTex, vUV).rgb;
+    vec3 n = texture(uInputTex, vUV + vec2(0.0,         uTexelSize.y)).rgb;
+    vec3 s = texture(uInputTex, vUV - vec2(0.0,         uTexelSize.y)).rgb;
+    vec3 e = texture(uInputTex, vUV + vec2(uTexelSize.x, 0.0       )).rgb;
+    vec3 w = texture(uInputTex, vUV - vec2(uTexelSize.x, 0.0       )).rgb;
+
+    // 邻域 min/max (per channel, 5-tap)
+    vec3 mnRGB = min(c, min(n, min(s, min(e, w))));
+    vec3 mxRGB = max(c, max(n, max(s, max(e, w))));
+
+    // 对暗部和亮部对称的 dynamic range (FSR1 trick)
+    vec3 mnRGB2 = min(mnRGB, 1.0 - mxRGB);
+    vec3 ampRGB = clamp(min(mnRGB, mnRGB2) / max(mxRGB, vec3(1e-4)), 0.0, 1.0);
+    ampRGB = sqrt(ampRGB);                       // perceptual gamma
+
+    // peak 系数: sharpness=0 → peak=-1/8 (弱), sharpness=1 → peak=-1/5 (强)
+    float peak = -1.0 / mix(8.0, 5.0, uSharpness);
+    vec3 wRGB  = ampRGB * peak;
+    vec3 rcpW  = 1.0 / (4.0 * wRGB + 1.0);
+
+    vec3 sum = c + (n + s + e + w) * wRGB;
+    vec3 sharpened = sum * rcpW;
+
+    // HDR safe: 防黑斑负值 (HDR 不截上限保留高光; ChocoLight 是 HDR pipeline)
+    FragColor = vec4(max(sharpened, vec3(0.0)), 1.0);
+}
+)";
+
 // ---- FS_MOTION_BLUR (GLES 3.0): Phase E.15 per-pixel velocity blur ----
 //   1. SampleVelocityDilated 与 SSRTemporal 同算法 (3x3 max-length 邻域可选)
 //   2. E3 软限: |vel| <= screenDiagUV × 0.3 ≈ 0.4243 防极端拖尾糊死
@@ -2954,6 +2998,46 @@ void main() {
 }
 )";
 
+// ---- FS_CAS (GL 3.3): Phase F.0.6 — TAA 后 5-tap CAS 锐化 (AMD FidelityFX FSR1) ----
+// 与 GLES3 版完全等价, 仅 #version + 无 precision qualifier
+static const char* FS_CAS_SOURCE = R"(
+#version 330 core
+in  vec2 vUV;
+out vec4 FragColor;
+
+uniform sampler2D uInputTex;       // slot 0: TAA blend 输出
+uniform vec2  uTexelSize;          // 1.0 / vec2(W, H)
+uniform float uSharpness;          // CAS [0, 1]
+
+void main() {
+    vec3 c = texture(uInputTex, vUV).rgb;
+    vec3 n = texture(uInputTex, vUV + vec2(0.0,         uTexelSize.y)).rgb;
+    vec3 s = texture(uInputTex, vUV - vec2(0.0,         uTexelSize.y)).rgb;
+    vec3 e = texture(uInputTex, vUV + vec2(uTexelSize.x, 0.0       )).rgb;
+    vec3 w = texture(uInputTex, vUV - vec2(uTexelSize.x, 0.0       )).rgb;
+
+    // 邻域 min/max (per channel, 5-tap)
+    vec3 mnRGB = min(c, min(n, min(s, min(e, w))));
+    vec3 mxRGB = max(c, max(n, max(s, max(e, w))));
+
+    // 对暗部和亮部对称的 dynamic range (FSR1 trick)
+    vec3 mnRGB2 = min(mnRGB, 1.0 - mxRGB);
+    vec3 ampRGB = clamp(min(mnRGB, mnRGB2) / max(mxRGB, vec3(1e-4)), 0.0, 1.0);
+    ampRGB = sqrt(ampRGB);
+
+    // peak: sharpness=0 → peak=-1/8 (弱), sharpness=1 → peak=-1/5 (强)
+    float peak = -1.0 / mix(8.0, 5.0, uSharpness);
+    vec3 wRGB  = ampRGB * peak;
+    vec3 rcpW  = 1.0 / (4.0 * wRGB + 1.0);
+
+    vec3 sum = c + (n + s + e + w) * wRGB;
+    vec3 sharpened = sum * rcpW;
+
+    // HDR safe: 防黑斑负值 (HDR 不截上限保留高光)
+    FragColor = vec4(max(sharpened, vec3(0.0)), 1.0);
+}
+)";
+
 // ---- FS_MOTION_BLUR (GL 3.3): Phase E.15 per-pixel velocity blur ----
 //   1. SampleVelocityDilated 与 SSRTemporal 同算法 (3x3 max-length 邻域可选)
 //   2. E3 软限: |vel| <= screenDiagUV × 0.3 ≈ 0.4243 防极端拖尾糊死
@@ -3411,6 +3495,14 @@ class GL33Backend : public RenderBackend {
     GLint  locSharpen_InputTex              = -1;   // sampler2D, slot 0
     GLint  locSharpen_TexelSize             = -1;
     GLint  locSharpen_Sharpness             = -1;
+
+    // Phase F.0.6 — TAA CAS Sharpening (5-tap AMD FidelityFX FSR1, 与 F.0.1 unsharp 共存)
+    //   shader: FS_CAS_SOURCE (uInputTex + uTexelSize + uSharpness ∈ [0, 1])
+    //   contrast-adaptive: 邻域 min/max 自动减弱低对比区域锐化, HDR safe (clamp ≥ 0)
+    GLuint programCAS                       = 0;
+    GLint  locCAS_InputTex                  = -1;   // sampler2D, slot 0
+    GLint  locCAS_TexelSize                 = -1;
+    GLint  locCAS_Sharpness                 = -1;
 
     // Phase E.2.1 — Lighting2D dirty bit cache
     // 当 state->version 与此值相等时, UploadLighting2D 跳过所有 glUniform*v 调用
@@ -4402,6 +4494,22 @@ public:
             CC::Log(CC::LOG_WARN, "GL33: Phase F.0.1 TAA Sharpen shader compile failed; DrawTAASharpenPass 将 fallback 走 Blit");
         }
 
+        // ---- Phase F.0.6 — TAA CAS Sharpening shader (AMD FSR1 5-tap) ----
+        //   与 F.0.1 unsharp 共存, 用户通过 SetSharpenMode("cas"/"unsharp") 切换
+        //   shader: FS_CAS_SOURCE (5-tap CAS, contrast-adaptive)
+        programCAS = buildProgram(FS_CAS_SOURCE, "TAA_CAS");
+        if (programCAS) {
+            locCAS_InputTex  = glGetUniformLocation(programCAS, "uInputTex");
+            locCAS_TexelSize = glGetUniformLocation(programCAS, "uTexelSize");
+            locCAS_Sharpness = glGetUniformLocation(programCAS, "uSharpness");
+            glUseProgram(programCAS);
+            if (locCAS_InputTex >= 0) glUniform1i(locCAS_InputTex, 0);
+            glUseProgram(0);
+            CC::Log(CC::LOG_INFO, "GL33: Phase F.0.6 TAA CAS shader compiled (program=%u)", programCAS);
+        } else {
+            CC::Log(CC::LOG_WARN, "GL33: Phase F.0.6 TAA CAS shader compile failed; DrawTAACASPass 将 fallback 走 Blit");
+        }
+
         CC::Log(CC::LOG_INFO,
                 "GL33: Phase E.6+E.7+E.8+E.9+E.10+E.11+E.12 LensFx/SSAO/SSR ready (lensDirt=%s, streak=%s, lensFlare=%s, ssao=%s, ssr=%s, ssrBlur=%s, ssrTemporal=%s; programs=[LD=%u, SB=%u, SC=%u, LFG=%u, S=%u, SB=%u, SC=%u, SSR=%u, SSRC=%u, SSRB=%u, SSRT=%u])",
                 lensDirtSupported ? "yes" : "no",
@@ -4612,6 +4720,10 @@ public:
         // Phase F.0.1 — TAA Sharpening 清理
         if (programSharpen) { glDeleteProgram(programSharpen); programSharpen = 0; }
         locSharpen_InputTex = locSharpen_TexelSize = locSharpen_Sharpness = -1;
+
+        // Phase F.0.6 — TAA CAS Sharpening 清理
+        if (programCAS) { glDeleteProgram(programCAS); programCAS = 0; }
+        locCAS_InputTex = locCAS_TexelSize = locCAS_Sharpness = -1;
     }
 
     bool SupportsLit2D() const override { return lit2DSupported; }
@@ -7478,6 +7590,36 @@ public:
         glBindVertexArray(0);
 
         // 状态复位
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        glUseProgram(0);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    }
+
+    /// Phase F.0.6 — TAA CAS pass: 5-tap contrast-adaptive sharpening (AMD FidelityFX FSR1)
+    /// 与 F.0.1 unsharp 同接口; sharpness ∈ [0, 1] (FSR1 标准范围, 调用方负责 clamp).
+    /// shader 编译失败时静默 no-op (TAARenderer 层 fallback 走 BlitTAAToHDR).
+    void DrawTAACASPass(uint32_t srcTex, uint32_t dstFbo,
+                        int w, int h, float sharpness) override {
+        if (!programCAS || !srcTex || !dstFbo || w <= 0 || h <= 0) return;
+
+        glBindFramebuffer(GL_FRAMEBUFFER, dstFbo);
+        glViewport(0, 0, w, h);
+        glDisable(GL_DEPTH_TEST);
+        glDisable(GL_SCISSOR_TEST);
+        glDisable(GL_BLEND);
+
+        glUseProgram(programCAS);
+        if (locCAS_TexelSize >= 0) glUniform2f(locCAS_TexelSize, 1.0f / (float)w, 1.0f / (float)h);
+        if (locCAS_Sharpness >= 0) glUniform1f(locCAS_Sharpness, sharpness);
+
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, (GLuint)srcTex);
+
+        glBindVertexArray(vaoTonemap);
+        glDrawArrays(GL_TRIANGLES, 0, 6);
+        glBindVertexArray(0);
+
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, 0);
         glUseProgram(0);

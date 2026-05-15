@@ -1356,6 +1356,16 @@ public:
     virtual void DrawTAASharpenPass(uint32_t /*srcTex*/, uint32_t /*dstFbo*/,
                                     int /*w*/, int /*h*/, float /*sharpness*/) {}
 
+    /// Phase F.0.6 — TAA CAS pass: 5-tap contrast-adaptive sharpening (AMD FidelityFX FSR1)
+    /// 与 F.0.1 unsharp 共存, 用户通过 SetSharpenMode("cas"/"unsharp") 切换.
+    /// shader 编译失败时此函数空实现, 调用方需 fallback 到 BlitTAAToHDR.
+    /// @param srcTex     TAA 输出 tex (= history 新 slot tex)
+    /// @param dstFbo     HDR FBO
+    /// @param w, h       尺寸 (full-res)
+    /// @param sharpness  CAS [0, 1] (FSR1 标准): 0→peak=-1/8 弱, 1→peak=-1/5 强; 已由调用方 clamp
+    virtual void DrawTAACASPass(uint32_t /*srcTex*/, uint32_t /*dstFbo*/,
+                                int /*w*/, int /*h*/, float /*sharpness*/) {}
+
     /// 设置 jittered projection matrix (TAA 启用时每帧 BeginScene 前调)
     /// 调用后, ComputeMVP3D() 用 jitteredProjection 替代原 projection (raster 路径).
     /// GetProjection() 仍返 unjittered (SSR/SSAO 等 view-space reconstruction 不受影响).

@@ -1,6 +1,6 @@
--- Phase F.0 + F.0.1 + F.0.2 + F.0.3 + F.0.4 + F.0.5 smoke: Light.Graphics.TAA (Temporal Anti-Aliasing master pipeline surface)
+-- Phase F.0 + F.0.1 + F.0.2 + F.0.3 + F.0.4 + F.0.5 + F.0.6 smoke: Light.Graphics.TAA (Temporal Anti-Aliasing master pipeline surface)
 --
--- API coverage (23 functions = F.0 13 + F.0.1 2 + F.0.2 2 + F.0.3 2 + F.0.4 2 + F.0.5 2):
+-- API coverage (25 functions = F.0 13 + F.0.1 2 + F.0.2 2 + F.0.3 2 + F.0.4 2 + F.0.5 2 + F.0.6 2):
 --   Lifecycle 5: Enable / Disable / IsEnabled / IsSupported / Resize
 --   Params     6: SetBlendAlpha / GetBlendAlpha (clamp [0, 1], default 0.92)
 --                 SetNeighborhoodClip / GetNeighborhoodClip (default true)
@@ -16,6 +16,9 @@
 --                                       仅 ClipMode=="variance" 生效; γ 越小 clip 越严
 --   Phase F.0.5 — Half-res 2: SetHalfResHistory / GetHalfResHistory (boolean, default false)
 --                              true: history RT (w/2, h/2), VRAM -75%; 零回归 (默认 OFF)
+--   Phase F.0.6 — Sharpen mode 2: SetSharpenMode / GetSharpenMode ("unsharp"/"cas", default "unsharp")
+--                                    "unsharp" = F.0.1 4-tap unsharp mask (sharpness [0,2])
+--                                    "cas"     = AMD FidelityFX FSR1 5-tap CAS (sharpness [0,1] internal clamp)
 --   Status     2: GetFrameCounter (Halton index 0..7, debug HUD)
 --                 GetCurrentJitter (returns 2 numbers, sub-pixel offset)
 --
@@ -57,6 +60,7 @@ local fn_names = {
     "SetClipMode", "GetClipMode",                  -- Phase F.0.2/F.0.3
     "SetVarianceGamma", "GetVarianceGamma",        -- Phase F.0.3
     "SetHalfResHistory", "GetHalfResHistory",      -- Phase F.0.5
+    "SetSharpenMode", "GetSharpenMode",            -- Phase F.0.6
     "GetFrameCounter", "GetCurrentJitter",
 }
 for _, k in ipairs(fn_names) do
@@ -563,6 +567,115 @@ TAA.SetVarianceGamma(1.0)
 TAA.SetHalfResHistory(false)
 
 -- ============================================================
+-- 6.10) Phase F.0.6 — Sharpen mode ("unsharp" / "cas")
+-- ============================================================
+
+-- 默认值 = "unsharp" (零回归, F.0.1 4-tap unsharp mask)
+local def_sm = TAA.GetSharpenMode()
+if type(def_sm) ~= "string" then
+    fail("GetSharpenMode should return string, got " .. type(def_sm))
+end
+if def_sm ~= "unsharp" then
+    fail("Default GetSharpenMode must be 'unsharp', got '" .. tostring(def_sm) .. "'")
+end
+pass("Default SharpenMode = 'unsharp' (Phase F.0.6 零回归)")
+
+-- round-trip: unsharp → cas → unsharp
+local sm_set1 = TAA.SetSharpenMode("cas")
+if sm_set1 ~= true then fail("SetSharpenMode('cas') should return true, got " .. tostring(sm_set1)) end
+if TAA.GetSharpenMode() ~= "cas" then
+    fail("Round-trip 'cas' failed, got '" .. TAA.GetSharpenMode() .. "'")
+end
+pass("SharpenMode round-trip 'cas' ok")
+
+TAA.SetSharpenMode("unsharp")
+if TAA.GetSharpenMode() ~= "unsharp" then
+    fail("Round-trip 'unsharp' failed, got '" .. TAA.GetSharpenMode() .. "'")
+end
+pass("SharpenMode round-trip 'unsharp' ok")
+
+-- 大小写不敏感 ("CAS" / "Cas" / "UNSHARP" / "Unsharp" 均应接受)
+TAA.SetSharpenMode("CAS")
+if TAA.GetSharpenMode() ~= "cas" then
+    fail("Case-insensitive 'CAS' failed, got '" .. TAA.GetSharpenMode() .. "'")
+end
+pass("SharpenMode case-insensitive 'CAS' → 'cas' ok")
+
+TAA.SetSharpenMode("Cas")
+if TAA.GetSharpenMode() ~= "cas" then fail("Case-insensitive 'Cas' failed") end
+pass("SharpenMode case-insensitive 'Cas' → 'cas' ok")
+
+TAA.SetSharpenMode("UNSHARP")
+if TAA.GetSharpenMode() ~= "unsharp" then fail("Case-insensitive 'UNSHARP' failed") end
+pass("SharpenMode case-insensitive 'UNSHARP' → 'unsharp' ok")
+
+-- invalid 字符串 → 返 nil + err (与 SetClipMode 同模式), state 不变
+TAA.SetSharpenMode("unsharp")          -- 重置
+local sm_invalid_ok, sm_invalid_err = TAA.SetSharpenMode("foo")
+if sm_invalid_ok ~= nil then
+    fail("SetSharpenMode('foo') should return nil, got " .. tostring(sm_invalid_ok))
+end
+if type(sm_invalid_err) ~= "string" or not sm_invalid_err:find("foo") then
+    fail("SetSharpenMode('foo') should err with 'foo' mentioned, got '" .. tostring(sm_invalid_err) .. "'")
+end
+if TAA.GetSharpenMode() ~= "unsharp" then
+    fail("After invalid mode, state must remain 'unsharp', got '" .. TAA.GetSharpenMode() .. "'")
+end
+pass("SharpenMode invalid 'foo' → nil+err, state 不变 ok")
+
+-- type-error: 非 string → 返 nil + err (与 SetClipMode 同模式, 不使用 luaL_check)
+local sm_ok1, sm_err1 = TAA.SetSharpenMode(123)
+if sm_ok1 ~= nil then fail("SetSharpenMode(123) should return nil, got " .. tostring(sm_ok1)) end
+pass("SharpenMode type-error rejected (number) [" .. tostring(sm_err1):sub(1, 60) .. "...]")
+
+local sm_ok2, sm_err2 = TAA.SetSharpenMode(true)
+if sm_ok2 ~= nil then fail("SetSharpenMode(true) should return nil") end
+pass("SharpenMode type-error rejected (boolean)")
+
+-- 状态独立验证: 切换 sharpenMode 不影响 alpha / clipMode / sharpness / antiFlicker / halfRes
+local a_before  = TAA.GetBlendAlpha()
+local cm_before = TAA.GetClipMode()
+local sh_before = TAA.GetSharpness()
+local af_before = TAA.GetAntiFlicker()
+local hr_before = TAA.GetHalfResHistory()
+
+TAA.SetSharpenMode("cas")
+TAA.SetSharpenMode("unsharp")
+TAA.SetSharpenMode("cas")
+
+if math.abs(TAA.GetBlendAlpha()  - a_before)  > 1e-4
+   or TAA.GetClipMode()           ~= cm_before
+   or math.abs(TAA.GetSharpness() - sh_before) > 1e-4
+   or TAA.GetAntiFlicker()        ~= af_before
+   or TAA.GetHalfResHistory()     ~= hr_before then
+    fail("SharpenMode toggle should not affect alpha/clipMode/sharpness/antiFlicker/halfRes")
+end
+pass("SharpenMode 切换不影响其他参数 (状态独立)")
+
+-- F.0.1 + F.0.2 + F.0.3 + F.0.4 + F.0.5 + F.0.6 六启共存验证
+TAA.SetSharpness(0.5)
+TAA.SetAntiFlicker(true)
+TAA.SetClipMode("variance")
+TAA.SetVarianceGamma(1.5)
+TAA.SetHalfResHistory(true)
+TAA.SetSharpenMode("cas")
+if math.abs(TAA.GetSharpness() - 0.5) > 1e-4
+   or TAA.GetAntiFlicker() ~= true
+   or TAA.GetClipMode() ~= "variance"
+   or math.abs(TAA.GetVarianceGamma() - 1.5) > 1e-4
+   or TAA.GetHalfResHistory() ~= true
+   or TAA.GetSharpenMode() ~= "cas" then
+    fail("F.0.1 + F.0.2 + F.0.3 + F.0.4 + F.0.5 + F.0.6 六启共存 failed")
+end
+pass("Sharpness=0.5 + AntiFlicker=true + ClipMode='variance' + VarianceGamma=1.5 + HalfResHistory=true + SharpenMode='cas' 六启共存 ok")
+
+-- 复位 default
+TAA.SetClipMode("ycocg")
+TAA.SetVarianceGamma(1.0)
+TAA.SetHalfResHistory(false)
+TAA.SetSharpenMode("unsharp")
+
+-- ============================================================
 -- 7) Status query — GetFrameCounter / GetCurrentJitter
 -- ============================================================
 
@@ -646,12 +759,13 @@ else
 end
 
 print("")
-print("=== Phase F.0 + F.0.1 + F.0.2 + F.0.3 + F.0.4 + F.0.5 TAA smoke: ALL TESTS PASSED ===")
-print("Functions covered: " .. #fn_names .. " / 23")
+print("=== Phase F.0 + F.0.1 + F.0.2 + F.0.3 + F.0.4 + F.0.5 + F.0.6 TAA smoke: ALL TESTS PASSED ===")
+print("Functions covered: " .. #fn_names .. " / 25")
 print("Highlights:")
-print("  - default OFF, alpha=0.92, neighborhoodClip=true, jitterEnabled=true, sharpness=0.5, antiFlicker=true, clipMode='ycocg', varianceGamma=1.0, halfResHistory=false")
+print("  - default OFF, alpha=0.92, neighborhoodClip=true, jitterEnabled=true, sharpness=0.5, antiFlicker=true, clipMode='ycocg', varianceGamma=1.0, halfResHistory=false, sharpenMode='unsharp'")
 print("  - clamp: BlendAlpha [0, 1], Sharpness [0, 2], VarianceGamma [0, 4]")
-print("  - type-error: SetNeighborhoodClip / SetJitterEnabled / SetAntiFlicker / SetHalfResHistory reject non-boolean; SetClipMode reject non-string / invalid value; SetVarianceGamma reject non-number")
+print("  - type-error: SetNeighborhoodClip / SetJitterEnabled / SetAntiFlicker / SetHalfResHistory reject non-boolean; SetClipMode / SetSharpenMode reject non-string / invalid value; SetVarianceGamma reject non-number")
+print("  - Phase F.0.6: 5-tap CAS (AMD FSR1) vs 4-tap unsharp; CAS contrast-adaptive + HDR safe; sharpenMode='cas' -> peak ∈ [-1/8, -1/5] @ sharpness ∈ [0, 1]")
 print("  - status: GetFrameCounter [0, 7], GetCurrentJitter in ±0.5 px range")
 print("  - coexistence: TAA toggle does not affect SSR Temporal state")
 print("  - Phase F.0.1: 4-tap unsharp mask, sharpness=0 走 blit fallback (零 ALU)")

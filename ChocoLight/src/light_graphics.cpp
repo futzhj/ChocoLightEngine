@@ -3233,6 +3233,45 @@ static int l_TAA_GetHalfResHistory(lua_State* L) {
     return 1;
 }
 
+/// @lua_api Light.Graphics.TAA.SetSharpenMode
+/// @param mode string  Phase F.0.6 — TAA sharpen 算法切换 (大小写不敏感)
+///                     "unsharp" = F.0.1 4-tap unsharp mask (默认, [0, 2] sharpness)
+///                     "cas"     = AMD FidelityFX FSR1 5-tap contrast-adaptive sharpening
+///                                 ([0, 1] sharpness, 内部 clamp 到 1; +0.02 ms vs unsharp)
+///                                 contrast-adaptive: 平滑区域不锁牰 + HDR safe + perceptual gamma
+/// 错误处理: 非 string / 未识别值 返 nil + err (与 SetClipMode 同模式)
+static int l_TAA_SetSharpenMode(lua_State* L) {
+    luaL_checkany(L, 1);
+    if (lua_type(L, 1) != LUA_TSTRING) {
+        lua_pushnil(L);
+        lua_pushliteral(L, "TAA.SetSharpenMode: 期望 string 参数 ('unsharp' / 'cas')");
+        return 2;
+    }
+    const char* mode = lua_tostring(L, 1);
+    // 小写化, 与 SetClipMode 同模式
+    char lower[16] = {0};
+    int  i = 0;
+    while (mode[i] && i < 15) {
+        char c = mode[i];
+        lower[i++] = (c >= 'A' && c <= 'Z') ? (char)(c + 32) : c;
+    }
+    if (strcmp(lower, "unsharp") != 0 && strcmp(lower, "cas") != 0) {
+        lua_pushnil(L);
+        lua_pushfstring(L, "TAA.SetSharpenMode: 未识别的 mode '%s' (期望 'unsharp' / 'cas')", mode);
+        return 2;
+    }
+    TAARenderer::SetSharpenMode(mode);
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+/// @lua_api Light.Graphics.TAA.GetSharpenMode
+/// @return string  "unsharp" / "cas"
+static int l_TAA_GetSharpenMode(lua_State* L) {
+    lua_pushstring(L, TAARenderer::GetSharpenMode());
+    return 1;
+}
+
 /// @lua_api Light.Graphics.TAA.GetFrameCounter
 /// @return integer 当前帧 Halton 索引 (0-7, 用于 debug HUD)
 static int l_TAA_GetFrameCounter(lua_State* L) {
@@ -3279,6 +3318,9 @@ static const luaL_Reg taa_funcs[] = {
     // Phase F.0.5 — half-res history (2 = 1 对): VRAM -75%, 默认 false (零回归)
     {"SetHalfResHistory",     l_TAA_SetHalfResHistory},
     {"GetHalfResHistory",     l_TAA_GetHalfResHistory},
+    // Phase F.0.6 — sharpen mode (2 = 1 对): "unsharp" (F.0.1 默认) / "cas" (AMD FSR1)
+    {"SetSharpenMode",        l_TAA_SetSharpenMode},
+    {"GetSharpenMode",        l_TAA_GetSharpenMode},
     // status (2): debug HUD 用
     {"GetFrameCounter",       l_TAA_GetFrameCounter},
     {"GetCurrentJitter",      l_TAA_GetCurrentJitter},
