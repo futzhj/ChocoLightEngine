@@ -12,9 +12,9 @@
 |-----------|------|--------|--------|--------|
 | Phase 1 — SetViewport / GetViewport Lua API | 暴露 Lua 控 viewport | 525cbaa + a94322f (fix) | 25941161759 | ✅ 6/6 success |
 | Phase 2 — TAA region Process + backend scissor | 加 region 参数到 7 个 TAA pass 方法 + Process overload | 57d78ae | 25942163582 | ✅ 6/6 success |
-| Phase 3 — HDR.SetAutoTAA + TAA.Process(region) Lua | 暴露手动 TAA 控时序 + 区域 process Lua API | fa29d75 | 25942469141 | ⏳ 在跑 |
-| Phase 4 — demo_taa_split2 真物理 split-screen | 双 player + 双 instance + 同帧 region TAA demo | 66ee607 | 25942649835 | ⏳ 排队 |
-| Phase 5 — 6A docs 收尾 | ACCEPTANCE / FINAL / TODO | (本 commit) | — | — |
+| Phase 3 — HDR.SetAutoTAA + TAA.Process(region) Lua | 暴露手动 TAA 控时序 + 区域 process Lua API | fa29d75 | 25942469141 | ✅ 6/6 success |
+| Phase 4 — demo_taa_split2 真物理 split-screen | 双 player + 双 instance + 同帧 region TAA demo | 66ee607 | 25942649835 | ✅ 6/6 success |
+| Phase 5 — 6A docs 收尾 | ACCEPTANCE / FINAL / TODO | 37605f1 | 25942801442 | ⏳ 在跑 |
 
 ---
 
@@ -129,10 +129,11 @@ Light.Graphics.TAA.Process(rgnX, rgnY, rgnW, rgnH)  -- region 路径
 - [x] Phase 1 commit 525cbaa: CI 25940796470 → failure (smoke headless 检查顺序问题)
 - [x] Phase 1 fix a94322f: CI 25941161759 → ✅ 6/6 success
 - [x] Phase 2 commit 57d78ae: CI 25942163582 → ✅ 6/6 success
-- [⏳] Phase 3 commit fa29d75: CI 25942469141 → in_progress
-- [⏳] Phase 4 commit 66ee607: CI 25942649835 → queued
+- [x] Phase 3 commit fa29d75: CI 25942469141 → ✅ 6/6 success (windows/macos/ios/android/web/linux)
+- [x] Phase 4 commit 66ee607: CI 25942649835 → ✅ 6/6 success (windows/macos/ios/android/web/linux)
+- [⏳] Phase 5 commit 37605f1: CI 25942801442 → in_progress (docs-only, 预期 success)
 
-(注: ACCEPTANCE 更新 CI 状态在 FINAL 文档完成)
+CI 总验证: **4/4 sub-phase 6/6 平台全 success** (Phase 1 fix 后无回归).
 
 ---
 

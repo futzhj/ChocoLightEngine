@@ -208,7 +208,8 @@ TAA.Process(0, 0, W/2, H)
 |--------|--------|-----|
 | a94322f (Phase 1 fix) | 25941161759 | ✅ 6/6 success |
 | 57d78ae (Phase 2) | 25942163582 | ✅ 6/6 success |
-| fa29d75 (Phase 3) | 25942469141 | ⏳ in_progress |
-| 66ee607 (Phase 4) | 25942649835 | ⏳ queued |
+| fa29d75 (Phase 3) | 25942469141 | ✅ 6/6 success |
+| 66ee607 (Phase 4) | 25942649835 | ✅ 6/6 success |
+| 37605f1 (Phase 5 docs) | 25942801442 | ⏳ in_progress (预期 success) |
 
-(本文档 Phase 3/4 通过后回填; 若某一步 failure, 留下 fix commit hash + 修复说明)
+**4/4 sub-phase 6/6 平台全 success** — Phase F.0.10.2 真物理 Split-Screen **已交付完成**.
