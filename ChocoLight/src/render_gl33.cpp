@@ -5490,14 +5490,21 @@ public:
 
     /// Bright Pass: HDR sceneTex → outFbo (pyramid[0]), 亮度阈值提取 + soft knee
     void DrawBloomBrightPass(uint32_t sceneTex, uint32_t outFbo,
-                              int w, int h, float threshold) override {
+                              int w, int h, float threshold,
+                              int rgnX, int rgnY, int rgnW, int rgnH) override {
         if (!bloomSupported || !sceneTex || !outFbo) return;
 
         glBindFramebuffer(GL_FRAMEBUFFER, (GLuint)outFbo);
         glViewport(0, 0, w, h);
         glDisable(GL_DEPTH_TEST);
         glDisable(GL_BLEND);
-        glDisable(GL_SCISSOR_TEST);
+        // Phase F.0.10.3 — scissor 限定 region 写区域 (split-screen 必备)
+        if (rgnW > 0 && rgnH > 0) {
+            glEnable(GL_SCISSOR_TEST);
+            glScissor(rgnX, rgnY, rgnW, rgnH);
+        } else {
+            glDisable(GL_SCISSOR_TEST);
+        }
 
         glUseProgram(programBloomBright);
         if (locBloomBright_Threshold >= 0) glUniform1f(locBloomBright_Threshold, threshold);
@@ -5511,12 +5518,14 @@ public:
         glBindVertexArray(0);
         glBindTexture(GL_TEXTURE_2D, 0);
         glUseProgram(0);
+        glDisable(GL_SCISSOR_TEST);   // Phase F.0.10.3 — 复位
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
     }
 
     /// Downsample: srcTex → dstFbo (13-tap COD AW)
     void DrawBloomDownsample(uint32_t srcTex, uint32_t dstFbo,
-                              int dstW, int dstH) override {
+                              int dstW, int dstH,
+                              int rgnX, int rgnY, int rgnW, int rgnH) override {
         if (!bloomSupported || !srcTex || !dstFbo || dstW <= 0 || dstH <= 0) return;
 
         // uTexel = 1.0 / srcSize. 注: downsample 的 src 是上一级, 大小 = dst * 2
@@ -5527,7 +5536,13 @@ public:
         glViewport(0, 0, dstW, dstH);
         glDisable(GL_DEPTH_TEST);
         glDisable(GL_BLEND);
-        glDisable(GL_SCISSOR_TEST);
+        // Phase F.0.10.3 — scissor 限定 region 写区域 (mip 缩半逻辑由 caller 处理)
+        if (rgnW > 0 && rgnH > 0) {
+            glEnable(GL_SCISSOR_TEST);
+            glScissor(rgnX, rgnY, rgnW, rgnH);
+        } else {
+            glDisable(GL_SCISSOR_TEST);
+        }
 
         glUseProgram(programBloomDown);
         if (locBloomDown_Texel >= 0) glUniform2f(locBloomDown_Texel, texelX, texelY);
@@ -5541,12 +5556,14 @@ public:
         glBindVertexArray(0);
         glBindTexture(GL_TEXTURE_2D, 0);
         glUseProgram(0);
+        glDisable(GL_SCISSOR_TEST);   // Phase F.0.10.3 — 复位
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
     }
 
     /// Upsample + additive blend: srcTex → dstFbo (tent 3x3, hardware blend)
     void DrawBloomUpsample(uint32_t srcTex, uint32_t dstFbo,
-                            int dstW, int dstH, float radius) override {
+                            int dstW, int dstH, float radius,
+                            int rgnX, int rgnY, int rgnW, int rgnH) override {
         if (!bloomSupported || !srcTex || !dstFbo || dstW <= 0 || dstH <= 0) return;
 
         // uTexel = 1.0 / dstSize (tent 采样在 dst 空间进行, 扩散半径相对 dst 像素)
@@ -5556,7 +5573,13 @@ public:
         glBindFramebuffer(GL_FRAMEBUFFER, (GLuint)dstFbo);
         glViewport(0, 0, dstW, dstH);
         glDisable(GL_DEPTH_TEST);
-        glDisable(GL_SCISSOR_TEST);
+        // Phase F.0.10.3 — scissor 限定 region (additive blend 也受 scissor 影响)
+        if (rgnW > 0 && rgnH > 0) {
+            glEnable(GL_SCISSOR_TEST);
+            glScissor(rgnX, rgnY, rgnW, rgnH);
+        } else {
+            glDisable(GL_SCISSOR_TEST);
+        }
         // additive blend: dst = dst + src (hardware blend 加速)
         glEnable(GL_BLEND);
         glBlendFunc(GL_ONE, GL_ONE);
@@ -5576,13 +5599,15 @@ public:
         glBindTexture(GL_TEXTURE_2D, 0);
         glUseProgram(0);
         glDisable(GL_BLEND);
+        glDisable(GL_SCISSOR_TEST);   // Phase F.0.10.3 — 复位
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
     }
 
     /// Final composite: bloomTex additive blend → hdrFbo (intensity 缩放)
     /// 复用 upsample shader, radius=0 相当于零偏移采样 (tent 中心权重 16/16 = 全权)
     void DrawBloomComposite(uint32_t bloomTex, uint32_t hdrFbo,
-                             int w, int h, float intensity) override {
+                             int w, int h, float intensity,
+                             int rgnX, int rgnY, int rgnW, int rgnH) override {
         if (!bloomSupported || !bloomTex || !hdrFbo || w <= 0 || h <= 0) return;
 
         float texelX = 1.0f / (float)w;
@@ -5591,7 +5616,13 @@ public:
         glBindFramebuffer(GL_FRAMEBUFFER, (GLuint)hdrFbo);
         glViewport(0, 0, w, h);
         glDisable(GL_DEPTH_TEST);
-        glDisable(GL_SCISSOR_TEST);
+        // Phase F.0.10.3 — scissor 限定 composite additive 写区域 (split-screen 必备)
+        if (rgnW > 0 && rgnH > 0) {
+            glEnable(GL_SCISSOR_TEST);
+            glScissor(rgnX, rgnY, rgnW, rgnH);
+        } else {
+            glDisable(GL_SCISSOR_TEST);
+        }
         glEnable(GL_BLEND);
         glBlendFunc(GL_ONE, GL_ONE);
 
@@ -5610,6 +5641,7 @@ public:
         glBindTexture(GL_TEXTURE_2D, 0);
         glUseProgram(0);
         glDisable(GL_BLEND);
+        glDisable(GL_SCISSOR_TEST);   // Phase F.0.10.3 — 复位
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
     }
 

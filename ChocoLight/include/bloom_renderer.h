@@ -133,6 +133,24 @@ int  GetLevels();
  */
 void Process(uint32_t hdrFbo, uint32_t hdrTex);
 
+/**
+ * @brief Phase F.0.10.3 — Region 限定 bloom (split-screen 必备 overload)
+ *
+ * 与无 region 版语义等价 (rgnW=0 || rgnH=0 时退化为全屏路径), 区别:
+ *   1. BrightPass / Composite: scissor 限定写 hdrFbo 子矩形 (full-res 坐标)
+ *   2. Downsample × N: 每级 region 缩半 (>>i, max(1, ...))
+ *   3. Upsample × (N-1): 反向, region 按 mip 翻倍 (<<i)
+ *
+ * 典型用法 (split-screen, HDR.SetAutoBloom(false) 后手动调):
+ *   Bloom.Process(0,    0, W/2, H)   -- 左半屏 player 1
+ *   Bloom.Process(W/2,  0, W/2, H)   -- 右半屏 player 2
+ *
+ * 注意: shader 跨边界采样仍可能从邻 region 借像素 (与 F.0.10.2 TAA 同等级),
+ *       约 ~1px 边界泄漏属可接受范围; 完美方案需 shader uvOffset/uvScale 改造 (留 F.0.10.5)
+ */
+void Process(uint32_t hdrFbo, uint32_t hdrTex,
+             int rgnX, int rgnY, int rgnW, int rgnH);
+
 // ==================== 高级查询 (Phase E.6 — Lens Dirt 输入源) ====================
 
 /**

@@ -11,6 +11,7 @@
 #include "bloom_renderer.h"
 #include "render_backend.h"
 #include "light.h"            // CC::Log
+#include <algorithm>          // std::max (Phase F.0.10.3 — region mip clamp)
 
 namespace {
 
@@ -201,42 +202,71 @@ int GetLevels() { return g.requestedLevels; }
 // ==================== 管线调用 ====================
 
 void Process(uint32_t hdrFbo, uint32_t hdrTex) {
+    // 转发到 region 版本 (0/0/0/0 = 全屏老路径, 零回归)
+    Process(hdrFbo, hdrTex, 0, 0, 0, 0);
+}
+
+// Phase F.0.10.3 — Region 限定 bloom (split-screen 必备)
+// rgnW=0 || rgnH=0 时退化为全屏路径 (与老 Process 等价, 零回归)
+// region 在 mip 链中按 >>i (downsample) / <<i (upsample) 缩放
+void Process(uint32_t hdrFbo, uint32_t hdrTex,
+             int rgnX, int rgnY, int rgnW, int rgnH) {
     // 防御性检查: 未启用 / backend 无效 / pyramid 不足 → no-op
     if (!g.enabled || !g.backend || !g.supported) return;
     if (!hdrFbo || !hdrTex) return;
     if (g.actualLevels < 2) return;
 
-    // 1. Bright Pass: HDR RT → pyramid[0]
+    // useRegion: rgnW/rgnH > 0 才启 scissor; 否则退化为全屏老路径
+    const bool useRegion = (rgnW > 0 && rgnH > 0);
+
+    // 1. Bright Pass: HDR RT → pyramid[0]  (region 同输入坐标, mip-0 full-res)
     g.backend->DrawBloomBrightPass(hdrTex, g.fbos[0],
-                                    g.width, g.height, g.threshold);
+                                    g.width, g.height, g.threshold,
+                                    rgnX, rgnY, rgnW, rgnH);
 
     // 2. Downsample: pyramid[0] → [1] → ... → [actualLevels-1]
-    // 每级尺寸 = (前级宽 / 2, 前级高 / 2), 最小 1x1
+    // 每级尺寸 = (前级宽 / 2, 前级高 / 2), 最小 1x1; region 同步缩半
     int prevW = g.width, prevH = g.height;
+    int curRgnX = rgnX, curRgnY = rgnY, curRgnW = rgnW, curRgnH = rgnH;
     for (int i = 1; i < g.actualLevels; ++i) {
         int curW = (prevW > 1) ? prevW / 2 : 1;
         int curH = (prevH > 1) ? prevH / 2 : 1;
-        g.backend->DrawBloomDownsample(g.texs[i - 1], g.fbos[i], curW, curH);
+        // region 缩半 (>>1); useRegion=false 时保持 0/0/0/0
+        if (useRegion) {
+            curRgnX >>= 1;
+            curRgnY >>= 1;
+            curRgnW = (curRgnW > 1) ? (curRgnW >> 1) : 1;
+            curRgnH = (curRgnH > 1) ? (curRgnH >> 1) : 1;
+        }
+        g.backend->DrawBloomDownsample(g.texs[i - 1], g.fbos[i], curW, curH,
+                                        curRgnX, curRgnY, curRgnW, curRgnH);
         prevW = curW;
         prevH = curH;
     }
 
     // 3. Upsample + additive blend: 反向从最底层往回累加
     // pyramid[N-1] → [N-2] → ... → [0]
-    // 每级 upsample 的 dst 大小 = 下级 * 2, 但最小 1x1
+    // 每级 upsample 的 dst 大小 = 下级 * 2; region 按 (i-1) 层反算 (不递推, 避免误差)
     for (int i = g.actualLevels - 1; i > 0; --i) {
-        // 第 i-1 级的原始大小 (不依赖 prevW/prevH, 按 width >> (i-1) 反算)
+        // 第 i-1 级的原始大小 (按 width >> (i-1) 反算)
         int dstW = g.width  >> (i - 1);
         int dstH = g.height >> (i - 1);
         if (dstW < 1) dstW = 1;
         if (dstH < 1) dstH = 1;
+        // region 在 i-1 级 (按 >> (i-1) 反算; 不递推保证一致性)
+        int dRgnX = useRegion ? (rgnX >> (i - 1)) : 0;
+        int dRgnY = useRegion ? (rgnY >> (i - 1)) : 0;
+        int dRgnW = useRegion ? ((rgnW > 0) ? std::max(1, rgnW >> (i - 1)) : 0) : 0;
+        int dRgnH = useRegion ? ((rgnH > 0) ? std::max(1, rgnH >> (i - 1)) : 0) : 0;
         g.backend->DrawBloomUpsample(g.texs[i], g.fbos[i - 1],
-                                      dstW, dstH, g.radius);
+                                      dstW, dstH, g.radius,
+                                      dRgnX, dRgnY, dRgnW, dRgnH);
     }
 
-    // 4. Composite: pyramid[0] additive blend → hdrFbo (intensity 缩放)
+    // 4. Composite: pyramid[0] additive blend → hdrFbo (intensity 缩放), region 同输入坐标
     g.backend->DrawBloomComposite(g.texs[0], hdrFbo,
-                                   g.width, g.height, g.intensity);
+                                   g.width, g.height, g.intensity,
+                                   rgnX, rgnY, rgnW, rgnH);
 }
 
 // ==================== Phase E.6 — 高级查询 ====================

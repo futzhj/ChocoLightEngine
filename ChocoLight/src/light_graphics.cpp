@@ -2032,6 +2032,55 @@ static int l_Bloom_GetLevels(lua_State* L) {
     return 1;
 }
 
+/// @lua_api Light.Graphics.Bloom.Process
+/// @param x integer? region 左下角 X (默认 0)
+/// @param y integer? region 左下角 Y (默认 0)
+/// @param w integer? region 宽度 (默认 0 = 全屏老路径)
+/// @param h integer? region 高度 (默认 0 = 全屏老路径)
+/// @return boolean true 成功; nil, string = 参数非法 / HDR 未启用
+/// @note Phase F.0.10.3 — region 化 Bloom (split-screen 必备 overload)
+///       内部按 mip 链 region 缩半 (downsample) / 翻倍 (upsample)
+///       典型用法 (split-screen):
+///         HDR.SetAutoBloom(false)
+///         Bloom.Process(0,    0, W/2, H)  -- 左半屏 player 1
+///         Bloom.Process(W/2,  0, W/2, H)  -- 右半屏 player 2
+static int l_Bloom_Process(lua_State* L) {
+    // 参数检查 (4 个 optional integer, 缺省 = 0): 全部 0 = 全屏老接口
+    const int nargs = lua_gettop(L);
+    int rgnX = 0, rgnY = 0, rgnW = 0, rgnH = 0;
+    if (nargs >= 1) rgnX = (int)luaL_checkinteger(L, 1);
+    if (nargs >= 2) rgnY = (int)luaL_checkinteger(L, 2);
+    if (nargs >= 3) rgnW = (int)luaL_checkinteger(L, 3);
+    if (nargs >= 4) rgnH = (int)luaL_checkinteger(L, 4);
+
+    // 防御性: 部分 region 参数 (只传 2 个 / 3 个) 视为非法
+    if (nargs != 0 && nargs != 4) {
+        lua_pushnil(L);
+        lua_pushfstring(L, "Bloom.Process: expected 0 or 4 args (got %d); region=(x,y,w,h) all-or-none", nargs);
+        return 2;
+    }
+    // 防御性: 区域 w/h 必须 >= 0
+    if (rgnW < 0 || rgnH < 0) {
+        lua_pushnil(L);
+        lua_pushfstring(L, "Bloom.Process: w/h must be >= 0 (got w=%d, h=%d)", rgnW, rgnH);
+        return 2;
+    }
+
+    // 取 HDR fbo + sceneTex (HDR 未启用时返 0)
+    const uint32_t fbo = HDRRenderer::GetFBO();
+    const uint32_t tex = HDRRenderer::GetSceneTexture();
+    if (!fbo || !tex) {
+        lua_pushnil(L);
+        lua_pushliteral(L, "Bloom.Process: HDR not enabled (fbo / sceneTex = 0)");
+        return 2;
+    }
+
+    // 转发到 BloomRenderer (rgnW/rgnH=0 时 backend 内部跳过 scissor, 与无参 Process 等价)
+    BloomRenderer::Process(fbo, tex, rgnX, rgnY, rgnW, rgnH);
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
 static const luaL_Reg bloom_funcs[] = {
     {"Enable",          l_Bloom_Enable},
     {"Disable",         l_Bloom_Disable},
@@ -2048,6 +2097,8 @@ static const luaL_Reg bloom_funcs[] = {
     {"GetRadius",       l_Bloom_GetRadius},
     {"SetLevels",       l_Bloom_SetLevels},
     {"GetLevels",       l_Bloom_GetLevels},
+    // Phase F.0.10.3 — 手动 region Bloom (配合 HDR.SetAutoBloom(false) 做真物理 split-screen)
+    {"Process",         l_Bloom_Process},
     {NULL, NULL}
 };
 

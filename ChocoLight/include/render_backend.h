@@ -668,35 +668,50 @@ public:
      * @param outFbo    Bloom pyramid[0] 的 FBO id (目标)
      * @param w, h      目标 RT 大小
      * @param threshold 亮度阈值 (L > threshold 时保留)
+     * @param rgnX,rgnY,rgnW,rgnH Phase F.0.10.3 — region 限定 (默认 0/0/0/0 = 全屏老路径)
+     *                            rgnW>0 && rgnH>0: 启用 GL_SCISSOR 限定写区域 (split-screen 必备)
      */
     virtual void DrawBloomBrightPass(uint32_t /*sceneTex*/, uint32_t /*outFbo*/,
-                                      int /*w*/, int /*h*/, float /*threshold*/) {}
+                                      int /*w*/, int /*h*/, float /*threshold*/,
+                                      int /*rgnX*/ = 0, int /*rgnY*/ = 0,
+                                      int /*rgnW*/ = 0, int /*rgnH*/ = 0) {}
 
     /**
      * @brief Downsample: srcTex → dstFbo (13-tap COD AW filter)
      *
      * 典型: pyramid[i-1].tex → pyramid[i].fbo, dst 大小 /2.
+     * Phase F.0.10.3: rgnX/Y/W/H 默认 0/0/0/0 = 全屏; >0 时 scissor 限定写区域
+     *                  调用方需自行按 mip 缩半 region (每级 >>1)
      */
     virtual void DrawBloomDownsample(uint32_t /*srcTex*/, uint32_t /*dstFbo*/,
-                                      int /*dstW*/, int /*dstH*/) {}
+                                      int /*dstW*/, int /*dstH*/,
+                                      int /*rgnX*/ = 0, int /*rgnY*/ = 0,
+                                      int /*rgnW*/ = 0, int /*rgnH*/ = 0) {}
 
     /**
      * @brief Upsample + additive blend: srcTex → dstFbo (tent 3x3 filter)
      *
      * 调用方应事先启用 GL blend (ONE, ONE) 让结果累加到 dstFbo 已有内容.
      * radius 控制 UV 偏移 (越大 glow 越宽, 过大会失真).
+     * Phase F.0.10.3: rgnX/Y/W/H 默认 0 = 全屏; >0 时 scissor 限定写区域
+     *                  调用方需自行按 mip 翻倍 region (每级 <<1)
      */
     virtual void DrawBloomUpsample(uint32_t /*srcTex*/, uint32_t /*dstFbo*/,
-                                    int /*dstW*/, int /*dstH*/, float /*radius*/) {}
+                                    int /*dstW*/, int /*dstH*/, float /*radius*/,
+                                    int /*rgnX*/ = 0, int /*rgnY*/ = 0,
+                                    int /*rgnW*/ = 0, int /*rgnH*/ = 0) {}
 
     /**
      * @brief Final composite: bloomTex additive blend → hdrFbo (intensity scaled)
      *
      * 复用 DrawBloomUpsample 的 shader, 以 radius=0 退化为 0-offset 采样,
      * intensity 通过 uniform 传入. 调用方应启用 GL blend (ONE, ONE).
+     * Phase F.0.10.3: rgnX/Y/W/H 默认 0 = 全屏; >0 时 scissor 限定 additive 写区域
      */
     virtual void DrawBloomComposite(uint32_t /*bloomTex*/, uint32_t /*hdrFbo*/,
-                                     int /*w*/, int /*h*/, float /*intensity*/) {}
+                                     int /*w*/, int /*h*/, float /*intensity*/,
+                                     int /*rgnX*/ = 0, int /*rgnY*/ = 0,
+                                     int /*rgnW*/ = 0, int /*rgnH*/ = 0) {}
 
     // ==================== Phase E.5 — Auto Exposure (Eye Adaptation) ====================
 
