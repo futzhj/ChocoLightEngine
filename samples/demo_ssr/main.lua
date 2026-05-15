@@ -481,6 +481,20 @@ while win:IsOpen() do
             vg, mg))
     end
 
+    -- Phase F.0.13 — O: motion-adaptive sharpness ON/OFF
+    --   ON  → 高速相机运动时 effSharpness lerp 到 motionSharpness (默认 0.1), 减 reprojection trail
+    --   OFF → 全屏静态 sharpness (零回归, 与 F.0.1/F.0.6/F.0.12 行为一致)
+    if TAA and TAA.IsEnabled() and TAA.SetMotionAdaptiveSharpness and keyTap('o') then
+        local cur = TAA.GetMotionAdaptiveSharpness()
+        TAA.SetMotionAdaptiveSharpness(not cur)
+        local ms = TAA.GetMotionSharpness and TAA.GetMotionSharpness() or 0.1
+        local sh = TAA.GetSharpness()
+        print(string.format('[demo] TAA MotionAdaptiveSharpness: %s -> %s (sharp=%.2f, motionSharpness=%.2f)',
+            cur and 'ON' or 'OFF',
+            TAA.GetMotionAdaptiveSharpness() and 'ON' or 'OFF',
+            sh, ms))
+    end
+
     -- Phase F.0.9 — P: 在 'bilinear' (F.0.5 默认) / 'bicubic' (Catmull-Rom 9-tap) 上采样之间切换
     --   仅 sharpness=0 && halfRes=true 时实际生效 (sharpen pass 路径不受影响)
     if TAA and TAA.IsEnabled() and TAA.SetUpscaleMode and keyTap('p') then
@@ -622,7 +636,7 @@ while win:IsOpen() do
                 TAAhud.GetFrameCounter(),
                 jx, jy))
         end
-        line('Keys: F=SSR B=Blur V=Bilateral T=Temporal 9/0=radius ,/.=sigma U/I=alpha N=reject K=Dilation L=Format M=MotionBlur ;=Mode [=MBHalfRes ]=DilHalfRes \\=AutoSkip Y=TAA J=TAAjitter H=TAAsharp G=TAAAF X=TAAHalfRes Z=TAASharpenMode Q=TAAMotionAdapt P=TAAUpscale R=reset ESC')
+        line('Keys: F=SSR B=Blur V=Bilateral T=Temporal 9/0=radius ,/.=sigma U/I=alpha N=reject K=Dilation L=Format M=MotionBlur ;=Mode [=MBHalfRes ]=DilHalfRes \\=AutoSkip Y=TAA J=TAAjitter H=TAAsharp G=TAAAF X=TAAHalfRes Z=TAASharpenMode Q=TAAMotionAdapt O=TAAMotionAdaptSharp P=TAAUpscale R=reset ESC')
     end
 
     win:EndFrame()

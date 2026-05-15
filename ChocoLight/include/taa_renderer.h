@@ -164,6 +164,18 @@ float GetMotionGamma();
 void  SetMotionAdaptive(bool on);
 bool  GetMotionAdaptive();
 
+/// Phase F.0.13 — Motion-Adaptive Sharpness (与 F.0.8 motion-adaptive γ 成对)
+/// 高速相机运动时动态降低 sharpness 减 trail; 静止/慢速时保持原 sharpness 保锐度
+/// motionFactor = clamp(ComputeCameraMotionScalar() * 0.5, 0, 1) (backend Frobenius distance)
+/// effSharpness = lerp(sharpness, motionSharpness, motionFactor)
+/// 适用全部 sharpenMode (unsharp/cas/rcas), 在 TAARenderer 层 lerp 替代 sharpness 字段
+/// 默认 motionAdaptiveSharpness = false (零回归), motionSharpness = 0.1
+/// motionSharpness clamp [0, 2] (与 sharpness 同范围, CAS 路径内部再 saturate 到 [0, 1])
+void  SetMotionAdaptiveSharpness(bool on);
+bool  GetMotionAdaptiveSharpness();
+void  SetMotionSharpness(float s);
+float GetMotionSharpness();
+
 /// Phase F.0.9 — Custom Upsampler (history → sceneTex 上采样)
 /// "bilinear" (默认) — F.0.5 老路径, GL_LINEAR stretch 硬件上采样, 零额外 ALU
 /// "bicubic"          — Catmull-Rom 9-tap bicubic (Sigggraph 2018 Filmic SMAA), -50% blur

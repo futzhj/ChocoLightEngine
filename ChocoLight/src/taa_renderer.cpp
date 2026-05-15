@@ -68,6 +68,8 @@ struct State {
     float    motionGamma      = 1.5f;        // Phase F.0.8: motion-adaptive 高速区域 γ (UE5 高级形式, [0, 4])
     bool     motionAdaptiveGamma = false;    // Phase F.0.8: 默认 OFF (零回归, F.0.3 单 γ 行为)
     int      upscaleMode      = 0;           // Phase F.0.9: 0=bilinear (F.0.5 默认) / 1=bicubic Catmull-Rom
+    bool     motionAdaptiveSharpness = false; // Phase F.0.13: 默认 OFF (零回归, sharpness 不随 motion 调整)
+    float    motionSharpness  = 0.1f;        // Phase F.0.13: 高速运动时目标 sharpness (clamp [0, 2], 默认 0.1 减 trail)
 
     // jitter state
     uint64_t frameCounter   = 0;
@@ -300,20 +302,28 @@ void Process(uint32_t hdrFbo, uint32_t hdrTex) {
     //   Sharpen: viewport=full-res, srcTex (history) GL_LINEAR sample 自动上采样→不需传 history 尺寸
     //   Blit:    src(history half-res) → dst(sceneTex full-res), backend 内检测尺寸不同走 GL_LINEAR stretch
     if (g.sharpness > 0.0f) {
+        // Phase F.0.13: motion-adaptive sharpness—— 高速运动时 lerp 到 motionSharpness, 减 reprojection trail
+        //                ComputeCameraMotionScalar 老 backend 默认返 0 (静默失效, 零回归)
+        float effSharpness = g.sharpness;
+        if (g.motionAdaptiveSharpness) {
+            const float motion = g.backend->ComputeCameraMotionScalar();
+            const float factor = clampf(motion * 0.5f, 0.0f, 1.0f);   // 经验归一化: ~1 = 50% factor, ~2 = 100%
+            effSharpness = g.sharpness + (g.motionSharpness - g.sharpness) * factor;
+        }
         if (g.sharpenMode == 2) {
             // Phase F.0.12: RCAS sharpness 接受完整 [0, 2] (FSR2 标准); 超出则 saturate 到 2.0
-            const float rcasS = (g.sharpness > 2.0f) ? 2.0f : g.sharpness;
+            const float rcasS = (effSharpness > 2.0f) ? 2.0f : effSharpness;
             g.backend->DrawTAARCASPass(g.historyTexs[writeIdx], hdrFbo,
                                         g.width, g.height, rcasS);
         } else if (g.sharpenMode == 1) {
             // Phase F.0.6: CAS sharpness clamp [0, 1] (FSR1 标准); 超出则 saturate 到 1.0
-            const float casS = (g.sharpness > 1.0f) ? 1.0f : g.sharpness;
+            const float casS = (effSharpness > 1.0f) ? 1.0f : effSharpness;
             g.backend->DrawTAACASPass(g.historyTexs[writeIdx], hdrFbo,
                                        g.width, g.height, casS);
         } else {
             // Phase F.0.1: unsharp mask, sharpness 接受完整 [0, 2] 范围
             g.backend->DrawTAASharpenPass(g.historyTexs[writeIdx], hdrFbo,
-                                          g.width, g.height, g.sharpness);
+                                          g.width, g.height, effSharpness);
         }
     } else {
         // Phase F.0.9: sharpness=0 路径—— halfRes && upscaleMode==1 走 Catmull-Rom bicubic上采样
@@ -452,6 +462,14 @@ float GetMotionGamma()                { return g.motionGamma; }
 // motionAdaptive 默认 false; 切换即生效 (下一帧 shader 走 motion-adaptive 分支)
 void  SetMotionAdaptive(bool on) { g.motionAdaptiveGamma = on; }
 bool  GetMotionAdaptive()         { return g.motionAdaptiveGamma; }
+
+// Phase F.0.13 — motion-adaptive sharpness (高速运动时动态降 sharpness 减 trail)
+// motionSharpness clamp [0, 2] (与 sharpness 同范围); 默认 0.1 (高速时几乎不锐化)
+void  SetMotionSharpness(float s) { g.motionSharpness = clampf(s, 0.0f, 2.0f); }
+float GetMotionSharpness()         { return g.motionSharpness; }
+// motionAdaptiveSharpness 默认 false; 切换即生效 (Process 内 effSharpness 切换 lerp 路径)
+void  SetMotionAdaptiveSharpness(bool on) { g.motionAdaptiveSharpness = on; }
+bool  GetMotionAdaptiveSharpness()         { return g.motionAdaptiveSharpness; }
 
 // Phase F.0.9 — Custom upsampler ("bilinear" 默认 / "bicubic" Catmull-Rom 9-tap)
 // 仅 sharpness=0 && halfRes=true 时生效; 复用 parseClipMode_ 手写 case-insensitive 模式

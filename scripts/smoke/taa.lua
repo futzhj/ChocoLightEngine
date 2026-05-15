@@ -1,6 +1,6 @@
--- Phase F.0 + F.0.1 + F.0.2 + F.0.3 + F.0.4 + F.0.5 + F.0.6 + F.0.8 + F.0.9 + F.0.12 smoke: Light.Graphics.TAA (Temporal Anti-Aliasing master pipeline surface)
+-- Phase F.0 + F.0.1 + F.0.2 + F.0.3 + F.0.4 + F.0.5 + F.0.6 + F.0.8 + F.0.9 + F.0.12 + F.0.13 smoke: Light.Graphics.TAA (Temporal Anti-Aliasing master pipeline surface)
 --
--- API coverage (31 functions = F.0 13 + F.0.1 2 + F.0.2 2 + F.0.3 2 + F.0.4 2 + F.0.5 2 + F.0.6/F.0.12 2 + F.0.8 4 + F.0.9 2):
+-- API coverage (35 functions = F.0 13 + F.0.1 2 + F.0.2 2 + F.0.3 2 + F.0.4 2 + F.0.5 2 + F.0.6/F.0.12 2 + F.0.8 4 + F.0.9 2 + F.0.13 4):
 --   Lifecycle 5: Enable / Disable / IsEnabled / IsSupported / Resize
 --   Params     6: SetBlendAlpha / GetBlendAlpha (clamp [0, 1], default 0.92)
 --                 SetNeighborhoodClip / GetNeighborhoodClip (default true)
@@ -24,6 +24,10 @@
 --                                       SetMotionAdaptive / GetMotionAdaptive (boolean, default false)
 --                                       UE5 高级形式: 静止区域 γ=varianceGamma, 高速区域 lerp 到 motionGamma
 --                                       仅 ClipMode=="variance" 生效; 默认关零回归
+--   Phase F.0.13 — Motion-adaptive sharpness 4: SetMotionAdaptiveSharpness / Get (boolean, default false)
+--                                                  SetMotionSharpness / Get (clamp [0, 2], default 0.1)
+--                                                  高速运动时 effSharpness lerp 到 motionSharpness 减 trail
+--                                                  backend Frobenius distance 自动估计 motion factor; 默认关零回归
 --   Phase F.0.9 — Custom upsampler 2: SetUpscaleMode / GetUpscaleMode ("bilinear"/"bicubic", default "bilinear")
 --                                       "bilinear" = F.0.5 GL_LINEAR stretch (零回归)
 --                                       "bicubic"  = Catmull-Rom 9-tap (Sigggraph 2018 Filmic SMAA)
@@ -72,6 +76,8 @@ local fn_names = {
     "SetSharpenMode", "GetSharpenMode",            -- Phase F.0.6
     "SetMotionGamma", "GetMotionGamma",            -- Phase F.0.8
     "SetMotionAdaptive", "GetMotionAdaptive",      -- Phase F.0.8
+    "SetMotionAdaptiveSharpness", "GetMotionAdaptiveSharpness",  -- Phase F.0.13
+    "SetMotionSharpness", "GetMotionSharpness",    -- Phase F.0.13
     "SetUpscaleMode", "GetUpscaleMode",            -- Phase F.0.9
     "GetFrameCounter", "GetCurrentJitter",
 }
@@ -950,6 +956,145 @@ TAA.SetMotionAdaptive(false)
 TAA.SetUpscaleMode("bilinear")
 
 -- ============================================================
+-- 6.13) Phase F.0.13 — Motion-adaptive sharpness (与 F.0.8 成对)
+-- ============================================================
+
+-- 6.13.1) motionAdaptiveSharpness 默认 = false (零回归)
+local def_mas = TAA.GetMotionAdaptiveSharpness()
+if type(def_mas) ~= "boolean" then fail("GetMotionAdaptiveSharpness should be boolean, got " .. type(def_mas)) end
+if def_mas ~= false then fail("Default GetMotionAdaptiveSharpness must be false (零回归)") end
+pass("Default MotionAdaptiveSharpness = false (Phase F.0.13 零回归)")
+
+-- 6.13.2) motionSharpness 默认 = 0.1
+local def_ms = TAA.GetMotionSharpness()
+if type(def_ms) ~= "number" then fail("GetMotionSharpness should be number, got " .. type(def_ms)) end
+if math.abs(def_ms - 0.1) > 1e-4 then
+    fail("Default GetMotionSharpness must be 0.1, got " .. tostring(def_ms))
+end
+pass("Default MotionSharpness = 0.1")
+
+-- 6.13.3) round-trip
+local ok_mas = TAA.SetMotionAdaptiveSharpness(true)
+if ok_mas ~= true then fail("SetMotionAdaptiveSharpness(true) should return true") end
+if TAA.GetMotionAdaptiveSharpness() ~= true then fail("Round-trip MotionAdaptiveSharpness=true failed") end
+pass("MotionAdaptiveSharpness round-trip true ok")
+
+TAA.SetMotionAdaptiveSharpness(false)
+if TAA.GetMotionAdaptiveSharpness() ~= false then fail("Round-trip MotionAdaptiveSharpness=false failed") end
+pass("MotionAdaptiveSharpness round-trip false ok")
+
+TAA.SetMotionSharpness(0.8)
+if math.abs(TAA.GetMotionSharpness() - 0.8) > 1e-4 then fail("Round-trip MotionSharpness=0.8 failed") end
+pass("MotionSharpness round-trip 0.8 ok")
+
+-- 6.13.4) clamp 验证 [0, 2]
+TAA.SetMotionSharpness(-1.0)
+if math.abs(TAA.GetMotionSharpness() - 0.0) > 1e-4 then
+    fail("MotionSharpness clamp lower bound failed (-1 → " .. TAA.GetMotionSharpness() .. ")")
+end
+pass("MotionSharpness clamp lower bound (-1 → 0) ok")
+
+TAA.SetMotionSharpness(5.0)
+if math.abs(TAA.GetMotionSharpness() - 2.0) > 1e-4 then
+    fail("MotionSharpness clamp upper bound failed (5 → " .. TAA.GetMotionSharpness() .. ")")
+end
+pass("MotionSharpness clamp upper bound (5 → 2) ok")
+
+TAA.SetMotionSharpness(0.1)  -- 复位
+
+-- 6.13.5) type-error
+local mas_t1 = TAA.SetMotionAdaptiveSharpness(1)
+if mas_t1 ~= nil then fail("SetMotionAdaptiveSharpness(1) should return nil") end
+pass("MotionAdaptiveSharpness type-error rejected (number)")
+
+local mas_t2 = TAA.SetMotionAdaptiveSharpness("true")
+if mas_t2 ~= nil then fail("SetMotionAdaptiveSharpness(string) should return nil") end
+pass("MotionAdaptiveSharpness type-error rejected (string)")
+
+local ms_t1 = TAA.SetMotionSharpness("0.5")
+if ms_t1 ~= nil then fail("SetMotionSharpness(string) should return nil") end
+pass("MotionSharpness type-error rejected (string)")
+
+local ms_t2 = TAA.SetMotionSharpness(true)
+if ms_t2 ~= nil then fail("SetMotionSharpness(boolean) should return nil") end
+pass("MotionSharpness type-error rejected (boolean)")
+
+-- 6.13.6) 状态独立: 切换不影响其他参数
+local a_before  = TAA.GetBlendAlpha()
+local sh_before = TAA.GetSharpness()
+local sm_before = TAA.GetSharpenMode()
+local mg_before = TAA.GetMotionAdaptive()
+
+TAA.SetMotionAdaptiveSharpness(true)
+TAA.SetMotionSharpness(0.5)
+TAA.SetMotionAdaptiveSharpness(false)
+TAA.SetMotionSharpness(0.1)
+
+if math.abs(TAA.GetBlendAlpha()  - a_before)  > 1e-4
+   or math.abs(TAA.GetSharpness() - sh_before) > 1e-4
+   or TAA.GetSharpenMode()        ~= sm_before
+   or TAA.GetMotionAdaptive()     ~= mg_before then
+    fail("MotionAdaptiveSharpness/MotionSharpness toggle should not affect alpha/sharpness/sharpenMode/motionAdaptive")
+end
+pass("MotionAdaptiveSharpness/MotionSharpness 切换不影响其他参数 (状态独立)")
+
+-- 6.13.7) F.0.13 与所有 sharpenMode (unsharp/cas/rcas) 共存
+for _, mode in ipairs({"unsharp", "cas", "rcas"}) do
+    TAA.SetSharpenMode(mode)
+    TAA.SetMotionAdaptiveSharpness(true)
+    TAA.SetMotionSharpness(0.2)
+    -- 不崩 + state 保持
+    if TAA.GetSharpenMode() ~= mode then
+        fail("sharpenMode='" .. mode .. "' 与 F.0.13 不共存")
+    end
+    if TAA.GetMotionAdaptiveSharpness() ~= true then
+        fail("F.0.13 in sharpenMode='" .. mode .. "' state lost")
+    end
+    pass("F.0.13 与 sharpenMode='" .. mode .. "' 共存 ok")
+end
+TAA.SetSharpenMode("unsharp")
+TAA.SetMotionAdaptiveSharpness(false)
+TAA.SetMotionSharpness(0.1)
+
+-- 6.13.8) F.0.1+F.0.2+F.0.3+F.0.4+F.0.5+F.0.6+F.0.8+F.0.9+F.0.12+F.0.13 十启共存
+TAA.SetSharpness(0.5)
+TAA.SetAntiFlicker(true)
+TAA.SetClipMode("variance")
+TAA.SetVarianceGamma(1.0)
+TAA.SetHalfResHistory(true)
+TAA.SetSharpenMode("rcas")
+TAA.SetMotionGamma(1.5)
+TAA.SetMotionAdaptive(true)
+TAA.SetUpscaleMode("bicubic")
+TAA.SetMotionAdaptiveSharpness(true)
+TAA.SetMotionSharpness(0.1)
+if math.abs(TAA.GetSharpness() - 0.5) > 1e-4
+   or TAA.GetAntiFlicker() ~= true
+   or TAA.GetClipMode() ~= "variance"
+   or math.abs(TAA.GetVarianceGamma() - 1.0) > 1e-4
+   or TAA.GetHalfResHistory() ~= true
+   or TAA.GetSharpenMode() ~= "rcas"
+   or math.abs(TAA.GetMotionGamma() - 1.5) > 1e-4
+   or TAA.GetMotionAdaptive() ~= true
+   or TAA.GetUpscaleMode() ~= "bicubic"
+   or TAA.GetMotionAdaptiveSharpness() ~= true
+   or math.abs(TAA.GetMotionSharpness() - 0.1) > 1e-4 then
+    fail("F.0.1+0.2+0.3+0.4+0.5+0.6+0.8+0.9+0.12+0.13 十启共存 failed")
+end
+pass("十启共存: sharp=0.5 + AF=true + clip=variance + vg=1.0 + halfRes=true + sharpenMode=rcas + mg=1.5 + ma=true + upscale=bicubic + mas=true + ms=0.1 ok")
+
+-- 复位 default
+TAA.SetClipMode("ycocg")
+TAA.SetVarianceGamma(1.0)
+TAA.SetHalfResHistory(false)
+TAA.SetSharpenMode("unsharp")
+TAA.SetMotionGamma(1.5)
+TAA.SetMotionAdaptive(false)
+TAA.SetUpscaleMode("bilinear")
+TAA.SetMotionAdaptiveSharpness(false)
+TAA.SetMotionSharpness(0.1)
+
+-- ============================================================
 -- 7) Status query — GetFrameCounter / GetCurrentJitter
 -- ============================================================
 
@@ -1033,8 +1178,8 @@ else
 end
 
 print("")
-print("=== Phase F.0 + F.0.1 + F.0.2 + F.0.3 + F.0.4 + F.0.5 + F.0.6 + F.0.8 + F.0.9 + F.0.12 TAA smoke: ALL TESTS PASSED ===")
-print("Functions covered: " .. #fn_names .. " / 31 (F.0.12 仅扩展 sharpenMode 主体 'rcas', 不增函数)")
+print("=== Phase F.0 + F.0.1 + F.0.2 + F.0.3 + F.0.4 + F.0.5 + F.0.6 + F.0.8 + F.0.9 + F.0.12 + F.0.13 TAA smoke: ALL TESTS PASSED ===")
+print("Functions covered: " .. #fn_names .. " / 35 (F.0.13 +4 fn: motion-adaptive sharpness)")
 print("Highlights:")
 print("  - default OFF, alpha=0.92, neighborhoodClip=true, jitterEnabled=true, sharpness=0.5, antiFlicker=true, clipMode='ycocg', varianceGamma=1.0, halfResHistory=false, sharpenMode='unsharp', motionGamma=1.5, motionAdaptive=false")
 print("  - clamp: BlendAlpha [0, 1], Sharpness [0, 2], VarianceGamma [0, 4], MotionGamma [0, 4]")
@@ -1043,6 +1188,7 @@ print("  - Phase F.0.6: 5-tap CAS (AMD FSR1) vs 4-tap unsharp; CAS contrast-adap
 print("  - Phase F.0.8: motion-adaptive γ (UE5 高级), 静止区域=varianceGamma严防ghost / 高速区域lerp到motionGamma宽容防trail; 仅 ClipMode='variance' 生效")
 print("  - Phase F.0.9: Catmull-Rom 9-tap bicubic 上采样 (Sigggraph 2018 Filmic SMAA), -50% blur vs bilinear; 仅 sharpness=0 && halfRes=true 生效")
 print("  - Phase F.0.12: FSR2 5-tap RCAS (Robust CAS), noise detection (range<1/64 跳过) + edge protection (lobe sqrt 限制); ~+0.03 ms vs unsharp")
+print("  - Phase F.0.13: motion-adaptive sharpness, 高速相机运动时 effSharpness lerp 到 motionSharpness (默认 0.1) 减 trail; 与所有 sharpenMode 共存")
 print("  - status: GetFrameCounter [0, 7], GetCurrentJitter in ±0.5 px range")
 print("  - coexistence: TAA toggle does not affect SSR Temporal state")
 print("  - Phase F.0.1: 4-tap unsharp mask, sharpness=0 走 blit fallback (零 ALU)")

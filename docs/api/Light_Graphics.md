@@ -1412,7 +1412,7 @@ print(Light.Graphics.MotionBlur.GetHalfRes())      --> true
 >
 > **默认 OFF**：用户主动 `Enable` 才生效（与 Phase E 所有模块一致），零回归保障。
 
-## TAA API 速查表（共 31 函数 = F.0 13 + F.0.1 2 + F.0.2 2 + F.0.3 2 + F.0.4 2 + F.0.5 2 + F.0.6 2 + F.0.8 4 + F.0.9 2）
+## TAA API 速查表（共 35 函数 = F.0 13 + F.0.1 2 + F.0.2 2 + F.0.3 2 + F.0.4 2 + F.0.5 2 + F.0.6 2 + F.0.8 4 + F.0.9 2 + F.0.13 4）
 
 | 类别 | 函数 | 默认值 / 说明 |
 |------|------|--------------|
@@ -1428,6 +1428,8 @@ print(Light.Graphics.MotionBlur.GetHalfRes())      --> true
 | 参数 (F.0.6/F.0.12) | `SetSharpenMode(mode)` / `GetSharpenMode()` | sharpen 算法：`"unsharp"` (F.0.1, [0,2]) / `"cas"` (FSR1, [0,1]) / `"rcas"` (FSR2, [0,2])，**默认 `"unsharp"`** |
 | 参数 (F.0.8) | `SetMotionGamma(γ)` / `GetMotionGamma()` | motion-adaptive 高速区域 γ，clamp `[0, 4]`，**默认 1.5**（UE5 推荐） |
 | 参数 (F.0.8) | `SetMotionAdaptive(on)` / `GetMotionAdaptive()` | motion-adaptive γ 开关，**默认 false**（零回归）；仅 `ClipMode=="variance"` 生效 |
+| 参数 (F.0.13) | `SetMotionAdaptiveSharpness(on)` / `GetMotionAdaptiveSharpness()` | motion-adaptive sharpness 开关，**默认 false**（零回归）；高速运动时 effSharpness lerp 减 trail |
+| 参数 (F.0.13) | `SetMotionSharpness(s)` / `GetMotionSharpness()` | 高速运动目标 sharpness，clamp `[0, 2]`，**默认 0.1** |
 | 参数 (F.0.9) | `SetUpscaleMode(mode)` / `GetUpscaleMode()` | history→sceneTex 上采样：`"bilinear"` (F.0.5) / `"bicubic"` Catmull-Rom，**默认 `"bilinear"`** |
 | 状态 | `GetFrameCounter()` | `int` Halton 索引 `[0, 7]`（debug HUD） |
 | 状态 | `GetCurrentJitter()` | `(jx, jy)` 本帧 sub-pixel 偏移（±0.5 px） |
@@ -2199,6 +2201,72 @@ TAA.SetHalfResHistory(true)
 TAA.SetSharpenMode("cas")
 TAA.SetMotionGamma(1.5)
 TAA.SetMotionAdaptive(true)               -- 七启共存
+```
+
+---
+
+## `TAA.SetMotionAdaptiveSharpness` / `TAA.SetMotionSharpness` (+ Get)
+
+**Phase F.0.13** — motion-adaptive sharpness：高速相机运动时动态降 sharpness 减 reprojection trail；静止/慢速保持原 sharpness 保锐度。与 Phase F.0.8 motion-adaptive variance γ 成对，使 motion-adaptive 设定一体化。
+
+### 参数
+
+- `SetMotionAdaptiveSharpness(on)` (`boolean`) — 开关：true=自动 lerp / false=保持静态 sharpness（**默认 false 零回归**）
+- `SetMotionSharpness(s)` (`number`) — 高速运动目标 sharpness，clamp `[0, 2]`（**默认 0.1**，高速时几乎不锐化）
+- `GetMotionAdaptiveSharpness()` → `boolean`
+- `GetMotionSharpness()` → `number`
+
+### 算法
+
+```
+motion  = backend->ComputeCameraMotionScalar()   // Frobenius distance of viewProj(t) vs viewProj(t-1)
+factor  = clamp(motion * 0.5, 0, 1)              // 经验归一化: ~1 = 50% factor, ~2 = 100%
+effSharpness = lerp(sharpness, motionSharpness, factor)
+```
+
+### 影响范围
+
+| sharpness | sharpenMode | motionAdaptiveSharpness | 结果 |
+|-----------|-------------|------------------------|------|
+| 0 | 任意 | 任意 | 走 BlitTAAToHDR fallback，motion-adaptive 不生效 |
+| >0 | unsharp/cas/rcas | false | effSharpness = sharpness（零回归）|
+| >0 | unsharp/cas/rcas | true | effSharpness lerp（同 mode 范围内 clamp）|
+
+### 错误处理
+
+- `SetMotionAdaptiveSharpness`: 非 boolean → 返 `nil + err`
+- `SetMotionSharpness`: 非 number → 返 `nil + err`
+
+### 推荐场景
+
+| 场景 | sharpness | motionSharpness | 启用 |
+|------|-----------|-----------------|------|
+| 第一人称射击/赛车 (高速旋转/平移) | 0.8 | 0.1 | **推荐** |
+| 桌面 RPG 慢速相机 | 0.5 | 0.5 | OFF (差异不明显) |
+| 镜头切换/cutscene | 0.5 | 0.0 | **推荐** (切换瞬间避免锐化 trail) |
+| 静止预览 | 任意 | 任意 | OFF (motion=0 → effSharpness=sharpness) |
+
+### 示例
+
+```lua
+local TAA = Light.Graphics.TAA
+TAA.Enable(1280, 720)
+TAA.SetSharpness(0.8)                     -- 静止时锐化强度
+TAA.SetMotionAdaptiveSharpness(true)      -- 启用自动调整
+TAA.SetMotionSharpness(0.1)               -- 高速时降到 0.1
+
+-- 验证默认
+print(TAA.GetMotionAdaptiveSharpness())   --> false
+print(TAA.GetMotionSharpness())           --> 0.1
+
+-- type-error
+local ok, err = TAA.SetMotionAdaptiveSharpness("yes")
+print(ok, err)                            --> nil  TAA.SetMotionAdaptiveSharpness: 期望 boolean 参数
+
+-- 与所有 sharpenMode 共存
+TAA.SetSharpenMode("rcas")                -- 与 F.0.12 RCAS 共存
+TAA.SetMotionAdaptiveSharpness(true)
+-- 高速时 effSharpness ∈ [motionSharpness, sharpness]，传给 RCAS pass
 ```
 
 ---

@@ -3313,6 +3313,54 @@ static int l_TAA_GetMotionAdaptive(lua_State* L) {
     return 1;
 }
 
+/// @lua_api Light.Graphics.TAA.SetMotionAdaptiveSharpness
+/// @param on boolean Phase F.0.13 — motion-adaptive sharpness 开关
+///                     true  = 高速相机运动时 effSharpness lerp 到 motionSharpness 减 trail
+///                     false = 全屏静态 sharpness (零回归, 与 F.0.1/F.0.6/F.0.12 行为一致)
+/// 错误处理: 非 boolean → 返 nil + err (与 SetAntiFlicker 同模式)
+static int l_TAA_SetMotionAdaptiveSharpness(lua_State* L) {
+    luaL_checkany(L, 1);
+    if (lua_type(L, 1) != LUA_TBOOLEAN) {
+        lua_pushnil(L);
+        lua_pushliteral(L, "TAA.SetMotionAdaptiveSharpness: 期望 boolean 参数");
+        return 2;
+    }
+    TAARenderer::SetMotionAdaptiveSharpness(lua_toboolean(L, 1) != 0);
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+/// @lua_api Light.Graphics.TAA.GetMotionAdaptiveSharpness
+/// @return boolean motion-adaptive sharpness 开关 (默认 false)
+static int l_TAA_GetMotionAdaptiveSharpness(lua_State* L) {
+    lua_pushboolean(L, TAARenderer::GetMotionAdaptiveSharpness() ? 1 : 0);
+    return 1;
+}
+
+/// @lua_api Light.Graphics.TAA.SetMotionSharpness
+/// @param s number Phase F.0.13 — 高速运动时目标 sharpness
+///                  clamp [0, 2] (与 sharpness 同范围); 默认 0.1 (高速时几乎不锐化, 减 trail 最大)
+///                  仅 motionAdaptiveSharpness=true 生效
+/// 错误处理: 非 number → 返 nil + err
+static int l_TAA_SetMotionSharpness(lua_State* L) {
+    luaL_checkany(L, 1);
+    if (lua_type(L, 1) != LUA_TNUMBER) {
+        lua_pushnil(L);
+        lua_pushliteral(L, "TAA.SetMotionSharpness: 期望 number 参数 (clamp [0, 2])");
+        return 2;
+    }
+    TAARenderer::SetMotionSharpness((float)lua_tonumber(L, 1));
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+/// @lua_api Light.Graphics.TAA.GetMotionSharpness
+/// @return number 高速目标 sharpness (clamp [0, 2], 默认 0.1)
+static int l_TAA_GetMotionSharpness(lua_State* L) {
+    lua_pushnumber(L, (lua_Number)TAARenderer::GetMotionSharpness());
+    return 1;
+}
+
 /// @lua_api Light.Graphics.TAA.SetUpscaleMode
 /// @param mode string Phase F.0.9 — TAA history → sceneTex 上采样算法 (大小写不敏感)
 ///                     "bilinear" = F.0.5 老路径 (GL_LINEAR stretch, 默认)
@@ -3405,6 +3453,11 @@ static const luaL_Reg taa_funcs[] = {
     {"GetMotionGamma",        l_TAA_GetMotionGamma},
     {"SetMotionAdaptive",     l_TAA_SetMotionAdaptive},
     {"GetMotionAdaptive",     l_TAA_GetMotionAdaptive},
+    // Phase F.0.13 — motion-adaptive sharpness (4 = 2 对): 高速时 sharpness lerp 到 motionSharpness, 默认 OFF
+    {"SetMotionAdaptiveSharpness", l_TAA_SetMotionAdaptiveSharpness},
+    {"GetMotionAdaptiveSharpness", l_TAA_GetMotionAdaptiveSharpness},
+    {"SetMotionSharpness",         l_TAA_SetMotionSharpness},
+    {"GetMotionSharpness",         l_TAA_GetMotionSharpness},
     // Phase F.0.9 — custom upsampler (2 = 1 对): "bilinear" (F.0.5 默认) / "bicubic" (Catmull-Rom)
     {"SetUpscaleMode",        l_TAA_SetUpscaleMode},
     {"GetUpscaleMode",        l_TAA_GetUpscaleMode},

@@ -989,6 +989,13 @@ public:
     virtual void GetProjection(float* /*out16*/) const {}
     virtual void GetView(float* /*out16*/) const {}
 
+    /// Phase F.0.13 — 返回相机帧间运动幅度标量 (用于 motion-adaptive sharpness)
+    /// 实现策略: Frobenius distance of viewProj(t) vs viewProj(t-1)
+    /// 返回值: [0, +∞), 0 = 静止, ~1 = 中等速度, >2 = 高速
+    /// 老 backend 默认返 0 (motion-adaptive sharpness 静默失效, 零回归)
+    /// 首帧或 hasPrevViewProj=false 时也返 0 (避免误判为高速)
+    virtual float ComputeCameraMotionScalar() const { return 0.0f; }
+
     // ==================== Phase E.9 — SSR (Screen Space Reflection) ====================
     //
     // 屏幕空间反射: linear ray march in view space.

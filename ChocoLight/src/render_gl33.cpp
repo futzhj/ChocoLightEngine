@@ -6775,6 +6775,23 @@ public:
         }
     }
 
+    /// Phase F.0.13 — camera 帧间运动幅度标量 (Frobenius distance of viewProj matrix)
+    /// 用于 TAARenderer motion-adaptive sharpness 在高速时自动降低 sharpness, 减 reprojection trail
+    /// 算法: ssd = sum( (curVP[i] - prevVP[i])^2 ), return sqrt(ssd)
+    /// 同时反映平移 + 旋转 + FoV 变化, 简单稳定; 经验上 0=静止, ~1 中等, >2 高速
+    /// 首帧 hasPrevViewProjForVelocity=false 时返 0 (避免误判为高速)
+    float ComputeCameraMotionScalar() const override {
+        if (!hasPrevViewProjForVelocity) return 0.0f;
+        // ComputeViewProj3D 是 non-const 内部方法, 安全 const_cast (仅计算, 无 state 修改副作用)
+        Mat4 cur = const_cast<GL33RenderBackend*>(this)->ComputeViewProj3D();
+        float ssd = 0.0f;
+        for (int i = 0; i < 16; ++i) {
+            const float d = cur.m[i] - prevViewProj.m[i];
+            ssd += d * d;
+        }
+        return std::sqrt(ssd);
+    }
+
     // ==================== Phase E.1.5 — Lit2D 绘制实现 ====================
     //
     // 结构:
