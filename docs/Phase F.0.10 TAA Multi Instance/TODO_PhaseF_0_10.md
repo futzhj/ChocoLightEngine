@@ -91,11 +91,17 @@ GitHub Run ID: [`25938518533`](https://github.com/futzhj/ChocoLightEngine/action
 
 ## 4. 候选 Phase
 
-- **F.0.10.1 — 真 split-screen demo_taa_split** (高优先级, 2h)
-  - 新建 `samples/demo_taa_split/main.lua` (260 行)
-  - 双 viewport (左/右半屏) + 双 sceneTex 或单 sceneTex+viewport scissor
-  - 左 instance: sharpness=1.5 rcas; 右 instance: sharpness=0.0 lanczos upscale
-  - HUD 对比两侧参数 + 切换键 (Tab swap viewports)
+- **F.0.10.1 — demo_taa_split 多实例演示** ✅ **已完成**
+  - 新建 `samples/demo_taa_split/main.lua` (~340 行) + README.md
+  - 4 个 Instance Profile (default + 3 user, 各赋差异化参数突出 F.0.12 / F.0.14 / F.0.8+0.13)
+  - 0/1/2/3 键: 切 active instance (history 各自累积, 切换 0 stabilize 时间)
+  - R 键: 重置当前 instance history; C 键: 销毁/重建 user instance
+  - HUD: active instance + profile 描述 + 实际 GetXxx 参数对比
+  - **注意**: 仅展示 instance API 行为, 未实现真物理 split-screen (左右分屏并行渲染需要 backend FBO + Lua SetViewport API, 属 F.0.10.2 范围)
+- **F.0.10.2 — 真物理 split-screen** (后续候选, 4-6h)
+  - 暴露 `Graphics.SetViewport(x, y, w, h)` Lua API
+  - HDR/TAA 链路支持单帧多次 Process + viewport 切换
+  - 左半屏 instance 1 / 右半屏 instance 2 真正同帧并行
 - F.0.11 — Demo 截图 / 录屏 (3h)
 - F.0.15 — TAA-driven CAS strength scaling (2h)
 - F.1 — DLSS-like TAAU
