@@ -165,17 +165,16 @@ Functions covered: 21 / 21
 
 | 平台 | 状态 | 备注 |
 |------|------|------|
-| build-windows | ⏳ | runtime smoke 含 taa.lua 21 fn + variance 11 PASS |
-| build-linux | ⏳ | 纯构建 |
-| build-macos | ⏳ | 纯构建 |
-| build-android | ⏳ | 纯构建 |
-| build-ios | ⏳ | 纯构建 |
-| build-web | ⏳ | Emscripten WASM |
+| build-windows | ✅ success | runtime smoke 8 新 PASS + Functions covered 21/21 |
+| build-linux | ✅ success | 纯构建 |
+| build-macos | ✅ success | 纯构建 |
+| build-android | ✅ success | 纯构建 |
+| build-ios | ✅ success | 纯构建 |
+| build-web | ✅ success | Emscripten WASM |
 
-GitHub Run ID: `<pending>`
-Commit hash: `<pending>`
-Date: `<pending>`
-Total duration: `<pending>`
+GitHub Run ID: `25927812437`
+Commit hash: `15b0db7`
+Date: `2026-05-15`
 
 ---
 

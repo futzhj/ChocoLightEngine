@@ -85,9 +85,9 @@
 - [x] `TODO_PhaseF_0_3.md` (下一文件)
 
 ### T5 CI
-- [ ] GitHub Actions 6/6 平台 success
-- [ ] Windows runtime smoke 11 个 F.0.3 PASS + Functions covered 21/21
-- [ ] CI 状态回填 ACCEPTANCE + FINAL + TODO
+- [x] GitHub Actions 6/6 平台 success (Run 25927812437)
+- [x] Windows runtime smoke 8 个 F.0.3 PASS + Functions covered 21/21
+- [x] CI 状态回填 ACCEPTANCE + FINAL + TODO
 
 ---
 
@@ -195,14 +195,26 @@ Phase F.0 + F.0.1 + F.0.2 + F.0.3 + F.0.4 TAA smoke: ALL TESTS PASSED
 
 | 平台 | 状态 | 状态详情 |
 |------|------|---------|
-| build-windows | ⏳ | runtime smoke 含 taa.lua 21 fn + VarianceGamma 11 新 PASS + 四启共存 |
-| build-linux | ⏳ | 纯构建 |
-| build-macos | ⏳ | 纯构建 |
-| build-android | ⏳ | 纯构建 |
-| build-ios | ⏳ | 纯构建 |
-| build-web | ⏳ | Emscripten WASM |
+| build-windows | ✅ success | runtime smoke 8 新 PASS + Functions covered 21/21 + Phase F.0.3 highlights |
+| build-linux | ✅ success | 纯构建 |
+| build-macos | ✅ success | 纯构建 |
+| build-android | ✅ success | 纯构建 |
+| build-ios | ✅ success | 纯构建 |
+| build-web | ✅ success | Emscripten WASM |
 
-GitHub Run ID: `<pending>`
-Commit hash: `<pending>`
-Total duration: `<pending>`
-Date: `<pending>`
+GitHub Run ID: `25927812437`
+Commit hash: `15b0db7`
+Date: `2026-05-15`
+
+Windows smoke 验证日志 (从 CI 提取):
+```
+PASS: ClipMode round-trip ok ('variance', Phase F.0.3)
+PASS: ClipMode case-insensitive ok ('VARIANCE'/'Variance'/'vArIaNcE' → normalized 'variance')
+PASS: Default VarianceGamma = 1.0 (Salvi 2016 / UE5, Phase F.0.3)
+PASS: VarianceGamma round-trip ok ([0, 4])
+PASS: VarianceGamma clamp [0, 4] ok
+PASS: SetVarianceGamma type-error rejected (string) [bad argument #1 to '?' (number expected, got string)...]
+PASS: SetVarianceGamma type-error rejected (boolean)
+PASS: Sharpness=0.5 + AntiFlicker=true + ClipMode='variance' + VarianceGamma=1.5 四启共存 ok
+Functions covered: 21 / 21
+```
