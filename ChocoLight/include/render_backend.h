@@ -164,6 +164,8 @@ public:
     virtual void SetColor(float r, float g, float b, float a) = 0;
     virtual void GetColor(float* r, float* g, float* b, float* a) = 0;
     virtual void SetViewport(int x, int y, int w, int h) = 0;
+    // Phase F.0.10.2 — 查询当前 viewport (用于 Lua Graphics.GetViewport / split-screen 区域计算)
+    virtual void GetViewport(int* x, int* y, int* w, int* h) = 0;
 
     // ---- 变换栈 ----
     virtual void PushMatrix() = 0;

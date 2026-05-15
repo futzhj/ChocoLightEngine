@@ -622,6 +622,43 @@ static int l_GetScissor(lua_State* L) {
     return 4;
 }
 
+// Phase F.0.10.2 — 视口控制 Lua API (split-screen / 双视口分屏基础)
+/// @lua_api Light.Graphics.SetViewport
+/// @brief 设置 OpenGL viewport (用于 split-screen 或自定义视口区域)
+/// @param x number 视口左下角 X (像素, OpenGL 原点在左下)
+/// @param y number 视口左下角 Y
+/// @param w number 视口宽
+/// @param h number 视口高
+/// @return void
+/// @note 不会自动恢复; 调用者负责后续 reset (典型用法: 渲染完一个 region 后切下一个)
+static int l_SetViewport(lua_State* L) {
+    if (!g_render) return 0;
+    // 类型检查 (4 个 integer, 失败抛 luaL_error)
+    int x = (int)luaL_checkinteger(L, 1);
+    int y = (int)luaL_checkinteger(L, 2);
+    int w = (int)luaL_checkinteger(L, 3);
+    int h = (int)luaL_checkinteger(L, 4);
+    // 防御性: w/h 必须 > 0 (OpenGL 允许负 viewport 但语义混乱)
+    if (w <= 0 || h <= 0) {
+        return luaL_error(L, "SetViewport: w/h must be > 0 (got w=%d, h=%d)", w, h);
+    }
+    g_render->SetViewport(x, y, w, h);
+    return 0;
+}
+
+/// @lua_api Light.Graphics.GetViewport
+/// @brief 获取当前 OpenGL viewport
+/// @return number,number,number,number x,y,w,h
+static int l_GetViewport(lua_State* L) {
+    int x = 0, y = 0, w = 0, h = 0;
+    if (g_render) g_render->GetViewport(&x, &y, &w, &h);
+    lua_pushinteger(L, x);
+    lua_pushinteger(L, y);
+    lua_pushinteger(L, w);
+    lua_pushinteger(L, h);
+    return 4;
+}
+
 // ==================== 绘图基元 ====================
 
 // 辅助: 从 Lua drawable 表中获取 GL 纹理信息
@@ -3572,6 +3609,9 @@ static const luaL_Reg graphics_funcs[] = {
     {"SetColor",          l_SetColor},
     {"SetCanvas",         l_SetCanvas},
     {"SetScissor",        l_SetScissor},
+    // Phase F.0.10.2 — viewport 控制 (split-screen 基础)
+    {"SetViewport",       l_SetViewport},
+    {"GetViewport",       l_GetViewport},
     // Phase AS.1 — Canvas 栈
     {"PushCanvas",        l_PushCanvas},
     {"PopCanvas",         l_PopCanvas},

@@ -79,6 +79,54 @@ local name3 = Gfx.GetBackendName()
 CHECK(name == name2 and name == name3,
       'GetBackendName 多次调用结果一致 (无副作用)')
 
+-- ==================== [3] Phase F.0.10.2: SetViewport / GetViewport ====================
+
+print('[3] Phase F.0.10.2: Light.Graphics.SetViewport / GetViewport (split-screen 基础)')
+
+CHECK(type(Gfx.SetViewport) == 'function', 'Gfx.SetViewport 存在 (Phase F.0.10.2)')
+CHECK(type(Gfx.GetViewport) == 'function', 'Gfx.GetViewport 存在 (Phase F.0.10.2)')
+
+-- GetViewport 调用必须安全 (headless 下也能调, 返 4 个 integer)
+local ok_get, vx, vy, vw, vh = pcall(Gfx.GetViewport)
+CHECK(ok_get, 'GetViewport() 不 raise')
+CHECK(type(vx) == 'number' and type(vy) == 'number'
+   and type(vw) == 'number' and type(vh) == 'number',
+      'GetViewport 返回 4 个 number (实际: ' .. tostring(vx) .. ',' .. tostring(vy)
+      .. ',' .. tostring(vw) .. ',' .. tostring(vh) .. ')')
+
+-- SetViewport round-trip: 调用后 GetViewport 应返同值
+-- 注意: headless 无 GL context 时 SetViewport 仍能调 (backend 接收, 但 GL 调用可能 no-op)
+--       GetViewport 在 GL context 不可用时返 [0,0,0,0]
+local has_gl = (vw > 0 and vh > 0)
+if has_gl then
+    -- 选择一个 split-screen 典型值: 左半 (0, 0, 480, 540)
+    local ok_set = pcall(Gfx.SetViewport, 0, 0, 480, 540)
+    CHECK(ok_set, 'SetViewport(0, 0, 480, 540) 不 raise')
+    local _, _, _, gx, gy, gw, gh = pcall(Gfx.GetViewport)
+    -- 重新拉一次 GetViewport (上面 pcall 返回顺序: ok, x, y, w, h)
+    local rx, ry, rw, rh = Gfx.GetViewport()
+    CHECK(rx == 0 and ry == 0 and rw == 480 and rh == 540,
+          'SetViewport round-trip OK (实际 GetViewport=' .. tostring(rx) .. ','
+          .. tostring(ry) .. ',' .. tostring(rw) .. ',' .. tostring(rh) .. ')')
+
+    -- 恢复初始 viewport (避免影响后续 smoke)
+    Gfx.SetViewport(vx, vy, vw, vh)
+else
+    print('  [skip] GL context 不可用 (headless mode), SetViewport round-trip 跳过')
+end
+
+-- 防御性: w <= 0 或 h <= 0 必须 raise (Lua error)
+local ok_w0 = pcall(Gfx.SetViewport, 0, 0, 0, 100)
+CHECK(not ok_w0, 'SetViewport(_, _, 0, _) raises (w=0 拒绝)')
+local ok_h0 = pcall(Gfx.SetViewport, 0, 0, 100, 0)
+CHECK(not ok_h0, 'SetViewport(_, _, _, 0) raises (h=0 拒绝)')
+local ok_wn = pcall(Gfx.SetViewport, 0, 0, -100, 100)
+CHECK(not ok_wn, 'SetViewport(_, _, -100, _) raises (w<0 拒绝)')
+
+-- 防御性: 类型错 (string 而非 number) 应 raise
+local ok_type = pcall(Gfx.SetViewport, 'foo', 0, 100, 100)
+CHECK(not ok_type, 'SetViewport("foo", ...) raises (类型错拒绝)')
+
 -- ==================== 汇总 ====================
 
 print(string.format('[Light.Graphics smoke] 通过 %d / 失败 %d', PASS, FAIL))

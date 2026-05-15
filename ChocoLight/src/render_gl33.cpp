@@ -7181,6 +7181,12 @@ public:
     void SetViewport(int x, int y, int w, int h) override {
         glViewport(x, y, w, h);
     }
+    // Phase F.0.10.2 — 查询 OpenGL 当前 viewport (直接 glGetIntegerv)
+    void GetViewport(int* x, int* y, int* w, int* h) override {
+        GLint vp[4] = {0, 0, 0, 0};
+        glGetIntegerv(GL_VIEWPORT, vp);
+        if (x) *x = vp[0]; if (y) *y = vp[1]; if (w) *w = vp[2]; if (h) *h = vp[3];
+    }
 
     // ---- 变换栈 ----
     void PushMatrix() override {
