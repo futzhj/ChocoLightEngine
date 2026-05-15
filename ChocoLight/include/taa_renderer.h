@@ -186,6 +186,46 @@ float GetMotionSharpness();
 void SetUpscaleMode(const char* mode);
 const char* GetUpscaleMode();
 
+// ==================== Phase F.0.10 — Multi-Instance API ====================
+//
+// 多实例 TAA: 同进程内最多 MAX_INSTANCES=4 个独立 TAA 状态.
+//   g_states[0] = default singleton, 永远占用; 老 namespace API (35 fn) 默认作用于 [0]
+//   新创建 instance 槽位 ID 范围 [1, 3], 各自独立 history RT + 14 sub-phase 参数 + jitter state
+//   切换 active 后, 现有 35 fn 全部作用于 new active instance
+//
+// 典型用法 (split-screen 双人):
+//   TAARenderer::Init(backend);                       // 一次性初始化所有 instance backend ptr
+//   const int id1 = TAARenderer::CreateInstance();    // 返 1
+//   const int id2 = TAARenderer::CreateInstance();    // 返 2
+//   TAARenderer::SetActiveInstance(id1); TAARenderer::Enable(W/2, H); TAARenderer::SetSharpness(0.5);
+//   TAARenderer::SetActiveInstance(id2); TAARenderer::Enable(W/2, H); TAARenderer::SetSharpness(1.5);
+//   // 每帧:
+//   TAARenderer::SetActiveInstance(id1); TAARenderer::ApplyJitter(); ...draw...; TAARenderer::Process(fbo, tex);
+//   TAARenderer::SetActiveInstance(id2); TAARenderer::ApplyJitter(); ...draw...; TAARenderer::Process(fbo, tex);
+//   // Shutdown 自动释放所有 instance RT
+
+/// 创建新 TAA instance, 返 ID [1, 3]; 槽位已满 / 未 Init 返 0
+/// 新 instance 默认 disabled (需后续 SetActiveInstance + Enable 启用)
+/// 继承 default 的 backend ptr / supported / inited; 其他参数为 struct 默认值
+int CreateInstance();
+
+/// 销毁 instance (释放 RT + 标空闲)
+/// 拒绝 id=0 (default) / 非法 id / 未分配 id
+/// 若 active 是被销毁的 id, 自动切回 default (0)
+/// @return false 当 id 非法 / id=0 / 未分配
+bool DestroyInstance(int id);
+
+/// 切换 active instance, 后续 35 fn 作用于 [id]
+/// 拒绝非法 id / 未分配 id
+/// @return false 当 id 非法 / 未分配
+bool SetActiveInstance(int id);
+
+/// 当前 active instance ID (default = 0)
+int GetActiveInstance();
+
+/// 已分配 instance 数 (含 default, 范围 [1, 4])
+int GetInstanceCount();
+
 // ==================== 内部状态查询 (debug HUD 用) ====================
 
 /// 当前帧 Halton 索引 (% 8), 累加帧计数器低 3 位

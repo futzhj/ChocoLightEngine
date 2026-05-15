@@ -3407,6 +3407,72 @@ static int l_TAA_GetFrameCounter(lua_State* L) {
     return 1;
 }
 
+// ==================== Phase F.0.10 — Multi-Instance API (5 fn) ====================
+
+/// @lua_api Light.Graphics.TAA.CreateInstance
+/// @return integer instance ID [1, 3] 或 0 (槽满 / 未 Init)
+/// 新 instance 默认 disabled, 需 SetActiveInstance + Enable 启用; 继承 default 的 backend ptr
+static int l_TAA_CreateInstance(lua_State* L) {
+    lua_pushinteger(L, (lua_Integer)TAARenderer::CreateInstance());
+    return 1;
+}
+
+/// @lua_api Light.Graphics.TAA.DestroyInstance
+/// @param id integer instance ID [1, 3]; id=0 (default) 拒绝
+/// @return boolean true=成功; 非法 id / 未分配 id 返 nil + err
+/// 销毁后, 若 active 是该 id, 自动切回 default (0)
+static int l_TAA_DestroyInstance(lua_State* L) {
+    luaL_checkany(L, 1);
+    if (lua_type(L, 1) != LUA_TNUMBER) {
+        lua_pushnil(L);
+        lua_pushliteral(L, "TAA.DestroyInstance: 期望 integer 参数 (instance id [1, 3])");
+        return 2;
+    }
+    const int id = (int)lua_tointeger(L, 1);
+    if (!TAARenderer::DestroyInstance(id)) {
+        lua_pushnil(L);
+        lua_pushfstring(L, "TAA.DestroyInstance: id=%d 非法或未分配 (id=0 是 default 不可销毁)", id);
+        return 2;
+    }
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+/// @lua_api Light.Graphics.TAA.SetActiveInstance
+/// @param id integer instance ID [0, 3]; 0=default; 1..3=用户 instance
+/// @return boolean true=成功; 非法 id / 未分配 id 返 nil + err
+/// 切换后, 后续 35 fn 全部作用于新 active instance
+static int l_TAA_SetActiveInstance(lua_State* L) {
+    luaL_checkany(L, 1);
+    if (lua_type(L, 1) != LUA_TNUMBER) {
+        lua_pushnil(L);
+        lua_pushliteral(L, "TAA.SetActiveInstance: 期望 integer 参数 (instance id [0, 3])");
+        return 2;
+    }
+    const int id = (int)lua_tointeger(L, 1);
+    if (!TAARenderer::SetActiveInstance(id)) {
+        lua_pushnil(L);
+        lua_pushfstring(L, "TAA.SetActiveInstance: id=%d 非法或未分配", id);
+        return 2;
+    }
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+/// @lua_api Light.Graphics.TAA.GetActiveInstance
+/// @return integer 当前 active instance ID (default = 0)
+static int l_TAA_GetActiveInstance(lua_State* L) {
+    lua_pushinteger(L, (lua_Integer)TAARenderer::GetActiveInstance());
+    return 1;
+}
+
+/// @lua_api Light.Graphics.TAA.GetInstanceCount
+/// @return integer 已分配 instance 数 [1, 4] (含 default)
+static int l_TAA_GetInstanceCount(lua_State* L) {
+    lua_pushinteger(L, (lua_Integer)TAARenderer::GetInstanceCount());
+    return 1;
+}
+
 /// @lua_api Light.Graphics.TAA.GetCurrentJitter
 /// @return number, number 本帧 sub-pixel jitter offset (±0.5 pixel, 仅 enabled+jitter 时非零)
 static int l_TAA_GetCurrentJitter(lua_State* L) {
@@ -3462,6 +3528,12 @@ static const luaL_Reg taa_funcs[] = {
     // Phase F.0.9 — custom upsampler (2 = 1 对): "bilinear" (F.0.5 默认) / "bicubic" (Catmull-Rom)
     {"SetUpscaleMode",        l_TAA_SetUpscaleMode},
     {"GetUpscaleMode",        l_TAA_GetUpscaleMode},
+    // Phase F.0.10 — multi-instance API (5 fn): default + 3 user instance, split-screen 双人/四人
+    {"CreateInstance",        l_TAA_CreateInstance},
+    {"DestroyInstance",       l_TAA_DestroyInstance},
+    {"SetActiveInstance",     l_TAA_SetActiveInstance},
+    {"GetActiveInstance",     l_TAA_GetActiveInstance},
+    {"GetInstanceCount",      l_TAA_GetInstanceCount},
     // status (2): debug HUD 用
     {"GetFrameCounter",       l_TAA_GetFrameCounter},
     {"GetCurrentJitter",      l_TAA_GetCurrentJitter},

@@ -36,7 +36,15 @@ static const float kHaltonJitter[8][2] = {
 };
 
 // ==================== 模块状态 ====================
-
+//
+// Phase F.0.10 — 多实例化重构 (multi-instance):
+//   - 老 `static State g;` 单例 → `static State g_states[MAX_INSTANCES]; static int g_active = 0;`
+//   - 通过 macro `#define g g_states[g_active]` 让现有 35 fn 零改动继续访问 active instance
+//   - g_states[0] 是 default singleton (老 namespace API 行为完全等价 F.0~F.0.14)
+//   - 新加 5 fn (CreateInstance / DestroyInstance / SetActiveInstance / GetActiveInstance / GetInstanceCount)
+//   - 每 instance 独立: backend ptr / enabled / RT / 14 个 sub-phase 参数 / jitter state
+//   - MAX_INSTANCES=4: default + 3 user (split-screen 双人/四人足够)
+//
 struct State {
     RenderBackend* backend  = nullptr;
     bool     inited         = false;
@@ -77,7 +85,16 @@ struct State {
     float    curJitterY     = 0.0f;
 };
 
-static State g;
+// Phase F.0.10 — multi-instance support
+static constexpr int MAX_INSTANCES = 4;          // default + 3 user instance (split-screen 多人足够)
+static State g_states[MAX_INSTANCES];
+static int   g_active = 0;                       // 当前 active instance 索引 [0, MAX_INSTANCES)
+static int   g_count  = 1;                       // 已分配 instance 数 (>=1, g_states[0]=default 永远占用)
+static bool  g_slot_in_use[MAX_INSTANCES] = { true, false, false, false };
+
+// 现有 35 fn 内部沿用 `g.X` 写法; macro 透明展开到 active instance
+// 注意: 仅在 taa_renderer.cpp 文件内有效, 不污染外部命名空间
+#define g g_states[g_active]
 
 // ==================== 内部资源管理 ====================
 
@@ -139,9 +156,14 @@ bool Init(RenderBackend* backend) {
         CC::Log(CC::LOG_ERROR, "TAARenderer::Init: backend is null");
         return false;
     }
-    g.backend   = backend;
-    g.supported = backend->SupportsTAA();
-    g.inited    = true;
+    // Phase F.0.10: 把 backend ptr / supported / inited 写入所有 MAX_INSTANCES 槽
+    // (每个 instance 共享 backend 能力, 但独立 enabled / RT / 参数)
+    const bool supported = backend->SupportsTAA();
+    for (int i = 0; i < MAX_INSTANCES; ++i) {
+        g_states[i].backend   = backend;
+        g_states[i].supported = supported;
+        g_states[i].inited    = true;
+    }
     if (g.supported) {
         CC::Log(CC::LOG_INFO, "TAARenderer: ready (backend supports TAA)");
     } else {
@@ -153,11 +175,24 @@ bool Init(RenderBackend* backend) {
 
 void Shutdown() {
     if (!g.inited) return;
-    ReleaseRT();
-    g.enabled   = false;
-    g.inited    = false;
-    g.supported = false;
-    g.backend   = nullptr;
+    // Phase F.0.10: 遍历所有 instance 释放 RT + 重置所有 state 字段
+    // (active instance 在循环中会临时切换, 最终复位到 0)
+    const int saved_active = g_active;
+    for (int i = 0; i < MAX_INSTANCES; ++i) {
+        g_active = i;
+        if (g_states[i].inited) {
+            ReleaseRT();        // 作用于当前 g_active 槽的 RT
+        }
+        g_states[i].enabled   = false;
+        g_states[i].inited    = false;
+        g_states[i].supported = false;
+        g_states[i].backend   = nullptr;
+    }
+    // 复位多实例分配状态: 仅 default 槽存在
+    g_active = 0;
+    g_count  = 1;
+    for (int i = 0; i < MAX_INSTANCES; ++i) g_slot_in_use[i] = (i == 0);
+    (void)saved_active;  // saved_active 不需保留 (Shutdown 后默认回 0)
 }
 
 bool IsInited() { return g.inited; }
@@ -519,6 +554,83 @@ int GetFrameCounter() { return (int)(g.frameCounter & 7u); }
 void GetCurrentJitter(float* outX, float* outY) {
     if (outX) *outX = g.curJitterX;
     if (outY) *outY = g.curJitterY;
+}
+
+// ==================== Phase F.0.10 — Multi-Instance API ====================
+//
+// 设计说明:
+//   - g_states[0] 是 default singleton, 永远占用; 老 35 fn 默认作用于 [0]
+//   - CreateInstance() 找空闲槽 [1, MAX_INSTANCES-1] 返 ID, 槽满返 0
+//   - 新 instance 继承 default 的 backend/supported/inited (来自 Init() 时全量写入)
+//   - SetActiveInstance(id) 切换 active, 后续 namespace fn 作用于 [id]
+//   - DestroyInstance(id) 释放该槽 RT + 标空闲, 若 active 是该 id 自动切回 0
+//   - 不能销毁 id=0 (default), 不能 SetActiveInstance(无效 id)
+
+int CreateInstance() {
+    // default 槽必须已 Init (新 instance 继承 backend ptr)
+    if (!g_states[0].inited) {
+        CC::Log(CC::LOG_WARN, "TAARenderer::CreateInstance: 模块未 Init, 拒绝创建");
+        return 0;
+    }
+    // 找第一个空闲槽 (跳过 [0])
+    for (int i = 1; i < MAX_INSTANCES; ++i) {
+        if (!g_slot_in_use[i]) {
+            // 复位为干净 default state (struct 默认值), 然后写入 backend
+            g_states[i] = State{};
+            g_states[i].backend   = g_states[0].backend;
+            g_states[i].supported = g_states[0].supported;
+            g_states[i].inited    = true;
+            g_slot_in_use[i] = true;
+            ++g_count;
+            CC::Log(CC::LOG_INFO, "TAARenderer::CreateInstance: 创建 instance id=%d (count=%d)", i, g_count);
+            return i;
+        }
+    }
+    CC::Log(CC::LOG_WARN, "TAARenderer::CreateInstance: 槽位已满 (MAX_INSTANCES=%d)", MAX_INSTANCES);
+    return 0;
+}
+
+bool DestroyInstance(int id) {
+    if (id <= 0 || id >= MAX_INSTANCES) {
+        CC::Log(CC::LOG_WARN, "TAARenderer::DestroyInstance: 非法 id=%d (合法范围 [1, %d])", id, MAX_INSTANCES - 1);
+        return false;
+    }
+    if (!g_slot_in_use[id]) {
+        CC::Log(CC::LOG_WARN, "TAARenderer::DestroyInstance: id=%d 未分配", id);
+        return false;
+    }
+    // 释放 RT: 临时切到该 instance, 调 ReleaseRT, 然后回原 active
+    const int saved = g_active;
+    g_active = id;
+    ReleaseRT();
+    g_states[id] = State{};       // 清空所有字段 (RT handle 等)
+    g_slot_in_use[id] = false;
+    --g_count;
+    // 若被销毁的是 active, 切回 default
+    g_active = (saved == id) ? 0 : saved;
+    CC::Log(CC::LOG_INFO, "TAARenderer::DestroyInstance: 销毁 instance id=%d (count=%d, active=%d)", id, g_count, g_active);
+    return true;
+}
+
+bool SetActiveInstance(int id) {
+    if (id < 0 || id >= MAX_INSTANCES) {
+        CC::Log(CC::LOG_WARN, "TAARenderer::SetActiveInstance: 非法 id=%d (合法范围 [0, %d])", id, MAX_INSTANCES - 1);
+        return false;
+    }
+    if (!g_slot_in_use[id]) {
+        CC::Log(CC::LOG_WARN, "TAARenderer::SetActiveInstance: id=%d 未分配", id);
+        return false;
+    }
+    g_active = id;
+    return true;
+}
+
+int GetActiveInstance() {
+    return g_active;
+}
+
+int GetInstanceCount() {
+    return g_count;
 }
 
 } // namespace TAARenderer

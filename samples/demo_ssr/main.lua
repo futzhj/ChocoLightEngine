@@ -495,6 +495,42 @@ while win:IsOpen() do
             sh, ms))
     end
 
+    -- Phase F.0.10 — C: 多实例 TAA 演示 (instance API: Create / SetActive / Destroy)
+    --   按 C 键: 4-state lifecycle 循环
+    --     state 0 (count=1): 创建 3 个 user instance, 各赋差异化参数 (sharpness/clipMode/sharpenMode)
+    --     state 1..3       : 循环切到 instance 1/2/3 (HUD 自动反映当前 active 的参数)
+    --     state 4 (active=3): 销毁所有 user instance, count 回 1
+    if TAA and TAA.CreateInstance and keyTap('c') then
+        local count = TAA.GetInstanceCount()
+        local active = TAA.GetActiveInstance()
+        if count == 1 then
+            -- 仅 default: 创建 3 个 user instance, 各赋差异化参数, 切到 instance 1
+            local id1 = TAA.CreateInstance()
+            local id2 = TAA.CreateInstance()
+            local id3 = TAA.CreateInstance()
+            if id1 > 0 and id2 > 0 and id3 > 0 then
+                -- 必须先 SetActive 才能配置该 instance 参数; new instance 默认 disabled
+                TAA.SetActiveInstance(id1); TAA.SetSharpness(0.3); TAA.SetClipMode('rgb');      TAA.SetSharpenMode('unsharp')
+                TAA.SetActiveInstance(id2); TAA.SetSharpness(1.5); TAA.SetClipMode('ycocg');    TAA.SetSharpenMode('cas')
+                TAA.SetActiveInstance(id3); TAA.SetSharpness(0.8); TAA.SetClipMode('variance'); TAA.SetSharpenMode('rcas')
+                TAA.SetActiveInstance(0)
+                print(string.format('[demo] TAA F.0.10: 已创建 3 个 instance (count=%d), active=0 (default)', TAA.GetInstanceCount()))
+            else
+                print('[demo] TAA F.0.10: CreateInstance 失败')
+            end
+        elseif active < TAA.GetInstanceCount() - 1 then
+            -- 循环切到下一个 instance (0 -> 1 -> 2 -> 3)
+            local nxt = active + 1
+            TAA.SetActiveInstance(nxt)
+            print(string.format('[demo] TAA F.0.10: active %d -> %d (sharp=%.2f, clip=%s, sharpen=%s)',
+                active, nxt, TAA.GetSharpness(), TAA.GetClipMode(), TAA.GetSharpenMode()))
+        else
+            -- 末尾 (active=3): 销毁所有 user instance, 切回 default
+            for i = 3, 1, -1 do TAA.DestroyInstance(i) end
+            print(string.format('[demo] TAA F.0.10: 销毁全部 user instance, count=%d, active=0 (default)', TAA.GetInstanceCount()))
+        end
+    end
+
     -- Phase F.0.9/F.0.14 — P: 在 'bilinear' / 'bicubic' (Catmull-Rom 9-tap) / 'lanczos' (Lanczos-2 25-tap) 三 mode 轮转
     --   仅 sharpness=0 && halfRes=true 时实际生效 (sharpen pass 路径不受影响)
     if TAA and TAA.IsEnabled() and TAA.SetUpscaleMode and keyTap('p') then
@@ -638,7 +674,7 @@ while win:IsOpen() do
                 TAAhud.GetFrameCounter(),
                 jx, jy))
         end
-        line('Keys: F=SSR B=Blur V=Bilateral T=Temporal 9/0=radius ,/.=sigma U/I=alpha N=reject K=Dilation L=Format M=MotionBlur ;=Mode [=MBHalfRes ]=DilHalfRes \\=AutoSkip Y=TAA J=TAAjitter H=TAAsharp G=TAAAF X=TAAHalfRes Z=TAASharpenMode Q=TAAMotionAdapt O=TAAMotionAdaptSharp P=TAAUpscale R=reset ESC')
+        line('Keys: F=SSR B=Blur V=Bilateral T=Temporal 9/0=radius ,/.=sigma U/I=alpha N=reject K=Dilation L=Format M=MotionBlur ;=Mode [=MBHalfRes ]=DilHalfRes \\=AutoSkip Y=TAA J=TAAjitter H=TAAsharp G=TAAAF X=TAAHalfRes Z=TAASharpenMode Q=TAAMotionAdapt O=TAAMotionAdaptSharp P=TAAUpscale C=TAAinstance R=reset ESC')
     end
 
     win:EndFrame()

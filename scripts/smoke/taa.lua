@@ -1,6 +1,6 @@
 -- Phase F.0 + F.0.1 + F.0.2 + F.0.3 + F.0.4 + F.0.5 + F.0.6 + F.0.8 + F.0.9 + F.0.12 + F.0.13 + F.0.14 smoke: Light.Graphics.TAA (Temporal Anti-Aliasing master pipeline surface)
 --
--- API coverage (35 functions = F.0 13 + F.0.1 2 + F.0.2 2 + F.0.3 2 + F.0.4 2 + F.0.5 2 + F.0.6/F.0.12 2 + F.0.8 4 + F.0.9/F.0.14 2 + F.0.13 4):
+-- API coverage (40 functions = F.0 13 + F.0.1 2 + F.0.2 2 + F.0.3 2 + F.0.4 2 + F.0.5 2 + F.0.6/F.0.12 2 + F.0.8 4 + F.0.9/F.0.14 2 + F.0.13 4 + F.0.10 5):
 --   Lifecycle 5: Enable / Disable / IsEnabled / IsSupported / Resize
 --   Params     6: SetBlendAlpha / GetBlendAlpha (clamp [0, 1], default 0.92)
 --                 SetNeighborhoodClip / GetNeighborhoodClip (default true)
@@ -80,6 +80,9 @@ local fn_names = {
     "SetMotionAdaptiveSharpness", "GetMotionAdaptiveSharpness",  -- Phase F.0.13
     "SetMotionSharpness", "GetMotionSharpness",    -- Phase F.0.13
     "SetUpscaleMode", "GetUpscaleMode",            -- Phase F.0.9
+    "CreateInstance", "DestroyInstance",            -- Phase F.0.10
+    "SetActiveInstance", "GetActiveInstance",       -- Phase F.0.10
+    "GetInstanceCount",                              -- Phase F.0.10
     "GetFrameCounter", "GetCurrentJitter",
 }
 for _, k in ipairs(fn_names) do
@@ -1250,9 +1253,141 @@ else
     pass("SSR subtable absent; coexistence test skipped")
 end
 
+-- ============================================================
+-- 9) Phase F.0.10 — Multi-Instance API (5 fn = Create / Destroy / SetActive / GetActive / GetCount)
+-- ============================================================
+
+-- 9.1) 初始 default 状态
+local def_active = TAA.GetActiveInstance()
+local def_count  = TAA.GetInstanceCount()
+if def_active ~= 0 then fail("Default active instance must be 0, got " .. tostring(def_active)) end
+if def_count  ~= 1 then fail("Default instance count must be 1, got " .. tostring(def_count)) end
+pass("Phase F.0.10 default: active=0, count=1 (零回归)")
+
+-- 9.2) CreateInstance round-trip
+local id1 = TAA.CreateInstance()
+if id1 ~= 1 then fail("First CreateInstance() must return 1, got " .. tostring(id1)) end
+if TAA.GetInstanceCount() ~= 2 then fail("After Create, count must be 2") end
+pass("CreateInstance() returns 1, count=2")
+
+local id2 = TAA.CreateInstance()
+if id2 ~= 2 then fail("Second CreateInstance() must return 2, got " .. tostring(id2)) end
+local id3 = TAA.CreateInstance()
+if id3 ~= 3 then fail("Third CreateInstance() must return 3, got " .. tostring(id3)) end
+if TAA.GetInstanceCount() ~= 4 then fail("After 3 Create, count must be 4 (含 default)") end
+pass("CreateInstance() three round-trips: id=1/2/3, count=4")
+
+-- 9.3) 槽位满 → 返 0
+local idFull = TAA.CreateInstance()
+if idFull ~= 0 then fail("CreateInstance() when full must return 0, got " .. tostring(idFull)) end
+pass("CreateInstance() when MAX_INSTANCES (4) full returns 0")
+
+-- 9.4) SetActiveInstance round-trip
+local ok1 = TAA.SetActiveInstance(id1)
+if ok1 ~= true then fail("SetActiveInstance(1) should return true") end
+if TAA.GetActiveInstance() ~= id1 then fail("After SetActive(1), GetActive must = 1") end
+pass("SetActiveInstance(1) round-trip ok")
+
+TAA.SetActiveInstance(id2)
+if TAA.GetActiveInstance() ~= id2 then fail("After SetActive(2), GetActive must = 2") end
+TAA.SetActiveInstance(0)  -- 切回 default
+if TAA.GetActiveInstance() ~= 0 then fail("After SetActive(0), GetActive must = 0") end
+pass("SetActiveInstance() 0/1/2 切换 round-trip ok")
+
+-- 9.5) SetActiveInstance 非法 id → nil + err
+local invOk, invErr = TAA.SetActiveInstance(99)
+if invOk ~= nil then fail("SetActiveInstance(99) should return nil") end
+if type(invErr) ~= "string" or not invErr:find("99") then
+    fail("SetActiveInstance(99) should err with id mentioned, got '" .. tostring(invErr) .. "'")
+end
+pass("SetActiveInstance(99) → nil + err")
+
+-- 9.6) SetActiveInstance 类型错 → nil + err
+local typeOk = TAA.SetActiveInstance("foo")
+if typeOk ~= nil then fail("SetActiveInstance('foo') should return nil") end
+pass("SetActiveInstance(string) type-error rejected")
+
+-- 9.7) 两 instance 参数独立: 设置不同 sharpness 验证互不影响
+TAA.SetActiveInstance(id1); TAA.SetSharpness(0.3)
+TAA.SetActiveInstance(id2); TAA.SetSharpness(1.5)
+TAA.SetActiveInstance(id1)
+if math.abs(TAA.GetSharpness() - 0.3) > 1e-4 then
+    fail("Instance 1 sharpness must be 0.3, got " .. TAA.GetSharpness())
+end
+TAA.SetActiveInstance(id2)
+if math.abs(TAA.GetSharpness() - 1.5) > 1e-4 then
+    fail("Instance 2 sharpness must be 1.5, got " .. TAA.GetSharpness())
+end
+pass("Instance 1 (sharp=0.3) vs Instance 2 (sharp=1.5) state 独立")
+
+-- 9.8) 两 instance 参数独立: 不同 clipMode + sharpenMode
+TAA.SetActiveInstance(id1); TAA.SetClipMode("variance"); TAA.SetSharpenMode("rcas")
+TAA.SetActiveInstance(id2); TAA.SetClipMode("rgb");      TAA.SetSharpenMode("cas")
+TAA.SetActiveInstance(id1)
+if TAA.GetClipMode() ~= "variance" or TAA.GetSharpenMode() ~= "rcas" then
+    fail("Instance 1 clipMode/sharpenMode 不正确")
+end
+TAA.SetActiveInstance(id2)
+if TAA.GetClipMode() ~= "rgb" or TAA.GetSharpenMode() ~= "cas" then
+    fail("Instance 2 clipMode/sharpenMode 不正确")
+end
+pass("Instance 1 (variance/rcas) vs Instance 2 (rgb/cas) state 独立")
+
+-- 9.9) default instance (0) 未受 instance 1/2 影响
+TAA.SetActiveInstance(0)
+if math.abs(TAA.GetSharpness() - 0.5) > 1e-4 then
+    fail("Default instance sharpness must be 0.5 (零回归), got " .. TAA.GetSharpness())
+end
+if TAA.GetClipMode() ~= "ycocg" then
+    fail("Default instance clipMode must be 'ycocg' (零回归), got '" .. TAA.GetClipMode() .. "'")
+end
+pass("Default instance state 未受其他 instance 影响 (零回归保障)")
+
+-- 9.10) DestroyInstance round-trip
+local destOk = TAA.DestroyInstance(id1)
+if destOk ~= true then fail("DestroyInstance(1) should return true") end
+if TAA.GetInstanceCount() ~= 3 then fail("After Destroy, count must be 3") end
+pass("DestroyInstance(1) round-trip, count=3")
+
+-- 9.11) 销毁后 SetActiveInstance 该 id 应失败
+local destSetOk = TAA.SetActiveInstance(id1)
+if destSetOk ~= nil then fail("SetActiveInstance(destroyed id 1) should return nil") end
+pass("SetActiveInstance(destroyed) → nil + err")
+
+-- 9.12) DestroyInstance(0) 拒绝 (default 不可销毁)
+local destZero = TAA.DestroyInstance(0)
+if destZero ~= nil then fail("DestroyInstance(0) must return nil (default 不可销毁)") end
+pass("DestroyInstance(0) 拒绝 (default 保护)")
+
+-- 9.13) DestroyInstance 非法 id
+local destInv = TAA.DestroyInstance(99)
+if destInv ~= nil then fail("DestroyInstance(99) should return nil") end
+pass("DestroyInstance(99) → nil + err")
+
+-- 9.14) 销毁 active 自动切回 default
+TAA.SetActiveInstance(id2)
+if TAA.GetActiveInstance() ~= id2 then fail("Pre: active should be 2") end
+TAA.DestroyInstance(id2)
+if TAA.GetActiveInstance() ~= 0 then
+    fail("After DestroyInstance(active), active must auto-revert to 0, got " .. TAA.GetActiveInstance())
+end
+pass("DestroyInstance(active) 自动切回 default (id=0)")
+
+-- 9.15) 收尾: 销毁剩余 id3
+TAA.DestroyInstance(id3)
+if TAA.GetInstanceCount() ~= 1 then fail("Final count must be 1 (仅 default), got " .. TAA.GetInstanceCount()) end
+pass("Final cleanup: count=1 (仅 default)")
+
+-- 9.16) 创建-销毁-创建: 槽位可复用
+local rid1 = TAA.CreateInstance()
+if rid1 ~= 1 then fail("Reusable: CreateInstance after cleanup must return 1, got " .. tostring(rid1)) end
+TAA.DestroyInstance(rid1)
+if TAA.GetInstanceCount() ~= 1 then fail("After re-destroy, count=1") end
+pass("槽位复用: Create → Destroy → Create 返同一 id")
+
 print("")
-print("=== Phase F.0 + F.0.1 + F.0.2 + F.0.3 + F.0.4 + F.0.5 + F.0.6 + F.0.8 + F.0.9 + F.0.12 + F.0.13 + F.0.14 TAA smoke: ALL TESTS PASSED ===")
-print("Functions covered: " .. #fn_names .. " / 35 (F.0.14 仅扩展 SetUpscaleMode 主体 'lanczos', 不增函数)")
+print("=== Phase F.0 + F.0.1 + F.0.2 + F.0.3 + F.0.4 + F.0.5 + F.0.6 + F.0.8 + F.0.9 + F.0.10 + F.0.12 + F.0.13 + F.0.14 TAA smoke: ALL TESTS PASSED ===")
+print("Functions covered: " .. #fn_names .. " / 40 (F.0.10 +5 fn: multi-instance API)")
 print("Highlights:")
 print("  - default OFF, alpha=0.92, neighborhoodClip=true, jitterEnabled=true, sharpness=0.5, antiFlicker=true, clipMode='ycocg', varianceGamma=1.0, halfResHistory=false, sharpenMode='unsharp', motionGamma=1.5, motionAdaptive=false")
 print("  - clamp: BlendAlpha [0, 1], Sharpness [0, 2], VarianceGamma [0, 4], MotionGamma [0, 4]")
@@ -1263,6 +1398,7 @@ print("  - Phase F.0.9: Catmull-Rom 9-tap bicubic 上采样 (Sigggraph 2018 Film
 print("  - Phase F.0.12: FSR2 5-tap RCAS (Robust CAS), noise detection (range<1/64 跳过) + edge protection (lobe sqrt 限制); ~+0.03 ms vs unsharp")
 print("  - Phase F.0.13: motion-adaptive sharpness, 高速相机运动时 effSharpness lerp 到 motionSharpness (默认 0.1) 减 trail; 与所有 sharpenMode 共存")
 print("  - Phase F.0.14: Lanczos-2 25-tap 5x5 上采样 (超高画质); -10% blur vs Catmull-Rom (-55% vs bilinear); ~+0.04 ms; 仅 sharpness=0 && halfRes=true 生效")
+print("  - Phase F.0.10: multi-instance (default + 3 user), 各 instance 独立 history RT + 14 参数; split-screen 双人/四人; 默认 active=0 (零回归)")
 print("  - status: GetFrameCounter [0, 7], GetCurrentJitter in ±0.5 px range")
 print("  - coexistence: TAA toggle does not affect SSR Temporal state")
 print("  - Phase F.0.1: 4-tap unsharp mask, sharpness=0 走 blit fallback (零 ALU)")
