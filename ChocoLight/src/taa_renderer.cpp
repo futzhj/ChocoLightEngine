@@ -318,9 +318,25 @@ void Process(uint32_t hdrFbo, uint32_t hdrTex,
     const uint32_t rawV      = g.backend->GetHDRVelocityTex(hdrFbo);
     const uint32_t velocityTex = dilatedV ? dilatedV : rawV;
 
+    // Phase F.0.10.5 — 算 uvBounds (vec4: uMin.xy, uMax.xy) 给 shader 内 ClampUV 用
+    // 防御性: 全屏路径 (rgnW=0 || rgnH=0) 时 uvBoundsPtr=nullptr, backend 自动上传 (0,0,1,1) = 无 clamp
+    // region 路径: 加 0.5 texel inset 防线性插值越界 (业界标准, UE 同模式)
+    float uvBoundsBuf[4];
+    const float* uvBoundsPtr = nullptr;
+    if (rgnW > 0 && rgnH > 0 && g.historyW > 0 && g.historyH > 0) {
+        const float invW = 1.0f / (float)g.historyW;
+        const float invH = 1.0f / (float)g.historyH;
+        uvBoundsBuf[0] = ((float)rgnX        + 0.5f) * invW;
+        uvBoundsBuf[1] = ((float)rgnY        + 0.5f) * invH;
+        uvBoundsBuf[2] = ((float)(rgnX + rgnW) - 0.5f) * invW;
+        uvBoundsBuf[3] = ((float)(rgnY + rgnH) - 0.5f) * invH;
+        uvBoundsPtr = uvBoundsBuf;
+    }
+
     // Phase F.0.5: TAA pass viewport = history RT 实际尺寸 (halfRes 时为 w/2, 否则为 w)
     //              shader 内邻域 sample 用 vUV 归一化 [0,1], sceneTex GL_LINEAR 自动 box-filter 预采样
     // Phase F.0.10.2: rgnX/Y/W/H 透传到 backend, rgnW/rgnH=0 时 backend 内部跳过 scissor (零回归)
+    // Phase F.0.10.5: uvBoundsPtr 透传到 shader (nullptr = 全屏 (0,0,1,1) no-op)
     g.backend->DrawTAAPass(hdrTex,
                             g.historyTexs[readIdx],
                             velocityTex,
@@ -337,7 +353,8 @@ void Process(uint32_t hdrFbo, uint32_t hdrTex,
                             g.varianceGamma,            // Phase F.0.3 (static γ)
                             g.motionGamma,              // Phase F.0.8 (motion γ)
                             g.motionAdaptiveGamma ? 1 : 0, // Phase F.0.8 (开关)
-                            rgnX, rgnY, rgnW, rgnH);    // Phase F.0.10.2 region
+                            rgnX, rgnY, rgnW, rgnH,     // Phase F.0.10.2 region
+                            uvBoundsPtr);               // Phase F.0.10.5 uvBounds
 
     // Phase F.0.1/F.0.6/F.0.12: sharpness > 0 走 sharpen pass (in-place 写回 sceneTex);
     //                    否则保持 F.0 纯 blit 路径 (零 ALU 开销)
@@ -369,9 +386,22 @@ void Process(uint32_t hdrFbo, uint32_t hdrTex,
                                        rgnX, rgnY, rgnW, rgnH);     // Phase F.0.10.2
         } else {
             // Phase F.0.1: unsharp mask, sharpness 接受完整 [0, 2] 范围
+            // Phase F.0.10.5: Sharpen 写回 sceneTex (full-res), uvBounds 基于 g.width/g.height 算
+            float sharpenUvBounds[4];
+            const float* sharpenUvBoundsPtr = nullptr;
+            if (rgnW > 0 && rgnH > 0 && g.width > 0 && g.height > 0) {
+                const float invW = 1.0f / (float)g.width;
+                const float invH = 1.0f / (float)g.height;
+                sharpenUvBounds[0] = ((float)rgnX        + 0.5f) * invW;
+                sharpenUvBounds[1] = ((float)rgnY        + 0.5f) * invH;
+                sharpenUvBounds[2] = ((float)(rgnX + rgnW) - 0.5f) * invW;
+                sharpenUvBounds[3] = ((float)(rgnY + rgnH) - 0.5f) * invH;
+                sharpenUvBoundsPtr = sharpenUvBounds;
+            }
             g.backend->DrawTAASharpenPass(g.historyTexs[writeIdx], hdrFbo,
                                           g.width, g.height, effSharpness,
-                                          rgnX, rgnY, rgnW, rgnH);  // Phase F.0.10.2
+                                          rgnX, rgnY, rgnW, rgnH,   // Phase F.0.10.2
+                                          sharpenUvBoundsPtr);      // Phase F.0.10.5
         }
     } else {
         // Phase F.0.9/F.0.14: sharpness=0 路径—— halfRes && upscaleMode 三选一

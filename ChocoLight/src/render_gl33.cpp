@@ -2114,6 +2114,10 @@ uniform int   uClipMode;            // Phase F.0.2/F.0.3: 0=RGB AABB, 1=YCoCg AA
 uniform float uVarianceGamma;       // Phase F.0.3: variance clip 收紧系数 γ (Salvi 2016 / UE5 推荐 1.0, [0, 4])
 uniform float uMotionGamma;         // Phase F.0.8: motion-adaptive 高速区域 γ (UE5 高级形式, 默认 1.5, [0, 4])
 uniform int   uMotionAdaptiveGamma; // Phase F.0.8: 0=仅用 uVarianceGamma (F.0.3 行为), 1=按 velocity 长度 lerp 两 γ
+uniform vec4  uUvBounds;            // Phase F.0.10.5: (uMin.xy, uMax.xy) clamp 邻域采样; 默认 (0,0,1,1) = 无 clamp
+
+// Phase F.0.10.5 — 邻域采样 UV clamp helper (默认 0,0,1,1 时是恒等, 老路径零回归)
+vec2 ClampUV(vec2 uv) { return clamp(uv, uUvBounds.xy, uUvBounds.zw); }
 
 // Phase F.0.2 — RGB ↔ YCoCg lift 形式转换 (整数可逆, 与 FXAA / Inside / UE5 标准一致)
 //   Y  = 亮度通道 (0.25R + 0.5G + 0.25B); Co = R-B 色度; Cg = G - 0.5(R+B) 色度
@@ -2141,7 +2145,7 @@ vec2 SampleVelocity(vec2 uv) {
     float bestLen = -1.0;
     for (int dy = -1; dy <= 1; ++dy) {
         for (int dx = -1; dx <= 1; ++dx) {
-            vec2 v = DecodeVelocity(texture(uVelocityTex, uv + vec2(float(dx), float(dy)) * uTexel).rg);
+            vec2 v = DecodeVelocity(texture(uVelocityTex, ClampUV(uv + vec2(float(dx), float(dy)) * uTexel)).rg);
             float l = dot(v, v);
             if (l > bestLen) { bestLen = l; bestV = v; }
         }
@@ -2156,30 +2160,31 @@ void main() {
     vec2 velocity = SampleVelocity(vUV);
     vec2 prevUV   = vUV - velocity;
 
-    if (prevUV.x < 0.0 || prevUV.x > 1.0 ||
-        prevUV.y < 0.0 || prevUV.y > 1.0) {
+    // Phase F.0.10.5: history reproject 出 region 边界 reject (默认 (0,0,1,1) = 全屏老行为)
+    if (prevUV.x < uUvBounds.x || prevUV.x > uUvBounds.z ||
+        prevUV.y < uUvBounds.y || prevUV.y > uUvBounds.w) {
         FragColor = cur;
         return;
     }
 
-    vec4 hist = texture(uHistoryTex, prevUV);
+    vec4 hist = texture(uHistoryTex, ClampUV(prevUV));  // Phase F.0.10.5: 防御性 clamp
 
     if (uNeighborhoodClip == 1) {
         if (uClipMode == 2) {
             // Phase F.0.3 — Variance clipping in YCoCg space (Salvi 2016 / UE5 default)
             // m1 = mean(YCoCg(N9)); m2 = mean(YCoCg(N9)^2); sigma = sqrt(max(0, m2-m1^2)); clip = [m1-γσ, m1+γσ]
-            // 与 AABB 相比: 对 single-outlier 更鲁棒 (均值不受单点影响), clip 盒更紧凑, ghost 抑制更强
+            // Phase F.0.10.5: 邻域采样 ClampUV 防跨 region 边界泄漏
             vec3 sum = vec3(0.0), sumSq = vec3(0.0);
             vec3 s;
-            s = RGBToYCoCg(cur.rgb);                                                     sum += s; sumSq += s*s;
-            s = RGBToYCoCg(texture(uCurHdrTex, vUV + uTexel * vec2(-1.0, -1.0)).rgb);    sum += s; sumSq += s*s;
-            s = RGBToYCoCg(texture(uCurHdrTex, vUV + uTexel * vec2( 0.0, -1.0)).rgb);    sum += s; sumSq += s*s;
-            s = RGBToYCoCg(texture(uCurHdrTex, vUV + uTexel * vec2( 1.0, -1.0)).rgb);    sum += s; sumSq += s*s;
-            s = RGBToYCoCg(texture(uCurHdrTex, vUV + uTexel * vec2(-1.0,  0.0)).rgb);    sum += s; sumSq += s*s;
-            s = RGBToYCoCg(texture(uCurHdrTex, vUV + uTexel * vec2( 1.0,  0.0)).rgb);    sum += s; sumSq += s*s;
-            s = RGBToYCoCg(texture(uCurHdrTex, vUV + uTexel * vec2(-1.0,  1.0)).rgb);    sum += s; sumSq += s*s;
-            s = RGBToYCoCg(texture(uCurHdrTex, vUV + uTexel * vec2( 0.0,  1.0)).rgb);    sum += s; sumSq += s*s;
-            s = RGBToYCoCg(texture(uCurHdrTex, vUV + uTexel * vec2( 1.0,  1.0)).rgb);    sum += s; sumSq += s*s;
+            s = RGBToYCoCg(cur.rgb);                                                                sum += s; sumSq += s*s;
+            s = RGBToYCoCg(texture(uCurHdrTex, ClampUV(vUV + uTexel * vec2(-1.0, -1.0))).rgb);     sum += s; sumSq += s*s;
+            s = RGBToYCoCg(texture(uCurHdrTex, ClampUV(vUV + uTexel * vec2( 0.0, -1.0))).rgb);     sum += s; sumSq += s*s;
+            s = RGBToYCoCg(texture(uCurHdrTex, ClampUV(vUV + uTexel * vec2( 1.0, -1.0))).rgb);     sum += s; sumSq += s*s;
+            s = RGBToYCoCg(texture(uCurHdrTex, ClampUV(vUV + uTexel * vec2(-1.0,  0.0))).rgb);     sum += s; sumSq += s*s;
+            s = RGBToYCoCg(texture(uCurHdrTex, ClampUV(vUV + uTexel * vec2( 1.0,  0.0))).rgb);     sum += s; sumSq += s*s;
+            s = RGBToYCoCg(texture(uCurHdrTex, ClampUV(vUV + uTexel * vec2(-1.0,  1.0))).rgb);     sum += s; sumSq += s*s;
+            s = RGBToYCoCg(texture(uCurHdrTex, ClampUV(vUV + uTexel * vec2( 0.0,  1.0))).rgb);     sum += s; sumSq += s*s;
+            s = RGBToYCoCg(texture(uCurHdrTex, ClampUV(vUV + uTexel * vec2( 1.0,  1.0))).rgb);     sum += s; sumSq += s*s;
             vec3 m1    = sum   * (1.0 / 9.0);
             vec3 m2    = sumSq * (1.0 / 9.0);
             vec3 sigma = sqrt(max(m2 - m1 * m1, vec3(0.0)));    // König-Huygens 公式, max(0) 防浮点负数
@@ -2197,34 +2202,36 @@ void main() {
             hist.rgb   = YCoCgToRGB(histY);
         } else if (uClipMode == 1) {
             // Phase F.0.2 — YCoCg AABB clip 路径 (色彩边缘更鲁棒)
+            // Phase F.0.10.5: 邻域采样 ClampUV 防跨 region 边界泄漏
             vec3 curY = RGBToYCoCg(cur.rgb);
             vec3 mn = curY;
             vec3 mx = curY;
             vec3 s;
-            s = RGBToYCoCg(texture(uCurHdrTex, vUV + uTexel * vec2(-1.0, -1.0)).rgb); mn = min(mn, s); mx = max(mx, s);
-            s = RGBToYCoCg(texture(uCurHdrTex, vUV + uTexel * vec2( 0.0, -1.0)).rgb); mn = min(mn, s); mx = max(mx, s);
-            s = RGBToYCoCg(texture(uCurHdrTex, vUV + uTexel * vec2( 1.0, -1.0)).rgb); mn = min(mn, s); mx = max(mx, s);
-            s = RGBToYCoCg(texture(uCurHdrTex, vUV + uTexel * vec2(-1.0,  0.0)).rgb); mn = min(mn, s); mx = max(mx, s);
-            s = RGBToYCoCg(texture(uCurHdrTex, vUV + uTexel * vec2( 1.0,  0.0)).rgb); mn = min(mn, s); mx = max(mx, s);
-            s = RGBToYCoCg(texture(uCurHdrTex, vUV + uTexel * vec2(-1.0,  1.0)).rgb); mn = min(mn, s); mx = max(mx, s);
-            s = RGBToYCoCg(texture(uCurHdrTex, vUV + uTexel * vec2( 0.0,  1.0)).rgb); mn = min(mn, s); mx = max(mx, s);
-            s = RGBToYCoCg(texture(uCurHdrTex, vUV + uTexel * vec2( 1.0,  1.0)).rgb); mn = min(mn, s); mx = max(mx, s);
+            s = RGBToYCoCg(texture(uCurHdrTex, ClampUV(vUV + uTexel * vec2(-1.0, -1.0))).rgb); mn = min(mn, s); mx = max(mx, s);
+            s = RGBToYCoCg(texture(uCurHdrTex, ClampUV(vUV + uTexel * vec2( 0.0, -1.0))).rgb); mn = min(mn, s); mx = max(mx, s);
+            s = RGBToYCoCg(texture(uCurHdrTex, ClampUV(vUV + uTexel * vec2( 1.0, -1.0))).rgb); mn = min(mn, s); mx = max(mx, s);
+            s = RGBToYCoCg(texture(uCurHdrTex, ClampUV(vUV + uTexel * vec2(-1.0,  0.0))).rgb); mn = min(mn, s); mx = max(mx, s);
+            s = RGBToYCoCg(texture(uCurHdrTex, ClampUV(vUV + uTexel * vec2( 1.0,  0.0))).rgb); mn = min(mn, s); mx = max(mx, s);
+            s = RGBToYCoCg(texture(uCurHdrTex, ClampUV(vUV + uTexel * vec2(-1.0,  1.0))).rgb); mn = min(mn, s); mx = max(mx, s);
+            s = RGBToYCoCg(texture(uCurHdrTex, ClampUV(vUV + uTexel * vec2( 0.0,  1.0))).rgb); mn = min(mn, s); mx = max(mx, s);
+            s = RGBToYCoCg(texture(uCurHdrTex, ClampUV(vUV + uTexel * vec2( 1.0,  1.0))).rgb); mn = min(mn, s); mx = max(mx, s);
             vec3 histY = RGBToYCoCg(hist.rgb);
             histY = clamp(histY, mn, mx);
             hist.rgb = YCoCgToRGB(histY);
         } else {
             // F.0 RGB AABB clip 路径 (uClipMode==0 时严格复现, 零 ALU 回退)
+            // Phase F.0.10.5: 邻域采样 ClampUV 防跨 region 边界泄漏
             vec3 mn = cur.rgb;
             vec3 mx = cur.rgb;
             vec3 s;
-            s = texture(uCurHdrTex, vUV + uTexel * vec2(-1.0, -1.0)).rgb; mn = min(mn, s); mx = max(mx, s);
-            s = texture(uCurHdrTex, vUV + uTexel * vec2( 0.0, -1.0)).rgb; mn = min(mn, s); mx = max(mx, s);
-            s = texture(uCurHdrTex, vUV + uTexel * vec2( 1.0, -1.0)).rgb; mn = min(mn, s); mx = max(mx, s);
-            s = texture(uCurHdrTex, vUV + uTexel * vec2(-1.0,  0.0)).rgb; mn = min(mn, s); mx = max(mx, s);
-            s = texture(uCurHdrTex, vUV + uTexel * vec2( 1.0,  0.0)).rgb; mn = min(mn, s); mx = max(mx, s);
-            s = texture(uCurHdrTex, vUV + uTexel * vec2(-1.0,  1.0)).rgb; mn = min(mn, s); mx = max(mx, s);
-            s = texture(uCurHdrTex, vUV + uTexel * vec2( 0.0,  1.0)).rgb; mn = min(mn, s); mx = max(mx, s);
-            s = texture(uCurHdrTex, vUV + uTexel * vec2( 1.0,  1.0)).rgb; mn = min(mn, s); mx = max(mx, s);
+            s = texture(uCurHdrTex, ClampUV(vUV + uTexel * vec2(-1.0, -1.0))).rgb; mn = min(mn, s); mx = max(mx, s);
+            s = texture(uCurHdrTex, ClampUV(vUV + uTexel * vec2( 0.0, -1.0))).rgb; mn = min(mn, s); mx = max(mx, s);
+            s = texture(uCurHdrTex, ClampUV(vUV + uTexel * vec2( 1.0, -1.0))).rgb; mn = min(mn, s); mx = max(mx, s);
+            s = texture(uCurHdrTex, ClampUV(vUV + uTexel * vec2(-1.0,  0.0))).rgb; mn = min(mn, s); mx = max(mx, s);
+            s = texture(uCurHdrTex, ClampUV(vUV + uTexel * vec2( 1.0,  0.0))).rgb; mn = min(mn, s); mx = max(mx, s);
+            s = texture(uCurHdrTex, ClampUV(vUV + uTexel * vec2(-1.0,  1.0))).rgb; mn = min(mn, s); mx = max(mx, s);
+            s = texture(uCurHdrTex, ClampUV(vUV + uTexel * vec2( 0.0,  1.0))).rgb; mn = min(mn, s); mx = max(mx, s);
+            s = texture(uCurHdrTex, ClampUV(vUV + uTexel * vec2( 1.0,  1.0))).rgb; mn = min(mn, s); mx = max(mx, s);
             hist.rgb = clamp(hist.rgb, mn, mx);
         }
     }
@@ -2261,14 +2268,18 @@ out vec4 FragColor;
 uniform sampler2D uInputTex;       // slot 0: TAA blend 输出 (history[writeIdx])
 uniform vec2  uTexelSize;          // 1.0 / vec2(W, H)
 uniform float uSharpness;          // [0, 2]
+uniform vec4  uUvBounds;           // Phase F.0.10.5: (uMin.xy, uMax.xy); 默认 (0,0,1,1) = 无 clamp
+
+vec2 ClampUV(vec2 uv) { return clamp(uv, uUvBounds.xy, uUvBounds.zw); }   // Phase F.0.10.5
 
 void main() {
     vec3 c = texture(uInputTex, vUV).rgb;
     // 4-tap 上下左右邻域采样 (对角线舍弃, 业界主流 4-tap unsharp mask)
-    vec3 n = texture(uInputTex, vUV + vec2(0.0,         uTexelSize.y)).rgb;
-    vec3 s = texture(uInputTex, vUV - vec2(0.0,         uTexelSize.y)).rgb;
-    vec3 e = texture(uInputTex, vUV + vec2(uTexelSize.x, 0.0       )).rgb;
-    vec3 w = texture(uInputTex, vUV - vec2(uTexelSize.x, 0.0       )).rgb;
+    // Phase F.0.10.5: ClampUV 防跨 region 边界泄漏
+    vec3 n = texture(uInputTex, ClampUV(vUV + vec2(0.0,         uTexelSize.y))).rgb;
+    vec3 s = texture(uInputTex, ClampUV(vUV - vec2(0.0,         uTexelSize.y))).rgb;
+    vec3 e = texture(uInputTex, ClampUV(vUV + vec2(uTexelSize.x, 0.0       ))).rgb;
+    vec3 w = texture(uInputTex, ClampUV(vUV - vec2(uTexelSize.x, 0.0       ))).rgb;
     vec3 avg4 = (n + s + e + w) * 0.25;
     // unsharp mask: c + (c - avg) × sharpness
     vec3 sharpened = c + (c - avg4) * uSharpness;
@@ -3031,6 +3042,10 @@ uniform float uVelocityScale;
 uniform int   uAntiFlicker;         // Phase F.0.4: 0=纯 alpha blend, 1=Karis luma-weighted blend
 uniform int   uClipMode;            // Phase F.0.2/F.0.3: 0=RGB AABB, 1=YCoCg AABB, 2=YCoCg variance
 uniform float uVarianceGamma;       // Phase F.0.3: variance clip 收紧系数 γ (Salvi 2016 / UE5 推荐 1.0, [0, 4])
+uniform vec4  uUvBounds;            // Phase F.0.10.5: (uMin.xy, uMax.xy) clamp 邻域采样; 默认 (0,0,1,1) = 无 clamp
+
+// Phase F.0.10.5 — 邻域采样 UV clamp helper (默认 0,0,1,1 时是恒等, 老路径零回归)
+vec2 ClampUV(vec2 uv) { return clamp(uv, uUvBounds.xy, uUvBounds.zw); }
 
 // Phase F.0.2 — RGB ↔ YCoCg lift 形式转换 (与 GLES3 版完全等价)
 vec3 RGBToYCoCg(vec3 c) {
@@ -3056,7 +3071,7 @@ vec2 SampleVelocity(vec2 uv) {
     float bestLen = -1.0;
     for (int dy = -1; dy <= 1; ++dy) {
         for (int dx = -1; dx <= 1; ++dx) {
-            vec2 v = DecodeVelocity(texture(uVelocityTex, uv + vec2(float(dx), float(dy)) * uTexel).rg);
+            vec2 v = DecodeVelocity(texture(uVelocityTex, ClampUV(uv + vec2(float(dx), float(dy)) * uTexel)).rg);
             float l = dot(v, v);
             if (l > bestLen) { bestLen = l; bestV = v; }
         }
@@ -3071,29 +3086,30 @@ void main() {
     vec2 velocity = SampleVelocity(vUV);
     vec2 prevUV   = vUV - velocity;
 
-    if (prevUV.x < 0.0 || prevUV.x > 1.0 ||
-        prevUV.y < 0.0 || prevUV.y > 1.0) {
+    // Phase F.0.10.5: history reproject 出 region 边界 reject (默认 (0,0,1,1) = 全屏老行为)
+    if (prevUV.x < uUvBounds.x || prevUV.x > uUvBounds.z ||
+        prevUV.y < uUvBounds.y || prevUV.y > uUvBounds.w) {
         FragColor = cur;
         return;
     }
 
-    vec4 hist = texture(uHistoryTex, prevUV);
+    vec4 hist = texture(uHistoryTex, ClampUV(prevUV));  // Phase F.0.10.5: 防御性 clamp
 
     if (uNeighborhoodClip == 1) {
         if (uClipMode == 2) {
             // Phase F.0.3 — Variance clipping in YCoCg space (Salvi 2016 / UE5 default)
-            // 与 GLES3 版完全等价
+            // 与 GLES3 版完全等价; Phase F.0.10.5: 邻域采样 ClampUV 防跨 region 边界泄漏
             vec3 sum = vec3(0.0), sumSq = vec3(0.0);
             vec3 s;
-            s = RGBToYCoCg(cur.rgb);                                                     sum += s; sumSq += s*s;
-            s = RGBToYCoCg(texture(uCurHdrTex, vUV + uTexel * vec2(-1.0, -1.0)).rgb);    sum += s; sumSq += s*s;
-            s = RGBToYCoCg(texture(uCurHdrTex, vUV + uTexel * vec2( 0.0, -1.0)).rgb);    sum += s; sumSq += s*s;
-            s = RGBToYCoCg(texture(uCurHdrTex, vUV + uTexel * vec2( 1.0, -1.0)).rgb);    sum += s; sumSq += s*s;
-            s = RGBToYCoCg(texture(uCurHdrTex, vUV + uTexel * vec2(-1.0,  0.0)).rgb);    sum += s; sumSq += s*s;
-            s = RGBToYCoCg(texture(uCurHdrTex, vUV + uTexel * vec2( 1.0,  0.0)).rgb);    sum += s; sumSq += s*s;
-            s = RGBToYCoCg(texture(uCurHdrTex, vUV + uTexel * vec2(-1.0,  1.0)).rgb);    sum += s; sumSq += s*s;
-            s = RGBToYCoCg(texture(uCurHdrTex, vUV + uTexel * vec2( 0.0,  1.0)).rgb);    sum += s; sumSq += s*s;
-            s = RGBToYCoCg(texture(uCurHdrTex, vUV + uTexel * vec2( 1.0,  1.0)).rgb);    sum += s; sumSq += s*s;
+            s = RGBToYCoCg(cur.rgb);                                                                sum += s; sumSq += s*s;
+            s = RGBToYCoCg(texture(uCurHdrTex, ClampUV(vUV + uTexel * vec2(-1.0, -1.0))).rgb);     sum += s; sumSq += s*s;
+            s = RGBToYCoCg(texture(uCurHdrTex, ClampUV(vUV + uTexel * vec2( 0.0, -1.0))).rgb);     sum += s; sumSq += s*s;
+            s = RGBToYCoCg(texture(uCurHdrTex, ClampUV(vUV + uTexel * vec2( 1.0, -1.0))).rgb);     sum += s; sumSq += s*s;
+            s = RGBToYCoCg(texture(uCurHdrTex, ClampUV(vUV + uTexel * vec2(-1.0,  0.0))).rgb);     sum += s; sumSq += s*s;
+            s = RGBToYCoCg(texture(uCurHdrTex, ClampUV(vUV + uTexel * vec2( 1.0,  0.0))).rgb);     sum += s; sumSq += s*s;
+            s = RGBToYCoCg(texture(uCurHdrTex, ClampUV(vUV + uTexel * vec2(-1.0,  1.0))).rgb);     sum += s; sumSq += s*s;
+            s = RGBToYCoCg(texture(uCurHdrTex, ClampUV(vUV + uTexel * vec2( 0.0,  1.0))).rgb);     sum += s; sumSq += s*s;
+            s = RGBToYCoCg(texture(uCurHdrTex, ClampUV(vUV + uTexel * vec2( 1.0,  1.0))).rgb);     sum += s; sumSq += s*s;
             vec3 m1    = sum   * (1.0 / 9.0);
             vec3 m2    = sumSq * (1.0 / 9.0);
             vec3 sigma = sqrt(max(m2 - m1 * m1, vec3(0.0)));
@@ -3103,34 +3119,36 @@ void main() {
             hist.rgb   = YCoCgToRGB(histY);
         } else if (uClipMode == 1) {
             // Phase F.0.2 — YCoCg AABB clip 路径 (色彩边缘更鲁棒)
+            // Phase F.0.10.5: 邻域采样 ClampUV 防跨 region 边界泄漏
             vec3 curY = RGBToYCoCg(cur.rgb);
             vec3 mn = curY;
             vec3 mx = curY;
             vec3 s;
-            s = RGBToYCoCg(texture(uCurHdrTex, vUV + uTexel * vec2(-1.0, -1.0)).rgb); mn = min(mn, s); mx = max(mx, s);
-            s = RGBToYCoCg(texture(uCurHdrTex, vUV + uTexel * vec2( 0.0, -1.0)).rgb); mn = min(mn, s); mx = max(mx, s);
-            s = RGBToYCoCg(texture(uCurHdrTex, vUV + uTexel * vec2( 1.0, -1.0)).rgb); mn = min(mn, s); mx = max(mx, s);
-            s = RGBToYCoCg(texture(uCurHdrTex, vUV + uTexel * vec2(-1.0,  0.0)).rgb); mn = min(mn, s); mx = max(mx, s);
-            s = RGBToYCoCg(texture(uCurHdrTex, vUV + uTexel * vec2( 1.0,  0.0)).rgb); mn = min(mn, s); mx = max(mx, s);
-            s = RGBToYCoCg(texture(uCurHdrTex, vUV + uTexel * vec2(-1.0,  1.0)).rgb); mn = min(mn, s); mx = max(mx, s);
-            s = RGBToYCoCg(texture(uCurHdrTex, vUV + uTexel * vec2( 0.0,  1.0)).rgb); mn = min(mn, s); mx = max(mx, s);
-            s = RGBToYCoCg(texture(uCurHdrTex, vUV + uTexel * vec2( 1.0,  1.0)).rgb); mn = min(mn, s); mx = max(mx, s);
+            s = RGBToYCoCg(texture(uCurHdrTex, ClampUV(vUV + uTexel * vec2(-1.0, -1.0))).rgb); mn = min(mn, s); mx = max(mx, s);
+            s = RGBToYCoCg(texture(uCurHdrTex, ClampUV(vUV + uTexel * vec2( 0.0, -1.0))).rgb); mn = min(mn, s); mx = max(mx, s);
+            s = RGBToYCoCg(texture(uCurHdrTex, ClampUV(vUV + uTexel * vec2( 1.0, -1.0))).rgb); mn = min(mn, s); mx = max(mx, s);
+            s = RGBToYCoCg(texture(uCurHdrTex, ClampUV(vUV + uTexel * vec2(-1.0,  0.0))).rgb); mn = min(mn, s); mx = max(mx, s);
+            s = RGBToYCoCg(texture(uCurHdrTex, ClampUV(vUV + uTexel * vec2( 1.0,  0.0))).rgb); mn = min(mn, s); mx = max(mx, s);
+            s = RGBToYCoCg(texture(uCurHdrTex, ClampUV(vUV + uTexel * vec2(-1.0,  1.0))).rgb); mn = min(mn, s); mx = max(mx, s);
+            s = RGBToYCoCg(texture(uCurHdrTex, ClampUV(vUV + uTexel * vec2( 0.0,  1.0))).rgb); mn = min(mn, s); mx = max(mx, s);
+            s = RGBToYCoCg(texture(uCurHdrTex, ClampUV(vUV + uTexel * vec2( 1.0,  1.0))).rgb); mn = min(mn, s); mx = max(mx, s);
             vec3 histY = RGBToYCoCg(hist.rgb);
             histY = clamp(histY, mn, mx);
             hist.rgb = YCoCgToRGB(histY);
         } else {
             // F.0 RGB AABB clip 路径 (uClipMode==0 时严格复现, 零 ALU 回退)
+            // Phase F.0.10.5: 邻域采样 ClampUV 防跨 region 边界泄漏
             vec3 mn = cur.rgb;
             vec3 mx = cur.rgb;
             vec3 s;
-            s = texture(uCurHdrTex, vUV + uTexel * vec2(-1.0, -1.0)).rgb; mn = min(mn, s); mx = max(mx, s);
-            s = texture(uCurHdrTex, vUV + uTexel * vec2( 0.0, -1.0)).rgb; mn = min(mn, s); mx = max(mx, s);
-            s = texture(uCurHdrTex, vUV + uTexel * vec2( 1.0, -1.0)).rgb; mn = min(mn, s); mx = max(mx, s);
-            s = texture(uCurHdrTex, vUV + uTexel * vec2(-1.0,  0.0)).rgb; mn = min(mn, s); mx = max(mx, s);
-            s = texture(uCurHdrTex, vUV + uTexel * vec2( 1.0,  0.0)).rgb; mn = min(mn, s); mx = max(mx, s);
-            s = texture(uCurHdrTex, vUV + uTexel * vec2(-1.0,  1.0)).rgb; mn = min(mn, s); mx = max(mx, s);
-            s = texture(uCurHdrTex, vUV + uTexel * vec2( 0.0,  1.0)).rgb; mn = min(mn, s); mx = max(mx, s);
-            s = texture(uCurHdrTex, vUV + uTexel * vec2( 1.0,  1.0)).rgb; mn = min(mn, s); mx = max(mx, s);
+            s = texture(uCurHdrTex, ClampUV(vUV + uTexel * vec2(-1.0, -1.0))).rgb; mn = min(mn, s); mx = max(mx, s);
+            s = texture(uCurHdrTex, ClampUV(vUV + uTexel * vec2( 0.0, -1.0))).rgb; mn = min(mn, s); mx = max(mx, s);
+            s = texture(uCurHdrTex, ClampUV(vUV + uTexel * vec2( 1.0, -1.0))).rgb; mn = min(mn, s); mx = max(mx, s);
+            s = texture(uCurHdrTex, ClampUV(vUV + uTexel * vec2(-1.0,  0.0))).rgb; mn = min(mn, s); mx = max(mx, s);
+            s = texture(uCurHdrTex, ClampUV(vUV + uTexel * vec2( 1.0,  0.0))).rgb; mn = min(mn, s); mx = max(mx, s);
+            s = texture(uCurHdrTex, ClampUV(vUV + uTexel * vec2(-1.0,  1.0))).rgb; mn = min(mn, s); mx = max(mx, s);
+            s = texture(uCurHdrTex, ClampUV(vUV + uTexel * vec2( 0.0,  1.0))).rgb; mn = min(mn, s); mx = max(mx, s);
+            s = texture(uCurHdrTex, ClampUV(vUV + uTexel * vec2( 1.0,  1.0))).rgb; mn = min(mn, s); mx = max(mx, s);
             hist.rgb = clamp(hist.rgb, mn, mx);
         }
     }
@@ -3161,14 +3179,18 @@ out vec4 FragColor;
 uniform sampler2D uInputTex;       // slot 0: TAA blend 输出 (history[writeIdx])
 uniform vec2  uTexelSize;          // 1.0 / vec2(W, H)
 uniform float uSharpness;          // [0, 2]
+uniform vec4  uUvBounds;           // Phase F.0.10.5: (uMin.xy, uMax.xy); 默认 (0,0,1,1) = 无 clamp
+
+vec2 ClampUV(vec2 uv) { return clamp(uv, uUvBounds.xy, uUvBounds.zw); }   // Phase F.0.10.5
 
 void main() {
     vec3 c = texture(uInputTex, vUV).rgb;
     // 4-tap 上下左右邻域采样 (对角线舍弃, 业界主流 4-tap unsharp mask)
-    vec3 n = texture(uInputTex, vUV + vec2(0.0,         uTexelSize.y)).rgb;
-    vec3 s = texture(uInputTex, vUV - vec2(0.0,         uTexelSize.y)).rgb;
-    vec3 e = texture(uInputTex, vUV + vec2(uTexelSize.x, 0.0       )).rgb;
-    vec3 w = texture(uInputTex, vUV - vec2(uTexelSize.x, 0.0       )).rgb;
+    // Phase F.0.10.5: ClampUV 防跨 region 边界泄漏
+    vec3 n = texture(uInputTex, ClampUV(vUV + vec2(0.0,         uTexelSize.y))).rgb;
+    vec3 s = texture(uInputTex, ClampUV(vUV - vec2(0.0,         uTexelSize.y))).rgb;
+    vec3 e = texture(uInputTex, ClampUV(vUV + vec2(uTexelSize.x, 0.0       ))).rgb;
+    vec3 w = texture(uInputTex, ClampUV(vUV - vec2(uTexelSize.x, 0.0       ))).rgb;
     vec3 avg4 = (n + s + e + w) * 0.25;
     // unsharp mask: c + (c - avg) × sharpness
     vec3 sharpened = c + (c - avg4) * uSharpness;
@@ -3812,6 +3834,7 @@ class GL33Backend : public RenderBackend {
     GLint  locTAA_VarianceGamma             = -1;   // Phase F.0.3: variance clip 收紧系数 γ (仅 clipMode==2 生效)
     GLint  locTAA_MotionGamma               = -1;   // Phase F.0.8: motion-adaptive 高速区域 γ (仅 motionAdaptive==1 生效)
     GLint  locTAA_MotionAdaptiveGamma       = -1;   // Phase F.0.8: 0=仅用 varianceGamma (F.0.3 行为), 1=按 vel 长度 lerp 两 γ
+    GLint  locTAA_UvBounds                  = -1;   // Phase F.0.10.5: vec4 邻域采样 UV clamp (默认 0,0,1,1 = 无 clamp)
 
     // Phase F.0.1 — TAA Sharpening (4-tap unsharp mask, 复用 SupportsTAA 能力位)
     //   shader: FS_SHARPEN_SOURCE (uInputTex + uTexelSize + uSharpness)
@@ -3819,6 +3842,7 @@ class GL33Backend : public RenderBackend {
     GLint  locSharpen_InputTex              = -1;   // sampler2D, slot 0
     GLint  locSharpen_TexelSize             = -1;
     GLint  locSharpen_Sharpness             = -1;
+    GLint  locSharpen_UvBounds              = -1;   // Phase F.0.10.5: vec4 4-tap NSEW UV clamp
 
     // Phase F.0.6 — TAA CAS Sharpening (5-tap AMD FidelityFX FSR1, 与 F.0.1 unsharp 共存)
     //   shader: FS_CAS_SOURCE (uInputTex + uTexelSize + uSharpness ∈ [0, 1])
@@ -4810,6 +4834,7 @@ public:
             locTAA_VarianceGamma    = glGetUniformLocation(programTAA, "uVarianceGamma");   // Phase F.0.3
             locTAA_MotionGamma         = glGetUniformLocation(programTAA, "uMotionGamma");          // Phase F.0.8
             locTAA_MotionAdaptiveGamma = glGetUniformLocation(programTAA, "uMotionAdaptiveGamma");  // Phase F.0.8
+            locTAA_UvBounds            = glGetUniformLocation(programTAA, "uUvBounds");             // Phase F.0.10.5
             // 一次性绑 sampler 到 texture unit (slot 0=cur HDR, slot 1=history, slot 2=velocity)
             glUseProgram(programTAA);
             if (locTAA_CurHdrTex   >= 0) glUniform1i(locTAA_CurHdrTex,   0);
@@ -4831,6 +4856,7 @@ public:
             locSharpen_InputTex  = glGetUniformLocation(programSharpen, "uInputTex");
             locSharpen_TexelSize = glGetUniformLocation(programSharpen, "uTexelSize");
             locSharpen_Sharpness = glGetUniformLocation(programSharpen, "uSharpness");
+            locSharpen_UvBounds  = glGetUniformLocation(programSharpen, "uUvBounds");   // Phase F.0.10.5
             // 一次性绑 sampler slot 0
             glUseProgram(programSharpen);
             if (locSharpen_InputTex >= 0) glUniform1i(locSharpen_InputTex, 0);
@@ -5112,10 +5138,11 @@ public:
         locTAA_VarianceGamma   = -1;   // Phase F.0.3 reset
         locTAA_MotionGamma         = -1;   // Phase F.0.8 reset
         locTAA_MotionAdaptiveGamma = -1;   // Phase F.0.8 reset
+        locTAA_UvBounds            = -1;   // Phase F.0.10.5 reset
 
         // Phase F.0.1 — TAA Sharpening 清理
         if (programSharpen) { glDeleteProgram(programSharpen); programSharpen = 0; }
-        locSharpen_InputTex = locSharpen_TexelSize = locSharpen_Sharpness = -1;
+        locSharpen_InputTex = locSharpen_TexelSize = locSharpen_Sharpness = locSharpen_UvBounds = -1;
 
         // Phase F.0.6 — TAA CAS Sharpening 清理
         if (programCAS) { glDeleteProgram(programCAS); programCAS = 0; }
@@ -8071,7 +8098,8 @@ public:
                      float motionGamma,                   // Phase F.0.8
                      int   motionAdaptiveGamma,           // Phase F.0.8
                      int rgnX, int rgnY,                  // Phase F.0.10.2: split-screen region
-                     int rgnW, int rgnH) override         // Phase F.0.10.2: rgnW<=0 时全屏 (零回归)
+                     int rgnW, int rgnH,                  // Phase F.0.10.2: rgnW<=0 时全屏 (零回归)
+                     const float* uvBounds) override      // Phase F.0.10.5: vec4 邻域采样 clamp; nullptr = 全屏 no-op
     {
         if (!taaSupported || !programTAA) return;
         if (!curHdrTex || !dstFbo || w <= 0 || h <= 0) return;
@@ -8110,6 +8138,11 @@ public:
         // Phase F.0.8: motion-adaptive γ — 高速区域 γ + 开关 (仅 motionAdaptive==1 && clipMode==2 生效)
         if (locTAA_MotionGamma         >= 0) glUniform1f(locTAA_MotionGamma,         motionGamma);
         if (locTAA_MotionAdaptiveGamma >= 0) glUniform1i(locTAA_MotionAdaptiveGamma, motionAdaptiveGamma);
+        // Phase F.0.10.5: uvBounds 上传 (nullptr 时上传 0,0,1,1 即恒等 clamp, 零回归)
+        if (locTAA_UvBounds >= 0) {
+            const float defaultBounds[4] = {0.0f, 0.0f, 1.0f, 1.0f};
+            glUniform4fv(locTAA_UvBounds, 1, uvBounds ? uvBounds : defaultBounds);
+        }
 
         // 绑 sampler: slot 0=cur HDR, slot 1=history (空时给 cur 占位避免黑帧), slot 2=velocity
         glActiveTexture(GL_TEXTURE0);
@@ -8139,7 +8172,8 @@ public:
     /// shader 编译失败时调用方应回落到 BlitTAAToHDR; sharpness <= 0 由调用方在 CPU 端跳过.
     void DrawTAASharpenPass(uint32_t srcTex, uint32_t dstFbo,
                             int w, int h, float sharpness,
-                            int rgnX, int rgnY, int rgnW, int rgnH) override {  // Phase F.0.10.2: region
+                            int rgnX, int rgnY, int rgnW, int rgnH,
+                            const float* uvBounds) override {   // Phase F.0.10.5
         if (!programSharpen || !srcTex || !dstFbo || w <= 0 || h <= 0) return;
 
         glBindFramebuffer(GL_FRAMEBUFFER, dstFbo);
@@ -8158,6 +8192,11 @@ public:
         glUseProgram(programSharpen);
         if (locSharpen_TexelSize >= 0) glUniform2f(locSharpen_TexelSize, 1.0f / (float)w, 1.0f / (float)h);
         if (locSharpen_Sharpness >= 0) glUniform1f(locSharpen_Sharpness, sharpness);
+        // Phase F.0.10.5: uvBounds 上传 (nullptr 时上传 0,0,1,1, 与 F.0.1 老路径等价)
+        if (locSharpen_UvBounds >= 0) {
+            const float defaultBounds[4] = {0.0f, 0.0f, 1.0f, 1.0f};
+            glUniform4fv(locSharpen_UvBounds, 1, uvBounds ? uvBounds : defaultBounds);
+        }
 
         // 绑 src TAA 输出到 slot 0
         glActiveTexture(GL_TEXTURE0);

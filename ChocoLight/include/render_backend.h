@@ -1375,6 +1375,9 @@ public:
     /// @param motionAdaptiveGamma Phase F.0.8: 0=仅用 varianceGamma (F.0.3 行为, 零回归), 1=按 |velocity| 长度 lerp 两 γ
     /// Phase F.0.10.2 — 可选 region 限制 (split-screen): rgnW/rgnH > 0 时启用 glScissor 写入区域;
     /// 默认 0/0/0/0 = 全屏 (零回归)。rgnX/rgnY 是 dst FBO 坐标 (GL origin = 左下), 与 SetViewport 同语义。
+    /// Phase F.0.10.5 — uvBounds (vec4: uMin.x, uMin.y, uMax.x, uMax.y) shader 内对邻域采样
+    /// (8-tap clip + 9-tap velocity dilation + history reproject) 做 clamp, 彻底消跨 region 边界泄漏。
+    /// nullptr (默认) 时 backend 自动上传 (0,0,1,1) 即全屏 no-op clamp (零回归)。
     virtual void DrawTAAPass(uint32_t /*curHdrTex*/, uint32_t /*historyTex*/,
                              uint32_t /*velocityTex*/, uint32_t /*dstFbo*/,
                              int /*w*/, int /*h*/,
@@ -1391,7 +1394,8 @@ public:
                              int   /*rgnX*/               = 0,      // Phase F.0.10.2: 区域 X (0 = 不限制)
                              int   /*rgnY*/               = 0,      // Phase F.0.10.2: 区域 Y
                              int   /*rgnW*/               = 0,      // Phase F.0.10.2: 区域 W (<=0 = 全屏)
-                             int   /*rgnH*/               = 0)      // Phase F.0.10.2: 区域 H
+                             int   /*rgnH*/               = 0,      // Phase F.0.10.2: 区域 H
+                             const float* /*uvBounds*/    = nullptr) // Phase F.0.10.5: vec4 UV clamp (nullptr=0,0,1,1)
                              {}
 
     /// 把 TAA 输出 blit 回 HDR sceneTex (覆盖, 让后续 Tonemap 用 TAA 后内容)
@@ -1416,10 +1420,12 @@ public:
     /// @param dstFbo     HDR FBO (绑定的 sceneTex 是写回目标)
     /// @param w, h       尺寸 (full-res)
     /// @param sharpness  unsharp mask 强度, 推荐 [0, 2]; 已由调用方 clamp
+    /// Phase F.0.10.5 — uvBounds (vec4) 用于 Sharpen 4-tap NSEW 采样 clamp, nullptr = no-op (全屏 0,0,1,1)
     virtual void DrawTAASharpenPass(uint32_t /*srcTex*/, uint32_t /*dstFbo*/,
                                     int /*w*/, int /*h*/, float /*sharpness*/,
                                     int /*rgnX*/ = 0, int /*rgnY*/ = 0,    // Phase F.0.10.2
-                                    int /*rgnW*/ = 0, int /*rgnH*/ = 0) {}
+                                    int /*rgnW*/ = 0, int /*rgnH*/ = 0,
+                                    const float* /*uvBounds*/ = nullptr) {} // Phase F.0.10.5
 
     /// Phase F.0.6 — TAA CAS pass: 5-tap contrast-adaptive sharpening (AMD FidelityFX FSR1)
     /// 与 F.0.1 unsharp 共存, 用户通过 SetSharpenMode("cas"/"unsharp") 切换.
