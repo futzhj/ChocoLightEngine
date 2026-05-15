@@ -7698,7 +7698,9 @@ public:
                         int w, int h,
                         float strength, int sampleCount,
                         int mode,                               // ★ Phase E.16
-                        int rtW, int rtH) override {            // ★ Phase E.17
+                        int rtW, int rtH,                       // ★ Phase E.17
+                        int rgnX, int rgnY,                     // ★ Phase F.0.10.3
+                        int rgnW, int rgnH) override {          // ★ Phase F.0.10.3
         if (!motionBlurSupported || !programMotionBlur) return;
         if (!sceneTex || !velocityTex || !motionBlurFbo || !motionBlurTex || !dstFbo) return;
         if (w <= 0 || h <= 0) return;
@@ -7706,6 +7708,20 @@ public:
         // ★ Phase E.17: rtW/H==0 → fallback w/h (full-res, 与 Phase E.16 等价)
         const int passW = (rtW > 0) ? rtW : w;
         const int passH = (rtH > 0) ? rtH : h;
+
+        // ★ Phase F.0.10.3 — region 化判定: rgnW>0 && rgnH>0 时启 scissor (Pass1) + sub-rect blit (Pass2)
+        // half-res storage (passW < w) 时, Pass1 写 storage 空间, region 也需缩半;
+        // Pass2 是 storage→full 的 blit, dst 用 full-res region 即可 (storageRgn 是 src rect)
+        const bool useRegion = (rgnW > 0 && rgnH > 0);
+        // Pass1 storage 空间 region: half-res 时缩半
+        int sRgnX = rgnX, sRgnY = rgnY, sRgnW = rgnW, sRgnH = rgnH;
+        if (useRegion && (passW < w || passH < h)) {
+            // half-res: storage region 是 dst region 的 1/2 (与 mip 缩半同模式)
+            sRgnX = rgnX / 2;
+            sRgnY = rgnY / 2;
+            sRgnW = (rgnW > 1) ? (rgnW / 2) : 1;
+            sRgnH = (rgnH > 1) ? (rgnH / 2) : 1;
+        }
 
         // Phase E.16 — mode=1/2 但 cameraVelocityTex 缺失 → silent fallback combined (mode=0)
         // 不打 warning log 避免每帧刷屏
@@ -7728,6 +7744,13 @@ public:
         glDisable(GL_DEPTH_TEST);
         glDisable(GL_CULL_FACE);
         glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+        // ★ Phase F.0.10.3 — scissor 限定 Pass1 写 storage 空间 region (split-screen 必备)
+        if (useRegion) {
+            glEnable(GL_SCISSOR_TEST);
+            glScissor(sRgnX, sRgnY, sRgnW, sRgnH);
+        } else {
+            glDisable(GL_SCISSOR_TEST);
+        }
 
         glUseProgram(programMotionBlur);
         // 上传 uniform (clamp 调用方已做, 此处再补 sanity)
@@ -7767,14 +7790,27 @@ public:
         glBindTexture(GL_TEXTURE_2D, 0);
         glUseProgram(0);
 
+        // ★ Phase F.0.10.3 — Pass1 完成, 复位 scissor (Pass2 blit 不依赖 scissor)
+        // 注: glBlitFramebuffer 不受 GL_SCISSOR_TEST 影响 (glScissor 仅作用于 raster);
+        //     因此 Pass2 用 src/dst rect 显式控制 sub-rect, 无需 enable scissor
+        glDisable(GL_SCISSOR_TEST);
+
         // ===== Pass2: blit motionBlurFbo → dstFbo (覆盖 sceneTex) =====
         // ★ Phase E.17: src=(passW, passH) → dst=(w, h)。
         //               passW/H < w/h → 自动选 GL_LINEAR 硬件 bilinear 上采样;
         //               同尺寸 → GL_NEAREST (与 Phase E.16 等价，零回归)
+        // ★ Phase F.0.10.3: useRegion 时 src=(sRgn) → dst=(rgn) 仅 blit 子矩形
         glBindFramebuffer(GL_READ_FRAMEBUFFER, (GLuint)motionBlurFbo);
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, (GLuint)dstFbo);
         const GLenum blitFilter = (passW == w && passH == h) ? GL_NEAREST : GL_LINEAR;
-        glBlitFramebuffer(0, 0, passW, passH, 0, 0, w, h, GL_COLOR_BUFFER_BIT, blitFilter);
+        if (useRegion) {
+            // src rect (storage 空间) → dst rect (full 空间)
+            glBlitFramebuffer(sRgnX, sRgnY, sRgnX + sRgnW, sRgnY + sRgnH,
+                              rgnX,  rgnY,  rgnX  + rgnW,  rgnY  + rgnH,
+                              GL_COLOR_BUFFER_BIT, blitFilter);
+        } else {
+            glBlitFramebuffer(0, 0, passW, passH, 0, 0, w, h, GL_COLOR_BUFFER_BIT, blitFilter);
+        }
         glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
     }

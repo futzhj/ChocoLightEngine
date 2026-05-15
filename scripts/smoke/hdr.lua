@@ -43,6 +43,10 @@ local fn_names = {
     "SetVelocityDilationAutoSkip", "GetVelocityDilationAutoSkip",
     -- Phase F.0.10.2 — Auto-TAA 开关 (split-screen 多 instance 必备)
     "SetAutoTAA", "GetAutoTAA",
+    -- Phase F.0.10.3 — Auto-Bloom/SSR/MotionBlur 开关 (split-screen 多 player 必备)
+    "SetAutoBloom", "GetAutoBloom",
+    "SetAutoSSR", "GetAutoSSR",
+    "SetAutoMotionBlur", "GetAutoMotionBlur",
 }
 for _, k in ipairs(fn_names) do
     if type(HDR[k]) ~= "function" then
@@ -474,7 +478,51 @@ pass("SetAutoTAA idempotent (no-op same value)")
 HDR.SetAutoTAA(true)
 
 -- ============================================================
+-- 12) Phase F.0.10.3 — SetAutoBloom / SetAutoSSR / SetAutoMotionBlur (split-screen 必备)
+-- ============================================================
+-- 3 对开关同模式 (与 SetAutoTAA 一致): 默认 true, round-trip, bad-arg, idempotent
+-- 关 split-screen 多 player 时必关这 3 个让用户手动 .Process(rgn)
+
+local auto_pairs = {
+    {name = "Bloom",      set = HDR.SetAutoBloom,      get = HDR.GetAutoBloom},
+    {name = "SSR",        set = HDR.SetAutoSSR,        get = HDR.GetAutoSSR},
+    {name = "MotionBlur", set = HDR.SetAutoMotionBlur, get = HDR.GetAutoMotionBlur},
+}
+for _, p in ipairs(auto_pairs) do
+    -- 12.1 默认 true (零回归)
+    if p.get() ~= true then
+        fail("HDR.GetAuto" .. p.name .. "() default should be true, got " .. tostring(p.get()))
+    end
+    pass("HDR.GetAuto" .. p.name .. "() default = true (零回归)")
+
+    -- 12.2 round-trip true → false → true
+    p.set(false)
+    if p.get() ~= false then
+        fail("HDR.SetAuto" .. p.name .. "(false) round-trip failed")
+    end
+    p.set(true)
+    if p.get() ~= true then
+        fail("HDR.SetAuto" .. p.name .. "(true) round-trip failed")
+    end
+    pass("HDR.SetAuto" .. p.name .. " true/false round-trip ok")
+
+    -- 12.3 bad-arg → nil + err
+    local r, e = p.set("yes")
+    if r ~= nil then fail("HDR.SetAuto" .. p.name .. "('yes') should return nil") end
+    if type(e) ~= "string" then fail("HDR.SetAuto" .. p.name .. " bad-arg err must be string") end
+    pass("HDR.SetAuto" .. p.name .. " bad-arg returns nil + err string")
+
+    -- 12.4 idempotent no-op 同值
+    p.set(true); p.set(true)
+    if p.get() ~= true then fail("HDR.SetAuto" .. p.name .. "(true) twice should remain true") end
+    pass("HDR.SetAuto" .. p.name .. " idempotent (no-op same value)")
+
+    -- 复位 (后续 demo 不破坏)
+    p.set(true)
+end
+
+-- ============================================================
 -- Done
 -- ============================================================
 
-print("[Phase E.3 + E.14 + E.18.1 + E.18.2 + F.0.10.2] Light.Graphics.HDR smoke PASS (" .. #fn_names .. " functions)")
+print("[Phase E.3 + E.14 + E.18.1 + E.18.2 + F.0.10.2 + F.0.10.3] Light.Graphics.HDR smoke PASS (" .. #fn_names .. " functions)")

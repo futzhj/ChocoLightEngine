@@ -48,6 +48,7 @@ local fn_names = {
     "SetSampleCount", "GetSampleCount",
     "SetMode", "GetMode",                       -- Phase E.16
     "SetHalfRes", "GetHalfRes",                 -- Phase E.17
+    "Process",                                  -- Phase F.0.10.3 (region overload)
 }
 for _, k in ipairs(fn_names) do
     if type(MB[k]) ~= "function" then
@@ -280,8 +281,104 @@ MB.SetHalfRes(false)        -- 复位
 pass("SetHalfRes does not corrupt IsEnabled state")
 
 -- ============================================================
+-- Phase F.0.10.3 — Process(region) overload defense (6 PASS)
+-- ============================================================
+-- HDR 未启 + MB 未启 时, Process 应返 nil + err string (silent skip, 不崩)
+-- 4-args 防御 / 部分 args 拒绝 / w<0 拒绝 / 类型错 luaL_error 抛
+-- 这些验证均在 headless / HDR-off 环境运行 (与 TAA.Process 同模式)
+
+-- 测试 1: 无参 Process (full-screen) - HDR 未启 → nil + err
+local r1, e1 = MB.Process()
+if r1 ~= nil then
+    fail("MB.Process() with HDR off should return nil; got " .. tostring(r1))
+end
+if type(e1) ~= "string" then
+    fail("MB.Process() with HDR off should return err string; got " .. type(e1))
+end
+pass("MB.Process() with HDR off returns nil + err string")
+
+-- 测试 2: 4 args region Process - HDR 未启 → nil + err
+local r2, e2 = MB.Process(0, 0, 100, 100)
+if r2 ~= nil or type(e2) ~= "string" then
+    fail("MB.Process(0,0,100,100) with HDR off should return nil + err; got " ..
+         tostring(r2) .. ", " .. type(e2))
+end
+pass("MB.Process(x,y,w,h) with HDR off returns nil + err string")
+
+-- 测试 3: 部分 region 参数 (3 个) → 拒绝 (与 TAA.Process 同模式)
+local r3, e3 = MB.Process(0, 0, 100)
+if r3 ~= nil or type(e3) ~= "string" or not string.find(e3, "expected 0 or 4 args") then
+    fail("MB.Process(0,0,100) should reject with 'expected 0 or 4 args' err; got " ..
+         tostring(r3) .. ", " .. tostring(e3))
+end
+pass("MB.Process partial args rejected (3 args)")
+
+-- 测试 4: w<0 拒绝
+local r4, e4 = MB.Process(0, 0, -1, 100)
+if r4 ~= nil or type(e4) ~= "string" or not string.find(e4, "w/h must be >= 0") then
+    fail("MB.Process(0,0,-1,100) should reject with 'w/h must be >= 0' err; got " ..
+         tostring(r4) .. ", " .. tostring(e4))
+end
+pass("MB.Process w<0 rejected")
+
+-- 测试 5: h<0 拒绝
+local r5, e5 = MB.Process(0, 0, 100, -1)
+if r5 ~= nil or type(e5) ~= "string" or not string.find(e5, "w/h must be >= 0") then
+    fail("MB.Process(0,0,100,-1) should reject with 'w/h must be >= 0' err; got " ..
+         tostring(r5) .. ", " .. tostring(e5))
+end
+pass("MB.Process h<0 rejected")
+
+-- 测试 6: 类型错 (传 string 而非 integer) → luaL_error 抛
+local ok6 = pcall(function() MB.Process("a", "b", "c", "d") end)
+if ok6 then
+    fail("MB.Process('a','b','c','d') should throw luaL_error; succeeded")
+end
+pass("MB.Process type error throws luaL_error")
+
+-- ============================================================
+-- Phase F.0.10.3 — HDR.SetAutoMotionBlur / GetAutoMotionBlur (4 PASS)
+-- ============================================================
+local HDR = Graphics.HDR
+if type(HDR) ~= "table" then fail("HDR subtable missing") end
+
+-- 默认 true
+if HDR.GetAutoMotionBlur() ~= true then
+    fail("HDR.GetAutoMotionBlur() default should be true, got " ..
+         tostring(HDR.GetAutoMotionBlur()))
+end
+pass("HDR.GetAutoMotionBlur() default = true")
+
+-- round-trip true → false → true
+HDR.SetAutoMotionBlur(false)
+if HDR.GetAutoMotionBlur() ~= false then
+    fail("HDR.SetAutoMotionBlur(false) round-trip failed")
+end
+HDR.SetAutoMotionBlur(true)
+if HDR.GetAutoMotionBlur() ~= true then
+    fail("HDR.SetAutoMotionBlur(true) round-trip failed")
+end
+pass("HDR.SetAutoMotionBlur round-trip ok")
+
+-- 同值 no-op (set true 两次)
+HDR.SetAutoMotionBlur(true)
+HDR.SetAutoMotionBlur(true)
+if HDR.GetAutoMotionBlur() ~= true then
+    fail("HDR.SetAutoMotionBlur idempotent failed")
+end
+pass("HDR.SetAutoMotionBlur idempotent (same value no-op)")
+
+-- 类型错 (传 string) → nil + err
+local r7, e7 = HDR.SetAutoMotionBlur("yes")
+if r7 ~= nil or type(e7) ~= "string" then
+    fail("HDR.SetAutoMotionBlur('yes') should return nil + err; got " ..
+         tostring(r7) .. ", " .. type(e7))
+end
+pass("HDR.SetAutoMotionBlur type error returns nil + err")
+
+-- ============================================================
 -- Final summary
 -- ============================================================
 
 print("")
-print("=== Light.Graphics.MotionBlur smoke OK (Phase E.15+E.16+E.17) ===")
+print("=== Light.Graphics.MotionBlur smoke OK (Phase E.15+E.16+E.17+F.0.10.3) ===")

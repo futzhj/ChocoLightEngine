@@ -113,4 +113,19 @@ bool GetHalfRes();
  */
 void Process(uint32_t hdrFbo, uint32_t hdrTex);
 
+/**
+ * @brief Phase F.0.10.3 — Region 限定 motion blur (split-screen 必备 overload)
+ *
+ * 与无 region 版语义等价 (rgnW=0 || rgnH=0 时退化为全屏路径), 区别:
+ *   1. Pass1 shader scissor 限定写 storage 空间子矩形
+ *   2. Pass2 blit 用 src=(storageRgn) → dst=(rgn) sub-rect blit
+ *   3. half-res storage (HalfRes=true) 时 storage region = dst region / 2
+ *
+ * 典型用法 (split-screen, HDR.SetAutoMotionBlur(false) 后手动调):
+ *   MotionBlur.Process(0,    0, W/2, H)   -- 左半屏 player 1
+ *   MotionBlur.Process(W/2,  0, W/2, H)   -- 右半屏 player 2
+ */
+void Process(uint32_t hdrFbo, uint32_t hdrTex,
+             int rgnX, int rgnY, int rgnW, int rgnH);
+
 } // namespace MotionBlurRenderer

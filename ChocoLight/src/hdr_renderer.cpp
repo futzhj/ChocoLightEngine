@@ -76,6 +76,11 @@ struct State {
     // Phase F.0.10.2 — Auto-TAA 开关 (默认 true = 零回归; false = 让用户手动 TAA.Process 控时序)
     //   split-screen 场景: 用户需要 TAA.SetActiveInstance + TAA.Process(region) 分次处理, 不能让 EndScene 全屏覆盖
     bool           autoTAA                  = true;
+    // Phase F.0.10.3 — Auto-Bloom/SSR/MotionBlur 开关 (默认 true = 零回归; false = 用户手动 .Process(rgn) 控时序)
+    //   split-screen 场景: 多 player 各自独立后处理时, 必关这 3 个开关, 用 Lua API 手动 region 处理
+    bool           autoBloom                = true;
+    bool           autoSSR                  = true;
+    bool           autoMotionBlur           = true;
 };
 
 static State g;
@@ -415,7 +420,10 @@ void EndScene() {
 
     // Phase E.4.2 — Bloom 管线 (内部自检 IsEnabled; 未启用 no-op)
     // Process 将 bloom 结果 additive blend 到 g.fbo (HDR RT) 原地累加
-    BloomRenderer::Process(g.fbo, g.sceneTex);
+    // Phase F.0.10.3: autoBloom=false 时跳过自动 Bloom, 让用户手动 Bloom.Process(rgn) (split-screen 必备)
+    if (g.autoBloom) {
+        BloomRenderer::Process(g.fbo, g.sceneTex);
+    }
 
     // Bloom Process 内部结束时已 BindFramebuffer(0), 但为安全起见再 unbind 一次
     g.backend->UnbindFBO();
@@ -502,7 +510,10 @@ void EndScene() {
     // Phase E.9 — SSR (屏幕空间反射, 加性写入 HDR; 在 SSAO 之后、Bloom 之前)
     // SSR 反射需要看到 SSAO 修正后的 HDR 调 (阴部在反射中仍为暗); Bloom 取反射 + AO HDR 提亮.
     // 内部自检 IsEnabled/IsSupported; 未启用时 no-op. 缺 G-buffer normal 时 silent skip + once warn.
-    SSRRenderer::Process(g.fbo, g.sceneTex);
+    // Phase F.0.10.3: autoSSR=false 时跳过自动 SSR, 让用户手动 SSR.Process(rgn) (split-screen 必备)
+    if (g.autoSSR) {
+        SSRRenderer::Process(g.fbo, g.sceneTex);
+    }
 
     // Phase E.7.2 — Lens Flare (内部自检 IsEnabled; 未启用 no-op)
     // 复用 Bloom bright/composite shader, 独立 ping-pong RT
@@ -510,7 +521,10 @@ void EndScene() {
 
     // Phase E.15 — Motion Blur (LensFlare 之后, Tonemap 之前)
     // 读 sceneTex + velocityTex 写 ping-pong, 再 blit 覆盖回 sceneTex
-    MotionBlurRenderer::Process(g.fbo, g.sceneTex);
+    // Phase F.0.10.3: autoMotionBlur=false 时跳过自动 MotionBlur, 让用户手动 MB.Process(rgn) (split-screen 必备)
+    if (g.autoMotionBlur) {
+        MotionBlurRenderer::Process(g.fbo, g.sceneTex);
+    }
 
     // Phase F.0 — TAA 主管线 (MotionBlur 之后, Tonemap 之前)
     //   读 cur sceneTex + history + dilated/raw velocity → 写 history递推、1  blit 回 sceneTex
@@ -629,6 +643,31 @@ bool SetAutoTAA(bool on) {
     return true;
 }
 bool GetAutoTAA() { return g.autoTAA; }
+
+// Phase F.0.10.3 — Auto-Bloom/SSR/MotionBlur 开关 (与 SetAutoTAA 同模式)
+// 默认 true = EndScene 内自动调对应 Renderer::Process(g.fbo, g.sceneTex) (零回归)
+// 设 false 后用户负责手动调 .Process / Process(rgn) 控时序 (split-screen 必备)
+// 无状态依赖, 立即生效, 同值 no-op
+bool SetAutoBloom(bool on) {
+    if (g.autoBloom == on) return true;
+    g.autoBloom = on;
+    return true;
+}
+bool GetAutoBloom() { return g.autoBloom; }
+
+bool SetAutoSSR(bool on) {
+    if (g.autoSSR == on) return true;
+    g.autoSSR = on;
+    return true;
+}
+bool GetAutoSSR() { return g.autoSSR; }
+
+bool SetAutoMotionBlur(bool on) {
+    if (g.autoMotionBlur == on) return true;
+    g.autoMotionBlur = on;
+    return true;
+}
+bool GetAutoMotionBlur() { return g.autoMotionBlur; }
 
 bool GetVelocityDilation() { return g.velocityDilation; }
 

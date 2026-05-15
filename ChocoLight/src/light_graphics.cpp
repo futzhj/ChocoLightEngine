@@ -1779,6 +1779,67 @@ static int l_HDR_GetAutoTAA(lua_State* L) {
     return 1;
 }
 
+// ==================== Phase F.0.10.3 — Auto-Bloom/SSR/MotionBlur (split-screen 多 player 必备) ====================
+//
+// 三对开关同模式 (与 SetAutoTAA 一致):
+//   - 默认 true → EndScene 内自动调对应 Renderer::Process() 全屏处理
+//   - 设 false → 用户手动调 Bloom.Process / SSR.Process / MotionBlur.Process 控时序 (含 region 重载)
+//   - 入参非 boolean 返 nil + err string
+
+/// @lua_api Light.Graphics.HDR.SetAutoBloom
+static int l_HDR_SetAutoBloom(lua_State* L) {
+    if (!lua_isboolean(L, 1)) {
+        lua_pushnil(L);
+        lua_pushstring(L, "SetAutoBloom: expect boolean");
+        return 2;
+    }
+    HDRRenderer::SetAutoBloom(lua_toboolean(L, 1) != 0);
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+/// @lua_api Light.Graphics.HDR.GetAutoBloom
+static int l_HDR_GetAutoBloom(lua_State* L) {
+    lua_pushboolean(L, HDRRenderer::GetAutoBloom() ? 1 : 0);
+    return 1;
+}
+
+/// @lua_api Light.Graphics.HDR.SetAutoSSR
+static int l_HDR_SetAutoSSR(lua_State* L) {
+    if (!lua_isboolean(L, 1)) {
+        lua_pushnil(L);
+        lua_pushstring(L, "SetAutoSSR: expect boolean");
+        return 2;
+    }
+    HDRRenderer::SetAutoSSR(lua_toboolean(L, 1) != 0);
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+/// @lua_api Light.Graphics.HDR.GetAutoSSR
+static int l_HDR_GetAutoSSR(lua_State* L) {
+    lua_pushboolean(L, HDRRenderer::GetAutoSSR() ? 1 : 0);
+    return 1;
+}
+
+/// @lua_api Light.Graphics.HDR.SetAutoMotionBlur
+static int l_HDR_SetAutoMotionBlur(lua_State* L) {
+    if (!lua_isboolean(L, 1)) {
+        lua_pushnil(L);
+        lua_pushstring(L, "SetAutoMotionBlur: expect boolean");
+        return 2;
+    }
+    HDRRenderer::SetAutoMotionBlur(lua_toboolean(L, 1) != 0);
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+/// @lua_api Light.Graphics.HDR.GetAutoMotionBlur
+static int l_HDR_GetAutoMotionBlur(lua_State* L) {
+    lua_pushboolean(L, HDRRenderer::GetAutoMotionBlur() ? 1 : 0);
+    return 1;
+}
+
 /// @lua_api Light.Graphics.HDR.SetVelocityFormat
 /// @brief 切换 velocity buffer 存储格式 (RG16F 默认 / RG8 节省 4x VRAM)
 /// @param fmt string "rg16f" | "rg8" (大小写敏感)
@@ -1837,6 +1898,13 @@ static const luaL_Reg hdr_funcs[] = {
     // Phase F.0.10.2 — Auto-TAA 开关 (split-screen 多 instance 必备)
     {"SetAutoTAA",                  l_HDR_SetAutoTAA},
     {"GetAutoTAA",                  l_HDR_GetAutoTAA},
+    // Phase F.0.10.3 — Auto-Bloom/SSR/MotionBlur 开关 (split-screen 多 player 必备)
+    {"SetAutoBloom",                l_HDR_SetAutoBloom},
+    {"GetAutoBloom",                l_HDR_GetAutoBloom},
+    {"SetAutoSSR",                  l_HDR_SetAutoSSR},
+    {"GetAutoSSR",                  l_HDR_GetAutoSSR},
+    {"SetAutoMotionBlur",           l_HDR_SetAutoMotionBlur},
+    {"GetAutoMotionBlur",           l_HDR_GetAutoMotionBlur},
     {NULL, NULL}
 };
 
@@ -3047,6 +3115,56 @@ static int l_MB_GetHalfRes(lua_State* L) {
     return 1;
 }
 
+/// @lua_api Light.Graphics.MotionBlur.Process
+/// @param x integer? region 左下角 X (默认 0)
+/// @param y integer? region 左下角 Y (默认 0)
+/// @param w integer? region 宽度 (默认 0 = 全屏老路径)
+/// @param h integer? region 高度 (默认 0 = 全屏老路径)
+/// @return boolean true 成功; nil, string = 参数非法 / HDR 未启用
+/// @note Phase F.0.10.3 — region 化 MotionBlur (split-screen 必备 overload)
+///       内部用 HDRRenderer::GetFBO() + GetSceneTexture() 作为目标
+///       headless / HDR 未启 时静默 no-op (返 nil + err string)
+///       典型用法 (split-screen):
+///         HDR.SetAutoMotionBlur(false)
+///         MotionBlur.Process(0,    0, W/2, H)  -- 左半屏 player 1
+///         MotionBlur.Process(W/2,  0, W/2, H)  -- 右半屏 player 2
+static int l_MB_Process(lua_State* L) {
+    // 参数检查 (4 个 optional integer, 缺省 = 0): 全部 0 = 全屏老接口
+    const int nargs = lua_gettop(L);
+    int rgnX = 0, rgnY = 0, rgnW = 0, rgnH = 0;
+    if (nargs >= 1) rgnX = (int)luaL_checkinteger(L, 1);
+    if (nargs >= 2) rgnY = (int)luaL_checkinteger(L, 2);
+    if (nargs >= 3) rgnW = (int)luaL_checkinteger(L, 3);
+    if (nargs >= 4) rgnH = (int)luaL_checkinteger(L, 4);
+
+    // 防御性: 部分 region 参数 (只传 2 个 / 3 个) 视为非法
+    if (nargs != 0 && nargs != 4) {
+        lua_pushnil(L);
+        lua_pushfstring(L, "MotionBlur.Process: expected 0 or 4 args (got %d); region=(x,y,w,h) all-or-none", nargs);
+        return 2;
+    }
+    // 防御性: 区域 w/h 必须 >= 0 (0/0/0/0 = 全屏 path; w<0 或 h<0 拒绝)
+    if (rgnW < 0 || rgnH < 0) {
+        lua_pushnil(L);
+        lua_pushfstring(L, "MotionBlur.Process: w/h must be >= 0 (got w=%d, h=%d)", rgnW, rgnH);
+        return 2;
+    }
+
+    // 取 HDR fbo + sceneTex (HDR 未启用时返 0, MotionBlurRenderer::Process 内部静默 no-op)
+    const uint32_t fbo = HDRRenderer::GetFBO();
+    const uint32_t tex = HDRRenderer::GetSceneTexture();
+    if (!fbo || !tex) {
+        lua_pushnil(L);
+        lua_pushliteral(L, "MotionBlur.Process: HDR not enabled (fbo / sceneTex = 0)");
+        return 2;
+    }
+
+    // 转发到 MotionBlurRenderer (rgnW/rgnH=0 时 backend 内部跳过 scissor + sub-rect blit, 与无参 Process 等价)
+    MotionBlurRenderer::Process(fbo, tex, rgnX, rgnY, rgnW, rgnH);
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
 static const luaL_Reg mb_funcs[] = {
     // lifecycle (5)
     {"Enable",         l_MB_Enable},
@@ -3068,6 +3186,8 @@ static const luaL_Reg mb_funcs[] = {
     // Phase E.17 — half-res 开关 (2 = 1 对): VRAM -75% 性能 ~4×
     {"SetHalfRes",     l_MB_SetHalfRes},
     {"GetHalfRes",     l_MB_GetHalfRes},
+    // Phase F.0.10.3 — 手动 region MotionBlur (配合 HDR.SetAutoMotionBlur(false) 做真物理 split-screen)
+    {"Process",        l_MB_Process},
     {NULL, NULL}
 };
 

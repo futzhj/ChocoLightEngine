@@ -221,6 +221,14 @@ bool GetHalfRes()             { return g.halfRes; }
 // ==================== 管线调用 ====================
 
 void Process(uint32_t hdrFbo, uint32_t hdrTex) {
+    // 转发到 region 版本 (0/0/0/0 = 全屏老路径, 零回归)
+    Process(hdrFbo, hdrTex, 0, 0, 0, 0);
+}
+
+// Phase F.0.10.3 — Region 限定 motion blur (split-screen 必备)
+// rgnW=0 || rgnH=0 时退化为全屏路径 (与老 Process 等价)
+void Process(uint32_t hdrFbo, uint32_t hdrTex,
+             int rgnX, int rgnY, int rgnW, int rgnH) {
     // 防御: 5 个先决条件任一不满足 → silent skip
     if (!g.enabled || !g.backend || !hdrFbo || !hdrTex) return;
     if (!g.fbo || !g.tex) return;
@@ -244,6 +252,7 @@ void Process(uint32_t hdrFbo, uint32_t hdrTex) {
     int rtW = 0, rtH = 0;
     ComputeStorageSize(g.width, g.height, rtW, rtH);
 
+    // Phase F.0.10.3 — region 透传到 backend, half-res 缩半逻辑由 backend 内部处理
     g.backend->DrawMotionBlur(hdrTex, velocityTex,
                                cameraVelocityTex,                  // ★ Phase E.16
                                g.fbo, g.tex,
@@ -251,7 +260,8 @@ void Process(uint32_t hdrFbo, uint32_t hdrTex) {
                                g.width, g.height,
                                g.strength, g.sampleCount,
                                g.mode,                             // ★ Phase E.16
-                               rtW, rtH);                          // ★ Phase E.17
+                               rtW, rtH,                           // ★ Phase E.17
+                               rgnX, rgnY, rgnW, rgnH);            // ★ Phase F.0.10.3
 }
 
 } // namespace MotionBlurRenderer

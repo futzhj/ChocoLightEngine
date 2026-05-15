@@ -203,6 +203,22 @@ VelocityFormat GetVelocityFormat();
 bool SetAutoTAA(bool on);
 bool GetAutoTAA();
 
+/// Phase F.0.10.3 — 是否在 EndScene 内自动调 BloomRenderer::Process() 全屏处理.
+/// 默认 true (零回归); 设 false 后用户需手动 Bloom.Process / Process(rgn) 控制时序.
+/// split-screen 多 player 各自独立 bloom 时必关.
+bool SetAutoBloom(bool on);
+bool GetAutoBloom();
+
+/// Phase F.0.10.3 — 是否在 EndScene 内自动调 SSRRenderer::Process() 全屏处理.
+/// 默认 true (零回归); 设 false 后用户需手动 SSR.Process / Process(rgn) 控制时序.
+bool SetAutoSSR(bool on);
+bool GetAutoSSR();
+
+/// Phase F.0.10.3 — 是否在 EndScene 内自动调 MotionBlurRenderer::Process() 全屏处理.
+/// 默认 true (零回归); 设 false 后用户需手动 MotionBlur.Process / Process(rgn) 控制时序.
+bool SetAutoMotionBlur(bool on);
+bool GetAutoMotionBlur();
+
 /// 当前 HDR RT 宽度 / 高度 (未 Enable 时 = 0)
 int GetWidth();
 int GetHeight();

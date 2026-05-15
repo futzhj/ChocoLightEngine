@@ -1209,6 +1209,9 @@ public:
     /// @param rtW, rtH            Phase E.17 — motionBlurTex 实际尺寸 (0 = 沿用 w/h)
     ///                            Pass1 viewport 用 (rtW, rtH); Pass2 blit src=(rtW, rtH) dst=(w, h)
     ///                            (rtW < w || rtH < h) → 自动选 GL_LINEAR 上采样; 否则 GL_NEAREST
+    /// @param rgnX,rgnY,rgnW,rgnH Phase F.0.10.3 — region 限定 (默认 0/0/0/0 = 全屏老路径)
+    ///                            rgnW>0 && rgnH>0: 启用 GL_SCISSOR + sub-rect blit (split-screen 必备)
+    ///                            (storageRgn 由 caller 缩 half-res 后传入: rtW<w 时 region 同 storage 空间)
     virtual void DrawMotionBlur(uint32_t /*sceneTex*/, uint32_t /*velocityTex*/,
                                  uint32_t /*cameraVelocityTex*/,
                                  uint32_t /*motionBlurFbo*/, uint32_t /*motionBlurTex*/,
@@ -1216,7 +1219,9 @@ public:
                                  int /*w*/, int /*h*/,
                                  float /*strength*/, int /*sampleCount*/,
                                  int /*mode*/,
-                                 int /*rtW*/ = 0, int /*rtH*/ = 0) {}  // ★ Phase E.17
+                                 int /*rtW*/ = 0, int /*rtH*/ = 0,            // ★ Phase E.17
+                                 int /*rgnX*/ = 0, int /*rgnY*/ = 0,          // ★ Phase F.0.10.3
+                                 int /*rgnW*/ = 0, int /*rgnH*/ = 0) {}       // ★ Phase F.0.10.3
 
     // ==================== Phase E.18 — Independent Velocity Dilation Pass ====================
     //
