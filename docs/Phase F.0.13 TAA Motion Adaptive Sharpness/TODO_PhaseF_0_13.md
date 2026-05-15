@@ -8,9 +8,10 @@
 
 | 任务 | 状态 |
 |------|------|
-| commit + push 代码到 main | 🔴 待办 |
-| 监控 GitHub Actions CI 6/6 success | 🔴 待办 |
-| CI 状态回填 ACCEPTANCE / FINAL / TODO | 🔴 待办 |
+| commit + push 代码到 main | ✅ 完成 (3923584) |
+| 监控 GitHub Actions CI 6/6 success | ✅ 完成 ([25936869113](https://github.com/futzhj/ChocoLightEngine/actions/runs/25936869113)) |
+| CI 状态回填 ACCEPTANCE / FINAL / TODO | ✅ 完成 |
+| 修复 typo GL33RenderBackend → GL33Backend | ✅ 完成 (0a794d0) |
 
 ---
 
@@ -57,9 +58,9 @@ TAA.SetMotionSharpness(0.1)
 
 ---
 
-## 3. CI 回填（待 T5 完成后填）
+## 3. CI 回填
 
-GitHub Run ID: `<pending>` / Commit hash: `<pending>` / Date: `<pending>`
+GitHub Run ID: [`25936869113`](https://github.com/futzhj/ChocoLightEngine/actions/runs/25936869113) / Fix commit: `0a794d0` / Date: 2026-05-15 19:23 UTC / Result: **6/6 success**
 
 ---
 

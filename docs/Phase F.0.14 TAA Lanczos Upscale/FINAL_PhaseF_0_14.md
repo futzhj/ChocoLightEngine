@@ -74,9 +74,21 @@ TAA.GetUpscaleMode() → "lanczos"
 
 ---
 
-## 4. CI 状态（待回填）
+## 4. CI 状态
 
-GitHub Run ID: `<pending>` / Commit hash: `<pending>` / Date: `<pending>`
+| 项 | 值 |
+|----|----|
+| GitHub Run ID | [`25936869113`](https://github.com/futzhj/ChocoLightEngine/actions/runs/25936869113) |
+| Result | **6/6 platforms success** ✅ |
+| F.0.14 commit | `0776e8f` |
+| Fix commit | `c5264f2` (Lua 白名单漏加 'lanczos') |
+| Date | 2026-05-15 19:23 UTC |
+
+**发现问题 + 修复**:
+- F.0.14 原始 commit `0776e8f` 依赖 F.0.13 commit, F.0.13 typo 导致两个平台完全 build fail
+- F.0.13 typo 修正 (0a794d0) 后 Windows runtime smoke 暴露 F.0.14 Lua 白名单漏加 'lanczos':
+  l_TAA_SetUpscaleMode 内 strcmp 只允许 'bilinear'/'bicubic', 'lanczos' 在 Lua pre-check 被拒 (走不到 parseUpscaleMode_)
+- fix commit `c5264f2` 補白名单 'lanczos' 并同步 error message
 
 ---
 

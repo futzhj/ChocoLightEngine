@@ -50,19 +50,26 @@
 - [x] bilinear → bicubic → lanczos → bilinear 三 mode 轮转
 - [x] F.0.1+F.0.2+F.0.3+F.0.4+F.0.5+F.0.6+F.0.8+F.0.9+F.0.12+F.0.13+F.0.14 十一启共存
 
-### CI (待回填)
-- [ ] runtime smoke 35/35 fn (Lua API 不变) + lanczos 测试段
-- [ ] GitHub Actions 6/6 平台 success
+### CI (已验证)
+- [x] runtime smoke 35/35 fn (Lua API 不变) + lanczos 测试段
+- [x] GitHub Actions 6/6 平台 success ([run 25936869113](https://github.com/futzhj/ChocoLightEngine/actions/runs/25936869113))
 
 ---
 
-## 4. CI 状态（待回填）
+## 4. CI 状态（已验证）
 
 | 平台 | 状态 |
 |------|------|
-| build-windows / linux / macos / android / ios / web | ⏳ |
+| build-windows | ✅ success |
+| build-linux | ✅ success |
+| build-macos | ✅ success |
+| build-android | ✅ success |
+| build-ios | ✅ success |
+| build-web | ✅ success |
 
-GitHub Run ID: `<pending>` / Commit hash: `<pending>` / Date: `<pending>`
+GitHub Run ID: [`25936869113`](https://github.com/futzhj/ChocoLightEngine/actions/runs/25936869113) (修复合集: c5264f2)
+F.0.14 原始 commit: `0776e8f` (Lua 白名单漏加 'lanczos', fix `c5264f2`)
+Date: 2026-05-15 19:23 UTC
 
 ---
 

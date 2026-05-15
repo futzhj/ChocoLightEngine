@@ -8,9 +8,10 @@
 
 | 任务 | 状态 |
 |------|------|
-| commit + push 代码到 main | 🔴 待办 |
-| 监控 GitHub Actions CI 6/6 success | 🔴 待办 |
-| CI 状态回填 ACCEPTANCE / FINAL / TODO | 🔴 待办 |
+| commit + push 代码到 main | ✅ 完成 (0776e8f) |
+| 监控 GitHub Actions CI 6/6 success | ✅ 完成 ([25936869113](https://github.com/futzhj/ChocoLightEngine/actions/runs/25936869113)) |
+| CI 状态回填 ACCEPTANCE / FINAL / TODO | ✅ 完成 |
+| 修复 Lua 白名单漏加 'lanczos' | ✅ 完成 (c5264f2) |
 
 ---
 
@@ -47,9 +48,9 @@ TAA.SetUpscaleMode("lanczos")      -- F.0.14: -10% blur vs Catmull-Rom
 
 ---
 
-## 3. CI 回填（待 T5 完成后填）
+## 3. CI 回填
 
-GitHub Run ID: `<pending>` / Commit hash: `<pending>` / Date: `<pending>`
+GitHub Run ID: [`25936869113`](https://github.com/futzhj/ChocoLightEngine/actions/runs/25936869113) / Fix commit: `c5264f2` / Date: 2026-05-15 19:23 UTC / Result: **6/6 success**
 
 ---
 

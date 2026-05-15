@@ -76,9 +76,20 @@ TAA.GetMotionSharpness() → number
 
 ---
 
-## 5. CI 状态（待回填）
+## 5. CI 状态
 
-GitHub Run ID: `<pending>` / Commit hash: `<pending>` / Date: `<pending>`
+| 项 | 值 |
+|----|----|
+| GitHub Run ID | [`25936869113`](https://github.com/futzhj/ChocoLightEngine/actions/runs/25936869113) |
+| Result | **6/6 platforms success** ✅ |
+| F.0.13 commit | `3923584` |
+| Fix commit | `0a794d0` (typo GL33RenderBackend → GL33Backend) |
+| Date | 2026-05-15 19:23 UTC |
+
+**发现问题 + 修复**:
+- F.0.13 原始 commit `3923584` 全 6 平台 build failure: render_gl33.cpp 使用了不存在的类名 `GL33RenderBackend` (实际是 `GL33Backend`)
+- fix commit `0a794d0` 修正 typo + 去掉多余 const_cast (ComputeViewProj3D 已是 const)
+- Windows 后续暴露 F.0.14 Lua 白名单漏加 'lanczos' (fix `c5264f2`, 含在同一 CI run)
 
 ---
 
