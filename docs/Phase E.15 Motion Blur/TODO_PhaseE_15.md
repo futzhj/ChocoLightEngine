@@ -68,12 +68,13 @@
 - API：`Light.Graphics.MotionBlur.SetHalfRes(bool)` / `GetHalfRes()`，默认 false 完全兼容
 - 详见 `@e:/jinyiNew/Light/docs/Phase E.17 Half-res Motion Blur/FINAL_PhaseE_17.md`
 
-### 3.4 Phase E.18 候选（短期，半天）
+### 3.4 Phase E.18 候选（短期，半天）— ✅ 已完成
 
-- **Independent velocity dilation pass**
-- 当 motion blur + SSR Temporal 都开启时，dilation 计算重复（两个 module 各算一次）
-- 提前 dilation pass 输出 dilatedVelocityTex 共享
-- 节省 ~0.2 ms @ 1080p（多消费者场景才有意义）
+- **Independent velocity dilation pass** — ✅ Phase E.18 已完成（CI run [25900086693](https://github.com/futzhj/ChocoLightEngine/actions/runs/25900086693) 6/6 green，commit `e894834`）
+- 实施回顾：抽出 `FS_VELOCITY_DILATE` shader (GLES3 + GL33)；HDR EndScene 内在 SSR/MotionBlur 之前执行 dilation pass，dilatedVelocityTex (RG16F) + 可选 dilatedCameraVelocityTex；consumer 优先取 dilated、fallback raw
+- 性能：SSR + Motion Blur 同开时 velocity fetch 节省 ~50%（81 → 18 fetch / pixel @ N=8）
+- API：复用 `Light.Graphics.HDR.SetVelocityDilation(bool)`，零 API 变动 + 三层 silent fallback 保证业务零感知
+- 详见 `@e:/jinyiNew/Light/docs/Phase E.18 Independent Velocity Dilation Pass/FINAL_PhaseE_18.md`
 
 ### 3.5 Phase F.x 远期
 

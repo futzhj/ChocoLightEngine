@@ -71,11 +71,13 @@
 
 ## 3. 后续 phase 候选
 
-### 3.1 Phase E.18 — Independent Velocity Dilation Pass
+### 3.1 Phase E.18 — Independent Velocity Dilation Pass — ✅ 已完成
 
-- 当前 dilation inline 在 SSR Temporal + MotionBlur 各做一次（重复 9-tap）
-- 抽出独立 dilation pass 写 dilatedVelocityTex，三方共享
-- 节省 −2× 9-tap 重复（@ 三方都启用）
+- ✅ Phase E.18 已完成（CI run [25900086693](https://github.com/futzhj/ChocoLightEngine/actions/runs/25900086693) 6/6 green，commit `e894834`）
+- 实施回顾：抽出 `FS_VELOCITY_DILATE` shader (GLES3 + GL33)；HDR EndScene 内在 SSR/MotionBlur 之前执行 dilation pass，dilatedVelocityTex (RG16F) + 可选 dilatedCameraVelocityTex；consumer 优先取 dilated、fallback raw
+- 性能：SSR + Motion Blur 同开时 velocity fetch 节省 ~50%（81 → 18 fetch / pixel @ N=8）
+- API：复用 `Light.Graphics.HDR.SetVelocityDilation(bool)`，零 API 变动 + 三层 silent fallback 保证业务零感知
+- 详见 `@e:/jinyiNew/Light/docs/Phase E.18 Independent Velocity Dilation Pass/FINAL_PhaseE_18.md`
 
 ### 3.2 Phase E.19 — SSR Temporal 选择性 camera-only velocity
 

@@ -95,20 +95,21 @@ Light.Graphics.HDR.SetVelocityDilation(true)  -- 默认值
 
 ---
 
-## 6. CI 回填（待 T8 完成后填）
+## 6. CI 回填（已完成）
 
 | 字段 | 值 |
 |------|---|
-| GitHub Run ID | `<pending>` |
-| Commit hash | `<pending>` |
-| 6/6 平台状态 | `<pending>` |
-| Total duration | `<pending>` |
+| GitHub Run ID | [`25900086693`](https://github.com/futzhj/ChocoLightEngine/actions/runs/25900086693) |
+| Commit hash | `e894834` |
+| 6/6 平台状态 | ✅ all success |
+| Total duration | **7 min** |
+| Date | 2026-05-15 04:22 UTC → 04:29 UTC |
 
-回填后同步更新：
-- `ACCEPTANCE_PhaseE_18.md` 第 7 章
-- `FINAL_PhaseE_18.md` 第 8 章
-- `docs/Phase E.15 Motion Blur/TODO_PhaseE_15.md` 标记 E.18 已完成
-- `docs/Phase E.17 Half-res Motion Blur/TODO_PhaseE_17.md` 标记 E.18 已完成
+已同步更新：
+- ✅ `ACCEPTANCE_PhaseE_18.md` 第 7 章
+- ✅ `FINAL_PhaseE_18.md` 第 8 章
+- ⏳ `docs/Phase E.15 Motion Blur/TODO_PhaseE_15.md` 标记 E.18 已完成（本提交）
+- ⏳ `docs/Phase E.17 Half-res Motion Blur/TODO_PhaseE_17.md` 标记 E.18 已完成（本提交）
 
 ---
 

@@ -141,20 +141,21 @@ Phase E.18 的价值在多 consumer 并存时显现（SSR Temporal + Motion Blur
 
 ---
 
-## 8. CI 状态（待回填）
+## 8. CI 状态
 
-| 平台 | 状态 | 时长 |
+| 平台 | 状态 | 备注 |
 |------|------|------|
-| build-windows | ⏳ | — |
-| build-linux | ⏳ | — |
-| build-macos | ⏳ | — |
-| build-android | ⏳ | — |
-| build-ios | ⏳ | — |
-| build-web | ⏳ | — |
+| build-windows | ✅ success | runtime smoke 24 PASS + 16 phase 零回归 |
+| build-linux | ✅ success | 纯构建 |
+| build-macos | ✅ success | 纯构建 |
+| build-android | ✅ success | 纯构建 |
+| build-ios | ✅ success | 纯构建 |
+| build-web | ✅ success | Emscripten WASM |
 
-GitHub Run ID: `<pending>`
-Commit hash: `<pending>`
-Duration: `<pending>`
+GitHub Run ID: [`25900086693`](https://github.com/futzhj/ChocoLightEngine/actions/runs/25900086693)
+Commit hash: `e894834`
+Date: 2026-05-15 04:22 UTC → 04:29 UTC
+Total duration: **7 min** (6/6 平台并行)
 
 ---
 

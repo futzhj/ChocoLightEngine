@@ -20,7 +20,7 @@
 | | `@e:/jinyiNew/Light/samples/demo_ssr/main.lua` | +2 / -1 | ✅ |
 | | `@e:/jinyiNew/Light/docs/api/Light_Graphics.md` | +30 / -7 | ✅ |
 | T7 6A 三件套 | `ACCEPTANCE_PhaseE_18.md` / `FINAL_PhaseE_18.md` / `TODO_PhaseE_18.md` | 新增 | ✅ |
-| T8 commit+push+CI | git + GitHub Actions | — | ⏳ |
+| T8 commit+push+CI | git + GitHub Actions | — | ✅ |
 
 ---
 
@@ -77,8 +77,8 @@
 - [x] ACCEPTANCE / FINAL / TODO 本次完成
 
 ### T8 CI
-- [ ] GitHub Actions 6/6 平台 success
-- [ ] CI 状态回填 ACCEPTANCE + FINAL + TODO
+- [x] GitHub Actions 6/6 平台 success
+- [x] CI 状态回填 ACCEPTANCE + FINAL + TODO
 
 ---
 
@@ -136,16 +136,18 @@
 
 ---
 
-## 7. CI 状态（待回填）
+## 7. CI 状态
 
-| 平台 | 状态 | 时长 |
+| 平台 | 状态 | 状态详情 |
 |------|------|------|
-| build-windows | ⏳ | — |
-| build-linux | ⏳ | — |
-| build-macos | ⏳ | — |
-| build-android | ⏳ | — |
-| build-ios | ⏳ | — |
-| build-web | ⏳ | — |
+| build-windows | ✅ success | runtime smoke 24 PASS + Phase E.16/17 零回归 |
+| build-linux | ✅ success | 纯构建 |
+| build-macos | ✅ success | 纯构建 |
+| build-android | ✅ success | 纯构建 |
+| build-ios | ✅ success | 纯构建 |
+| build-web | ✅ success | Emscripten WASM |
 
-GitHub Run ID: `<pending>`
-Commit hash: `<pending>`
+GitHub Run ID: [`25900086693`](https://github.com/futzhj/ChocoLightEngine/actions/runs/25900086693)
+Commit hash: `e894834`
+Total duration: **7 min**
+Date: 2026-05-15 04:22 UTC → 04:29 UTC
