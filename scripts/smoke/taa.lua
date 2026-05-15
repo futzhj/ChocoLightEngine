@@ -1,6 +1,6 @@
--- Phase F.0 + F.0.1 + F.0.2 + F.0.3 + F.0.4 + F.0.5 + F.0.6 + F.0.8 + F.0.9 + F.0.12 + F.0.13 smoke: Light.Graphics.TAA (Temporal Anti-Aliasing master pipeline surface)
+-- Phase F.0 + F.0.1 + F.0.2 + F.0.3 + F.0.4 + F.0.5 + F.0.6 + F.0.8 + F.0.9 + F.0.12 + F.0.13 + F.0.14 smoke: Light.Graphics.TAA (Temporal Anti-Aliasing master pipeline surface)
 --
--- API coverage (35 functions = F.0 13 + F.0.1 2 + F.0.2 2 + F.0.3 2 + F.0.4 2 + F.0.5 2 + F.0.6/F.0.12 2 + F.0.8 4 + F.0.9 2 + F.0.13 4):
+-- API coverage (35 functions = F.0 13 + F.0.1 2 + F.0.2 2 + F.0.3 2 + F.0.4 2 + F.0.5 2 + F.0.6/F.0.12 2 + F.0.8 4 + F.0.9/F.0.14 2 + F.0.13 4):
 --   Lifecycle 5: Enable / Disable / IsEnabled / IsSupported / Resize
 --   Params     6: SetBlendAlpha / GetBlendAlpha (clamp [0, 1], default 0.92)
 --                 SetNeighborhoodClip / GetNeighborhoodClip (default true)
@@ -28,9 +28,10 @@
 --                                                  SetMotionSharpness / Get (clamp [0, 2], default 0.1)
 --                                                  高速运动时 effSharpness lerp 到 motionSharpness 减 trail
 --                                                  backend Frobenius distance 自动估计 motion factor; 默认关零回归
---   Phase F.0.9 — Custom upsampler 2: SetUpscaleMode / GetUpscaleMode ("bilinear"/"bicubic", default "bilinear")
+--   Phase F.0.9/F.0.14 — Custom upsampler 2: SetUpscaleMode / GetUpscaleMode ("bilinear"/"bicubic"/"lanczos", default "bilinear")
 --                                       "bilinear" = F.0.5 GL_LINEAR stretch (零回归)
 --                                       "bicubic"  = Catmull-Rom 9-tap (Sigggraph 2018 Filmic SMAA)
+--                                       "lanczos"  = Lanczos-2 25-tap 5x5 (Phase F.0.14, 超高画质)
 --                                       仅 sharpness=0 && halfResHistory=true 时实际生效
 --   Status     2: GetFrameCounter (Halton index 0..7, debug HUD)
 --                 GetCurrentJitter (returns 2 numbers, sub-pixel offset)
@@ -1095,6 +1096,78 @@ TAA.SetMotionAdaptiveSharpness(false)
 TAA.SetMotionSharpness(0.1)
 
 -- ============================================================
+-- 6.14) Phase F.0.14 — Lanczos-2 25-tap 5x5 上采样 (超高画质选项)
+-- ============================================================
+
+-- 6.14.1) lanczos round-trip
+local lz1 = TAA.SetUpscaleMode("lanczos")
+if lz1 ~= true then fail("SetUpscaleMode('lanczos') should return true") end
+if TAA.GetUpscaleMode() ~= "lanczos" then
+    fail("Round-trip 'lanczos' failed, got '" .. tostring(TAA.GetUpscaleMode()) .. "'")
+end
+pass("UpscaleMode round-trip 'lanczos' ok (Phase F.0.14)")
+
+-- 6.14.2) lanczos 大小写不敏感
+TAA.SetUpscaleMode("LANCZOS")
+if TAA.GetUpscaleMode() ~= "lanczos" then
+    fail("Case-insensitive 'LANCZOS' failed, got '" .. tostring(TAA.GetUpscaleMode()) .. "'")
+end
+pass("UpscaleMode case-insensitive 'LANCZOS' → 'lanczos' ok")
+
+TAA.SetUpscaleMode("LanCzOs")
+if TAA.GetUpscaleMode() ~= "lanczos" then fail("Case-insensitive 'LanCzOs' failed") end
+pass("UpscaleMode case-insensitive 'LanCzOs' → 'lanczos' ok")
+
+-- 6.14.3) bilinear → bicubic → lanczos → bilinear 三 mode 轮转
+TAA.SetUpscaleMode("bilinear")
+TAA.SetUpscaleMode("bicubic")
+if TAA.GetUpscaleMode() ~= "bicubic" then fail("三 mode 轮转 bicubic failed") end
+TAA.SetUpscaleMode("lanczos")
+if TAA.GetUpscaleMode() ~= "lanczos" then fail("三 mode 轮转 lanczos failed") end
+TAA.SetUpscaleMode("bilinear")
+if TAA.GetUpscaleMode() ~= "bilinear" then fail("三 mode 轮转 bilinear failed") end
+pass("UpscaleMode bilinear → bicubic → lanczos → bilinear 三 mode 轮转 ok")
+
+-- 6.14.4) F.0.1+F.0.2+F.0.3+F.0.4+F.0.5+F.0.6+F.0.8+F.0.9+F.0.12+F.0.13+F.0.14 十一启共存
+TAA.SetSharpness(0.0)                 -- sharpness=0 才能走 lanczos 路径
+TAA.SetAntiFlicker(true)
+TAA.SetClipMode("variance")
+TAA.SetVarianceGamma(1.0)
+TAA.SetHalfResHistory(true)           -- halfRes=true 才能走 lanczos 路径
+TAA.SetSharpenMode("rcas")            -- sharpness=0 时 sharpenMode 不生效
+TAA.SetMotionGamma(1.5)
+TAA.SetMotionAdaptive(true)
+TAA.SetUpscaleMode("lanczos")          -- F.0.14
+TAA.SetMotionAdaptiveSharpness(true)
+TAA.SetMotionSharpness(0.1)
+if math.abs(TAA.GetSharpness() - 0.0) > 1e-4
+   or TAA.GetAntiFlicker() ~= true
+   or TAA.GetClipMode() ~= "variance"
+   or math.abs(TAA.GetVarianceGamma() - 1.0) > 1e-4
+   or TAA.GetHalfResHistory() ~= true
+   or TAA.GetSharpenMode() ~= "rcas"
+   or math.abs(TAA.GetMotionGamma() - 1.5) > 1e-4
+   or TAA.GetMotionAdaptive() ~= true
+   or TAA.GetUpscaleMode() ~= "lanczos"
+   or TAA.GetMotionAdaptiveSharpness() ~= true
+   or math.abs(TAA.GetMotionSharpness() - 0.1) > 1e-4 then
+    fail("F.0.1+0.2+0.3+0.4+0.5+0.6+0.8+0.9+0.12+0.13+0.14 十一启共存 failed")
+end
+pass("十一启共存: sharp=0 + AF=true + clip=variance + vg=1.0 + halfRes=true + sharpenMode=rcas + mg=1.5 + ma=true + upscale=lanczos + mas=true + ms=0.1 ok")
+
+-- 复位 default
+TAA.SetSharpness(0.5)
+TAA.SetClipMode("ycocg")
+TAA.SetVarianceGamma(1.0)
+TAA.SetHalfResHistory(false)
+TAA.SetSharpenMode("unsharp")
+TAA.SetMotionGamma(1.5)
+TAA.SetMotionAdaptive(false)
+TAA.SetUpscaleMode("bilinear")
+TAA.SetMotionAdaptiveSharpness(false)
+TAA.SetMotionSharpness(0.1)
+
+-- ============================================================
 -- 7) Status query — GetFrameCounter / GetCurrentJitter
 -- ============================================================
 
@@ -1178,8 +1251,8 @@ else
 end
 
 print("")
-print("=== Phase F.0 + F.0.1 + F.0.2 + F.0.3 + F.0.4 + F.0.5 + F.0.6 + F.0.8 + F.0.9 + F.0.12 + F.0.13 TAA smoke: ALL TESTS PASSED ===")
-print("Functions covered: " .. #fn_names .. " / 35 (F.0.13 +4 fn: motion-adaptive sharpness)")
+print("=== Phase F.0 + F.0.1 + F.0.2 + F.0.3 + F.0.4 + F.0.5 + F.0.6 + F.0.8 + F.0.9 + F.0.12 + F.0.13 + F.0.14 TAA smoke: ALL TESTS PASSED ===")
+print("Functions covered: " .. #fn_names .. " / 35 (F.0.14 仅扩展 SetUpscaleMode 主体 'lanczos', 不增函数)")
 print("Highlights:")
 print("  - default OFF, alpha=0.92, neighborhoodClip=true, jitterEnabled=true, sharpness=0.5, antiFlicker=true, clipMode='ycocg', varianceGamma=1.0, halfResHistory=false, sharpenMode='unsharp', motionGamma=1.5, motionAdaptive=false")
 print("  - clamp: BlendAlpha [0, 1], Sharpness [0, 2], VarianceGamma [0, 4], MotionGamma [0, 4]")
@@ -1189,6 +1262,7 @@ print("  - Phase F.0.8: motion-adaptive γ (UE5 高级), 静止区域=varianceGa
 print("  - Phase F.0.9: Catmull-Rom 9-tap bicubic 上采样 (Sigggraph 2018 Filmic SMAA), -50% blur vs bilinear; 仅 sharpness=0 && halfRes=true 生效")
 print("  - Phase F.0.12: FSR2 5-tap RCAS (Robust CAS), noise detection (range<1/64 跳过) + edge protection (lobe sqrt 限制); ~+0.03 ms vs unsharp")
 print("  - Phase F.0.13: motion-adaptive sharpness, 高速相机运动时 effSharpness lerp 到 motionSharpness (默认 0.1) 减 trail; 与所有 sharpenMode 共存")
+print("  - Phase F.0.14: Lanczos-2 25-tap 5x5 上采样 (超高画质); -10% blur vs Catmull-Rom (-55% vs bilinear); ~+0.04 ms; 仅 sharpness=0 && halfRes=true 生效")
 print("  - status: GetFrameCounter [0, 7], GetCurrentJitter in ±0.5 px range")
 print("  - coexistence: TAA toggle does not affect SSR Temporal state")
 print("  - Phase F.0.1: 4-tap unsharp mask, sharpness=0 走 blit fallback (零 ALU)")

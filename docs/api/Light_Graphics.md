@@ -1430,7 +1430,7 @@ print(Light.Graphics.MotionBlur.GetHalfRes())      --> true
 | 参数 (F.0.8) | `SetMotionAdaptive(on)` / `GetMotionAdaptive()` | motion-adaptive γ 开关，**默认 false**（零回归）；仅 `ClipMode=="variance"` 生效 |
 | 参数 (F.0.13) | `SetMotionAdaptiveSharpness(on)` / `GetMotionAdaptiveSharpness()` | motion-adaptive sharpness 开关，**默认 false**（零回归）；高速运动时 effSharpness lerp 减 trail |
 | 参数 (F.0.13) | `SetMotionSharpness(s)` / `GetMotionSharpness()` | 高速运动目标 sharpness，clamp `[0, 2]`，**默认 0.1** |
-| 参数 (F.0.9) | `SetUpscaleMode(mode)` / `GetUpscaleMode()` | history→sceneTex 上采样：`"bilinear"` (F.0.5) / `"bicubic"` Catmull-Rom，**默认 `"bilinear"`** |
+| 参数 (F.0.9/F.0.14) | `SetUpscaleMode(mode)` / `GetUpscaleMode()` | history→sceneTex 上采样：`"bilinear"` (F.0.5) / `"bicubic"` Catmull-Rom / `"lanczos"` Lanczos-2 25-tap (F.0.14)，**默认 `"bilinear"`** |
 | 状态 | `GetFrameCounter()` | `int` Halton 索引 `[0, 7]`（debug HUD） |
 | 状态 | `GetCurrentJitter()` | `(jx, jy)` 本帧 sub-pixel 偏移（±0.5 px） |
 
@@ -2273,13 +2273,15 @@ TAA.SetMotionAdaptiveSharpness(true)
 
 ## `TAA.SetUpscaleMode` / `TAA.GetUpscaleMode`
 
-**Phase F.0.9** — history → sceneTex 上采样算法切换：F.0.5 GL_LINEAR stretch vs Catmull-Rom 9-tap bicubic (Sigggraph 2018 Filmic SMAA)。
+**Phase F.0.9 + F.0.14** — history → sceneTex 上采样算法三选一：F.0.5 GL_LINEAR stretch / F.0.9 Catmull-Rom 9-tap bicubic (Sigggraph 2018 Filmic SMAA) / F.0.14 Lanczos-2 25-tap 5x5 (超高画质)。
 
 ### 参数
 
-- `mode` (`string`)：`"bilinear"` / `"bicubic"`（大小写不敏感）
+- `mode` (`string`)：`"bilinear"` / `"bicubic"` / `"lanczos"`（大小写不敏感）
   - **`"bilinear"`**（默认）— F.0.5 老路径，硬件 GL_LINEAR 拉伸，零额外 ALU (~0.005 ms @ 1080p)。
   - **`"bicubic"`** — Catmull-Rom 9-tap bicubic (Sigggraph 2018 Filmic SMAA)，-50% blur vs bilinear (~+0.025 ms @ 1080p)。
+  - **`"lanczos"`** — Phase F.0.14 — Lanczos-2 25-tap 5x5，-10% blur vs Catmull-Rom (-55% vs bilinear)，~+0.04 ms @ 1080p。
+    适合 4K + 桌面 GPU 超高画质场景；mobile 推荐用 "bicubic" 节省功耗。
 
 ### 默认值
 

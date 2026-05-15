@@ -326,13 +326,19 @@ void Process(uint32_t hdrFbo, uint32_t hdrTex) {
                                           g.width, g.height, effSharpness);
         }
     } else {
-        // Phase F.0.9: sharpness=0 路径—— halfRes && upscaleMode==1 走 Catmull-Rom bicubic上采样
-        //                                  其他走 F.0.5 老 BlitTAAToHDR (bilinear stretch 或 1:1 nearest)
+        // Phase F.0.9/F.0.14: sharpness=0 路径—— halfRes && upscaleMode 三选一
+        //   upscaleMode==1 走 Catmull-Rom 9-tap bicubic (F.0.9)
+        //   upscaleMode==2 走 Lanczos-2 25-tap 5x5 (F.0.14, 超高画质)
+        //   其他 (==0 / halfRes=false) 走 F.0.5 老 BlitTAAToHDR (bilinear stretch 或 1:1 nearest)
         // 仅 halfRes=true 时需要上采样品质提升 (full-res 时 1:1 blit 零 ALU)
         if (g.halfResHistory && g.upscaleMode == 1) {
             g.backend->DrawTAAUpscalePass(g.historyTexs[writeIdx], hdrFbo,
                                            g.historyW, g.historyH,    // src = half-res
                                            g.width,    g.height);     // dst = full-res
+        } else if (g.halfResHistory && g.upscaleMode == 2) {
+            g.backend->DrawTAALanczosPass(g.historyTexs[writeIdx], hdrFbo,
+                                           g.historyW, g.historyH,
+                                           g.width,    g.height);
         } else {
             g.backend->BlitTAAToHDR(g.historyTexs[writeIdx], hdrFbo,
                                      g.historyW, g.historyH,    // Phase F.0.5: src = history RT 实际尺寸
@@ -471,7 +477,7 @@ float GetMotionSharpness()         { return g.motionSharpness; }
 void  SetMotionAdaptiveSharpness(bool on) { g.motionAdaptiveSharpness = on; }
 bool  GetMotionAdaptiveSharpness()         { return g.motionAdaptiveSharpness; }
 
-// Phase F.0.9 — Custom upsampler ("bilinear" 默认 / "bicubic" Catmull-Rom 9-tap)
+// Phase F.0.9/F.0.14 — Custom upsampler ("bilinear" 默认 / "bicubic" Catmull-Rom 9-tap / "lanczos" Lanczos-2 25-tap)
 // 仅 sharpness=0 && halfRes=true 时生效; 复用 parseClipMode_ 手写 case-insensitive 模式
 static int parseUpscaleMode_(const char* mode) {
     if (!mode) return -1;
@@ -486,6 +492,7 @@ static int parseUpscaleMode_(const char* mode) {
     };
     if (eq(mode, "bilinear")) return 0;
     if (eq(mode, "bicubic"))  return 1;
+    if (eq(mode, "lanczos"))  return 2;   // Phase F.0.14
     return -1;
 }
 void SetUpscaleMode(const char* mode) {
@@ -493,7 +500,9 @@ void SetUpscaleMode(const char* mode) {
     if (parsed >= 0) g.upscaleMode = parsed;   // 仅识别到才写入 (与 SetClipMode/SetSharpenMode 同模式)
 }
 const char* GetUpscaleMode() {
-    return (g.upscaleMode == 1) ? "bicubic" : "bilinear";
+    if (g.upscaleMode == 2) return "lanczos";   // Phase F.0.14
+    if (g.upscaleMode == 1) return "bicubic";
+    return "bilinear";
 }
 
 void  SetJitterEnabled(bool on) {

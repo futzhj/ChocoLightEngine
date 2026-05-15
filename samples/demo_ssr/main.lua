@@ -495,11 +495,13 @@ while win:IsOpen() do
             sh, ms))
     end
 
-    -- Phase F.0.9 — P: 在 'bilinear' (F.0.5 默认) / 'bicubic' (Catmull-Rom 9-tap) 上采样之间切换
+    -- Phase F.0.9/F.0.14 — P: 在 'bilinear' / 'bicubic' (Catmull-Rom 9-tap) / 'lanczos' (Lanczos-2 25-tap) 三 mode 轮转
     --   仅 sharpness=0 && halfRes=true 时实际生效 (sharpen pass 路径不受影响)
     if TAA and TAA.IsEnabled() and TAA.SetUpscaleMode and keyTap('p') then
         local cur = TAA.GetUpscaleMode()
-        local nxt = (cur == 'bilinear') and 'bicubic' or 'bilinear'
+        local nxt = (cur == 'bilinear') and 'bicubic'
+                 or (cur == 'bicubic')  and 'lanczos'
+                 or                          'bilinear'
         TAA.SetUpscaleMode(nxt)
         local sh = TAA.GetSharpness()
         local hr = TAA.GetHalfResHistory()
