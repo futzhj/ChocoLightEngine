@@ -210,6 +210,7 @@ TAA.Process(0, 0, W/2, H)
 | 57d78ae (Phase 2) | 25942163582 | ✅ 6/6 success |
 | fa29d75 (Phase 3) | 25942469141 | ✅ 6/6 success |
 | 66ee607 (Phase 4) | 25942649835 | ✅ 6/6 success |
-| 37605f1 (Phase 5 docs) | 25942801442 | ⏳ in_progress (预期 success) |
+| 37605f1 (Phase 5 docs) | 25942801442 | ✅ 6/6 success |
+| 31ede65 (Phase 5 CI 回填) | 25942983875 | ✅ 6/6 success |
 
-**4/4 sub-phase 6/6 平台全 success** — Phase F.0.10.2 真物理 Split-Screen **已交付完成**.
+**5/5 sub-phase 6/6 平台全 success** — Phase F.0.10.2 真物理 Split-Screen **已交付完成** (6 个 commit 全绿).

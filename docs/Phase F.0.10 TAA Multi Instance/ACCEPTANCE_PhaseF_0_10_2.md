@@ -14,7 +14,7 @@
 | Phase 2 — TAA region Process + backend scissor | 加 region 参数到 7 个 TAA pass 方法 + Process overload | 57d78ae | 25942163582 | ✅ 6/6 success |
 | Phase 3 — HDR.SetAutoTAA + TAA.Process(region) Lua | 暴露手动 TAA 控时序 + 区域 process Lua API | fa29d75 | 25942469141 | ✅ 6/6 success |
 | Phase 4 — demo_taa_split2 真物理 split-screen | 双 player + 双 instance + 同帧 region TAA demo | 66ee607 | 25942649835 | ✅ 6/6 success |
-| Phase 5 — 6A docs 收尾 | ACCEPTANCE / FINAL / TODO | 37605f1 | 25942801442 | ⏳ 在跑 |
+| Phase 5 — 6A docs 收尾 | ACCEPTANCE / FINAL / TODO | 37605f1 + 31ede65 (回填) | 25942801442 + 25942983875 | ✅ 6/6 success |
 
 ---
 
@@ -131,9 +131,10 @@ Light.Graphics.TAA.Process(rgnX, rgnY, rgnW, rgnH)  -- region 路径
 - [x] Phase 2 commit 57d78ae: CI 25942163582 → ✅ 6/6 success
 - [x] Phase 3 commit fa29d75: CI 25942469141 → ✅ 6/6 success (windows/macos/ios/android/web/linux)
 - [x] Phase 4 commit 66ee607: CI 25942649835 → ✅ 6/6 success (windows/macos/ios/android/web/linux)
-- [⏳] Phase 5 commit 37605f1: CI 25942801442 → in_progress (docs-only, 预期 success)
+- [x] Phase 5 commit 37605f1: CI 25942801442 → ✅ 6/6 success (docs-only)
+- [x] Phase 5 回填 commit 31ede65: CI 25942983875 → ✅ 6/6 success
 
-CI 总验证: **4/4 sub-phase 6/6 平台全 success** (Phase 1 fix 后无回归).
+CI 总验证: **5/5 sub-phase 6/6 平台全 success** (Phase 1 fix 后无回归, 6 个 commit 全绿).
 
 ---
 

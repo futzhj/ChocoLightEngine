@@ -101,9 +101,10 @@ HDR.EndScene()              -- bloom + tonemap 全屏 (auto-TAA 已 off)
 | 57d78ae (Phase 2) | 25942163582 | ✅ 6/6 success | 8m26s |
 | fa29d75 (Phase 3) | 25942469141 | ✅ 6/6 success | ~12m |
 | 66ee607 (Phase 4) | 25942649835 | ✅ 6/6 success | ~10m |
-| 37605f1 (Phase 5 docs) | 25942801442 | ⏳ in_progress | (docs-only, 预期 success) |
+| 37605f1 (Phase 5 docs) | 25942801442 | ✅ 6/6 success | ~7m |
+| 31ede65 (Phase 5 CI 回填) | 25942983875 | ✅ 6/6 success | ~7m |
 
-**4/4 sub-phase 6/6 平台全 success** — windows/macos/ios/android/web/linux 全部通过.
+**5/5 sub-phase 6/6 平台全 success** — windows/macos/ios/android/web/linux 全部通过 (6 个 commit 全绿).
 
 ---
 
@@ -154,6 +155,6 @@ Demo 累计: demo_taa_compare + demo_ssr (C 键 cycle) + demo_taa_split (F.0.10.
 | smoke | ✅ TAA 41/41 + HDR 22/22 + Graphics 19/0 本地 windows headless |
 | demo | ✅ samples/demo_taa_split2 (headless API probe 验证 PASS) |
 | 6A 文档 | ✅ PLAN / DESIGN / ACCEPTANCE / FINAL / TODO (5 文档) |
-| CI | ✅ Phase 1-4 全 6/6 success (Phase 5 docs in_progress) |
+| CI | ✅ Phase 1-5 全 6/6 success (6 commit 全绿) |
 
-**Phase F.0.10.2 真物理 Split-Screen 交付完成. CI 4/4 sub-phase × 6 平台 全部 success.**
+**Phase F.0.10.2 真物理 Split-Screen 交付完成. CI 5/5 sub-phase × 6 平台 全部 success (windows/macos/ios/android/web/linux).**
