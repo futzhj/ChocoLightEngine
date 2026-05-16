@@ -1,22 +1,32 @@
 -- ============================================================================
--- ChocoLight Phase F.0.10.4 — True Physical Split-Screen with Independent
---                              TAA + Bloom + SSR + MotionBlur (per-region)
+-- ChocoLight Phase F.0.10.7 — True Physical Split-Screen with Independent
+--                              TAA + Bloom + SSR + MotionBlur + Tonemap (per-region)
 -- ============================================================================
 -- F.0.10.2 交付了双 TAA instance 同帧 split-screen。
 -- F.0.10.3 交付了 Bloom / SSR / MotionBlur 的 region 化 (3 个 .Process(rgn) Lua API).
--- F.0.10.4 (本 demo) 把 F.0.10.3 的成果同屏站台化: 双 player 各自不同后处理 profile.
+-- F.0.10.4 把 F.0.10.3 的成果同屏站台化: 双 player 各自不同后处理 profile.
+-- F.0.10.5 (shader uvBounds) 保证 split-screen 边界零像素泄漏.
+-- F.0.10.6 交付 per-region tonemap (HDR.Tonemap(rgn, params) Lua API).
+-- F.0.10.7 (本 demo) 升级展示 F.0.10.5+F.0.10.6 最终效果:
+--   - 边界像素完美 (uvBounds 防邻域采样泄漏)
+--   - per-region tonemap 双该化 (P1 黄昏暖调 vs P2 冷夜蓝调)
 --
--- 双 player 后处理对比 profile (视觉差异明显):
---   Player 1 (左, "电影感冲击"): RCAS 强锐 + 强 Bloom + 中速 SSR + 强 MotionBlur
---   Player 2 (右, "高清细腻"):   Lanczos halfRes + 轻 Bloom + 高质 temporal SSR + 无 MotionBlur
+-- 双 player 后处理 + tonemap profile (视觉差异极明显):
+--   Player 1 (左, "黄昏电影感"):  RCAS + 强 Bloom + 中 SSR + 强 MB + ACES exp=1.5 暖调
+--   Player 2 (右, "冷夜高清"):     Lanczos + 轻 Bloom + temporal SSR + 无 MB + Uncharted2 exp=0.6 冷调
 --
--- F.0.10.3 新增 API 起作用点:
---   1) HDR.SetAutoBloom(false)                                -- 关 EndScene 自动全屏 Bloom
---   2) HDR.SetAutoSSR(false)                                  -- 关 EndScene 自动全屏 SSR
---   3) HDR.SetAutoMotionBlur(false)                           -- 关 EndScene 自动全屏 MB
---   4) Bloom.Process(rgnX, rgnY, rgnW, rgnH)                  -- 手动 region Bloom
---   5) SSR.Process(rgnX, rgnY, rgnW, rgnH)                    -- 手动 region SSR
---   6) MotionBlur.Process(rgnX, rgnY, rgnW, rgnH)             -- 手动 region MB
+-- F.0.10.6 新增 API 起作用点:
+--   1) HDR.SetAutoTonemap(false)                              -- 关 EndScene 自动全屏 tonemap
+--   2) HDR.Tonemap(rgnX, rgnY, rgnW, rgnH, params_table)      -- 手动 region tonemap
+--      params: { exposure=number, gamma=number, tonemap=string|int }
+--
+-- F.0.10.3 API 起作用点:
+--   3) HDR.SetAutoBloom(false)                                -- 关 EndScene 自动全屏 Bloom
+--   4) HDR.SetAutoSSR(false)                                  -- 关 EndScene 自动全屏 SSR
+--   5) HDR.SetAutoMotionBlur(false)                           -- 关 EndScene 自动全屏 MB
+--   6) Bloom.Process(rgnX, rgnY, rgnW, rgnH)                  -- 手动 region Bloom
+--   7) SSR.Process(rgnX, rgnY, rgnW, rgnH)                    -- 手动 region SSR
+--   8) MotionBlur.Process(rgnX, rgnY, rgnW, rgnH)             -- 手动 region MB
 --
 -- F.0.10.2 已有 API:
 --   HDR.SetAutoTAA(false) + TAA.Process(rgn) + Gfx.SetViewport + TAA.SetActiveInstance
@@ -28,7 +38,7 @@
 --   Gfx.SetViewport(0, 0, HALF_W, WIN_H)
 --   TAA.SetActiveInstance(p1_id); TAA.ApplyJitter()
 --   drawScene(player1_camera)                 -- raster into HDR fbo 左半区域
---   Bloom.Process(0, 0, HALF_W, WIN_H)        -- 1❶ Bloom (顺序同 HDR.EndScene auto 路径)
+--   Bloom.Process(0, 0, HALF_W, WIN_H)        -- 1❶ Bloom
 --   SSR.Process(0, 0, HALF_W, WIN_H)          -- 2❷ SSR
 --   MotionBlur.Process(0, 0, HALF_W, WIN_H)   -- 3❸ MotionBlur
 --   TAA.Process(0, 0, HALF_W, WIN_H)          -- 4❹ TAA history (双 instance 隔离)
@@ -36,8 +46,11 @@
 --   -- Player 2 (右半屏, x=HALF_W, w=HALF_W) — 同理, 但 profile 不同
 --   ...
 --
---   Gfx.SetViewport(0, 0, WIN_W, WIN_H)       -- 复位 (HDR.EndScene tonemap 仍全屏)
---   HDR.EndScene()                            -- 仅 tonemap (auto-Bloom/SSR/MB/TAA 均 off)
+--   -- F.0.10.7 新增: per-region tonemap (在 win:EndFrame 之前, EndScene 跳过全屏 tonemap)
+--   Gfx.SetViewport(0, 0, WIN_W, WIN_H)       -- 复位
+--   HDR.Tonemap(0, 0, HALF_W, WIN_H, p1_tm_params)        -- 5❺ P1 黄昏暖调 tonemap
+--   HDR.Tonemap(HALF_W, 0, HALF_W, WIN_H, p2_tm_params)   -- 6❻ P2 冷夜蓝调 tonemap
+--   -- win:EndFrame 内部隐式调 EndScene (仅跑 SSAO/AE/LensFx, tonemap 跳过)
 --
 -- 控制:
 --   R             : 重置两个 instance history
@@ -104,8 +117,18 @@ else
     print('[demo_taa_split2] Phase F.0.10.3 API not full (demo 降级为 F.0.10.2 纯 TAA)')
 end
 
-print('==== ChocoLight Phase F.0.10.4 True Physical Split-Screen Demo ====')
-print('  (TAA + Bloom + SSR + MotionBlur all per-region with different profiles)')
+-- F.0.10.6 新 API 依赖 (per-region tonemap) — 未启时降级成 F.0.10.4 (全屏单一 tonemap)
+local hasF10_6 = (not api_missing(HDR, 'SetAutoTonemap'))
+             and (not api_missing(HDR, 'GetAutoTonemap'))
+             and (not api_missing(HDR, 'Tonemap'))
+if hasF10_6 then
+    print('[demo_taa_split2] Phase F.0.10.6 API ready (HDR.SetAutoTonemap + HDR.Tonemap per-region)')
+else
+    print('[demo_taa_split2] Phase F.0.10.6 API not present (demo 降级: 全屏单一 tonemap)')
+end
+
+print('==== ChocoLight Phase F.0.10.7 True Physical Split-Screen Demo ====')
+print('  (TAA + Bloom + SSR + MotionBlur + Tonemap all per-region with different profiles)')
 print('[demo_taa_split2] Backend          = ' .. tostring(Gfx.GetBackendName and Gfx.GetBackendName() or '?'))
 print('[demo_taa_split2] HDR.IsSupported  = ' .. tostring(HDR.IsSupported()))
 print('[demo_taa_split2] TAA.IsSupported  = ' .. tostring(TAA.IsSupported()))
@@ -177,6 +200,33 @@ local function run_headless_api_probe()
     else
         print('  SKIP: F.0.10.3 API not present (legacy build)')
     end
+
+    -- F.0.10.7 新增: F.0.10.6 API 探针 (HDR.Tonemap per-region)
+    if hasF10_6 then
+        -- HDR.SetAutoTonemap round-trip
+        HDR.SetAutoTonemap(false)
+        if HDR.GetAutoTonemap() ~= false then print('  FAIL: SetAutoTonemap round-trip')
+        else                                  print('  PASS: HDR.SetAutoTonemap(false) round-trip ok') end
+        HDR.SetAutoTonemap(true)
+
+        -- HDR.Tonemap headless 退化 (HDR 未启用时返 nil + err)
+        local r, e = HDR.Tonemap(0, 0, 100, 100)
+        if r == nil and type(e) == 'string' then
+            print('  PASS: HDR.Tonemap(rgn) headless returns nil + err: ' .. e)
+        else
+            print('  FAIL: HDR.Tonemap expected nil + err, got ' .. tostring(r))
+        end
+
+        -- HDR.Tonemap with params_table (验证接收 string 形 tonemap 参数)
+        local r2, e2 = HDR.Tonemap(0, 0, 100, 100, {exposure=1.5, tonemap='aces'})
+        if r2 == nil and type(e2) == 'string' then
+            print('  PASS: HDR.Tonemap(rgn, {exposure=1.5, tonemap="aces"}) headless ok')
+        else
+            print('  FAIL: HDR.Tonemap with params expected nil + err')
+        end
+    else
+        print('  SKIP: F.0.10.6 API not present (legacy build)')
+    end
 end
 
 if not UI or not UI.Window then
@@ -188,7 +238,7 @@ end
 local Window = UI.Window
 local WIN_W, WIN_H = 1280, 540
 local pok, win, err = pcall(function()
-    return Window.Open(WIN_W, WIN_H, 'Phase F.0.10.4 - True Physical Split-Screen: TAA+Bloom+SSR+MB per-region')
+    return Window.Open(WIN_W, WIN_H, 'Phase F.0.10.7 - True Physical Split-Screen: TAA+Bloom+SSR+MB+Tonemap per-region')
 end)
 if not pok then
     -- Window.Open 抛异常 (常因 no GL context, CI headless 环境典型情况)
@@ -298,6 +348,14 @@ if hasF10_3 and hdrEnabled then
     end
 end
 
+-- F.0.10.6 关键: 关 auto-Tonemap, 让本 demo 手动 HDR.Tonemap(rgn, params) 双该化
+local tonemapPerRegion = false
+if hasF10_6 and hdrEnabled then
+    HDR.SetAutoTonemap(false)
+    tonemapPerRegion = true
+    print('[demo_taa_split2] HDR.SetAutoTonemap(false) -- 手动 region tonemap (P1 黄昏 vs P2 冷夜)')
+end
+
 if type(Gfx.SetPerspective) == 'function' then
     -- aspect ratio = HALF_W / WIN_H (因为每半屏是独立 viewport, 各自 16:9 比例的一半)
     Gfx.SetPerspective(60, HALF_W / WIN_H, 0.1, 100.0)
@@ -353,7 +411,7 @@ TAA.SetActiveInstance(0)                  -- 切回 default 备用
 -- 后处理参数切换 < 1us, 不影响性能)
 -- ============================================================================
 local function apply_p1_postfx_profile()
-    -- Player 1: 电影感冲击 — 强 Bloom + 中速 SSR + 强 MotionBlur
+    -- Player 1: 黄昏电影感 — 强 Bloom + 中速 SSR + 强 MotionBlur
     if bloomEnabled then
         Bloom.SetIntensity(1.5)          -- 强辉光
         Bloom.SetThreshold(0.8)          -- 低阈值: 中等亮度也起辉
@@ -369,7 +427,7 @@ local function apply_p1_postfx_profile()
     end
 end
 local function apply_p2_postfx_profile()
-    -- Player 2: 高清细腻 — 轻 Bloom + 高质 temporal SSR + 无 MotionBlur
+    -- Player 2: 冷夜高清细腻 — 轻 Bloom + 高质 temporal SSR + 无 MotionBlur
     if bloomEnabled then
         Bloom.SetIntensity(0.4)          -- 轻辉光 (突出 cube/bar 细节)
         Bloom.SetThreshold(1.5)          -- 高阈值: 仅最亮区起辉
@@ -383,6 +441,18 @@ local function apply_p2_postfx_profile()
         MB.SetStrength(0.0)              -- 关 motion blur (静止感)
     end
 end
+
+-- F.0.10.6 新增: per-region tonemap 参数
+local P1_TM_PARAMS = {
+    exposure = 1.5,           -- 亮 50% (黄昏阳光感)
+    gamma    = 2.2,           -- 标准
+    tonemap  = 'aces',        -- 电影感调色
+}
+local P2_TM_PARAMS = {
+    exposure = 0.6,           -- 暗 40% (冷夜感)
+    gamma    = 2.4,           -- 略高 gamma (深部更黑)
+    tonemap  = 'uncharted2',  -- Hable filmic 冷调
+}
 
 -- ============================================================================
 -- 主循环
@@ -503,16 +573,24 @@ while win:IsOpen() do
     end
     TAA.Process(HALF_W, 0, HALF_W, WIN_H) -- region TAA: 仅更新右半 instance 2 history
 
-    -- 复位全屏 viewport, HDR.EndScene 仅做 tonemap (auto-Bloom/SSR/MB/TAA 已全部 off)
+    -- 复位全屏 viewport (为后续 tonemap pass 准备)
     Gfx.SetViewport(0, 0, WIN_W, WIN_H)
     TAA.SetActiveInstance(0)              -- 切回 default 避免污染下次
+
+    -- F.0.10.7 新增: per-region tonemap (P1 黄昏 vs P2 冷夜)
+    -- 必须在 win:EndFrame 之前 (内部隐式调 EndScene), 因为 HDR.Tonemap 内部 UnbindFBO + 写 default fb
+    -- EndScene 仅跑 SSAO/AE/LensFx (写 HDR RT, 下帧 BeginScene clear, 不影响本帧输出)
+    if tonemapPerRegion then
+        HDR.Tonemap(0,      0, HALF_W, WIN_H, P1_TM_PARAMS)
+        HDR.Tonemap(HALF_W, 0, HALF_W, WIN_H, P2_TM_PARAMS)
+    end
 
     -- ========== HUD ==========
     if win.DrawText then
         local y = 8
         local line = function(s) win:DrawText(8, y, s, 1, 1, 1, 1); y = y + 16 end
-        line('===== Phase F.0.10.4 True Physical Split-Screen Demo =====')
-        line('  (TAA + Bloom + SSR + MotionBlur all per-region)')
+        line('===== Phase F.0.10.7 True Physical Split-Screen Demo =====')
+        line('  (TAA + Bloom + SSR + MotionBlur + Tonemap all per-region)')
         line(string.format('Window: %dx%d | Half: %dx%d', WIN_W, WIN_H, HALF_W, WIN_H))
         line(string.format('  TAA      : auto=%s, instances=%d',
             tostring(HDR.GetAutoTAA()), TAA.GetInstanceCount()))
@@ -526,12 +604,16 @@ while win:IsOpen() do
         else
             line('  [F.0.10.3 API unavailable, falling back to TAA-only demo]')
         end
+        if hasF10_6 then
+            line(string.format('  Tonemap  : per-region=%s, autoTonemap=%s',
+                tostring(tonemapPerRegion), tostring(HDR.GetAutoTonemap())))
+        end
         line('')
-        line(string.format('P1 (LEFT,  id=%d): RCAS sharp + STRONG bloom + mid SSR + STRONG MB', p1_id))
-        line(string.format('P2 (RIGHT, id=%d): Lanczos     + light bloom  + temporal SSR + NO MB', p2_id))
+        line(string.format('P1 (LEFT,  id=%d): RCAS + STRONG bloom + mid SSR + STRONG MB + ACES exp=1.5 黄昏', p1_id))
+        line(string.format('P2 (RIGHT, id=%d): Lanczos + light bloom + temporal SSR + NO MB + Uncharted2 exp=0.6 冷夜', p2_id))
         line('Keys: R = reset both history | ESC = quit')
         -- 右半 banner (突出 split-screen 边界)
-        win:DrawText(HALF_W + 8, 8, '[P2: hi-quality side]', 0.5, 1, 0.5, 1)
+        win:DrawText(HALF_W + 8, 8, '[P2: cool-dark hi-quality]', 0.5, 0.7, 1.0, 1)
     end
 
     win:EndFrame()
@@ -544,12 +626,15 @@ TAA.SetActiveInstance(0)
 if p1_id then TAA.DestroyInstance(p1_id) end
 if p2_id then TAA.DestroyInstance(p2_id) end
 
--- 复位 4 个 auto 开关到默认 (避免其他 demo 受影响)
+-- 复位 5 个 auto 开关到默认 (避免其他 demo 受影响)
 HDR.SetAutoTAA(true)
 if hasF10_3 then
     HDR.SetAutoBloom(true)
     HDR.SetAutoSSR(true)
     HDR.SetAutoMotionBlur(true)
+end
+if hasF10_6 then
+    HDR.SetAutoTonemap(true)
 end
 
 -- 反向 Disable (TAA -> MB -> SSR -> Bloom -> HDR)

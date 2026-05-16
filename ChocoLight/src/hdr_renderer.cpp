@@ -686,8 +686,11 @@ bool GetAutoTonemap() { return g.autoTonemap; }
 
 // Region 限定 tonemap pass — 复用全局 g.exposure (含 AE 叠加) / g.gamma / g.tonemap
 // HDR 未启用 / sceneTex 无效时 silent skip
+// Phase F.0.10.7 fix: 必须先 UnbindFBO 切到 default fb (因为调用方典型在 EndScene 之前,
+//                    HDR fbo 仍绑着; 不 unbind 会把 tonemap 写回 HDR RT, 黑屏)
 void Tonemap(int rgnX, int rgnY, int rgnW, int rgnH) {
     if (!g.enabled || !g.backend || !g.sceneTex) return;
+    g.backend->UnbindFBO();   // F.0.10.7 fix: 切到 default fb
     // AE 叠加 (与 EndScene 同逻辑): AE 开时 AE current 覆盖 manual; AE 关时回归 g.exposure
     float exposure = AutoExposureRenderer::IsEnabled()
                         ? AutoExposureRenderer::GetCurrentExposure()
@@ -698,9 +701,11 @@ void Tonemap(int rgnX, int rgnY, int rgnW, int rgnH) {
 
 // Region 限定 tonemap pass (params 显式版) — 完全自定义, 不叠加 AE
 // 适合: split-screen 中每 region 独立 exposure (不希望 AE 干扰)
+// Phase F.0.10.7 fix: 同上, 必须先 UnbindFBO 切到 default fb
 void Tonemap(int rgnX, int rgnY, int rgnW, int rgnH,
               float exposure, float gamma, int tonemapMode) {
     if (!g.enabled || !g.backend || !g.sceneTex) return;
+    g.backend->UnbindFBO();   // F.0.10.7 fix: 切到 default fb
     // 防御性 clamp gamma (与 SetGamma 一致, 防 0/负数 崩溃)
     if (gamma < 0.0001f) gamma = 0.0001f;
     g.backend->DrawTonemapRegion(g.sceneTex, exposure, gamma, tonemapMode,
