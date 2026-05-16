@@ -1,71 +1,44 @@
 -- ============================================================================
--- ChocoLight Phase E.3 — HDR + ACES Tonemapping demo
+-- ChocoLight Phase E.3 — HDR + ACES Tonemapping Demo (callback-model)
 -- ============================================================================
 -- 演示 HDR 离屏渲染 + ACES filmic tonemap 对高亮场景的压缩能力.
 --
 -- 画面布局:
---   左半:  10 个矩形, 亮度线性递增 (0.2, 0.6, 1.0, 1.4, 1.8, 2.2, 2.6, 3.0, 3.4, 3.8)
---   右半:  相同布局, 带红/绿/蓝色调
+--   上行:  10 个矩形, 亮度线性递增 (0.2, 0.6, 1.0, 1.4, 1.8, 2.2, 2.6, 3.0, 3.4, 3.8)
+--   下行:  3 条彩色梯度 (红/绿/蓝)
 --   底部:  OSD 显示 HDR 状态 / Exposure / Gamma / 操作提示
 --
 -- 预期效果:
---   HDR OFF  -> 顶点颜色 > 1.0 被硬件 clamp 为白色, 亮度 > 1.0 的 6 个矩形
---              视觉上无差异 (全部白块)
---   HDR ON   -> ACES 曲线将 0 ~ +∞ 压缩到 0 ~ 1, 亮度 > 1.0 的矩形仍可区分
---              (随亮度增加, 颜色从饱和 -> 压缩 -> 趋近白色, 但保留细节)
+--   HDR OFF -> 顶点颜色 > 1.0 被硬件 clamp 为白色, 亮度 > 1.0 的 6 个矩形视觉上无差异
+--   HDR ON  -> ACES 曲线将 0~+∞ 压缩到 0~1, 亮度 > 1.0 的矩形仍可区分
 --
 -- 控制:
---   H       : 切换 HDR 启用 / 禁用
---   Z / X   : 减小 / 增大 Exposure (步长 0.1, [0.1, 5.0])
---   C / V   : 减小 / 增大 Gamma    (步长 0.1, [1.0, 3.0])
---   T       : 循环切换 Tonemap operator (aces → reinhard → uncharted2 → linear)  (Phase E.3.4)
---   B       : 切换 Bloom 启用 / 禁用  (Phase E.4.3; 需 HDR ON)
---   R       : 重置 Exposure=1.0, Gamma=2.2, Tonemapper=aces, Bloom=ON
---   ESC     : 退出
---
--- 兼容: Lua 5.1 + ChocoLight Light.Graphics.HDR / UI.Window / Time
--- 后端: 仅 GL33 支持 HDR (RGBA16F RT), Legacy 后端 HDR.IsSupported 返回 false.
+--   H : 切换 HDR 启用 / 禁用
+--   Z / X : 减小 / 增大 Exposure (步长 0.1, 范围 [0.1, 5.0])
+--   C / V : 减小 / 增大 Gamma   (步长 0.1, 范围 [1.0, 3.0])
+--   T : 循环切换 Tonemap (aces → reinhard → uncharted2 → linear)
+--   B : 切换 Bloom (需 HDR ON)
+--   R : 重置全部参数
+--   ESC : 退出
 -- ============================================================================
 
--- ==================== 1. 模块加载 ====================
-
-local UI, Gfx, Time
-do
-    local function safe_require(n)
-        local ok, m = pcall(require, n)
-        if ok and type(m) == 'table' then return m end
-        return nil
-    end
-    UI   = safe_require('Light.UI')
-    Gfx  = safe_require('Light.Graphics')
-    Time = safe_require('Light.Time')
+local function safe_require(n)
+    local ok, m = pcall(require, n); if ok and type(m) == 'table' then return m end; return nil
 end
+local UI  = safe_require('Light.UI')
+local Gfx = safe_require('Light.Graphics')
 
-if not Gfx then
-    print('[demo_hdr] Light.Graphics 不可用')
-    print('demo_hdr ok (no graphics)')
-    return
-end
+if not Gfx then print('[demo_hdr] Light.Graphics 不可用'); print('demo_hdr ok (no graphics)'); return end
+local HDR   = Gfx.HDR
+local Bloom = Gfx.Bloom
+if type(HDR) ~= 'table' then print('[demo_hdr] HDR 子表缺失'); print('demo_hdr ok (no HDR subtable)'); return end
 
-local HDR = Gfx.HDR
-if type(HDR) ~= 'table' then
-    print('[demo_hdr] Light.Graphics.HDR 子表缺失')
-    print('demo_hdr ok (no HDR subtable)')
-    return
-end
+print('==== ChocoLight Phase E.3 HDR demo (callback-model) ====')
+print('[demo_hdr] Backend         = ' .. tostring(Gfx.GetBackendName and Gfx.GetBackendName() or '?'))
+print('[demo_hdr] HDR.IsSupported = ' .. tostring(HDR.IsSupported()))
+if Bloom then print('[demo_hdr] Bloom.IsSupported = ' .. tostring(Bloom.IsSupported())) end
 
-local Bloom = Gfx.Bloom   -- Phase E.4.3 (可选; 后续带 nil 检查)
-
-print('==== ChocoLight Phase E.3 HDR demo ====')
-print('[demo_hdr] Backend: ' ..
-    tostring(Gfx.GetBackendName and Gfx.GetBackendName() or '?'))
-print('[demo_hdr] HDR.IsSupported   = ' .. tostring(HDR.IsSupported()))
-if Bloom then
-    print('[demo_hdr] Bloom.IsSupported = ' .. tostring(Bloom.IsSupported()))
-end
-
--- ==================== 2. Headless 探测 ====================
-
+-- Headless 探测 (CI 兼容)
 if not UI or not UI.Window then
     print('[demo_hdr] UI.Window 不可用, 仅执行 API 探测')
     print('  HDR.IsEnabled       = ' .. tostring(HDR.IsEnabled()))
@@ -75,181 +48,66 @@ if not UI or not UI.Window then
     print('demo_hdr ok (headless API check)')
     return
 end
-
--- ==================== 3. 打开窗口 ====================
-
-local Window = UI.Window
-local WIN_W, WIN_H = 960, 540
-local win, openErr = Window.Open(WIN_W, WIN_H, 'Phase E.3 — HDR + ACES Tonemap Demo')
-if not win then
-    print('[demo_hdr] Window.Open 失败: ' .. tostring(openErr))
-    print('demo_hdr ok (no window)')
+if type(Light) ~= 'function' and type(Light) ~= 'table' then
+    print('[demo_hdr] Light global 不可用')
+    print('demo_hdr ok (no Light global)')
     return
 end
 
--- ==================== 4. 启用 HDR ====================
--- 注意: 必须在 Window.Open 之后再 Enable, 否则无 GL context.
+-- ============================================================================
+-- 常量 + 工具
+-- ============================================================================
+local WIN_W, WIN_H = 960, 540
+local TONEMAPS  = { 'aces', 'reinhard', 'uncharted2', 'linear' }
+local BRIGHTS   = { 0.2, 0.6, 1.0, 1.4, 1.8, 2.2, 2.6, 3.0, 3.4, 3.8 }
+local BAR_W, BAR_H, BAR_GAP = 80, 180, 8
 
-local hdrEnabled = false
+local function clamp(v, lo, hi) return v < lo and lo or (v > hi and hi or v) end
+
+-- ============================================================================
+-- Demo 类
+-- ============================================================================
+local Demo = Light(Light.UI.Window):New()
+
+local g_hdrEnabled = false
+local g_exposure   = 1.0
+local g_gamma      = 2.2
+local g_tmIndex    = 1   -- 1-based, TONEMAPS 索引
+
 local function tryEnableHDR()
     if not HDR.IsSupported() then
-        print('[demo_hdr] 当前后端不支持 HDR (Legacy backend?), 留在 LDR 模式')
-        return false
+        print('[demo_hdr] 当前后端不支持 HDR, 留 LDR 模式'); return false
     end
     local ok = HDR.Enable(WIN_W, WIN_H)
-    if ok then
-        print('[demo_hdr] HDR.Enable(' .. WIN_W .. ', ' .. WIN_H .. ') = true')
-        return true
-    end
-    print('[demo_hdr] HDR.Enable 失败')
-    return false
+    if ok then print('[demo_hdr] HDR.Enable(' .. WIN_W .. 'x' .. WIN_H .. ') ok'); return true end
+    print('[demo_hdr] HDR.Enable 失败'); return false
 end
 
-hdrEnabled = tryEnableHDR()
-
--- ==================== 5. 主循环 ====================
-
-local exposure = 1.0
-local gamma    = 2.2
-local TONEMAPS = { "aces", "reinhard", "uncharted2", "linear" }   -- Phase E.3.4
-local tmIndex  = 1   -- 1-based
-local lastTime = (Time and Time.GetSeconds and Time.GetSeconds()) or 0
-
--- 输入消抖 (防按键长按连触发)
-local keyCooldown = {}
-local function keyTap(name)
-    if win:IsKeyPressed(name) then
-        if (keyCooldown[name] or 0) <= 0 then
-            keyCooldown[name] = 0.15   -- 150ms 去抖
-            return true
-        end
-    end
-    return false
+function Demo:OnOpen()
+    g_hdrEnabled = tryEnableHDR()
 end
 
-local function clamp(v, lo, hi)
-    if v < lo then return lo end
-    if v > hi then return hi end
-    return v
+function Demo:Update(dt)
+    -- 静态画面, 无时间动画
 end
 
--- 10 个亮度档位 (可超过 1.0 以测试 HDR 压缩)
-local BRIGHTS = { 0.2, 0.6, 1.0, 1.4, 1.8, 2.2, 2.6, 3.0, 3.4, 3.8 }
-local BAR_W = 80
-local BAR_H = 180
-local BAR_GAP = 8
-
-while win:IsOpen() do
-    -- 时间步进
-    local now = (Time and Time.GetSeconds and Time.GetSeconds()) or (lastTime + 0.016)
-    local dt = now - lastTime
-    lastTime = now
-    if dt > 0.1 then dt = 0.1 end
-
-    -- 按键冷却衰减
-    for k, v in pairs(keyCooldown) do
-        keyCooldown[k] = math.max(0, v - dt)
-    end
-
-    -- 事件处理
-    win:PollEvents()
-
-    if win:IsKeyPressed('escape') then
-        win:Close()
-        break
-    end
-
-    -- H: 切换 HDR
-    if keyTap('h') then
-        if hdrEnabled then
-            HDR.Disable()
-            hdrEnabled = false
-            print('[demo_hdr] HDR OFF')
-        else
-            hdrEnabled = tryEnableHDR()
-            print('[demo_hdr] HDR ' .. (hdrEnabled and 'ON' or 'OFF (enable failed)'))
-        end
-    end
-
-    -- Z/X: Exposure -/+
-    if keyTap('z') then
-        exposure = clamp(exposure - 0.1, 0.1, 5.0)
-        HDR.SetExposure(exposure)
-    end
-    if keyTap('x') then
-        exposure = clamp(exposure + 0.1, 0.1, 5.0)
-        HDR.SetExposure(exposure)
-    end
-
-    -- C/V: Gamma -/+
-    if keyTap('c') then
-        gamma = clamp(gamma - 0.1, 1.0, 3.0)
-        HDR.SetGamma(gamma)
-    end
-    if keyTap('v') then
-        gamma = clamp(gamma + 0.1, 1.0, 3.0)
-        HDR.SetGamma(gamma)
-    end
-
-    -- T: 循环 tonemapper (Phase E.3.4)
-    if keyTap('t') then
-        tmIndex = (tmIndex % #TONEMAPS) + 1
-        HDR.SetTonemapper(TONEMAPS[tmIndex])
-        print('[demo_hdr] Tonemapper -> ' .. TONEMAPS[tmIndex])
-    end
-
-    -- B: 切换 Bloom (Phase E.4.3; 需 HDR ON)
-    if Bloom and keyTap('b') then
-        if Bloom.IsEnabled() then
-            Bloom.Disable()
-            print('[demo_hdr] Bloom OFF')
-        else
-            if hdrEnabled then
-                local ok = Bloom.Enable(WIN_W, WIN_H)
-                print('[demo_hdr] Bloom ' .. (ok and 'ON' or 'OFF (enable failed)'))
-            else
-                print('[demo_hdr] 需先启用 HDR 才能启 Bloom (按 H)')
-            end
-        end
-    end
-
-    -- R: reset
-    if keyTap('r') then
-        exposure = 1.0
-        gamma    = 2.2
-        tmIndex  = 1
-        HDR.SetExposure(exposure)
-        HDR.SetGamma(gamma)
-        HDR.SetTonemapper(TONEMAPS[tmIndex])
-        -- Bloom 默认随 HDR 自动启动 (autoEnable=true); 手动关过后 R 重新拉起
-        if Bloom and hdrEnabled and not Bloom.IsEnabled() then
-            Bloom.Enable(WIN_W, WIN_H)
-        end
-    end
-
-    -- 渲染
-    win:BeginFrame(0.05, 0.05, 0.08, 1.0)
-
-    -- 左半: 白色梯度
+function Demo:Draw()
+    -- 上排: 灰度梯度
     local startX = 40
     local y0     = 80
     for i, b in ipairs(BRIGHTS) do
         local x = startX + (i - 1) * (BAR_W + BAR_GAP)
-        Gfx.SetColor(b, b, b, 1.0)                          -- 灰度梯度
+        Gfx.SetColor(b, b, b, 1.0)
         Gfx.Rectangle(Gfx.FillMode, x, y0, 0, BAR_W, BAR_H, 0)
         Gfx.SetColor(1, 1, 1, 1)
-        if win.DrawText then
-            win:DrawText(x + 4, y0 + BAR_H + 4, string.format('%.1f', b), 1, 1, 1, 1)
+        if Gfx.Print then
+            Gfx.Print(string.format('%.1f', b), x + 4, y0 + BAR_H + 4, 0)
         end
     end
 
-    -- 右半: 彩色梯度 (突出 HDR 对彩色压缩的效果)
+    -- 下排: 彩色梯度 (红/绿/蓝)
     local colOffY = 80 + BAR_H + 40
-    local palette = {
-        {1.0, 0.3, 0.2},   -- 暖红
-        {0.2, 1.0, 0.3},   -- 荧光绿
-        {0.2, 0.4, 1.0},   -- 深蓝
-    }
+    local palette = { {1.0, 0.3, 0.2}, {0.2, 1.0, 0.3}, {0.2, 0.4, 1.0} }
     for ci, rgb in ipairs(palette) do
         local yy = colOffY + (ci - 1) * (BAR_H * 0.4 + 8)
         for i, b in ipairs(BRIGHTS) do
@@ -261,20 +119,16 @@ while win:IsOpen() do
     Gfx.SetColor(1, 1, 1, 1)
 
     -- OSD
-    if win.DrawText then
-        local y = 8
-        local line = function(s)
-            win:DrawText(8, y, s, 1, 1, 1, 1)
-            y = y + 16
-        end
+    if Gfx.Print then
+        local y = 8; local function line(s) Gfx.Print(s, 8, y, 0); y = y + 16 end
         line(string.format('HDR: %s | Supported: %s | Backend: %s',
-            hdrEnabled and 'ON' or 'OFF',
+            g_hdrEnabled and 'ON' or 'OFF',
             tostring(HDR.IsSupported()),
             tostring(Gfx.GetBackendName and Gfx.GetBackendName() or '?')))
         line(string.format('Exposure: %.2f   Gamma: %.2f   Tonemap: %-10s  SceneTex: %d',
             HDR.GetExposure(), HDR.GetGamma(), HDR.GetTonemapper(), HDR.GetSceneTexture()))
         if Bloom then
-            line(string.format('Bloom: %s | Supported: %s | Thr: %.2f  Int: %.2f  Rad: %.2f  Lv: %d',
+            line(string.format('Bloom: %s | Supported: %s | Thr: %.2f Int: %.2f Rad: %.2f Lv: %d',
                 Bloom.IsEnabled() and 'ON' or 'OFF',
                 tostring(Bloom.IsSupported()),
                 Bloom.GetThreshold(), Bloom.GetIntensity(),
@@ -283,20 +137,52 @@ while win:IsOpen() do
         line('Brightness scale: 0.2 ... 3.8 (values > 1.0 need HDR to resolve)')
         line('Keys: H=HDR  Z/X=exp  C/V=gamma  T=tonemap  B=Bloom  R=reset  ESC=quit')
     end
-
-    win:EndFrame()
 end
 
--- ==================== 6. 清理 ====================
+function Demo:OnKey(key, scancode, action, mods)
+    if action ~= 1 then return end   -- 仅按下
 
-if Bloom and Bloom.IsEnabled() then
-    Bloom.Disable()
-    print('[demo_hdr] Bloom.Disable (cleanup)')
-end
-if hdrEnabled then
-    HDR.Disable()
-    print('[demo_hdr] HDR.Disable (cleanup)')
+    if key == 256 then                 -- ESC
+        self:Close()
+    elseif key == string.byte('H') then  -- 切 HDR
+        if g_hdrEnabled then HDR.Disable(); g_hdrEnabled = false; print('[demo_hdr] HDR OFF')
+        else g_hdrEnabled = tryEnableHDR(); print('[demo_hdr] HDR ' .. (g_hdrEnabled and 'ON' or 'OFF')) end
+    elseif key == string.byte('Z') then  -- exposure -
+        g_exposure = clamp(g_exposure - 0.1, 0.1, 5.0); HDR.SetExposure(g_exposure)
+    elseif key == string.byte('X') then  -- exposure +
+        g_exposure = clamp(g_exposure + 0.1, 0.1, 5.0); HDR.SetExposure(g_exposure)
+    elseif key == string.byte('C') then  -- gamma -
+        g_gamma = clamp(g_gamma - 0.1, 1.0, 3.0); HDR.SetGamma(g_gamma)
+    elseif key == string.byte('V') then  -- gamma +
+        g_gamma = clamp(g_gamma + 0.1, 1.0, 3.0); HDR.SetGamma(g_gamma)
+    elseif key == string.byte('T') then  -- tonemap 循环
+        g_tmIndex = (g_tmIndex % #TONEMAPS) + 1
+        HDR.SetTonemapper(TONEMAPS[g_tmIndex])
+        print('[demo_hdr] Tonemapper -> ' .. TONEMAPS[g_tmIndex])
+    elseif key == string.byte('B') then  -- Bloom 切换 (需 HDR)
+        if Bloom then
+            if Bloom.IsEnabled() then Bloom.Disable(); print('[demo_hdr] Bloom OFF')
+            elseif g_hdrEnabled then
+                local ok = Bloom.Enable(WIN_W, WIN_H)
+                print('[demo_hdr] Bloom ' .. (ok and 'ON' or 'OFF (enable failed)'))
+            else print('[demo_hdr] 需先启 HDR 才能开 Bloom (按 H)') end
+        end
+    elseif key == string.byte('R') then  -- reset
+        g_exposure = 1.0; g_gamma = 2.2; g_tmIndex = 1
+        HDR.SetExposure(g_exposure); HDR.SetGamma(g_gamma)
+        HDR.SetTonemapper(TONEMAPS[g_tmIndex])
+        if Bloom and g_hdrEnabled and not Bloom.IsEnabled() then
+            Bloom.Enable(WIN_W, WIN_H)
+        end
+    end
 end
 
-if win.Close and win:IsOpen() then win:Close() end
+local function cleanup_demo()
+    if Bloom and Bloom.IsEnabled() then Bloom.Disable(); print('[demo_hdr] Bloom.Disable (cleanup)') end
+    if g_hdrEnabled then HDR.Disable(); print('[demo_hdr] HDR.Disable (cleanup)') end
+end
+
+Demo:Open(WIN_W, WIN_H, 'Phase E.3 - HDR + ACES Tonemap Demo (callback)')
+while Light.UI.Loop() do Light.UI.Resume() end
+cleanup_demo()
 print('demo_hdr ok')

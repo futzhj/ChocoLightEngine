@@ -1,693 +1,372 @@
 -- ============================================================================
--- ChocoLight Phase E.9+E.10+E.11 — SSR (Screen-Space Reflection) demo
+-- ChocoLight Phase E.9~E.18 + F.0~F.0.14 — SSR + Velocity + MotionBlur + TAA Demo (callback-model)
 -- ============================================================================
--- 金属反射场景: plane 地面 + 多色 cube + 旋转相机 + SSR toggle + Blur toggle + Bilateral.
---   * 显式 SetPerspective + SetCamera + SetDepthTest(true)
---   * G-buffer normal MRT 由 HDR pipeline 提供 (Phase E.8.x)
---   * SSR linear ray march (64 step) 写入反射 RT, additive composite 入 HDR
---   * Phase E.10: 可选 half-res Gaussian blur (5-tap separable) 模糊反射
---   * Phase E.11: 可选 depth-aware bilateral 权重门控，消除跨深度边 leak
---   * 反射效果最强: 摄像机斜俯视地面 (法线向上, 反射方向命中周围 cube)
+-- 反射场景沙盒 (plane + 7 cube + 旋转相机), 演示完整后处理链路.
 --
--- 控制:
---   F        : 切换 SSR on/off
---   1 / 2    : MaxSteps      -/+  (步长 8,    范围 [8, 128])
---   3 / 4    : StepSize      -/+  (步长 0.05, 范围 [0.01, 1.0])
---   5 / 6    : Thickness     -/+  (步长 0.1,  范围 [0.01, 5.0])
---   7 / 8    : Intensity     -/+  (步长 0.1,  范围 [0.0, 2.0])
---   - / =    : MaxDistance   -/+  (步长 10,   范围 [1, 1000])
---   [ / ]    : EdgeFade      -/+  (步长 0.05, 范围 [0.0, 0.5])
---   B        : 切换 SSR Blur on/off            (Phase E.10)
---   9 / 0    : BlurRadius    -/+  (步长 0.25, 范围 [0.5, 4.0])  (Phase E.10)
---   V        : 切换 Bilateral on/off           (Phase E.11; off = E.10 Gaussian)
---   , / .    : BlurDepthSigma -/+ (步长 25,   范围 [50, 500])    (Phase E.11)
---   T        : 切换 Temporal on/off           (Phase E.12; off = E.11 行为)
---   U / I    : TemporalAlpha -/+ (步长 0.02, 范围 [0.5, 0.99])  (Phase E.12)
---   N        : 切换 RejectionMode 0/1         (Phase E.12; 1=neighborhood clip)
---   R        : reset 所有参数到默认
---   ESC      : 退出
+-- 控制 (基础 SSR):
+--   F : 切 SSR     1/2 : MaxSteps -/+    3/4 : StepSize -/+    5/6 : Thickness -/+
+--   7/8 : Intensity -/+   -/= : MaxDistance -/+   [/] : EdgeFade -/+
+-- Phase E.10 Blur:
+--   B : 切 Blur    9/0 : BlurRadius -/+
+-- Phase E.11 Bilateral:
+--   V : 切 Bilateral    ,/. : BlurDepthSigma -/+
+-- Phase E.12 Temporal:
+--   T : 切 Temporal    U/I : Alpha -/+    N : 切 Rejection 0/1
+-- Phase E.14/E.18 Velocity:
+--   K : 切 Velocity Dilation    L : 切 Velocity Format rg16f/rg8
+--   ] : 切 Dilation HalfRes    \ : 切 Dilation AutoSkip
+-- Phase E.15~17 MotionBlur:
+--   M : 切 MotionBlur    ; : 切 Mode    [ : 切 MB HalfRes
+-- Phase F.0~14 TAA:
+--   Y : 切 TAA    J : 切 Jitter    H : Sharpness 循环
+--   G : 切 AntiFlicker    X : 切 HalfResHistory    Z : 切 SharpenMode
+--   Q : 切 MotionAdaptive    O : 切 MotionAdaptiveSharpness    P : 切 UpscaleMode
+--   C : TAA multi-instance lifecycle 演示
+-- 通用:
+--   R : reset    ESC : 退出
 -- ============================================================================
 
-local UI, Gfx, Time
-do
-    local function safe_require(n)
-        local ok, m = pcall(require, n)
-        if ok and type(m) == 'table' then return m end
-        return nil
-    end
-    UI   = safe_require('Light.UI')
-    Gfx  = safe_require('Light.Graphics')
-    Time = safe_require('Light.Time')
-end
+local function safe_require(n) local ok, m = pcall(require, n); if ok and type(m) == 'table' then return m end; return nil end
+local UI  = safe_require('Light.UI')
+local Gfx = safe_require('Light.Graphics')
 
-if not Gfx then
-    print('[demo_ssr] Light.Graphics not available')
-    print('demo_ssr ok (no graphics)')
-    return
-end
-
-local HDR = Gfx.HDR
-local SSR = Gfx.SSR
--- Phase E.15 — MotionBlur 是可选模块 (老版本可能没有), 不强制要求
+if not Gfx then print('[demo_ssr] Light.Graphics 不可用'); print('demo_ssr ok (no graphics)'); return end
+local HDR, SSR = Gfx.HDR, Gfx.SSR
 local MotionBlur = Gfx.MotionBlur
+local TAA = Gfx.TAA
 if type(HDR) ~= 'table' or type(SSR) ~= 'table' then
-    print('[demo_ssr] need HDR + SSR subtables')
-    print('demo_ssr ok (subtable missing)')
-    return
+    print('[demo_ssr] HDR/SSR 子表缺失'); print('demo_ssr ok (subtable missing)'); return
 end
 
-print('==== ChocoLight Phase E.9 SSR demo ====')
-print('[demo_ssr] Backend       = ' .. tostring(Gfx.GetBackendName and Gfx.GetBackendName() or '?'))
+print('==== ChocoLight Phase E.9 SSR demo (callback-model) ====')
+print('[demo_ssr] Backend         = ' .. tostring(Gfx.GetBackendName and Gfx.GetBackendName() or '?'))
 print('[demo_ssr] HDR.IsSupported = ' .. tostring(HDR.IsSupported()))
 print('[demo_ssr] SSR.IsSupported = ' .. tostring(SSR.IsSupported()))
 
 if not UI or not UI.Window then
-    print('[demo_ssr] UI.Window not available, API probe only')
-    print('  SSR.GetMaxSteps      = ' .. tostring(SSR.GetMaxSteps()))
-    print('  SSR.GetStepSize      = ' .. tostring(SSR.GetStepSize()))
-    print('  SSR.GetThickness     = ' .. tostring(SSR.GetThickness()))
-    print('  SSR.GetMaxDistance   = ' .. tostring(SSR.GetMaxDistance()))
-    print('  SSR.GetIntensity     = ' .. tostring(SSR.GetIntensity()))
-    print('  SSR.GetEdgeFade      = ' .. tostring(SSR.GetEdgeFade()))
-    print('  SSR.GetReflectionTexId = ' .. tostring(SSR.GetReflectionTexId()))
+    print('[demo_ssr] UI.Window 不可用, 仅 API 探测')
+    for _, k in ipairs({'GetMaxSteps','GetStepSize','GetThickness','GetMaxDistance',
+                       'GetIntensity','GetEdgeFade','GetReflectionTexId'}) do
+        print('  SSR.' .. k .. '() = ' .. tostring(SSR[k] and SSR[k]()))
+    end
     print('demo_ssr ok (headless API check)')
     return
 end
+if type(Light) ~= 'function' and type(Light) ~= 'table' then
+    print('[demo_ssr] Light global 不可用'); print('demo_ssr ok (no Light global)'); return
+end
 
-local Window = UI.Window
 local WIN_W, WIN_H = 960, 540
--- ChocoLight Window 是 OOP 表; pcall 防御不同环境下的调用约定差异 + headless 优雅退出
-local pok, win, err = pcall(function() return Window.Open(WIN_W, WIN_H, 'Phase E.9 - SSR Demo') end)
-if not pok then
-    print('[demo_ssr] Window.Open raised error: ' .. tostring(win))
-    print('demo_ssr ok (no window)')
-    return
-end
-if not win then
-    print('[demo_ssr] Window.Open returned nil: ' .. tostring(err))
-    print('demo_ssr ok (no window)')
-    return
-end
+local function clampNum(v, lo, hi) if v < lo then return lo end; if hi and v > hi then return hi end; return v end
 
--- ============================================================================
--- 1. 生成几何体: plane (地面, 反射面) + 多个 cube (反射源)
--- ============================================================================
-
--- vertex format: pos3 + normal3 + uv2 + color4 = 12 floats (与 SSAO demo 同)
+-- 几何 (复用 SSAO demo 模板)
 local function buildCube()
-    local s = 0.5
-    local v = {}
-    local idx = {}
+    local s = 0.5; local v, idx = {}, {}
     local function addQuad(p1, p2, p3, p4, n)
         local base = #v / 12
         for _, p in ipairs({p1, p2, p3, p4}) do
-            for i = 1, 3 do v[#v + 1] = p[i] end
-            for i = 1, 3 do v[#v + 1] = n[i] end
-            v[#v + 1] = 0; v[#v + 1] = 0
-            v[#v + 1] = 1; v[#v + 1] = 1
-            v[#v + 1] = 1; v[#v + 1] = 1
+            v[#v+1]=p[1]; v[#v+1]=p[2]; v[#v+1]=p[3]
+            v[#v+1]=n[1]; v[#v+1]=n[2]; v[#v+1]=n[3]
+            v[#v+1]=0; v[#v+1]=0
+            v[#v+1]=1; v[#v+1]=1; v[#v+1]=1; v[#v+1]=1
         end
-        idx[#idx + 1] = base + 1; idx[#idx + 1] = base + 2; idx[#idx + 1] = base + 3
-        idx[#idx + 1] = base + 1; idx[#idx + 1] = base + 3; idx[#idx + 1] = base + 4
+        idx[#idx+1]=base+1; idx[#idx+1]=base+2; idx[#idx+1]=base+3
+        idx[#idx+1]=base+1; idx[#idx+1]=base+3; idx[#idx+1]=base+4
     end
-    addQuad({ s,-s,-s}, { s, s,-s}, { s, s, s}, { s,-s, s}, { 1, 0, 0})
-    addQuad({-s,-s, s}, {-s, s, s}, {-s, s,-s}, {-s,-s,-s}, {-1, 0, 0})
-    addQuad({-s, s,-s}, {-s, s, s}, { s, s, s}, { s, s,-s}, { 0, 1, 0})
-    addQuad({-s,-s, s}, {-s,-s,-s}, { s,-s,-s}, { s,-s, s}, { 0,-1, 0})
-    addQuad({-s,-s, s}, { s,-s, s}, { s, s, s}, {-s, s, s}, { 0, 0, 1})
-    addQuad({ s,-s,-s}, {-s,-s,-s}, {-s, s,-s}, { s, s,-s}, { 0, 0,-1})
+    addQuad({ s,-s,-s},{ s, s,-s},{ s, s, s},{ s,-s, s},{ 1, 0, 0})
+    addQuad({-s,-s, s},{-s, s, s},{-s, s,-s},{-s,-s,-s},{-1, 0, 0})
+    addQuad({-s, s,-s},{-s, s, s},{ s, s, s},{ s, s,-s},{ 0, 1, 0})
+    addQuad({-s,-s, s},{-s,-s,-s},{ s,-s,-s},{ s,-s, s},{ 0,-1, 0})
+    addQuad({-s,-s, s},{ s,-s, s},{ s, s, s},{-s, s, s},{ 0, 0, 1})
+    addQuad({ s,-s,-s},{-s,-s,-s},{-s, s,-s},{ s, s,-s},{ 0, 0,-1})
     return v, idx
 end
-
--- plane XZ 面朝上 (反射面), 大小 10x10
 local function buildPlane()
     local s = 5.0
-    local v = {
-        -s, 0, -s,  0, 1, 0,  0, 0,  0.5, 0.5, 0.55, 1,
-         s, 0, -s,  0, 1, 0,  1, 0,  0.5, 0.5, 0.55, 1,
-         s, 0,  s,  0, 1, 0,  1, 1,  0.5, 0.5, 0.55, 1,
-        -s, 0,  s,  0, 1, 0,  0, 1,  0.5, 0.5, 0.55, 1,
-    }
-    local idx = {1, 2, 3, 1, 3, 4}
-    return v, idx
+    local v = { -s,0,-s, 0,1,0, 0,0, 0.5,0.5,0.55,1,
+                 s,0,-s, 0,1,0, 1,0, 0.5,0.5,0.55,1,
+                 s,0, s, 0,1,0, 1,1, 0.5,0.5,0.55,1,
+                -s,0, s, 0,1,0, 0,1, 0.5,0.5,0.55,1 }
+    return v, { 1, 2, 3, 1, 3, 4 }
 end
 
-local cubeMesh = nil
-local planeMesh = nil
-do
-    local Mesh = Gfx.Mesh
-    if not Mesh or type(Mesh.New) ~= 'function' then
-        print('[demo_ssr] Gfx.Mesh.New not available, skipping 3D scene')
-        win:Close()
-        print('demo_ssr ok (no mesh api)')
-        return
-    end
-    local cv, ci = buildCube()
-    local pv, pi = buildPlane()
-    local m1, e1 = Mesh.New(cv, ci)
-    local m2, e2 = Mesh.New(pv, pi)
-    if not m1 then print('[demo_ssr] cube mesh failed: ' .. tostring(e1)); win:Close(); return end
-    if not m2 then print('[demo_ssr] plane mesh failed: ' .. tostring(e2)); win:Close(); return end
-    cubeMesh = m1
-    planeMesh = m2
-    print(string.format('[demo_ssr] cube: %d verts / %d idx; plane: %d verts / %d idx',
-        m1:GetVertexCount(), m1:GetIndexCount(), m2:GetVertexCount(), m2:GetIndexCount()))
-end
-
--- ============================================================================
--- 2. HDR + SSR Enable + camera
--- ============================================================================
-
-local hdrEnabled = HDR.IsSupported() and HDR.Enable(WIN_W, WIN_H) or false
-print('[demo_ssr] HDR.Enable = ' .. tostring(hdrEnabled))
-
-local ssrEnabled = hdrEnabled and SSR.Enable(WIN_W, WIN_H) or false
-print('[demo_ssr] SSR.Enable = ' .. tostring(ssrEnabled))
-if ssrEnabled then
-    print('[demo_ssr] Reflection tex id = ' .. tostring(SSR.GetReflectionTexId()))
-end
-
--- 3D camera (透视投影 + LookAt)
-if type(Gfx.SetPerspective) == 'function' then
-    Gfx.SetPerspective(60, WIN_W / WIN_H, 0.1, 100.0)
-end
-if type(Gfx.SetDepthTest) == 'function' then
-    Gfx.SetDepthTest(true)
-end
-
--- 主灯光 (PBR direction light)
-if type(Gfx.SetDirectionalLight) == 'function' then
-    Gfx.SetDirectionalLight(0.5, -1.0, -0.3, 1.0, 0.95, 0.85, 1.5)
-end
-
--- ============================================================================
--- 3. 主循环 + 键位
--- ============================================================================
-
-local lastTime = (Time and Time.GetSeconds and Time.GetSeconds()) or 0
-local keyCooldown = {}
-local function keyTap(name)
-    if win:IsKeyPressed(name) then
-        if (keyCooldown[name] or 0) <= 0 then
-            keyCooldown[name] = 0.15
-            return true
-        end
-    end
-    return false
-end
-
-local function clampNum(v, lo, hi)
-    if v < lo then return lo end
-    if hi and v > hi then return hi end
-    return v
-end
-
--- 3D 场景: 7 个 cube + 1 plane (亮色, 反射明显)
 local SCENE = {
-    {x =  0.0, y = 0.6, z =  0.0, scale = 1.2, color = {1.0, 0.4, 0.4}},
-    {x =  2.5, y = 0.5, z =  1.5, scale = 1.0, color = {0.4, 1.0, 0.4}},
-    {x = -2.5, y = 0.5, z = -1.5, scale = 1.0, color = {0.4, 0.4, 1.0}},
-    {x =  1.5, y = 0.4, z = -2.5, scale = 0.8, color = {1.0, 1.0, 0.4}},
-    {x = -1.5, y = 0.4, z =  2.5, scale = 0.8, color = {0.4, 1.0, 1.0}},
-    {x =  3.5, y = 0.5, z = -3.0, scale = 1.0, color = {1.0, 0.5, 1.0}},
-    {x = -3.5, y = 0.5, z =  3.0, scale = 1.0, color = {1.0, 0.7, 0.3}},
+    {x= 0.0,y=0.6,z= 0.0, scale=1.2, color={1.0,0.4,0.4}},
+    {x= 2.5,y=0.5,z= 1.5, scale=1.0, color={0.4,1.0,0.4}},
+    {x=-2.5,y=0.5,z=-1.5, scale=1.0, color={0.4,0.4,1.0}},
+    {x= 1.5,y=0.4,z=-2.5, scale=0.8, color={1.0,1.0,0.4}},
+    {x=-1.5,y=0.4,z= 2.5, scale=0.8, color={0.4,1.0,1.0}},
+    {x= 3.5,y=0.5,z=-3.0, scale=1.0, color={1.0,0.5,1.0}},
+    {x=-3.5,y=0.5,z= 3.0, scale=1.0, color={1.0,0.7,0.3}},
 }
 
-local camAngle = 0.0
-local camHeight = 3.5   -- 较低俯角, 让反射更明显
+local Demo = Light(Light.UI.Window):New()
+local g_cubeMesh, g_planeMesh = nil, nil
+local g_hdrEnabled = false
+local g_camAngle   = 0.0
+local g_camHeight  = 3.5
 
-while win:IsOpen() do
-    local now = (Time and Time.GetSeconds and Time.GetSeconds()) or (lastTime + 0.016)
-    local dt = now - lastTime
-    lastTime = now
+function Demo:OnOpen()
+    local Mesh = Gfx.Mesh
+    if not Mesh or type(Mesh.New) ~= 'function' then print('[demo_ssr] Gfx.Mesh.New 不可用'); self:Close(); return end
+    local cv, ci = buildCube(); local pv, pi = buildPlane()
+    g_cubeMesh  = Mesh.New(cv, ci)
+    g_planeMesh = Mesh.New(pv, pi)
+    if not g_cubeMesh or not g_planeMesh then print('[demo_ssr] mesh build failed'); self:Close(); return end
+
+    g_hdrEnabled = HDR.IsSupported() and HDR.Enable(WIN_W, WIN_H) or false
+    print('[demo_ssr] HDR.Enable = ' .. tostring(g_hdrEnabled))
+    local ssrOk = g_hdrEnabled and SSR.Enable(WIN_W, WIN_H) or false
+    print('[demo_ssr] SSR.Enable = ' .. tostring(ssrOk))
+    if ssrOk then print('[demo_ssr] Reflection tex id = ' .. tostring(SSR.GetReflectionTexId())) end
+
+    if type(Gfx.SetPerspective) == 'function' then Gfx.SetPerspective(60, WIN_W / WIN_H, 0.1, 100.0) end
+    if type(Gfx.SetDepthTest) == 'function' then Gfx.SetDepthTest(true) end
+    if type(Gfx.SetDirectionalLight) == 'function' then
+        Gfx.SetDirectionalLight(0.5, -1.0, -0.3, 1.0, 0.95, 0.85, 1.5)
+    end
+end
+
+function Demo:Update(dt)
     if dt > 0.1 then dt = 0.1 end
+    g_camAngle = g_camAngle + dt * 0.25
+end
 
-    for k, v in pairs(keyCooldown) do
-        keyCooldown[k] = math.max(0, v - dt)
+function Demo:Draw()
+    local cx, cz = math.cos(g_camAngle) * 8.0, math.sin(g_camAngle) * 8.0
+    if type(Gfx.SetCamera) == 'function' then Gfx.SetCamera(cx, g_camHeight, cz, 0.0, 0.5, 0.0) end
+
+    if g_planeMesh then
+        Gfx.Push(); Gfx.SetColor(0.5, 0.5, 0.55, 1.0); g_planeMesh:Draw(0); Gfx.Pop()
     end
-
-    camAngle = camAngle + dt * 0.25
-
-    win:PollEvents()
-    if win:IsKeyPressed('escape') then win:Close(); break end
-
-    if keyTap('f') then
-        if SSR.IsEnabled() then SSR.Disable(); print('[demo] SSR OFF')
-        else local ok = SSR.Enable(WIN_W, WIN_H); print('[demo] SSR ' .. (ok and 'ON' or 'OFF (fail)')) end
-    end
-
-    -- 1/2: MaxSteps (8 step 增量)
-    if keyTap('1') then SSR.SetMaxSteps(math.max(8, SSR.GetMaxSteps() - 8)); print('[demo] MaxSteps = ' .. SSR.GetMaxSteps()) end
-    if keyTap('2') then SSR.SetMaxSteps(math.min(128, SSR.GetMaxSteps() + 8)); print('[demo] MaxSteps = ' .. SSR.GetMaxSteps()) end
-
-    -- 3/4: StepSize
-    if keyTap('3') then SSR.SetStepSize(clampNum(SSR.GetStepSize() - 0.05, 0.01, 1.0)) end
-    if keyTap('4') then SSR.SetStepSize(clampNum(SSR.GetStepSize() + 0.05, 0.01, 1.0)) end
-
-    -- 5/6: Thickness
-    if keyTap('5') then SSR.SetThickness(clampNum(SSR.GetThickness() - 0.1, 0.01, 5.0)) end
-    if keyTap('6') then SSR.SetThickness(clampNum(SSR.GetThickness() + 0.1, 0.01, 5.0)) end
-
-    -- 7/8: Intensity
-    if keyTap('7') then SSR.SetIntensity(clampNum(SSR.GetIntensity() - 0.1, 0.0, 2.0)) end
-    if keyTap('8') then SSR.SetIntensity(clampNum(SSR.GetIntensity() + 0.1, 0.0, 2.0)) end
-
-    -- - / =: MaxDistance (注: '-' 在 SDL key name 中是 'minus', '=' 是 'equals')
-    if keyTap('minus')  then SSR.SetMaxDistance(clampNum(SSR.GetMaxDistance() - 10, 1, 1000)) end
-    if keyTap('equals') then SSR.SetMaxDistance(clampNum(SSR.GetMaxDistance() + 10, 1, 1000)) end
-
-    -- [ / ]: EdgeFade
-    if keyTap('[') then SSR.SetEdgeFade(clampNum(SSR.GetEdgeFade() - 0.05, 0.0, 0.5)) end
-    if keyTap(']') then SSR.SetEdgeFade(clampNum(SSR.GetEdgeFade() + 0.05, 0.0, 0.5)) end
-
-    -- Phase E.10 — B: 切换 SSR Blur on/off
-    if keyTap('b') then
-        local v = not SSR.GetBlurEnabled()
-        SSR.SetBlurEnabled(v)
-        print('[demo] SSR Blur ' .. (v and 'ON' or 'OFF') .. ' (radius=' .. string.format('%.2f', SSR.GetBlurRadius()) .. ')')
-    end
-
-    -- Phase E.10 — 9/0: BlurRadius
-    if keyTap('9') then
-        SSR.SetBlurRadius(clampNum(SSR.GetBlurRadius() - 0.25, 0.5, 4.0))
-        print('[demo] BlurRadius = ' .. string.format('%.2f', SSR.GetBlurRadius()))
-    end
-    if keyTap('0') then
-        SSR.SetBlurRadius(clampNum(SSR.GetBlurRadius() + 0.25, 0.5, 4.0))
-        print('[demo] BlurRadius = ' .. string.format('%.2f', SSR.GetBlurRadius()))
-    end
-
-    -- Phase E.11 — V: 切换 Bilateral
-    if keyTap('v') then
-        local b = not SSR.GetBilateralEnabled()
-        SSR.SetBilateralEnabled(b)
-        print('[demo] SSR Bilateral ' .. (b and 'ON' or 'OFF') .. ' (sigma=' .. string.format('%.0f', SSR.GetBlurDepthSigma()) .. ')')
-    end
-
-    -- Phase E.11 — ,/.: BlurDepthSigma
-    if keyTap(',') then
-        SSR.SetBlurDepthSigma(clampNum(SSR.GetBlurDepthSigma() - 25.0, 50.0, 500.0))
-        print('[demo] BlurDepthSigma = ' .. string.format('%.0f', SSR.GetBlurDepthSigma()))
-    end
-    if keyTap('.') then
-        SSR.SetBlurDepthSigma(clampNum(SSR.GetBlurDepthSigma() + 25.0, 50.0, 500.0))
-        print('[demo] BlurDepthSigma = ' .. string.format('%.0f', SSR.GetBlurDepthSigma()))
-    end
-
-    -- Phase E.12 — T: 切换 Temporal
-    if keyTap('t') then
-        local te = not SSR.GetTemporalEnabled()
-        SSR.SetTemporalEnabled(te)
-        print('[demo] SSR Temporal ' .. (te and 'ON' or 'OFF') ..
-              ' (alpha=' .. string.format('%.2f', SSR.GetTemporalAlpha()) ..
-              ', reject=' .. tostring(SSR.GetRejectionMode()) .. ')')
-    end
-
-    -- Phase E.12 — U/I: TemporalAlpha
-    if keyTap('u') then
-        SSR.SetTemporalAlpha(clampNum(SSR.GetTemporalAlpha() - 0.02, 0.5, 0.99))
-        print('[demo] TemporalAlpha = ' .. string.format('%.3f', SSR.GetTemporalAlpha()))
-    end
-    if keyTap('i') then
-        SSR.SetTemporalAlpha(clampNum(SSR.GetTemporalAlpha() + 0.02, 0.5, 0.99))
-        print('[demo] TemporalAlpha = ' .. string.format('%.3f', SSR.GetTemporalAlpha()))
-    end
-
-    -- Phase E.12 — N: 切换 RejectionMode (0=current-depth, 1=neighborhood)
-    if keyTap('n') then
-        local rm = 1 - SSR.GetRejectionMode()
-        SSR.SetRejectionMode(rm)
-        print('[demo] RejectionMode = ' .. tostring(rm) ..
-              ' (' .. (rm == 1 and 'neighborhood-clip' or 'current-depth') .. ')')
-    end
-
-    -- Phase E.14 — K: 切 velocity dilation
-    if keyTap('k') then
-        local d = not HDR.GetVelocityDilation()
-        HDR.SetVelocityDilation(d)
-        print('[demo] Velocity Dilation ' .. (d and 'ON' or 'OFF'))
-    end
-
-    -- Phase E.14 — L: 切 velocity 格式 rg16f <-> rg8 (会重建 HDR RT)
-    if keyTap('l') then
-        local cur = HDR.GetVelocityFormat()
-        local nxt = (cur == 'rg16f') and 'rg8' or 'rg16f'
-        local ok = HDR.SetVelocityFormat(nxt)
-        print('[demo] Velocity Format ' .. cur .. ' -> ' .. nxt ..
-              ' (' .. (ok and 'ok' or 'failed') .. ')')
-    end
-
-    -- Phase E.15 — M: 切 Motion Blur ON/OFF
-    if MotionBlur and keyTap('m') then
-        if MotionBlur.IsEnabled() then
-            MotionBlur.Disable()
-            print('[demo] MotionBlur OFF')
-        else
-            local ok = MotionBlur.Enable(WIN_W, WIN_H)
-            print('[demo] MotionBlur ' .. (ok and 'ON' or 'OFF (fail)'))
+    if g_cubeMesh then
+        for _, c in ipairs(SCENE) do
+            Gfx.Push()
+            Gfx.Translate(c.x, c.y, c.z); Gfx.Scale(c.scale, c.scale, c.scale)
+            Gfx.SetColor(c.color[1], c.color[2], c.color[3], 1.0)
+            g_cubeMesh:Draw(0); Gfx.Pop()
         end
-    end
-
-    -- Phase E.16 — ;: 循环切 motion blur mode (0→1→2→0)
-    if MotionBlur and keyTap(';') then
-        local names = { [0] = 'combined', [1] = 'camera_only', [2] = 'object_only' }
-        local cur = MotionBlur.GetMode()
-        local nxt = (cur + 1) % 3
-        MotionBlur.SetMode(nxt)
-        print(string.format('[demo] MotionBlur Mode: %s (%d) -> %s (%d)',
-            names[cur], cur, names[nxt], nxt))
-    end
-
-    -- Phase E.17 — [: 切 half-res motion blur ON/OFF
-    if MotionBlur and MotionBlur.SetHalfRes and keyTap('[') then
-        local cur = MotionBlur.GetHalfRes()
-        MotionBlur.SetHalfRes(not cur)
-        print(string.format('[demo] MotionBlur HalfRes: %s -> %s',
-            cur and 'ON' or 'OFF', (not cur) and 'ON' or 'OFF'))
-    end
-
-    -- Phase E.18.1 — ]: 切 dilation pass 半分辨率 ON/OFF (与 [ motion blur halfRes 对称)
-    if HDR.SetVelocityDilationHalfRes and keyTap(']') then
-        local cur = HDR.GetVelocityDilationHalfRes()
-        HDR.SetVelocityDilationHalfRes(not cur)
-        print(string.format('[demo] Velocity Dilation HalfRes: %s -> %s (VRAM %s / dilation pass %s)',
-            cur and 'ON' or 'OFF', (not cur) and 'ON' or 'OFF',
-            (not cur) and '-75%' or 'baseline',
-            (not cur) and '+4x' or 'baseline'))
-    end
-
-    -- Phase E.18.2 — \: 切 dilation pass autoSkip ON/OFF (单消费者 SSR Temporal 场景自动跳过)
-    if HDR.SetVelocityDilationAutoSkip and keyTap('\\') then
-        local cur = HDR.GetVelocityDilationAutoSkip()
-        HDR.SetVelocityDilationAutoSkip(not cur)
-        print(string.format('[demo] Velocity Dilation AutoSkip: %s -> %s (%s)',
-            cur and 'ON' or 'OFF', (not cur) and 'ON' or 'OFF',
-            (not cur) and 'SSR-only single consumer auto-skipped' or 'always run dilation pass'))
-    end
-
-    -- Phase F.0 — Y: 切 TAA 主管线 ON/OFF (与 SSR Temporal 共存，推荐手动关 SSR Temporal)
-    local TAA = Gfx.TAA
-    if TAA and keyTap('y') then
-        if TAA.IsEnabled() then
-            TAA.Disable()
-            print('[demo] TAA OFF')
-        else
-            local w, h = win:GetSize()
-            local ok = TAA.Enable(w, h)
-            print(string.format('[demo] TAA Enable(%d, %d) -> %s (alpha=%.2f, clip=%s, jitter=%s)',
-                w, h, ok and 'ON' or 'FAILED',
-                TAA.GetBlendAlpha(),
-                TAA.GetNeighborhoodClip() and 'ON' or 'OFF',
-                TAA.GetJitterEnabled() and 'ON' or 'OFF'))
-            if ok and SSR.GetTemporalEnabled() then
-                print('[demo] WARN: SSR Temporal 仍启用, 反射会被 temporal 两次 (考虑 SSR.SetTemporalEnabled(false))')
-            end
-        end
-    end
-
-    -- Phase F.0 — J: 切 TAA jitter ON/OFF (关掉则退化为纯时序 stability filter, 无 super-sampling)
-    if TAA and TAA.IsEnabled() and keyTap('j') then
-        local cur = TAA.GetJitterEnabled()
-        TAA.SetJitterEnabled(not cur)
-        print(string.format('[demo] TAA Jitter: %s -> %s (%s)',
-            cur and 'ON' or 'OFF', (not cur) and 'ON' or 'OFF',
-            (not cur) and 'sub-pixel super-sampling' or 'pure temporal stability (no SS)'))
-    end
-
-    -- Phase F.0.1 — H: 调节 TAA sharpness (±0.1, clamp [0, 2], 默认 0.5)
-    --   sharpness=0 走纯 blit fallback (零 ALU); > 0 启用 4-tap unsharp mask
-    if TAA and TAA.IsEnabled() and TAA.SetSharpness and keyTap('h') then
-        local cur = TAA.GetSharpness()
-        local nxt = cur + 0.1
-        if nxt > 2.0 + 1e-3 then nxt = 0.0 end   -- 环状回 0 (方便演示 sharpness=0 路径)
-        TAA.SetSharpness(nxt)
-        print(string.format('[demo] TAA Sharpness: %.2f -> %.2f (%s)',
-            cur, TAA.GetSharpness(),
-            TAA.GetSharpness() > 0 and '4-tap unsharp mask' or 'pure blit (zero ALU)'))
-    end
-
-    -- Phase F.0.4 — G: 切 TAA anti-flicker (Karis luma-weighted blend) ON/OFF
-    --   off → F.0 纯 alpha blend (低亮部行为完全等价); on → Karis 压制 firefly 闪烁
-    if TAA and TAA.IsEnabled() and TAA.SetAntiFlicker and keyTap('g') then
-        local cur = TAA.GetAntiFlicker()
-        TAA.SetAntiFlicker(not cur)
-        print(string.format('[demo] TAA AntiFlicker: %s -> %s (%s)',
-            cur and 'ON' or 'OFF',
-            TAA.GetAntiFlicker() and 'ON' or 'OFF',
-            TAA.GetAntiFlicker() and 'Karis luma weighting (压制 firefly)' or 'pure alpha blend (F.0 行为)'))
-    end
-
-    -- Phase F.0.5 — X: 切 TAA history RT 半分辨率 ON/OFF
-    --   on  → history RT (w/2, h/2), VRAM -75%, history bilinear 上采样
-    --   off → full-res (零回归, 与 F.0/0.1/0.2/0.3/0.4 行为一致)
-    if TAA and TAA.IsEnabled() and TAA.SetHalfResHistory and keyTap('x') then
-        local cur = TAA.GetHalfResHistory()
-        TAA.SetHalfResHistory(not cur)
-        print(string.format('[demo] TAA HalfResHistory: %s -> %s (VRAM %s)',
-            cur and 'ON' or 'OFF',
-            TAA.GetHalfResHistory() and 'ON' or 'OFF',
-            TAA.GetHalfResHistory() and '-75%' or 'baseline'))
-    end
-
-    -- Phase F.0.6/F.0.12 — Z: 三轮循环 'unsharp' → 'cas' → 'rcas' → 'unsharp'
-    --   unsharp → F.0.1 4-tap, sharpness [0, 2], 平滑区域也被锐化 (可能出现噪点)
-    --   cas     → F.0.6 FSR1 5-tap, sharpness [0, 1], contrast-adaptive 低对比区域不锐化
-    --   rcas    → F.0.12 FSR2 5-tap, sharpness [0, 2], 加 noise detection + edge protection
-    if TAA and TAA.IsEnabled() and TAA.SetSharpenMode and keyTap('z') then
-        local cur = TAA.GetSharpenMode()
-        -- 三轮循环表
-        local cycle = { unsharp = 'cas', cas = 'rcas', rcas = 'unsharp' }
-        local nxt = cycle[cur] or 'unsharp'
-        TAA.SetSharpenMode(nxt)
-        local desc
-        if     nxt == 'cas'  then desc = 'AMD FSR1 5-tap CAS, contrast-adaptive + HDR safe'
-        elseif nxt == 'rcas' then desc = 'AMD FSR2 5-tap RCAS (Robust CAS), noise + edge aware'
-        else                      desc = 'F.0.1 4-tap unsharp mask (默认)'
-        end
-        print(string.format('[demo] TAA SharpenMode: %s -> %s (%s)', cur, nxt, desc))
-    end
-
-    -- Phase F.0.8 — Q: motion-adaptive γ ON/OFF (UE5 高级形式, 仅 ClipMode='variance' 生效)
-    --   ON  → 静止区域 γ=varianceGamma 严防 ghost; 高速 γ=motionGamma 宽容防 trail
-    --   OFF → F.0.3 行为 (全屏单 γ = varianceGamma)
-    if TAA and TAA.IsEnabled() and TAA.SetMotionAdaptive and keyTap('q') then
-        local cur = TAA.GetMotionAdaptive()
-        TAA.SetMotionAdaptive(not cur)
-        local mg = TAA.GetMotionGamma and TAA.GetMotionGamma() or 1.5
-        local vg = TAA.GetVarianceGamma()
-        print(string.format('[demo] TAA MotionAdaptive: %s -> %s (varG=%.2f, motG=%.2f)',
-            cur and 'ON' or 'OFF',
-            TAA.GetMotionAdaptive() and 'ON' or 'OFF',
-            vg, mg))
-    end
-
-    -- Phase F.0.13 — O: motion-adaptive sharpness ON/OFF
-    --   ON  → 高速相机运动时 effSharpness lerp 到 motionSharpness (默认 0.1), 减 reprojection trail
-    --   OFF → 全屏静态 sharpness (零回归, 与 F.0.1/F.0.6/F.0.12 行为一致)
-    if TAA and TAA.IsEnabled() and TAA.SetMotionAdaptiveSharpness and keyTap('o') then
-        local cur = TAA.GetMotionAdaptiveSharpness()
-        TAA.SetMotionAdaptiveSharpness(not cur)
-        local ms = TAA.GetMotionSharpness and TAA.GetMotionSharpness() or 0.1
-        local sh = TAA.GetSharpness()
-        print(string.format('[demo] TAA MotionAdaptiveSharpness: %s -> %s (sharp=%.2f, motionSharpness=%.2f)',
-            cur and 'ON' or 'OFF',
-            TAA.GetMotionAdaptiveSharpness() and 'ON' or 'OFF',
-            sh, ms))
-    end
-
-    -- Phase F.0.10 — C: 多实例 TAA 演示 (instance API: Create / SetActive / Destroy)
-    --   按 C 键: 4-state lifecycle 循环
-    --     state 0 (count=1): 创建 3 个 user instance, 各赋差异化参数 (sharpness/clipMode/sharpenMode)
-    --     state 1..3       : 循环切到 instance 1/2/3 (HUD 自动反映当前 active 的参数)
-    --     state 4 (active=3): 销毁所有 user instance, count 回 1
-    if TAA and TAA.CreateInstance and keyTap('c') then
-        local count = TAA.GetInstanceCount()
-        local active = TAA.GetActiveInstance()
-        if count == 1 then
-            -- 仅 default: 创建 3 个 user instance, 各赋差异化参数, 切到 instance 1
-            local id1 = TAA.CreateInstance()
-            local id2 = TAA.CreateInstance()
-            local id3 = TAA.CreateInstance()
-            if id1 > 0 and id2 > 0 and id3 > 0 then
-                -- 必须先 SetActive 才能配置该 instance 参数; new instance 默认 disabled
-                TAA.SetActiveInstance(id1); TAA.SetSharpness(0.3); TAA.SetClipMode('rgb');      TAA.SetSharpenMode('unsharp')
-                TAA.SetActiveInstance(id2); TAA.SetSharpness(1.5); TAA.SetClipMode('ycocg');    TAA.SetSharpenMode('cas')
-                TAA.SetActiveInstance(id3); TAA.SetSharpness(0.8); TAA.SetClipMode('variance'); TAA.SetSharpenMode('rcas')
-                TAA.SetActiveInstance(0)
-                print(string.format('[demo] TAA F.0.10: 已创建 3 个 instance (count=%d), active=0 (default)', TAA.GetInstanceCount()))
-            else
-                print('[demo] TAA F.0.10: CreateInstance 失败')
-            end
-        elseif active < TAA.GetInstanceCount() - 1 then
-            -- 循环切到下一个 instance (0 -> 1 -> 2 -> 3)
-            local nxt = active + 1
-            TAA.SetActiveInstance(nxt)
-            print(string.format('[demo] TAA F.0.10: active %d -> %d (sharp=%.2f, clip=%s, sharpen=%s)',
-                active, nxt, TAA.GetSharpness(), TAA.GetClipMode(), TAA.GetSharpenMode()))
-        else
-            -- 末尾 (active=3): 销毁所有 user instance, 切回 default
-            for i = 3, 1, -1 do TAA.DestroyInstance(i) end
-            print(string.format('[demo] TAA F.0.10: 销毁全部 user instance, count=%d, active=0 (default)', TAA.GetInstanceCount()))
-        end
-    end
-
-    -- Phase F.0.9/F.0.14 — P: 在 'bilinear' / 'bicubic' (Catmull-Rom 9-tap) / 'lanczos' (Lanczos-2 25-tap) 三 mode 轮转
-    --   仅 sharpness=0 && halfRes=true 时实际生效 (sharpen pass 路径不受影响)
-    if TAA and TAA.IsEnabled() and TAA.SetUpscaleMode and keyTap('p') then
-        local cur = TAA.GetUpscaleMode()
-        local nxt = (cur == 'bilinear') and 'bicubic'
-                 or (cur == 'bicubic')  and 'lanczos'
-                 or                          'bilinear'
-        TAA.SetUpscaleMode(nxt)
-        local sh = TAA.GetSharpness()
-        local hr = TAA.GetHalfResHistory()
-        local active = (sh <= 0.0001) and hr  -- 实际生效条件
-        print(string.format('[demo] TAA UpscaleMode: %s -> %s (实际生效=%s, sharp=%.2f, halfRes=%s)',
-            cur, nxt, active and 'YES' or 'NO (需 sharp=0 + halfRes=ON)',
-            sh, hr and 'ON' or 'OFF'))
-    end
-
-    -- R: reset 默认
-    if keyTap('r') then
-        SSR.SetMaxSteps(64); SSR.SetStepSize(0.1); SSR.SetThickness(0.5)
-        SSR.SetMaxDistance(50.0); SSR.SetIntensity(0.7); SSR.SetEdgeFade(0.1)
-        SSR.SetBlurEnabled(false); SSR.SetBlurRadius(1.5)         -- Phase E.10
-        SSR.SetBilateralEnabled(true); SSR.SetBlurDepthSigma(200.0)  -- Phase E.11
-        SSR.SetTemporalEnabled(true); SSR.SetTemporalAlpha(0.9); SSR.SetRejectionMode(1)  -- Phase E.12
-        print('[demo] reset defaults')
-    end
-
-    -- ========== 渲染 ==========
-    win:BeginFrame(0.08, 0.10, 0.14, 1.0)
-
-    -- 相机围绕场景慢转
-    local cx = math.cos(camAngle) * 8.0
-    local cz = math.sin(camAngle) * 8.0
-    if type(Gfx.SetCamera) == 'function' then
-        Gfx.SetCamera(cx, camHeight, cz, 0.0, 0.5, 0.0)
-    end
-
-    -- 地面 (反射面)
-    if planeMesh then
-        Gfx.Push()
-        Gfx.SetColor(0.5, 0.5, 0.55, 1.0)
-        planeMesh:Draw(0)
-        Gfx.Pop()
-    end
-
-    -- 7 个立方体
-    for _, c in ipairs(SCENE) do
-        Gfx.Push()
-        Gfx.Translate(c.x, c.y, c.z)
-        Gfx.Scale(c.scale, c.scale, c.scale)
-        Gfx.SetColor(c.color[1], c.color[2], c.color[3], 1.0)
-        cubeMesh:Draw(0)
-        Gfx.Pop()
     end
     Gfx.SetColor(1, 1, 1, 1)
 
-    -- OSD
-    if win.DrawText then
-        local y = 8
-        local line = function(s) win:DrawText(8, y, s, 1, 1, 1, 1); y = y + 16 end
+    if Gfx.Print then
+        local y = 8; local function line(s) Gfx.Print(s, 8, y, 0); y = y + 16 end
         line(string.format('HDR: %s   SSR: %s   reflectTex=%d',
-            hdrEnabled and 'ON' or 'OFF',
-            SSR.IsEnabled() and 'ON' or 'OFF',
-            SSR.GetReflectionTexId()))
+            g_hdrEnabled and 'ON' or 'OFF', SSR.IsEnabled() and 'ON' or 'OFF', SSR.GetReflectionTexId()))
         line(string.format('SSR: steps=%d step=%.2f thick=%.2f',
             SSR.GetMaxSteps(), SSR.GetStepSize(), SSR.GetThickness()))
         line(string.format('SSR: maxDist=%.0f intensity=%.2f edgeFade=%.2f',
             SSR.GetMaxDistance(), SSR.GetIntensity(), SSR.GetEdgeFade()))
         line(string.format('SSR Blur: %s  radius=%.2f  Bilateral=%s  sigma=%.0f',
-            SSR.GetBlurEnabled() and 'ON' or 'OFF',
-            SSR.GetBlurRadius(),
-            SSR.GetBilateralEnabled() and 'ON' or 'OFF',
-            SSR.GetBlurDepthSigma()))
+            SSR.GetBlurEnabled() and 'ON' or 'OFF', SSR.GetBlurRadius(),
+            SSR.GetBilateralEnabled() and 'ON' or 'OFF', SSR.GetBlurDepthSigma()))
         line(string.format('Temporal: %s | alpha=%.2f | reject=%d (%s)',
-            SSR.GetTemporalEnabled() and 'ON' or 'OFF',
-            SSR.GetTemporalAlpha(),
+            SSR.GetTemporalEnabled() and 'ON' or 'OFF', SSR.GetTemporalAlpha(),
             SSR.GetRejectionMode(),
             SSR.GetRejectionMode() == 1 and 'neighborhood' or 'depth'))
-        -- Phase E.13/E.14: velocity buffer 与 Temporal SSR 联动；显示 dilation/format 状态
-        -- Phase E.18: dilation=ON 时 HDR EndScene 内做独立 9-tap pass，SSR/MB 共享 dilatedTex
-        -- Phase E.18.1: dilation pass 可半分辨率 (VRAM -75%, perf +4x)
-        -- Phase E.18.2: autoSkip 单消费者 SSR Temporal 场景跳过 dilation pass
-        local dilateHalfRes = HDR.GetVelocityDilationHalfRes and HDR.GetVelocityDilationHalfRes() or false
+        local dilateHalfRes  = HDR.GetVelocityDilationHalfRes  and HDR.GetVelocityDilationHalfRes()  or false
         local dilateAutoSkip = HDR.GetVelocityDilationAutoSkip and HDR.GetVelocityDilationAutoSkip() or false
-        line(string.format('Velocity: %s | dilation=%s (E.18 shared, halfRes=%s, autoSkip=%s) | reproj=%s',
-            HDR.GetVelocityFormat(),
-            HDR.GetVelocityDilation() and 'ON' or 'OFF',
-            dilateHalfRes and 'ON' or 'OFF',
-            dilateAutoSkip and 'ON' or 'OFF',
-            SSR.GetTemporalEnabled() and 'velocity-first' or 'idle (Temporal OFF)'))
-        -- Phase E.15+E.16+E.17: MotionBlur 状态 (可选模块)
+        line(string.format('Velocity: %s | dilation=%s (halfRes=%s, autoSkip=%s)',
+            HDR.GetVelocityFormat(), HDR.GetVelocityDilation() and 'ON' or 'OFF',
+            dilateHalfRes and 'ON' or 'OFF', dilateAutoSkip and 'ON' or 'OFF'))
         if MotionBlur then
             local modeNames = { [0] = 'combined', [1] = 'camera_only', [2] = 'object_only' }
             local m = MotionBlur.GetMode and MotionBlur.GetMode() or 0
             local hr = MotionBlur.GetHalfRes and MotionBlur.GetHalfRes() or false
             line(string.format('MotionBlur: %s | mode=%d (%s) | halfRes=%s | strength=%.2f | samples=%d',
                 MotionBlur.IsEnabled() and 'ON' or 'OFF',
-                m, modeNames[m] or '?',
-                hr and 'ON' or 'OFF',
-                MotionBlur.GetStrength(),
-                MotionBlur.GetSampleCount()))
+                m, modeNames[m] or '?', hr and 'ON' or 'OFF',
+                MotionBlur.GetStrength(), MotionBlur.GetSampleCount()))
         end
-        -- Phase F.0+F.0.1+F.0.2+F.0.3+F.0.4+F.0.5+F.0.6+F.0.8: TAA 主管线状态 (jitter + frame counter + alpha + clip + sharpness + antiFlicker + clipMode + varianceGamma + halfResHistory + sharpenMode + motionAdaptive)
-        local TAAhud = Gfx.TAA
-        if TAAhud then
-            local jx, jy = TAAhud.GetCurrentJitter()
-            local sharp  = TAAhud.GetSharpness and TAAhud.GetSharpness() or 0
-            local af     = TAAhud.GetAntiFlicker and TAAhud.GetAntiFlicker() or false
-            local cmode  = TAAhud.GetClipMode and TAAhud.GetClipMode() or 'ycocg'        -- Phase F.0.2/F.0.3 默认 ycocg
-            local hr     = TAAhud.GetHalfResHistory and TAAhud.GetHalfResHistory() or false  -- Phase F.0.5
-            local smode  = TAAhud.GetSharpenMode and TAAhud.GetSharpenMode() or 'unsharp'    -- Phase F.0.6
-            local madapt = TAAhud.GetMotionAdaptive and TAAhud.GetMotionAdaptive() or false  -- Phase F.0.8
-            -- Phase F.0.3 + F.0.8: variance 模式下 HUD 添加 γ 字段; F.0.8 开启时额外显示 motionγ
-            local cmodeStr = cmode
-            if cmode == 'variance' and TAAhud.GetVarianceGamma then
-                if madapt and TAAhud.GetMotionGamma then
-                    cmodeStr = string.format('variance(sγ=%.2f mγ=%.2f)',
-                                             TAAhud.GetVarianceGamma(), TAAhud.GetMotionGamma())
-                else
-                    cmodeStr = string.format('variance(γ=%.2f)', TAAhud.GetVarianceGamma())
-                end
-            end
-            -- Phase F.0.9: sharp=0 路径额外显示 upscale mode (bil/bic), 仅 halfRes=true 时实际上采样
-            local umode  = TAAhud.GetUpscaleMode and TAAhud.GetUpscaleMode() or 'bilinear'
-            local umodeShort = (umode == 'bicubic') and 'bic' or 'bil'
-            -- Phase F.0.6: sharp 字段后加 mode 后缀 (unsharp/cas) 或 blit/upscale (sharp=0)
-            local sharpStr
-            if sharp > 0 then
-                sharpStr = string.format('%.2f/%s', sharp, smode)
-            else
-                sharpStr = string.format('%.2f/blit-%s', sharp, umodeShort)
-            end
-            line(string.format('TAA: %s | alpha=%.2f | clip=%s/%s | jitter=%s | sharp=%s | AF=%s | halfRes=%s | frame=%d (jx=%.3f jy=%.3f)',
-                TAAhud.IsEnabled() and 'ON' or 'OFF',
-                TAAhud.GetBlendAlpha(),
-                TAAhud.GetNeighborhoodClip() and 'ON' or 'OFF',
-                cmodeStr,                                -- Phase F.0.2/F.0.3: rgb / ycocg / variance(γ=N)
-                TAAhud.GetJitterEnabled() and 'ON' or 'OFF',
-                sharpStr,                                -- Phase F.0.6: 值/mode
-                af and 'ON' or 'OFF',                    -- Phase F.0.4
-                hr and 'ON' or 'OFF',                    -- Phase F.0.5
-                TAAhud.GetFrameCounter(),
-                jx, jy))
+        if TAA then
+            local jx, jy = TAA.GetCurrentJitter()
+            line(string.format('TAA: %s | alpha=%.2f | clip=%s | sharp=%.2f/%s | frame=%d (jx=%.3f jy=%.3f)',
+                TAA.IsEnabled() and 'ON' or 'OFF', TAA.GetBlendAlpha(),
+                TAA.GetNeighborhoodClip() and 'ON' or 'OFF',
+                TAA.GetSharpness and TAA.GetSharpness() or 0,
+                TAA.GetSharpenMode and TAA.GetSharpenMode() or '?',
+                TAA.GetFrameCounter(), jx, jy))
         end
-        line('Keys: F=SSR B=Blur V=Bilateral T=Temporal 9/0=radius ,/.=sigma U/I=alpha N=reject K=Dilation L=Format M=MotionBlur ;=Mode [=MBHalfRes ]=DilHalfRes \\=AutoSkip Y=TAA J=TAAjitter H=TAAsharp G=TAAAF X=TAAHalfRes Z=TAASharpenMode Q=TAAMotionAdapt O=TAAMotionAdaptSharp P=TAAUpscale C=TAAinstance R=reset ESC')
+        line('Keys: F=SSR B=Blur V=Bilateral T=Temporal U/I=alpha N=reject K=Dilation L=Format ' ..
+             'M=MotionBlur ;=Mode Y=TAA J=Jitter H=Sharp G=AF X=HalfRes Z=Sharpen Q=MotionAdapt ' ..
+             'O=MotAdaSharp P=Upscale C=instance R=reset ESC')
     end
-
-    win:EndFrame()
 end
 
--- ============================================================================
--- 4. 反向清理
--- ============================================================================
+local function getKeyChar(k)
+    if k >= 32 and k <= 126 then return string.char(k) end
+    return nil
+end
 
-if Gfx.TAA and Gfx.TAA.IsEnabled() then Gfx.TAA.Disable() end
-if MotionBlur and MotionBlur.IsEnabled() then MotionBlur.Disable() end
-if SSR.IsEnabled() then SSR.Disable() end
-if hdrEnabled then HDR.Disable() end
-if cubeMesh then cubeMesh:Delete() end
-if planeMesh then planeMesh:Delete() end
+function Demo:OnKey(key, scancode, action, mods)
+    if action ~= 1 then return end
+
+    -- 短路 ESC
+    if key == 256 then self:Close(); return end
+
+    -- SSR 基础参数
+    if     key == string.byte('F') then
+        if SSR.IsEnabled() then SSR.Disable(); print('[demo] SSR OFF')
+        else local ok = SSR.Enable(WIN_W, WIN_H); print('[demo] SSR ' .. (ok and 'ON' or 'OFF (fail)')) end
+    elseif key == string.byte('1') then SSR.SetMaxSteps(math.max(8, SSR.GetMaxSteps() - 8)); print('[demo] MaxSteps = ' .. SSR.GetMaxSteps())
+    elseif key == string.byte('2') then SSR.SetMaxSteps(math.min(128, SSR.GetMaxSteps() + 8)); print('[demo] MaxSteps = ' .. SSR.GetMaxSteps())
+    elseif key == string.byte('3') then SSR.SetStepSize(clampNum(SSR.GetStepSize() - 0.05, 0.01, 1.0))
+    elseif key == string.byte('4') then SSR.SetStepSize(clampNum(SSR.GetStepSize() + 0.05, 0.01, 1.0))
+    elseif key == string.byte('5') then SSR.SetThickness(clampNum(SSR.GetThickness() - 0.1, 0.01, 5.0))
+    elseif key == string.byte('6') then SSR.SetThickness(clampNum(SSR.GetThickness() + 0.1, 0.01, 5.0))
+    elseif key == string.byte('7') then SSR.SetIntensity(clampNum(SSR.GetIntensity() - 0.1, 0.0, 2.0))
+    elseif key == string.byte('8') then SSR.SetIntensity(clampNum(SSR.GetIntensity() + 0.1, 0.0, 2.0))
+    elseif key == 45 then SSR.SetMaxDistance(clampNum(SSR.GetMaxDistance() - 10, 1, 1000))                 -- '-'
+    elseif key == 61 then SSR.SetMaxDistance(clampNum(SSR.GetMaxDistance() + 10, 1, 1000))                 -- '='
+    -- Phase E.10 Blur
+    elseif key == string.byte('B') then
+        local v = not SSR.GetBlurEnabled(); SSR.SetBlurEnabled(v)
+        print('[demo] SSR Blur ' .. (v and 'ON' or 'OFF'))
+    elseif key == string.byte('9') then SSR.SetBlurRadius(clampNum(SSR.GetBlurRadius() - 0.25, 0.5, 4.0))
+    elseif key == string.byte('0') then SSR.SetBlurRadius(clampNum(SSR.GetBlurRadius() + 0.25, 0.5, 4.0))
+    -- Phase E.11 Bilateral
+    elseif key == string.byte('V') then
+        local b = not SSR.GetBilateralEnabled(); SSR.SetBilateralEnabled(b)
+        print('[demo] SSR Bilateral ' .. (b and 'ON' or 'OFF'))
+    elseif key == 44 then SSR.SetBlurDepthSigma(clampNum(SSR.GetBlurDepthSigma() - 25.0, 50.0, 500.0))     -- ','
+    elseif key == 46 then SSR.SetBlurDepthSigma(clampNum(SSR.GetBlurDepthSigma() + 25.0, 50.0, 500.0))     -- '.'
+    -- Phase E.12 Temporal
+    elseif key == string.byte('T') then
+        local te = not SSR.GetTemporalEnabled(); SSR.SetTemporalEnabled(te)
+        print('[demo] SSR Temporal ' .. (te and 'ON' or 'OFF'))
+    elseif key == string.byte('U') then SSR.SetTemporalAlpha(clampNum(SSR.GetTemporalAlpha() - 0.02, 0.5, 0.99))
+    elseif key == string.byte('I') then SSR.SetTemporalAlpha(clampNum(SSR.GetTemporalAlpha() + 0.02, 0.5, 0.99))
+    elseif key == string.byte('N') then
+        local rm = 1 - SSR.GetRejectionMode(); SSR.SetRejectionMode(rm)
+        print('[demo] RejectionMode = ' .. tostring(rm))
+    -- Phase E.14 Velocity Dilation
+    elseif key == string.byte('K') then
+        local d = not HDR.GetVelocityDilation(); HDR.SetVelocityDilation(d)
+        print('[demo] Velocity Dilation ' .. (d and 'ON' or 'OFF'))
+    elseif key == string.byte('L') then
+        local cur = HDR.GetVelocityFormat()
+        local nxt = (cur == 'rg16f') and 'rg8' or 'rg16f'
+        local ok = HDR.SetVelocityFormat(nxt)
+        print('[demo] Velocity Format ' .. cur .. ' -> ' .. nxt .. ' (' .. (ok and 'ok' or 'failed') .. ')')
+    -- Phase E.15 MotionBlur
+    elseif key == string.byte('M') then
+        if MotionBlur then
+            if MotionBlur.IsEnabled() then MotionBlur.Disable(); print('[demo] MotionBlur OFF')
+            else local ok = MotionBlur.Enable(WIN_W, WIN_H); print('[demo] MotionBlur ' .. (ok and 'ON' or 'OFF (fail)')) end
+        end
+    elseif key == 59 then                                                                              -- ';'
+        if MotionBlur then
+            local cur = MotionBlur.GetMode(); local nxt = (cur + 1) % 3
+            MotionBlur.SetMode(nxt); print('[demo] MotionBlur Mode -> ' .. nxt)
+        end
+    -- Phase E.18.1/E.18.2 — ] / \
+    elseif key == 93 then                                                                              -- ']'
+        if HDR.SetVelocityDilationHalfRes then
+            local cur = HDR.GetVelocityDilationHalfRes()
+            HDR.SetVelocityDilationHalfRes(not cur)
+            print('[demo] Velocity Dilation HalfRes -> ' .. (cur and 'OFF' or 'ON'))
+        end
+    elseif key == 92 then                                                                              -- '\'
+        if HDR.SetVelocityDilationAutoSkip then
+            local cur = HDR.GetVelocityDilationAutoSkip()
+            HDR.SetVelocityDilationAutoSkip(not cur)
+            print('[demo] Velocity Dilation AutoSkip -> ' .. (cur and 'OFF' or 'ON'))
+        end
+    -- Phase F.0 TAA
+    elseif key == string.byte('Y') then
+        if TAA then
+            if TAA.IsEnabled() then TAA.Disable(); print('[demo] TAA OFF')
+            else
+                local ok = TAA.Enable(WIN_W, WIN_H)
+                print('[demo] TAA Enable -> ' .. (ok and 'ON' or 'FAILED'))
+            end
+        end
+    elseif key == string.byte('J') then
+        if TAA and TAA.IsEnabled() then
+            local cur = TAA.GetJitterEnabled(); TAA.SetJitterEnabled(not cur)
+            print('[demo] TAA Jitter -> ' .. (cur and 'OFF' or 'ON'))
+        end
+    elseif key == string.byte('H') then
+        if TAA and TAA.IsEnabled() and TAA.SetSharpness then
+            local cur = TAA.GetSharpness(); local nxt = cur + 0.1
+            if nxt > 2.0 + 1e-3 then nxt = 0.0 end
+            TAA.SetSharpness(nxt)
+            print(string.format('[demo] TAA Sharpness: %.2f -> %.2f', cur, TAA.GetSharpness()))
+        end
+    elseif key == string.byte('G') then
+        if TAA and TAA.IsEnabled() and TAA.SetAntiFlicker then
+            local cur = TAA.GetAntiFlicker(); TAA.SetAntiFlicker(not cur)
+            print('[demo] TAA AntiFlicker -> ' .. (cur and 'OFF' or 'ON'))
+        end
+    elseif key == string.byte('X') then
+        if TAA and TAA.IsEnabled() and TAA.SetHalfResHistory then
+            local cur = TAA.GetHalfResHistory(); TAA.SetHalfResHistory(not cur)
+            print('[demo] TAA HalfResHistory -> ' .. (cur and 'OFF' or 'ON'))
+        end
+    elseif key == string.byte('Z') then
+        if TAA and TAA.IsEnabled() and TAA.SetSharpenMode then
+            local cur = TAA.GetSharpenMode()
+            local cycle = { unsharp = 'cas', cas = 'rcas', rcas = 'unsharp' }
+            local nxt = cycle[cur] or 'unsharp'
+            TAA.SetSharpenMode(nxt); print('[demo] TAA SharpenMode: ' .. cur .. ' -> ' .. nxt)
+        end
+    elseif key == string.byte('Q') then
+        if TAA and TAA.IsEnabled() and TAA.SetMotionAdaptive then
+            local cur = TAA.GetMotionAdaptive(); TAA.SetMotionAdaptive(not cur)
+            print('[demo] TAA MotionAdaptive -> ' .. (cur and 'OFF' or 'ON'))
+        end
+    elseif key == string.byte('O') then
+        if TAA and TAA.IsEnabled() and TAA.SetMotionAdaptiveSharpness then
+            local cur = TAA.GetMotionAdaptiveSharpness(); TAA.SetMotionAdaptiveSharpness(not cur)
+            print('[demo] TAA MotionAdaptiveSharpness -> ' .. (cur and 'OFF' or 'ON'))
+        end
+    elseif key == string.byte('P') then
+        if TAA and TAA.IsEnabled() and TAA.SetUpscaleMode then
+            local cur = TAA.GetUpscaleMode()
+            local nxt = (cur == 'bilinear') and 'bicubic' or (cur == 'bicubic') and 'lanczos' or 'bilinear'
+            TAA.SetUpscaleMode(nxt); print('[demo] TAA UpscaleMode: ' .. cur .. ' -> ' .. nxt)
+        end
+    elseif key == string.byte('C') then
+        -- Phase F.0.10 multi-instance lifecycle 演示
+        if TAA and TAA.CreateInstance then
+            local count = TAA.GetInstanceCount(); local active = TAA.GetActiveInstance()
+            if count == 1 then
+                local id1, id2, id3 = TAA.CreateInstance(), TAA.CreateInstance(), TAA.CreateInstance()
+                if id1 > 0 and id2 > 0 and id3 > 0 then
+                    TAA.SetActiveInstance(id1); TAA.SetSharpness(0.3); TAA.SetClipMode('rgb');      TAA.SetSharpenMode('unsharp')
+                    TAA.SetActiveInstance(id2); TAA.SetSharpness(1.5); TAA.SetClipMode('ycocg');    TAA.SetSharpenMode('cas')
+                    TAA.SetActiveInstance(id3); TAA.SetSharpness(0.8); TAA.SetClipMode('variance'); TAA.SetSharpenMode('rcas')
+                    TAA.SetActiveInstance(0)
+                    print('[demo] TAA F.0.10: 已创建 3 instance, count=' .. TAA.GetInstanceCount())
+                end
+            elseif active < TAA.GetInstanceCount() - 1 then
+                TAA.SetActiveInstance(active + 1)
+                print(string.format('[demo] TAA F.0.10: active %d -> %d', active, active + 1))
+            else
+                for i = 3, 1, -1 do TAA.DestroyInstance(i) end
+                print('[demo] TAA F.0.10: 销毁全部, count=' .. TAA.GetInstanceCount())
+            end
+        end
+    elseif key == string.byte('R') then
+        SSR.SetMaxSteps(64); SSR.SetStepSize(0.1); SSR.SetThickness(0.5)
+        SSR.SetMaxDistance(50.0); SSR.SetIntensity(0.7); SSR.SetEdgeFade(0.1)
+        SSR.SetBlurEnabled(false); SSR.SetBlurRadius(1.5)
+        SSR.SetBilateralEnabled(true); SSR.SetBlurDepthSigma(200.0)
+        SSR.SetTemporalEnabled(true); SSR.SetTemporalAlpha(0.9); SSR.SetRejectionMode(1)
+        print('[demo] reset defaults')
+    end
+end
+
+local function cleanup_demo()
+    if TAA and TAA.IsEnabled() then TAA.Disable() end
+    if MotionBlur and MotionBlur.IsEnabled() then MotionBlur.Disable() end
+    if SSR.IsEnabled() then SSR.Disable() end
+    if g_hdrEnabled then HDR.Disable() end
+    if g_cubeMesh  then g_cubeMesh:Delete() end
+    if g_planeMesh then g_planeMesh:Delete() end
+end
+
+Demo:Open(WIN_W, WIN_H, 'Phase E.9 - SSR Demo (callback)')
+while Light.UI.Loop() do Light.UI.Resume() end
+cleanup_demo()
 print('demo_ssr ok')
