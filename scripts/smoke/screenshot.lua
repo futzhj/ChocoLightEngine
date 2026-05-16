@@ -9,6 +9,9 @@ p(type(Gfx.ScreenshotRegion)=='function',  'ScreenshotRegion exists')
 p(type(Gfx.RecordPNGSequence)=='function', 'RecordPNGSequence exists')
 p(type(Gfx.StopRecord)=='function',        'StopRecord exists')
 p(type(Gfx.IsRecording)=='function',       'IsRecording exists')
+-- F.0.11.2: PBO 异步 readback
+p(type(Gfx.SetRecordAsync)=='function',    'SetRecordAsync exists')
+p(type(Gfx.IsRecordAsync)=='function',     'IsRecordAsync exists')
 
 -- Screenshot headless (viewport=0 → nil+err)
 local ok,r,e = pcall(Gfx.Screenshot,"out.png"); p(ok,'Screenshot no raise')
@@ -38,6 +41,19 @@ Gfx.StopRecord()
 -- F.0.11.1: frame_skip 显式传 3 (隔 3 帧写)
 local _,rs1 = pcall(Gfx.RecordPNGSequence,'f/',5,3)
 p(rs1==true,'RecordPNGSequence(dir,5,3) frame_skip=3 accepted')
+Gfx.StopRecord()
+
+-- F.0.11.2: SetRecordAsync 切换 (idle 时允许)
+p(Gfx.IsRecordAsync()==false,'IsRecordAsync default = false')
+local _,rsa1 = pcall(Gfx.SetRecordAsync,true);  p(rsa1==true,'SetRecordAsync(true) idle ok')
+p(Gfx.IsRecordAsync()==true, 'IsRecordAsync after SetRecordAsync(true) = true')
+local _,rsa2 = pcall(Gfx.SetRecordAsync,false); p(rsa2==true,'SetRecordAsync(false) idle ok')
+p(Gfx.IsRecordAsync()==false,'IsRecordAsync after SetRecordAsync(false) = false')
+
+-- F.0.11.2: SetRecordAsync 录屏中切换被拒
+Gfx.RecordPNGSequence('f/',1)
+local _,rsa3,esa3 = pcall(Gfx.SetRecordAsync,true)
+p(rsa3==nil and type(esa3)=='string','SetRecordAsync during recording → nil+err')
 Gfx.StopRecord()
 
 -- RecordPNGSequence + stop

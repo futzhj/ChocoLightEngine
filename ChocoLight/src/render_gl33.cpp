@@ -3572,6 +3572,15 @@ class GL33Backend : public RenderBackend {
     // 当前绑定的纹理 (0 = 无)
     GLuint boundTex = 0;
 
+    // ============ Phase F.0.11.2 — PBO 异步 readback (ping-pong, 双 PBO) ============
+    // 行为: ReadbackDefaultFBAsync 每次调用启动 PBO[idx] readback + 取 PBO[1-idx] 数据
+    //       lazy 分配 (首次调用时建); 尺寸变 → 释放旧 PBO 重建
+    GLuint m_pbo[2]      = {0, 0};
+    int    m_pbo_w       = 0;
+    int    m_pbo_h       = 0;
+    int    m_pbo_idx     = 0;            // 下一次 readback 用 m_pbo[m_pbo_idx]
+    bool   m_pbo_pending[2] = {false, false};  // 数据是否已 issue (待读)
+
     // 动态 VBO 容量 (顶点数)
     int vboCapacity = 0;
     static constexpr int INITIAL_VBO_CAPACITY = 1024;
@@ -4995,6 +5004,9 @@ public:
         if (vao) glDeleteVertexArrays(1, &vao);
         program = vao = vbo = ebo = 0;
         eboCapacity = 0;
+
+        // Phase F.0.11.2 — 释放异步 readback PBO (若有)
+        ReadbackAsyncShutdown();
 
         // Phase AS.4 — 释放 3D 资源
         if (programUnlit) { glDeleteProgram(programUnlit); programUnlit = 0; }
@@ -7498,8 +7510,9 @@ public:
         if (w <= 0 || h <= 0 || !out_rgba) return false;
         // Step 1: drain pre-existing errors (不属于本次 readback)
         while (glGetError() != GL_NO_ERROR) {}
-        // Step 2: setup state + readback
+        // Step 2: setup state + readback (取消 PBO 绑定, 走标准 client memory 路径)
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
         glPixelStorei(GL_PACK_ALIGNMENT, 1);
         glReadPixels(x, y, w, h, GL_RGBA, GL_UNSIGNED_BYTE, out_rgba);
         // Step 3: 仅检查 readback 自身 error
@@ -7509,6 +7522,83 @@ public:
             return false;
         }
         return true;
+    }
+
+    // ============================================================================
+    // Phase F.0.11.2 — PBO 异步 readback (ping-pong)
+    //
+    // 关键 GL 习语:
+    //   1) 绑 GL_PIXEL_PACK_BUFFER + glReadPixels (ptr=0): GPU→PBO 异步 DMA 启动, 不 stall
+    //   2) glGetBufferSubData(PBO[N-1]): 取上一帧数据; 若 GPU 未完成会 sync block
+    //      (但因为是上一帧的, 实际几乎总是已就绪)
+    //   3) PBO 大小固定后复用; 仅尺寸变更时重建
+    //
+    // 第一次调用: PBO[0] 启动, PBO[1] 无数据 → 返 false (out_rgba 不写)
+    // 第二次调用: PBO[1] 启动, 取 PBO[0] → 返 true, 数据是上 1 帧的
+    // 第三次调用: PBO[0] 启动, 取 PBO[1] → 返 true, 数据是上 1 帧的
+    // ============================================================================
+    bool ReadbackDefaultFBAsync(int x, int y, int w, int h, unsigned char* out_rgba) override {
+        if (w <= 0 || h <= 0 || !out_rgba) return false;
+        // Step 0: drain stale errors (同 sync 版)
+        while (glGetError() != GL_NO_ERROR) {}
+
+        // Step 1: 尺寸变更 → 全部重建 (lazy 分配 + 自适应窗口 resize)
+        if (w != m_pbo_w || h != m_pbo_h) {
+            ReadbackAsyncShutdown();   // 释放旧 PBO + 重置 pending
+            for (int i = 0; i < 2; ++i) {
+                glGenBuffers(1, &m_pbo[i]);
+                glBindBuffer(GL_PIXEL_PACK_BUFFER, m_pbo[i]);
+                // GL_STREAM_READ: GPU 写一次, CPU 读一次, hint driver 用 mappable 内存
+                glBufferData(GL_PIXEL_PACK_BUFFER, (GLsizeiptr)w * h * 4, nullptr, GL_STREAM_READ);
+            }
+            m_pbo_w   = w;
+            m_pbo_h   = h;
+            m_pbo_idx = 0;
+        }
+
+        // Step 2: 启动新 readback 到 m_pbo[m_pbo_idx]
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, m_pbo[m_pbo_idx]);
+        glPixelStorei(GL_PACK_ALIGNMENT, 1);
+        // PBO 绑定时, 第 7 参数 (data) 是 PBO 内偏移, 这里 0 = 起始
+        glReadPixels(x, y, w, h, GL_RGBA, GL_UNSIGNED_BYTE, (void*)0);
+        m_pbo_pending[m_pbo_idx] = true;
+
+        // Step 3: 取上一帧 PBO 数据 (若有)
+        int prev_idx = 1 - m_pbo_idx;
+        bool got = false;
+        if (m_pbo_pending[prev_idx]) {
+            glBindBuffer(GL_PIXEL_PACK_BUFFER, m_pbo[prev_idx]);
+            // glGetBufferSubData 比 glMapBuffer + memcpy 更安全 (不需 unmap 配对)
+            glGetBufferSubData(GL_PIXEL_PACK_BUFFER, 0, (GLsizeiptr)w * h * 4, out_rgba);
+            m_pbo_pending[prev_idx] = false;
+            got = true;
+        }
+
+        // Step 4: cleanup + flip ping-pong index
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+        m_pbo_idx = prev_idx;   // 下次用现在的 prev (即下一帧再启动 readback)
+
+        // Step 5: 检查 GL error (失败仍返已取到的数据 / false)
+        GLenum err = glGetError();
+        if (err != GL_NO_ERROR) {
+            while (glGetError() != GL_NO_ERROR) {}
+            // 不 fail-fast: 已取到 out_rgba 数据时仍返 true (best-effort)
+        }
+        return got;
+    }
+
+    void ReadbackAsyncShutdown() override {
+        for (int i = 0; i < 2; ++i) {
+            if (m_pbo[i]) {
+                glDeleteBuffers(1, &m_pbo[i]);
+                m_pbo[i] = 0;
+            }
+            m_pbo_pending[i] = false;
+        }
+        m_pbo_w   = 0;
+        m_pbo_h   = 0;
+        m_pbo_idx = 0;
     }
 
     // ---- 状态 ----

@@ -606,16 +606,22 @@ function Demo:Draw()
 
     -- Phase F.0.11: 第 3 帧 Draw 后触发自动截图 (EndFrame hook 里执行, HDR tonemap 已完成)
     -- demo 启动验证模式 (CHOCO_AUTO_EXIT 环境变量): 自动截图 + 退出, CI / smoke 验证用
+    -- F.0.11.2: CHOCO_RECORD_ASYNC=1 启用 PBO 异步 readback (验证零回归 + 性能)
     if g_auto_shot_frames > 0 then
         g_auto_shot_frames = g_auto_shot_frames - 1
         if g_auto_shot_frames == 0 then
+            if os.getenv('CHOCO_RECORD_ASYNC') == '1' and Gfx.SetRecordAsync then
+                Gfx.SetRecordAsync(true)
+                print('[demo_quad_split] PBO async readback enabled (F.0.11.2)')
+            end
             Gfx.RecordPNGSequence('docs/screenshots/', 1)
             print('[demo_quad_split] auto screenshot → docs/screenshots/frame_0000.png'); io.flush()
         end
     elseif os.getenv('CHOCO_AUTO_EXIT') == '1' then
         -- 倒计时归零后再多跑 3 帧让 hook 写完 PNG, 然后自动退出
+        -- (async 模式需要至少 2 帧: 第 1 启动 PBO, 第 2 取数据)
         g_auto_shot_frames = g_auto_shot_frames - 1   -- 继续 -1, -2, -3 ...
-        if g_auto_shot_frames <= -3 then
+        if g_auto_shot_frames <= -4 then
             print('[demo_quad_split] CHOCO_AUTO_EXIT=1 → self:Close()'); io.flush()
             self:Close()
         end

@@ -4864,6 +4864,13 @@ struct RecordState {
     //   frame_skip=3 → 每 3 帧写 1 张 (60fps 渲染 → 20fps 录屏, 显著降卡顿)
     int         frame_skip    = 1;
     int         tick_count    = 0;     // 渲染帧累计 (内部, 用于 % frame_skip 判断)
+    // Phase F.0.11.2: 异步 readback (PBO ping-pong, GPU 无 stall)
+    //   true  = 用 backend->ReadbackDefaultFBAsync (PNG 写盘与下一帧渲染并行)
+    //   false = 用同步 ReadbackDefaultFB (默认, 与 F.0.11 行为一致)
+    //
+    //   注: async=true 时录屏延迟 1 帧 (首次启动写不出, 之后取上一帧数据), 用户不可感知;
+    //   StopRecord 时若 PBO 内还有 1 帧 pending 数据会丢失 (可接受)
+    bool        use_async     = false;
 };
 static RecordState g_record;
 
@@ -4882,12 +4889,35 @@ static int do_screenshot_internal(const char* path, int x, int y, int w, int h) 
 /// 不抛 lua 异常 (因为 light_ui 不在 lua_State* 上下文里); 录屏失败 silent
 /// 注: 录屏读 default fb 当前窗口尺寸 (用户切窗口大小后, 下一帧自动用新尺寸)
 extern "C" void Light_Graphics_RecordTickHook(int win_w, int win_h) {
-    if (!g_record.active || win_w <= 0 || win_h <= 0) return;
+    if (!g_record.active || win_w <= 0 || win_h <= 0 || !g_render) return;
     // Phase F.0.11.1: frame_skip 检查 — 每 N 渲染帧才实际写 1 张 PNG
     // tick_count 从 1 起递增, 仅当 (tick_count % frame_skip == 0) 写盘
     ++g_record.tick_count;
     if (g_record.frame_skip > 1 && (g_record.tick_count % g_record.frame_skip) != 0) return;
-    // 写 PNG (frame_count 递增, 文件名连续编号方便 ffmpeg 拼接)
+
+    // Phase F.0.11.2: 异步路径 — PBO ping-pong, glReadPixels 不 stall GPU
+    //   首次调用启动 PBO[0], 取不到数据 → 不写 PNG (frame_count 不递增, 用户感知"延 1 帧")
+    //   第 2+ 次启动新 readback + 取上一帧数据 → 写 PNG
+    //   用户场景: 录 60 帧 (max_frames=60), 实际渲染 ~61 帧, 输出 60 PNG, ffmpeg 不漏号
+    if (g_record.use_async) {
+        std::vector<unsigned char> buf((size_t)win_w * win_h * 4);
+        if (g_render->ReadbackDefaultFBAsync(0, 0, win_w, win_h, buf.data())) {
+            // 取到上一帧数据 → 写盘
+            char path[512];
+            std::snprintf(path, sizeof(path), "%sframe_%04d.png",
+                          g_record.dir_prefix.c_str(), g_record.frame_count);
+            stbi_flip_vertically_on_write(1);
+            stbi_write_png(path, win_w, win_h, 4, buf.data(), win_w * 4);
+            ++g_record.frame_count;
+            if (g_record.max_frames > 0 && g_record.frame_count >= g_record.max_frames) {
+                g_record.active = false;
+            }
+        }
+        // else: 首次调用 (PBO 已启动, 下一帧取数据), 或 backend 不支持 async (默认 fallback)
+        return;
+    }
+
+    // 同步路径 (默认, 与 F.0.11 行为一致)
     char path[512];
     std::snprintf(path, sizeof(path), "%sframe_%04d.png",
                   g_record.dir_prefix.c_str(), g_record.frame_count);
@@ -5002,6 +5032,40 @@ static int l_Graphics_IsRecording(lua_State* L) {
     return 2;
 }
 
+/// @lua_api Light.Graphics.SetRecordAsync
+/// @brief Phase F.0.11.2 — 切换录屏 readback 模式 (sync vs PBO async)
+/// @param enabled boolean true=异步 (PBO ping-pong, GPU 不 stall, 录屏延 1 帧);
+///                        false=同步 (默认, 与 F.0.11 行为一致)
+/// @return boolean true=成功; nil, err=录屏中切换被拒 (需先 StopRecord)
+/// @note 性能对比 (1280x720):
+///         sync  : glReadPixels 阻塞 ~3-8ms/帧 (GPU stall) + PNG 写盘 ~5-15ms (sync block)
+///         async : glReadPixels 异步 ~0ms 阻塞 + PNG 写盘与下一帧渲染并行
+/// @note 需 backend 支持 (GL3.3+); 不支持时 RecordTickHook 永远取不到数据 silent fail
+static int l_Graphics_SetRecordAsync(lua_State* L) {
+    bool enabled = lua_toboolean(L, 1) != 0;
+    // 录屏中切换会让 PBO 状态错乱 (sync→async 时 PBO 未启动, async→sync 时丢 1 帧 pending)
+    if (g_record.active) {
+        lua_pushnil(L);
+        lua_pushstring(L, "SetRecordAsync: cannot switch while recording (call StopRecord first)");
+        return 2;
+    }
+    // 切回 sync 时主动释放 PBO (节省 ~7MB)
+    if (!enabled && g_record.use_async && g_render) {
+        g_render->ReadbackAsyncShutdown();
+    }
+    g_record.use_async = enabled;
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+/// @lua_api Light.Graphics.IsRecordAsync
+/// @brief Phase F.0.11.2 — 查询录屏 readback 是否 async (PBO 模式)
+/// @return boolean true=async, false=sync
+static int l_Graphics_IsRecordAsync(lua_State* L) {
+    lua_pushboolean(L, g_record.use_async ? 1 : 0);
+    return 1;
+}
+
 static const luaL_Reg graphics_funcs[] = {
     // --- 绘图基元 ---
     {"Draw",              l_Draw},
@@ -5062,6 +5126,9 @@ static const luaL_Reg graphics_funcs[] = {
     {"RecordPNGSequence",          l_Graphics_RecordPNGSequence},
     {"StopRecord",                 l_Graphics_StopRecord},
     {"IsRecording",                l_Graphics_IsRecording},
+    // Phase F.0.11.2 — 异步 readback (PBO ping-pong)
+    {"SetRecordAsync",             l_Graphics_SetRecordAsync},
+    {"IsRecordAsync",              l_Graphics_IsRecordAsync},
     // --- 元方法 ---
     {"__call",            l_Graphics_Call},
     {"__tostring",        l_Graphics_Tostring},

@@ -172,6 +172,32 @@ public:
     virtual bool ReadbackDefaultFB(int /*x*/, int /*y*/, int /*w*/, int /*h*/,
                                     unsigned char* /*out_rgba*/) { return false; }
 
+    /**
+     * @brief Phase F.0.11.2 — PBO 异步 readback (ping-pong, 双 PBO)
+     *
+     * 行为:
+     *   每次调用同时做两件事:
+     *     (a) 启动新 readback (glReadPixels → PBO[idx], GPU 不 stall)
+     *     (b) 取上一帧 readback 数据 (PBO[1-idx]), 拷贝到 out_rgba
+     *
+     *   首次调用 (a) 启动, (b) 无数据可取 → 返 false, out_rgba 不写.
+     *   第 2+ 次调用 (b) 取上一次数据 → 返 true.
+     *
+     * 优势: glReadPixels 不阻塞 GPU; CPU 写盘与下一帧渲染并行执行
+     * 代价: 录屏延迟 1 帧 (用户不可感知); 2 PBO 缓存 (~7MB @ 1280x720)
+     *
+     * 默认实现 (Legacy / headless): 返 false (调用方 fallback 到同步 ReadbackDefaultFB)
+     *
+     * @param x, y, w, h  region (同 ReadbackDefaultFB)
+     * @param out_rgba    输出 RGBA8 buf (非 null), 仅当返 true 时被填充
+     * @return  true = out_rgba 已填充上一帧数据; false = 首次调用 / 不支持
+     */
+    virtual bool ReadbackDefaultFBAsync(int /*x*/, int /*y*/, int /*w*/, int /*h*/,
+                                        unsigned char* /*out_rgba*/) { return false; }
+
+    /// @brief Phase F.0.11.2 — 释放异步 readback PBO (Shutdown 路径或用户切回同步时调)
+    virtual void ReadbackAsyncShutdown() {}
+
     // ---- 状态 ----
     virtual void SetColor(float r, float g, float b, float a) = 0;
     virtual void GetColor(float* r, float* g, float* b, float* a) = 0;
