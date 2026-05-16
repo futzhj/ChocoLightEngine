@@ -346,6 +346,67 @@ uint32_t LoadCubeLUTFromString(const char* text, size_t textLen,
  */
 uint32_t LoadHaldLUTFile(const char* path, char* outErr, size_t errCap);
 
+// ==================== Phase F.0.10.8.3 — LUT 热重载 (mtime polling) ====================
+
+/**
+ * @brief Phase F.0.10.8.3 — 注册 LUT 文件到 watch list (内部加载 + 跟踪 mtime)
+ *
+ * 内部自动判扩展名:
+ *   - .cube → LoadCubeLUTFile
+ *   - .png/.jpg/.jpeg/.bmp/.tga → LoadHaldLUTFile
+ *   - 其他 → 默认走 .cube parser
+ *
+ * 同 path 重复 Watch: 旧 entry + 旧 GL tex 自动释放, 重新注册.
+ *
+ * @param path    LUT 文件路径
+ * @param outErr  [out] 错误描述
+ * @param errCap  outErr 容量
+ * @return        GL tex id (>0); 0 = 失败 (不加入 watchList)
+ *
+ * @note 后续调 PollLUTReloads() 触发 mtime 检查 + 自动 reload
+ */
+uint32_t WatchLUT(const char* path, char* outErr, size_t errCap);
+
+/**
+ * @brief 从 watch list 移除 + 删除对应 GL texture
+ * @return true = 成功移除; false = id 不在 list (silent)
+ * @note 如果 lutTex 是当前 grading 的 LUT, g.gradingLutId 自动清 0
+ */
+bool UnwatchLUT(uint32_t lutTex);
+
+/**
+ * @brief 查询 path 当前的 LUT id (reload 后 path 不变但 id 已变, 用此查最新)
+ * @return GL tex id (>0); 0 = path 不在 watchList
+ */
+uint32_t GetWatchedLUTId(const char* path);
+
+/**
+ * @brief 遍历 watch list, 检 mtime 变化 → 自动 reload + 替换 id
+ *
+ * 行为:
+ *   1. 若 g.lutHotReload == false 或 watchList 空 → 返 0
+ *   2. 对每个 entry, SDL_GetPathInfo 取 modify_time
+ *      - 失败 (文件被锁/移动) → continue, 保留 entry
+ *      - mtime 未变 → continue
+ *      - mtime 变化: 重 load (复用 LoadCubeLUTFile / LoadHaldLUTFile)
+ *        - reload 成功 → DeleteOld + entry.lutId = newId + 若 g.gradingLutId 匹配则自动同步
+ *        - reload 失败 → log + 保留 entry (下次再试)
+ *
+ * @return 本次 reload 成功数 (>= 0)
+ *
+ * @note 用户控制 poll 频率 (典型每秒 1 次, 或每帧若 watch 量少)
+ */
+int PollLUTReloads();
+
+/**
+ * @brief 全局热重载开关 (默认 true)
+ * @note 关闭后 PollLUTReloads 立即返 0, 跳过所有 mtime 调用
+ */
+void SetLUTHotReload(bool enabled);
+
+/// 查全局热重载开关 (默认 true)
+bool GetLUTHotReload();
+
 /// 当前 HDR RT 宽度 / 高度 (未 Enable 时 = 0)
 int GetWidth();
 int GetHeight();

@@ -2072,6 +2072,76 @@ static int l_HDR_LoadHaldLUT(lua_State* L) {
     return 1;
 }
 
+// ==================== Phase F.0.10.8.3 — LUT 热重载 ====================
+
+/// @lua_api Light.Graphics.HDR.WatchLUT
+/// @brief 注册 LUT 文件到 watch list (内部加载 + 跟踪 mtime)
+/// @param path string LUT 文件路径 (.cube / .png/.jpg/.jpeg/.bmp/.tga)
+/// @return integer | nil tex_id (>0), string? err
+/// @note 后续调 PollLUTReloads() 触发 mtime 检查 + 自动 reload
+static int l_HDR_WatchLUT(lua_State* L) {
+    const char* path = luaL_checkstring(L, 1);
+    char errBuf[256] = {0};
+    uint32_t id = HDRRenderer::WatchLUT(path, errBuf, sizeof(errBuf));
+    if (!id) {
+        lua_pushnil(L);
+        lua_pushstring(L, errBuf[0] ? errBuf : "WatchLUT: unknown error");
+        return 2;
+    }
+    lua_pushinteger(L, (lua_Integer)id);
+    return 1;
+}
+
+/// @lua_api Light.Graphics.HDR.UnwatchLUT
+/// @brief 从 watch list 移除 + 删除 GL texture
+/// @param tex_id integer GL tex id (WatchLUT 返回值)
+/// @return boolean true = 成功; false = id 不在 list (silent)
+static int l_HDR_UnwatchLUT(lua_State* L) {
+    uint32_t id = (uint32_t)luaL_checkinteger(L, 1);
+    lua_pushboolean(L, HDRRenderer::UnwatchLUT(id) ? 1 : 0);
+    return 1;
+}
+
+/// @lua_api Light.Graphics.HDR.GetWatchedLUTId
+/// @brief 查 path 当前的 LUT id (reload 后 path 不变但 id 已变, 用此查最新)
+/// @param path string watched LUT 路径
+/// @return integer | nil 当前 GL tex id (>0); nil = path 不在 watchList
+static int l_HDR_GetWatchedLUTId(lua_State* L) {
+    const char* path = luaL_checkstring(L, 1);
+    uint32_t id = HDRRenderer::GetWatchedLUTId(path);
+    if (!id) { lua_pushnil(L); return 1; }
+    lua_pushinteger(L, (lua_Integer)id);
+    return 1;
+}
+
+/// @lua_api Light.Graphics.HDR.PollLUTReloads
+/// @brief 遍历 watch list, 检 mtime 变化 → 自动 reload + 替换 id
+/// @return integer 本次 reload 成功数 (>= 0)
+/// @note 用户控制 poll 频率 (典型每秒 1 次), 关闭 SetLUTHotReload(false) 后直接返 0
+/// @usage local n = HDR.PollLUTReloads()
+///        if n > 0 then print('reloaded', n, 'LUT(s)') end
+static int l_HDR_PollLUTReloads(lua_State* L) {
+    lua_pushinteger(L, (lua_Integer)HDRRenderer::PollLUTReloads());
+    return 1;
+}
+
+/// @lua_api Light.Graphics.HDR.SetLUTHotReload
+/// @brief 全局热重载开关 (默认 true)
+/// @param enabled boolean true = 开 (默认); false = PollLUTReloads 立即返 0
+static int l_HDR_SetLUTHotReload(lua_State* L) {
+    luaL_checktype(L, 1, LUA_TBOOLEAN);
+    HDRRenderer::SetLUTHotReload(lua_toboolean(L, 1) != 0);
+    return 0;
+}
+
+/// @lua_api Light.Graphics.HDR.GetLUTHotReload
+/// @brief 查全局热重载开关
+/// @return boolean (默认 true)
+static int l_HDR_GetLUTHotReload(lua_State* L) {
+    lua_pushboolean(L, HDRRenderer::GetLUTHotReload() ? 1 : 0);
+    return 1;
+}
+
 /// @lua_api Light.Graphics.HDR.SetVelocityFormat
 /// @brief 切换 velocity buffer 存储格式 (RG16F 默认 / RG8 节省 4x VRAM)
 /// @param fmt string "rg16f" | "rg8" (大小写敏感)
@@ -2151,6 +2221,13 @@ static const luaL_Reg hdr_funcs[] = {
     {"LoadCubeLUT",                 l_HDR_LoadCubeLUT},
     // Phase F.0.10.8.2 — HALD CLUT 图像 LUT 加载 (PNG/JPG/BMP/TGA)
     {"LoadHaldLUT",                 l_HDR_LoadHaldLUT},
+    // Phase F.0.10.8.3 — LUT 热重载 (mtime polling)
+    {"WatchLUT",                    l_HDR_WatchLUT},
+    {"UnwatchLUT",                  l_HDR_UnwatchLUT},
+    {"GetWatchedLUTId",             l_HDR_GetWatchedLUTId},
+    {"PollLUTReloads",              l_HDR_PollLUTReloads},
+    {"SetLUTHotReload",             l_HDR_SetLUTHotReload},
+    {"GetLUTHotReload",             l_HDR_GetLUTHotReload},
     {NULL, NULL}
 };
 

@@ -153,6 +153,15 @@ else
     print('[demo_taa_split2] Phase F.0.10.8.2 API not present')
 end
 
+-- F.0.10.8.3 新 API 依赖 (LUT 热重载 mtime polling)
+local hasF10_8_3 = (not api_missing(HDR, 'WatchLUT'))
+               and (not api_missing(HDR, 'PollLUTReloads'))
+if hasF10_8_3 then
+    print('[demo_taa_split2] Phase F.0.10.8.3 API ready (HDR LUT hot reload via mtime polling)')
+else
+    print('[demo_taa_split2] Phase F.0.10.8.3 API not present')
+end
+
 print('==== ChocoLight Phase F.0.10.7 True Physical Split-Screen Demo ====')
 print('  (TAA + Bloom + SSR + MotionBlur + Tonemap all per-region with different profiles)')
 print('[demo_taa_split2] Backend          = ' .. tostring(Gfx.GetBackendName and Gfx.GetBackendName() or '?'))
@@ -309,6 +318,31 @@ local function run_headless_api_probe()
         end
     else
         print('  SKIP: F.0.10.8.2 API not present (legacy build)')
+    end
+
+    -- F.0.10.8.3 新增: LUT 热重载 probe
+    if hasF10_8_3 then
+        -- 默认开关 = true
+        if HDR.GetLUTHotReload() == true then
+            print('  PASS: HDR.GetLUTHotReload() default = true')
+        else
+            print('  FAIL: GetLUTHotReload default not true')
+        end
+        -- WatchLUT(missing) → nil + err
+        local r1, e1 = HDR.WatchLUT('definitely_not_exist.cube')
+        if r1 == nil and type(e1) == 'string' then
+            print('  PASS: HDR.WatchLUT(missing file) rejected: ' .. e1:sub(1, 60))
+        else
+            print('  FAIL: WatchLUT(missing) expected nil + err')
+        end
+        -- PollLUTReloads(empty) → 0
+        if HDR.PollLUTReloads() == 0 then
+            print('  PASS: HDR.PollLUTReloads(empty list) returns 0')
+        else
+            print('  FAIL: PollLUTReloads on empty list not 0')
+        end
+    else
+        print('  SKIP: F.0.10.8.3 API not present (legacy build)')
     end
 end
 

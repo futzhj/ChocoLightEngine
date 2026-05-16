@@ -24,7 +24,8 @@
 #include <cstdlib>         // Phase F.0.10.8.1 — strtof / strtol
 #include <cstring>         // Phase F.0.10.8.1 — strncmp
 #include <cstdarg>         // Phase F.0.10.8.1 — writeErr_ vsnprintf
-#include <SDL3/SDL.h>      // Phase F.0.10.8.1 — SDL_LoadFile / SDL_free
+#include <string>          // Phase F.0.10.8.3 — WatchEntry.path
+#include <SDL3/SDL.h>      // Phase F.0.10.8.1 — SDL_LoadFile / SDL_free / SDL_GetPathInfo
 #include "stb_image.h"     // Phase F.0.10.8.2 — HALD CLUT 图像 LUT 解码 (实现在 third_party/stb_impl.c)
 
 namespace HDRRenderer {
@@ -95,9 +96,27 @@ struct State {
     //   lutTexId=0 或 lutStrength=0 → shader 跳过 LUT (uniform branch 短路, 性能 0 损)
     uint32_t       lutTexId                 = 0;
     float          lutStrength              = 0.0f;   // clamp [0, 1]
+
+    // Phase F.0.10.8.3 — LUT 热重载 (mtime polling)
+    //   lutHotReload  = 全局开关, 关闭后 PollLUTReloads 直接返 0 (零开销)
+    //   lutWatchList  = 已 Watch 的 LUT 文件 (path + 上次 mtime + 当前 lutId + 格式标志)
+    bool           lutHotReload             = true;
 };
 
-static State g;
+// Phase F.0.10.8.3 — WatchEntry: 一条 watched LUT 文件记录
+//   path     注册时传入的路径 (后续 Poll 也用此 path, 不做规范化)
+//   lastMtime 上次成功 reload (或初次 Watch) 时的 modify_time, nanoseconds since epoch
+//   lutId    当前 GL tex id (reload 时更新)
+//   isHald   true = HALD image (.png/.jpg/.bmp/.tga); false = .cube
+struct WatchEntry {
+    std::string path;
+    SDL_Time    lastMtime = 0;
+    uint32_t    lutId     = 0;
+    bool        isHald    = false;
+};
+
+static State                   g;
+static std::vector<WatchEntry> g_lutWatchList;   // F.0.10.8.3 (放 State 外避免 forward 依赖)
 
 // Phase E.18.1: 内部辅助 — 计算 dilation RT 实际存储尺寸
 // halfRes=true 时 ((W+1)/2, (H+1)/2) 向上取整 (与 Phase E.17 motion blur 同模式)
@@ -1057,6 +1076,141 @@ uint32_t LoadHaldLUTFile(const char* path, char* outErr, size_t errCap) {
     }
     return id;
 }
+
+// ==================== Phase F.0.10.8.3 — LUT 热重载 (mtime polling) ====================
+
+namespace {
+
+// 辅助: 判断 path 是否图像扩展名 (case-insensitive)
+//   .png/.jpg/.jpeg/.bmp/.tga → true (走 HALD parser)
+//   .cube 或其他 → false (走 .cube parser)
+bool isImageExt_(const char* path) {
+    if (!path) return false;
+    const char* dot = strrchr(path, '.');
+    if (!dot) return false;
+    // Windows 用 _stricmp, POSIX 用 strcasecmp; 简化用手写 tolower 比较 (避免平台分支)
+    char ext[8] = {0};
+    for (int i = 0; i < 7 && dot[i]; ++i) {
+        const char c = dot[i];
+        ext[i] = (c >= 'A' && c <= 'Z') ? (char)(c - 'A' + 'a') : c;
+    }
+    return strcmp(ext, ".png") == 0 || strcmp(ext, ".jpg") == 0 ||
+           strcmp(ext, ".jpeg") == 0 || strcmp(ext, ".bmp") == 0 ||
+           strcmp(ext, ".tga") == 0;
+}
+
+}  // anonymous namespace
+
+uint32_t WatchLUT(const char* path, char* outErr, size_t errCap) {
+    if (!path || !*path) {
+        writeErr_(outErr, errCap, "WatchLUT: empty path");
+        return 0u;
+    }
+
+    // 1. 判格式 → 委托对应 parser
+    const bool hald = isImageExt_(path);
+    const uint32_t id = hald
+        ? LoadHaldLUTFile(path, outErr, errCap)
+        : LoadCubeLUTFile(path, outErr, errCap);
+    if (id == 0u) return 0u;   // 加载失败 (outErr 已被 parser 填)
+
+    // 2. 取初始 mtime (失败容忍, mtime=0 也合法 — 下次 Poll 会用真值替换)
+    SDL_PathInfo info{};
+    SDL_GetPathInfo(path, &info);   // 失败时 info 全 0
+
+    // 3. 同 path 重复注册: 清旧 entry + 旧 GL tex (避免泄漏)
+    for (auto it = g_lutWatchList.begin(); it != g_lutWatchList.end(); ++it) {
+        if (it->path == path) {
+            if (it->lutId && it->lutId != id && g.backend) {
+                g.backend->DeleteLUT3D(it->lutId);
+                if (g.lutTexId == it->lutId) g.lutTexId = 0u;
+            }
+            g_lutWatchList.erase(it);
+            break;
+        }
+    }
+
+    // 4. 注册新 entry
+    WatchEntry e;
+    e.path      = path;
+    e.lastMtime = info.modify_time;
+    e.lutId     = id;
+    e.isHald    = hald;
+    g_lutWatchList.push_back(std::move(e));
+    return id;
+}
+
+bool UnwatchLUT(uint32_t lutTex) {
+    if (lutTex == 0u) return false;
+    for (auto it = g_lutWatchList.begin(); it != g_lutWatchList.end(); ++it) {
+        if (it->lutId == lutTex) {
+            if (g.backend) g.backend->DeleteLUT3D(lutTex);
+            // 同步清: 如果是当前 grading 用的 LUT, lutTexId 重置防悬挂
+            if (g.lutTexId == lutTex) {
+                g.lutTexId    = 0u;
+                g.lutStrength = 0.0f;
+            }
+            g_lutWatchList.erase(it);
+            return true;
+        }
+    }
+    return false;
+}
+
+uint32_t GetWatchedLUTId(const char* path) {
+    if (!path || !*path) return 0u;
+    for (auto& e : g_lutWatchList) {
+        if (e.path == path) return e.lutId;
+    }
+    return 0u;
+}
+
+int PollLUTReloads() {
+    // 短路: 关闭 / 列表空 → 直接返 (零 SDL 调用)
+    if (!g.lutHotReload || g_lutWatchList.empty()) return 0;
+
+    int reloaded = 0;
+    char errBuf[256];
+    for (auto& e : g_lutWatchList) {
+        // 1. 取当前 mtime
+        SDL_PathInfo info{};
+        if (!SDL_GetPathInfo(e.path.c_str(), &info)) {
+            continue;   // 文件被锁/移动, 保留 entry 下次再试
+        }
+        if (info.modify_time == e.lastMtime) continue;   // 无变化
+
+        // 2. mtime 变化, 触发 reload (复用 LoadCubeLUTFile / LoadHaldLUTFile)
+        errBuf[0] = '\0';
+        const uint32_t newId = e.isHald
+            ? LoadHaldLUTFile(e.path.c_str(), errBuf, sizeof(errBuf))
+            : LoadCubeLUTFile(e.path.c_str(), errBuf, sizeof(errBuf));
+        if (newId == 0u) {
+            // reload 失败 (文件正被写, 内容不完整) → 保留 entry, 下次再试
+            CC::Log(CC::LOG_WARN,
+                    "HDRRenderer::PollLUTReloads: reload failed: %s -- %s",
+                    e.path.c_str(), errBuf[0] ? errBuf : "unknown");
+            continue;
+        }
+
+        // 3. 替换 id + mtime
+        const uint32_t oldId = e.lutId;
+        e.lutId     = newId;
+        e.lastMtime = info.modify_time;
+
+        // 4. 若 oldId 是当前 grading 用的 LUT, 自动同步到 newId
+        //    (用户视角: SetGradingLUT(id, ...) 设过之后, 美术改文件 → 自动看到新调色)
+        if (g.lutTexId == oldId) g.lutTexId = newId;
+
+        // 5. 删旧 GL tex
+        if (oldId && g.backend) g.backend->DeleteLUT3D(oldId);
+
+        ++reloaded;
+    }
+    return reloaded;
+}
+
+void SetLUTHotReload(bool enabled) { g.lutHotReload = enabled; }
+bool GetLUTHotReload()             { return g.lutHotReload; }
 
 bool GetVelocityDilation() { return g.velocityDilation; }
 

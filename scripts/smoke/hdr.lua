@@ -56,6 +56,9 @@ local fn_names = {
     "LoadCubeLUT",
     -- Phase F.0.10.8.2 — HALD CLUT 图像 LUT (PNG/JPG/BMP/TGA)
     "LoadHaldLUT",
+    -- Phase F.0.10.8.3 — LUT 热重载 (mtime polling)
+    "WatchLUT", "UnwatchLUT", "GetWatchedLUTId",
+    "PollLUTReloads", "SetLUTHotReload", "GetLUTHotReload",
 }
 for _, k in ipairs(fn_names) do
     if type(HDR[k]) ~= "function" then
@@ -940,7 +943,75 @@ pass("LoadHaldLUT(8x8 HALD level=2) headless ok (id=" ..
 if type(rh5) == "number" and rh5 > 0 then HDR.DeleteLUT3D(rh5) end
 
 -- ============================================================
+-- 17. Phase F.0.10.8.3 — LUT 热重载 (mtime polling)
+-- ============================================================
+
+-- 17.1 默认开关 = true
+local hr0 = HDR.GetLUTHotReload()
+if hr0 ~= true then fail("Default GetLUTHotReload must be true, got: " .. tostring(hr0)) end
+pass("Default GetLUTHotReload() = true (Phase F.0.10.8.3)")
+
+-- 17.2 SetLUTHotReload(false/true) round-trip
+HDR.SetLUTHotReload(false)
+if HDR.GetLUTHotReload() ~= false then
+    fail("SetLUTHotReload(false) round-trip failed, got: " .. tostring(HDR.GetLUTHotReload()))
+end
+HDR.SetLUTHotReload(true)
+if HDR.GetLUTHotReload() ~= true then
+    fail("SetLUTHotReload(true) round-trip failed, got: " .. tostring(HDR.GetLUTHotReload()))
+end
+pass("SetLUTHotReload(false/true) round-trip ok")
+
+-- 17.3 SetLUTHotReload 类型错误 (非 bool 报错)
+local ok_type, err_type = pcall(HDR.SetLUTHotReload, "yes")
+if ok_type then fail("SetLUTHotReload(string) should raise") end
+pass("SetLUTHotReload(non-bool) type-error rejected: " .. tostring(err_type):sub(1, 60))
+
+-- 17.4 WatchLUT 不存在文件 (.cube path)
+local rw1, ew1 = HDR.WatchLUT("definitely_not_exist_watch.cube")
+if rw1 ~= nil then fail("WatchLUT(missing .cube) should return nil") end
+if type(ew1) ~= "string" or not ew1:find("file read failed") then
+    fail("WatchLUT(missing .cube) err must contain 'file read failed', got: " .. tostring(ew1))
+end
+pass("WatchLUT(missing .cube file) rejected: " .. ew1)
+
+-- 17.5 WatchLUT 不存在图像 (.png path → 走 HALD parser)
+local rw2, ew2 = HDR.WatchLUT("definitely_not_exist_watch.png")
+if rw2 ~= nil then fail("WatchLUT(missing .png) should return nil") end
+if not ew2:find("stbi_load failed") then
+    fail("WatchLUT(missing .png) err must contain 'stbi_load failed', got: " .. ew2)
+end
+pass("WatchLUT(missing .png file) rejected: " .. ew2)
+
+-- 17.6 UnwatchLUT(0) → false (silent)
+if HDR.UnwatchLUT(0) ~= false then fail("UnwatchLUT(0) should return false") end
+pass("UnwatchLUT(0) returns false (silent)")
+
+-- 17.7 UnwatchLUT(不存在 id) → false (silent)
+if HDR.UnwatchLUT(99999) ~= false then fail("UnwatchLUT(99999) should return false") end
+pass("UnwatchLUT(non-existent id) returns false (silent)")
+
+-- 17.8 GetWatchedLUTId(未注册 path) → nil
+if HDR.GetWatchedLUTId("never_registered.cube") ~= nil then
+    fail("GetWatchedLUTId(not_watched) should return nil")
+end
+pass("GetWatchedLUTId(not_watched) returns nil")
+
+-- 17.9 PollLUTReloads 空 list → 0
+local n_poll = HDR.PollLUTReloads()
+if n_poll ~= 0 then fail("PollLUTReloads(empty list) should be 0, got: " .. tostring(n_poll)) end
+pass("PollLUTReloads(empty watchList) returns 0")
+
+-- 17.10 SetLUTHotReload(false) + PollLUTReloads → 0 (短路)
+HDR.SetLUTHotReload(false)
+if HDR.PollLUTReloads() ~= 0 then
+    fail("PollLUTReloads with hot reload OFF should be 0")
+end
+HDR.SetLUTHotReload(true)   -- 恢复默认
+pass("PollLUTReloads short-circuit (hot reload OFF) returns 0")
+
+-- ============================================================
 -- Done
 -- ============================================================
 
-print("[Phase E.3 + E.14 + E.18.1 + E.18.2 + F.0.10.2 + F.0.10.3 + F.0.10.6 + F.0.10.8 + F.0.10.8.1 + F.0.10.8.2] Light.Graphics.HDR smoke PASS (" .. #fn_names .. " functions)")
+print("[Phase E.3 + E.14 + E.18.1 + E.18.2 + F.0.10.2 + F.0.10.3 + F.0.10.6 + F.0.10.8 + F.0.10.8.1 + F.0.10.8.2 + F.0.10.8.3] Light.Graphics.HDR smoke PASS (" .. #fn_names .. " functions)")
