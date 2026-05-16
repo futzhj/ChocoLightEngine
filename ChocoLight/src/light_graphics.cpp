@@ -2220,6 +2220,18 @@ static int l_HDR_GetLUTReloadCallback(lua_State* L) {
     return 1;
 }
 
+/// @lua_api Light.Graphics.HDR.SupportsHDRLUT
+/// @brief Phase F.0.10.8.6 — 探测 backend 是否支持 HDR LUT (RGB16F)
+///
+/// 用途: Lua UI 显示 "HDR LUT supported / fallback to RGB8"; 美术决策 HDR vs LDR .cube
+/// 注: 即使返 false, LoadCubeLUT/LoadHaldLUT 对 HDR 输入仍可用 (自动 fallback + warn log)
+///
+/// @return boolean true = 支持 (gl33 / GLES3); false = legacy backend / 未初始化
+static int l_HDR_SupportsHDRLUT(lua_State* L) {
+    lua_pushboolean(L, HDRRenderer::SupportsHDRLUT() ? 1 : 0);
+    return 1;
+}
+
 /// @lua_api Light.Graphics.HDR.SetVelocityFormat
 /// @brief 切换 velocity buffer 存储格式 (RG16F 默认 / RG8 节省 4x VRAM)
 /// @param fmt string "rg16f" | "rg8" (大小写敏感)
@@ -2309,6 +2321,8 @@ static const luaL_Reg hdr_funcs[] = {
     // Phase F.0.10.8.4 — LUT reload 回调
     {"SetLUTReloadCallback",        l_HDR_SetLUTReloadCallback},
     {"GetLUTReloadCallback",        l_HDR_GetLUTReloadCallback},
+    // Phase F.0.10.8.6 — HDR LUT 能力探测
+    {"SupportsHDRLUT",              l_HDR_SupportsHDRLUT},
     {NULL, NULL}
 };
 

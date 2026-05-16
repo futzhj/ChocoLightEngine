@@ -61,6 +61,8 @@ local fn_names = {
     "PollLUTReloads", "SetLUTHotReload", "GetLUTHotReload",
     -- Phase F.0.10.8.4 — LUT reload 回调
     "SetLUTReloadCallback", "GetLUTReloadCallback",
+    -- Phase F.0.10.8.6 — HDR LUT 能力探测
+    "SupportsHDRLUT",
 }
 for _, k in ipairs(fn_names) do
     if type(HDR[k]) ~= "function" then
@@ -1200,7 +1202,21 @@ do
 end
 
 -- ============================================================
+-- 20. Phase F.0.10.8.6 — HDR LUT 能力探测
+-- ============================================================
+-- SupportsHDRLUT() 应返 bool; 在有 backend 的运行环境应为 true (gl33).
+-- headless 模式下 backend 不一定初始化, 但 fn 必须存在且返 bool.
+
+do
+    local r = HDR.SupportsHDRLUT()
+    if type(r) ~= "boolean" then
+        fail("SupportsHDRLUT must return boolean, got: " .. type(r) .. " value=" .. tostring(r))
+    end
+    pass("SupportsHDRLUT() returned boolean: " .. tostring(r))
+end
+
+-- ============================================================
 -- Done
 -- ============================================================
 
-print("[Phase E.3 + E.14 + E.18.1 + E.18.2 + F.0.10.2 + F.0.10.3 + F.0.10.6 + F.0.10.8 + F.0.10.8.1 + F.0.10.8.2 + F.0.10.8.3 + F.0.10.8.4 + F.0.10.8.5] Light.Graphics.HDR smoke PASS (" .. #fn_names .. " functions)")
+print("[Phase E.3 + E.14 + E.18.1 + E.18.2 + F.0.10.2 + F.0.10.3 + F.0.10.6 + F.0.10.8 + F.0.10.8.1 + F.0.10.8.2 + F.0.10.8.3 + F.0.10.8.4 + F.0.10.8.5 + F.0.10.8.6] Light.Graphics.HDR smoke PASS (" .. #fn_names .. " functions)")

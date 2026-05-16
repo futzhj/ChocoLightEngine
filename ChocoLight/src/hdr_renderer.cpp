@@ -792,6 +792,12 @@ bool DeleteLUT3D(uint32_t lutTex) {
     return g.backend->DeleteLUT3D(lutTex);
 }
 
+// Phase F.0.10.8.6 — 探测 backend 是否支持 HDR LUT (透传)
+bool SupportsHDRLUT() {
+    if (!g.backend) return false;            // 未初始化
+    return g.backend->SupportsLUT3DFloat();
+}
+
 bool SetGradingLUT(uint32_t lutTex, float strength) {
     if (strength < 0.0f) strength = 0.0f;
     else if (strength > 1.0f) strength = 1.0f;

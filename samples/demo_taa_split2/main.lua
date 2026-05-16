@@ -373,6 +373,18 @@ local function run_headless_api_probe()
         print('  SKIP: F.0.10.8.4 API not present (legacy build)')
     end
 
+    -- F.0.10.8.6 新增: HDR LUT 能力探测 probe
+    if HDR.SupportsHDRLUT then
+        local r = HDR.SupportsHDRLUT()
+        if type(r) == 'boolean' then
+            print('  PASS: HDR.SupportsHDRLUT() = ' .. tostring(r) .. ' (boolean)')
+        else
+            print('  FAIL: SupportsHDRLUT non-boolean: ' .. type(r))
+        end
+    else
+        print('  SKIP: F.0.10.8.6 SupportsHDRLUT not present')
+    end
+
     -- F.0.10.8.5 新增: HDR LUT (DOMAIN > 1.0) probe
     -- 透明扩展无新 Lua API, 用 LoadCubeLUT + DOMAIN_MAX 4 4 4 验证 parser
     if HDR.LoadCubeLUT then

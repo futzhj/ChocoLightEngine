@@ -5599,6 +5599,10 @@ public:
         return true;
     }
 
+    /// Phase F.0.10.8.6 — 探测是否支持 HDR LUT
+    /// GL3.3 desktop / GLES3 都支持 GL_RGB16F + GL_TEXTURE_3D + GL_FLOAT 上传, 返 true
+    bool SupportsLUT3DFloat() const override { return true; }
+
     /// Phase F.0.10.8.5 — 创建 HDR float 3D LUT (RGB16F + LINEAR + CLAMP_TO_EDGE)
     /// 用于 .cube DOMAIN_MAX > 1.0 / 16-bit HALD PNG / ACES workflow
     uint32_t CreateLUT3DFloat(int size, const float* data) override {

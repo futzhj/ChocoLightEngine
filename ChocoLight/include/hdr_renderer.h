@@ -261,8 +261,21 @@ void Tonemap(int rgnX, int rgnY, int rgnW, int rgnH,
 /// @return          GL texture id (> 0 = 成功; 0 = 失败 — backend 不支持 / 入参错 / OOM)
 uint32_t CreateLUT3D(int size, const uint8_t* data, size_t dataLen);
 
-/// Phase F.0.10.8 — 删除 LUT3D 纹理. 0 = silent fail.
+/// Phase F.0.10.8 — 删除 LUT3D 纹理 (与 CreateLUT3D / CreateLUT3DFloat 配对). 0 = silent fail.
 bool DeleteLUT3D(uint32_t lutTex);
+
+/// Phase F.0.10.8.6 — 探测 backend 是否真支持 HDR LUT (RGB16F).
+///
+/// 透传 backend->SupportsLUT3DFloat(). 用途:
+///   - Lua 用户 UI 显示 "HDR LUT supported" / "fallback to RGB8 (clamped)"
+///   - 美术决策提供 HDR .cube vs LDR .cube
+///   - 自动测试可探测是否预期 HDR 路径生效
+///
+/// 注: 即使返 false, LoadCubeLUT / LoadHaldLUT 对 HDR domain / 16-bit 输入仍可用,
+///     内部自动 fallback 到 RGB8 + clamp (warn log 提示精度损失).
+///
+/// @return true 当 backend 实现 RGB16F + 3D texture 上传; false 当 legacy / backend 未初始化.
+bool SupportsHDRLUT();
 
 /// Phase F.0.10.8 — 设置全局 grading LUT (作用于 autoTonemap / Tonemap(rgn) 不带 lut 参数路径).
 /// strength clamp [0, 1]; lutTex=0 即关 LUT.

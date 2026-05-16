@@ -702,6 +702,18 @@ public:
      */
     virtual uint32_t CreateLUT3DFloat(int /*size*/, const float* /*data*/) { return 0; }
 
+    /**
+     * @brief Phase F.0.10.8.6 — 探测 backend 是否真支持 HDR LUT (RGB16F)
+     *
+     * 用于 Lua 用户在 UI 上展示 "HDR LUT supported / fallback to RGB8" 状态;
+     * 也用于美术决策是否提供 HDR .cube vs LDR .cube. 比"调一次 CreateLUT3DFloat
+     * 看返 0" 更轻量 (不会 GL 误码), 也避免试探时的资源泄漏.
+     *
+     * 默认实现 (Legacy): false (与 CreateLUT3DFloat 默认 0u 一致).
+     * GL3.3 / GLES3 实现: true (要求 GL_RGB16F + GL_TEXTURE_3D + GL_FLOAT 上传).
+     */
+    virtual bool SupportsLUT3DFloat() const { return false; }
+
     // ==================== Phase E.4 — Bloom 后处理 ====================
 
     /**
