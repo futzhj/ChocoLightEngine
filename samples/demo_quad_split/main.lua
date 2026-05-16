@@ -1,8 +1,13 @@
 -- ============================================================================
--- ChocoLight Phase F.0.10.10 — Quad-Split Linkage Demo (callback-model)
+-- ChocoLight Phase F.0.10.10.1 — Quad-Split Demo with CloneInstance setup
 -- ============================================================================
--- 真物理 4-screen split-screen, 4 个 HDR instance × 4 个 TAA instance,
--- 每 quad 各自独立 LUT / exposure / tonemap / sharpen profile, 集 F.0.10.9.x 之大成.
+-- F.0.10.10 真物理 4-screen split-screen + F.0.10.9.x.3 CloneInstance 简化 setup,
+-- 4 个 HDR instance × 4 个 TAA instance, 每 quad 独立 LUT/exposure/tonemap/sharpen profile.
+--
+-- vs F.0.10.10 老版本:
+--   1) HDR/TAA setup 改用 CloneInstance(0) + override, 节省 ~30 行 boilerplate
+--   2) OnOpen 末加 GetState() 4 instance 快照打印, 直观确认 per-quad profile 隔离
+--   3) Bloom.SetRadius clamp [0,1] 小 bug 修正
 --
 -- Quad 布局 (1280×720, 各 quad 640×360):
 --   ┌──────────────┬──────────────┐
@@ -61,7 +66,7 @@ if api_missing(HDR, 'CreateInstance') or api_missing(HDR, 'SetActiveInstance')
     print('demo_quad_split ok (legacy build)'); return
 end
 
-print('==== ChocoLight Phase F.0.10.10 Quad-Split Linkage Demo (callback-model) ====')
+print('==== ChocoLight Phase F.0.10.10.1 Quad-Split Demo (CloneInstance setup) ====')
 print('[demo_quad_split] Backend         = ' .. tostring(Gfx.GetBackendName and Gfx.GetBackendName() or '?'))
 print('[demo_quad_split] HDR.IsSupported = ' .. tostring(HDR.IsSupported()))
 print('[demo_quad_split] TAA.IsSupported = ' .. tostring(TAA.IsSupported()))
@@ -225,42 +230,70 @@ local function build_tm_params(i)
     return nil
 end
 
--- 4 quad 的 TAA per-instance setup (sharpen / clip mode / antiflicker)
-local function setup_taa_instance(i)
-    TAA.SetActiveInstance(g_taa_ids[i])
+-- ============================================================================
+-- 4 quad 的 TAA per-instance setup (Clone 模式, F.0.10.9.x.3)
+-- ============================================================================
+-- 旧模式: 4 个 instance 全量 Set* (每 instance 5~7 行)
+-- 新模式: instance 0 (default) 设 TL base profile, instance 1/2/3 用 Clone(0) 复制
+--         然后仅 override 差异字段.
+-- 差异统计 (vs TL base):
+--   TR (1): 6 字段 (clipMode/varianceGamma/halfRes/upscaleMode/sharpness/sharpenMode)
+--   BL (2): 4 字段 (clipMode/sharpness/sharpenMode/antiFlicker)
+--   BR (3): 3 字段 (clipMode/varianceGamma/sharpness)  -- sharpenMode='rcas' 与 base 同
+--
+-- TL base 设 RCAS sharp=1.2 + ycocg + antiFlicker=true; Clone 自动继承.
+local function setup_taa_base_profile()  -- instance 0 (TL) 完整 setup
+    TAA.SetActiveInstance(0)
     TAA.Enable(HALF_W, HALF_H)
-    if     i == 0 then  -- TL: RCAS strong sharpen
-        TAA.SetClipMode('ycocg'); TAA.SetSharpness(1.2)
-        if TAA.SetSharpenMode then TAA.SetSharpenMode('rcas') end
-        if TAA.SetAntiFlicker then TAA.SetAntiFlicker(true) end
-    elseif i == 1 then  -- TR: Lanczos high-quality upscale
+    TAA.SetClipMode('ycocg')
+    TAA.SetSharpness(1.2)
+    if TAA.SetSharpenMode then TAA.SetSharpenMode('rcas') end
+    if TAA.SetAntiFlicker then TAA.SetAntiFlicker(true) end
+end
+
+-- override 差异字段 (用于 instance 1/2/3, 假定 Clone(0) 已复制 TL base)
+local function override_taa_diff(i)
+    if     i == 1 then  -- TR: Lanczos halfRes variance
         TAA.SetClipMode('variance')
         if TAA.SetVarianceGamma then TAA.SetVarianceGamma(1.0) end
         TAA.SetSharpness(0.0)
         if TAA.SetSharpenMode then TAA.SetSharpenMode('unsharp') end
         if TAA.SetHalfResHistory then TAA.SetHalfResHistory(true) end
         if TAA.SetUpscaleMode then TAA.SetUpscaleMode('lanczos') end
-        if TAA.SetAntiFlicker then TAA.SetAntiFlicker(true) end
-    elseif i == 2 then  -- BL: 中性 unsharp
+    elseif i == 2 then  -- BL: 中性 unsharp, 关 antiFlicker
         TAA.SetClipMode('rgb'); TAA.SetSharpness(0.5)
         if TAA.SetSharpenMode then TAA.SetSharpenMode('unsharp') end
         if TAA.SetAntiFlicker then TAA.SetAntiFlicker(false) end
-    elseif i == 3 then  -- BR: AntiFlicker + variance + RCAS
+    elseif i == 3 then  -- BR: variance + RCAS 更强 sharpen (sharpenMode='rcas' Clone 已带)
         TAA.SetClipMode('variance')
         if TAA.SetVarianceGamma then TAA.SetVarianceGamma(0.8) end
         TAA.SetSharpness(1.5)
+    end
+end
+
+-- 1/2/3/4 键 reset 用 (退化为完整 setup; 因 Disable 已释放 RT, 需 Enable 重建)
+local function setup_taa_instance(i)
+    TAA.SetActiveInstance(g_taa_ids[i])
+    TAA.Enable(HALF_W, HALF_H)
+    if i == 0 then
+        -- 退化重设 TL base (键 1 reset)
+        TAA.SetClipMode('ycocg'); TAA.SetSharpness(1.2)
         if TAA.SetSharpenMode then TAA.SetSharpenMode('rcas') end
         if TAA.SetAntiFlicker then TAA.SetAntiFlicker(true) end
+    else
+        -- 键 2/3/4 reset: instance 已 Disable 释 RT, Enable 后字段保留, 不用再 override
+        -- (Disable 不会清 user-settable 字段, 只清 RT handle + history)
     end
 end
 
 -- 4 quad 的 Bloom/SSR/MB profile (每帧切换, 因为是全局单例)
+-- 注: Bloom.SetRadius clamp [0, 1], 原版 demo 1.5/1.2 都被 silent clamp 到 1.0; 已修正
 local function apply_postfx_profile(i)
     if Bloom and Bloom.IsEnabled and Bloom.IsEnabled() then
-        if     i == 0 then Bloom.SetIntensity(1.5); Bloom.SetThreshold(0.8); Bloom.SetRadius(1.5)
+        if     i == 0 then Bloom.SetIntensity(1.5); Bloom.SetThreshold(0.8); Bloom.SetRadius(1.0)
         elseif i == 1 then Bloom.SetIntensity(0.4); Bloom.SetThreshold(1.5); Bloom.SetRadius(0.8)
-        elseif i == 2 then Bloom.SetIntensity(0.8); Bloom.SetThreshold(1.0); Bloom.SetRadius(1.0)
-        elseif i == 3 then Bloom.SetIntensity(1.2); Bloom.SetThreshold(0.9); Bloom.SetRadius(1.2)
+        elseif i == 2 then Bloom.SetIntensity(0.8); Bloom.SetThreshold(1.0); Bloom.SetRadius(0.9)
+        elseif i == 3 then Bloom.SetIntensity(1.2); Bloom.SetThreshold(0.9); Bloom.SetRadius(1.0)
         end
     end
     if SSR and SSR.IsEnabled and SSR.IsEnabled() then
@@ -316,38 +349,38 @@ function Demo:OnOpen()
         print('[demo_quad_split] mesh build failed'); self:Close(); return
     end
 
-    -- HDR multi-instance: instance 0 (default) + 3 new = 4 total
+    -- ============ HDR multi-instance setup (Clone 模式, F.0.10.9.x.3) ============
+    -- 旧 (F.0.10.10) 模式: 4 × {CreateInstance + SetActiveInstance + Enable + SetAutoTonemap(false)} 16 行
+    -- 新 (本 phase) 模式: 1 × full setup default + 3 × {CloneInstance(0) + Enable} ~6 行
+    --
+    -- CloneInstance(0) 复制 default 全部 user-settable 字段 (含 autoTonemap=false), 仅 RT/sceneTex
+    -- 重置为 0; 因此子 instance 必须再调 Enable() 自建 RT.
     if not HDR.IsSupported() then
         print('[demo_quad_split] HDR not supported, abort'); self:Close(); return
     end
-    -- Quad 0 用 instance 0
+    -- 1) Default instance (quad 0) 设 base profile
     if not HDR.Enable(HALF_W, HALF_H) then
-        print('[demo_quad_split] Quad 0 (instance 0) HDR.Enable failed'); self:Close(); return
+        print('[demo_quad_split] HDR.Enable default failed'); self:Close(); return
     end
-    -- Quad 1/2/3 创建 user instance
+    HDR.SetAutoTonemap(false)   -- ← 每帧手动 HDR.Tonemap(rgn,params), 这一行同时定义后续 clone 的默认行为
+    -- 2) Clone default 到 quad 1/2/3 (1 行 = 1 instance, 含 autoTonemap=false)
     for i = 1, 3 do
-        local id = HDR.CreateInstance()
+        local id = HDR.CloneInstance(0)
         if not id or id <= 0 then
-            print(string.format('[demo_quad_split] HDR.CreateInstance #%d failed', i))
+            print(string.format('[demo_quad_split] HDR.CloneInstance(0) #%d failed (slot full?)', i))
             self:Close(); return
         end
         g_hdr_ids[i] = id
         HDR.SetActiveInstance(id)
         if not HDR.Enable(HALF_W, HALF_H) then
-            print(string.format('[demo_quad_split] HDR.Enable instance %d failed', id))
+            print(string.format('[demo_quad_split] HDR.Enable cloned instance %d failed', id))
             self:Close(); return
         end
+        -- 注: autoTonemap=false 已被 Clone 复制, 此处零额外 Set*
     end
     HDR.SetActiveInstance(0)
-    print(string.format('[demo_quad_split] 4 HDR instance ready: ids=[%d, %d, %d, %d], each %dx%d',
+    print(string.format('[demo_quad_split] 4 HDR instance via Clone: ids=[%d, %d, %d, %d], each %dx%d',
           g_hdr_ids[0], g_hdr_ids[1], g_hdr_ids[2], g_hdr_ids[3], HALF_W, HALF_H))
-
-    -- 关 4 instance 的 autoTonemap (每帧手动 HDR.Tonemap(rgn, params))
-    for i = 0, 3 do
-        HDR.SetActiveInstance(g_hdr_ids[i])
-        HDR.SetAutoTonemap(false)
-    end
-    HDR.SetActiveInstance(0)
 
     -- LUT 加载 (lut id 是 backend 全局, 任 instance 可引用)
     if HDR.LoadCubeLUT then
@@ -368,23 +401,52 @@ function Demo:OnOpen()
         MB.Enable(HALF_W, HALF_H); HDR.SetAutoMotionBlur(false)
     end
 
-    -- 4 个 TAA instance: instance 0 (default) + 3 new
-    -- TAA instance 0 默认就有, 直接用. 创建 3 个 user instance.
+    -- ============ TAA multi-instance setup (Clone 模式, F.0.10.9.x.3) ============
+    -- 旧 (F.0.10.10): 3 × CreateInstance + 4 × {SetActive + Enable + 5~7 × Set*} ≈ 35 行
+    -- 新 (本 phase): 1 × full setup + 3 × {Clone(0) + Enable + 3~6 × override} ≈ 25 行
+    --
+    -- TL base profile (instance 0) 设 ycocg + rcas + sharp=1.2 + antiFlicker=true.
+    -- Clone(0) 自动继承 base + RT 字段重置; override_taa_diff(i) 只调差异字段.
     g_taa_ids[0] = 0
     HDR.SetAutoTAA(false)   -- 关 auto TAA (我们手动 TAA.Process)
+
+    -- 1) Default instance (TL base profile) 完整 setup
+    setup_taa_base_profile()
+
+    -- 2) Clone default 到 quad 1/2/3, override 差异字段
     for i = 1, 3 do
-        local id = TAA.CreateInstance()
+        local id = TAA.CloneInstance(0)
         if not id or id <= 0 then
-            print(string.format('[demo_quad_split] TAA.CreateInstance #%d failed', i))
+            print(string.format('[demo_quad_split] TAA.CloneInstance(0) #%d failed', i))
             self:Close(); return
         end
         g_taa_ids[i] = id
+        TAA.SetActiveInstance(id)
+        if not TAA.Enable(HALF_W, HALF_H) then
+            print(string.format('[demo_quad_split] TAA.Enable cloned instance %d failed', id))
+            self:Close(); return
+        end
+        override_taa_diff(i)   -- 仅 3~6 个字段差异
     end
-    -- per-instance TAA setup
-    for i = 0, 3 do setup_taa_instance(i) end
     TAA.SetActiveInstance(0)
-    print(string.format('[demo_quad_split] 4 TAA instance ready: ids=[%d, %d, %d, %d]',
+    print(string.format('[demo_quad_split] 4 TAA instance via Clone: ids=[%d, %d, %d, %d]',
           g_taa_ids[0], g_taa_ids[1], g_taa_ids[2], g_taa_ids[3]))
+
+    -- ============ GetState() 验证 4 instance 配置确实独立 (F.0.10.9.x.3) ============
+    -- print 每个 instance 的关键差异字段, 直观确认 setup 正确
+    if HDR.GetState and TAA.GetState then
+        print('[demo_quad_split] === per-instance setup snapshot (GetState) ===')
+        for i = 0, 3 do
+            HDR.SetActiveInstance(g_hdr_ids[i])
+            TAA.SetActiveInstance(g_taa_ids[i])
+            local hs, ts = HDR.GetState(), TAA.GetState()
+            print(string.format('  Q%d HDR.enabled=%s auto_tonemap=%s | TAA clip=%s sharpen=%s sharp=%.2f antiflicker=%s halfRes=%s upscale=%s',
+                i, tostring(hs.enabled), tostring(hs.auto_tonemap),
+                tostring(ts.clip_mode), tostring(ts.sharpen_mode), ts.sharpness or 0,
+                tostring(ts.anti_flicker), tostring(ts.half_res_history), tostring(ts.upscale_mode)))
+        end
+        HDR.SetActiveInstance(0); TAA.SetActiveInstance(0)
+    end
 
     -- 相机 + 光照 (project ratio 用 quad 的, 因为每 quad 是 640x360)
     if type(Gfx.SetPerspective) == 'function' then
@@ -460,7 +522,7 @@ function Demo:Draw()
     if Gfx.Print then
         Gfx.Push()
         Gfx.SetColor(1, 1, 1, 1)
-        Gfx.Print('=== Phase F.0.10.10 Quad-Split Linkage Demo (4 HDR x 4 TAA) ===', 8, 8, 0)
+        Gfx.Print('=== Phase F.0.10.10.1 Quad-Split (4 HDR x 4 TAA via CloneInstance) ===', 8, 8, 0)
         Gfx.Print(string.format('Window=%dx%d  Each quad=%dx%d  HDR ids=[%d,%d,%d,%d]  TAA ids=[%d,%d,%d,%d]',
               WIN_W, WIN_H, HALF_W, HALF_H,
               g_hdr_ids[0], g_hdr_ids[1], g_hdr_ids[2], g_hdr_ids[3],
@@ -541,7 +603,7 @@ local function cleanup_demo()
     g_initOk = false
 end
 
-Demo:Open(WIN_W, WIN_H, 'Phase F.0.10.10 - Quad-Split Linkage Demo (4 HDR x 4 TAA)')
+Demo:Open(WIN_W, WIN_H, 'Phase F.0.10.10.1 - Quad-Split (4 HDR x 4 TAA via Clone)')
 while Light.UI.Loop() do Light.UI.Resume() end
 cleanup_demo()
 print('demo_quad_split ok')

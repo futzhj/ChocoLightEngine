@@ -4503,16 +4503,23 @@ static int l_TAA_CloneInstance(lua_State* L) {
 }
 
 /// @lua_api Light.Graphics.TAA.GetState — Phase F.0.10.9.x.3 (snapshot)
+/// 补全 F.0.10.10.1: 增加 clip_mode / anti_flicker / motion_gamma 等字段方便 setup 审查
 static int l_TAA_GetState(lua_State* L) {
     lua_newtable(L);
     lua_pushnumber(L, (lua_Number)TAARenderer::GetBlendAlpha());        lua_setfield(L, -2, "blend_alpha");
     lua_pushboolean(L, TAARenderer::GetNeighborhoodClip() ? 1 : 0);     lua_setfield(L, -2, "neighborhood_clip");
+    lua_pushstring(L, TAARenderer::GetClipMode());                      lua_setfield(L, -2, "clip_mode");
     lua_pushboolean(L, TAARenderer::GetJitterEnabled() ? 1 : 0);        lua_setfield(L, -2, "jitter_enabled");
     lua_pushnumber(L, (lua_Number)TAARenderer::GetSharpness());         lua_setfield(L, -2, "sharpness");
     lua_pushnumber(L, (lua_Number)TAARenderer::GetVarianceGamma());     lua_setfield(L, -2, "variance_gamma");
     lua_pushboolean(L, TAARenderer::GetHalfResHistory() ? 1 : 0);       lua_setfield(L, -2, "half_res_history");
     lua_pushstring(L, TAARenderer::GetSharpenMode());                   lua_setfield(L, -2, "sharpen_mode");
     lua_pushstring(L, TAARenderer::GetUpscaleMode());                   lua_setfield(L, -2, "upscale_mode");
+    lua_pushboolean(L, TAARenderer::GetAntiFlicker() ? 1 : 0);          lua_setfield(L, -2, "anti_flicker");
+    lua_pushnumber(L, (lua_Number)TAARenderer::GetMotionGamma());       lua_setfield(L, -2, "motion_gamma");
+    lua_pushboolean(L, TAARenderer::GetMotionAdaptive() ? 1 : 0);       lua_setfield(L, -2, "motion_adaptive_gamma");
+    lua_pushnumber(L, (lua_Number)TAARenderer::GetMotionSharpness());   lua_setfield(L, -2, "motion_sharpness");
+    lua_pushboolean(L, TAARenderer::GetMotionAdaptiveSharpness() ? 1 : 0); lua_setfield(L, -2, "motion_adaptive_sharpness");
     lua_pushboolean(L, TAARenderer::IsEnabled() ? 1 : 0);               lua_setfield(L, -2, "enabled");
     lua_pushboolean(L, TAARenderer::IsSupported() ? 1 : 0);             lua_setfield(L, -2, "supported");
     return 1;

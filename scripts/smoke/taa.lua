@@ -1395,12 +1395,15 @@ print("--- Phase F.0.10.9.x.3 (Clone + GetState) ---")
 
 TAA.SetActiveInstance(0)
 
--- 9.17.1 GetState 字段完整 (10 字段)
+-- 9.17.1 GetState 字段完整 (F.0.10.10.1 扩 16 字段含 clip_mode/anti_flicker/motion_*)
 do
     local s = TAA.GetState()
     if type(s) ~= "table" then fail("9.17.1 GetState should return table") end
-    local req = { "blend_alpha", "neighborhood_clip", "jitter_enabled", "sharpness",
-                  "variance_gamma", "half_res_history", "sharpen_mode", "upscale_mode",
+    local req = { "blend_alpha", "neighborhood_clip", "clip_mode", "jitter_enabled",
+                  "sharpness", "variance_gamma", "half_res_history",
+                  "sharpen_mode", "upscale_mode", "anti_flicker",
+                  "motion_gamma", "motion_adaptive_gamma",
+                  "motion_sharpness", "motion_adaptive_sharpness",
                   "enabled", "supported" }
     for _, k in ipairs(req) do
         if s[k] == nil then fail("9.17.1 GetState missing field: " .. k) end
