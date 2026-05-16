@@ -1689,6 +1689,29 @@ static const char* hdr_tonemap_mode_to_name(int mode) {
     }
 }
 
+// ============================================================================
+// Phase F.0.10.9.x.4 — SetState helpers (5 renderer 共用)
+// 用于解析 lua table 的 K-V 字段, 按类型校验后分发到 SetterFn.
+// 类型不符 / 字段缺失: silent skip (使 partial table 友好).
+// 调用方需保证 lua_State* L 入参 1 是 table, 且 int applied 局部变量已声明.
+// ============================================================================
+#define APPLY_NUM(K, SETTER) \
+    do { lua_getfield(L, 1, K); \
+         if (lua_isnumber(L, -1)) { SETTER((float)lua_tonumber(L, -1)); ++applied; } \
+         lua_pop(L, 1); } while(0)
+#define APPLY_INT(K, SETTER) \
+    do { lua_getfield(L, 1, K); \
+         if (lua_isnumber(L, -1)) { SETTER((int)lua_tointeger(L, -1)); ++applied; } \
+         lua_pop(L, 1); } while(0)
+#define APPLY_BOOL(K, SETTER) \
+    do { lua_getfield(L, 1, K); \
+         if (lua_isboolean(L, -1)) { SETTER(lua_toboolean(L, -1) != 0); ++applied; } \
+         lua_pop(L, 1); } while(0)
+#define APPLY_STR(K, SETTER) \
+    do { lua_getfield(L, 1, K); \
+         if (lua_isstring(L, -1)) { SETTER(lua_tostring(L, -1)); ++applied; } \
+         lua_pop(L, 1); } while(0)
+
 /// @lua_api Light.Graphics.HDR.SetTonemapper
 /// @brief 选择 tonemap 曲线 (Phase E.3.4)
 /// @param name string "aces" | "reinhard" | "uncharted2" | "linear" (大小写无关; 未知名回退 "aces")
@@ -2330,6 +2353,52 @@ static int l_HDR_GetState(lua_State* L) {
     return 1;
 }
 
+/// @lua_api Light.Graphics.HDR.SetState — Phase F.0.10.9.x.4 (反向 GetState)
+/// @param state table  字段名匹配 GetState (任 partial 子集); enabled/supported 静默跳过
+/// @return boolean, integer  ok=至少应用 1 字段 / applied=应用字段数
+/// @return nil, string       入参非 table (类型错误)
+/// @note tonemap_mode 接 int (0..3), 与 GetState 输出对称; 想用 string 请走 HDR.SetTonemapper
+///       lut_id 不校验是否已 LoadCubeLUT; 用户责任传合法 id
+static int l_HDR_SetState(lua_State* L) {
+    if (!lua_istable(L, 1)) {
+        lua_pushnil(L);
+        lua_pushstring(L, "SetState: expect table arg");
+        return 2;
+    }
+    int applied = 0;
+    APPLY_NUM("exposure",                     HDRRenderer::SetExposure);
+    APPLY_INT("tonemap_mode",                 HDRRenderer::SetTonemapper);
+    APPLY_NUM("gamma",                        HDRRenderer::SetGamma);
+    APPLY_BOOL("velocity_dilation",           HDRRenderer::SetVelocityDilation);
+    APPLY_BOOL("velocity_dilation_half_res",  HDRRenderer::SetVelocityDilationHalfRes);
+    APPLY_BOOL("velocity_dilation_auto_skip", HDRRenderer::SetVelocityDilationAutoSkip);
+    APPLY_BOOL("auto_tonemap",                HDRRenderer::SetAutoTonemap);
+    APPLY_BOOL("auto_taa",                    HDRRenderer::SetAutoTAA);
+    APPLY_BOOL("auto_bloom",                  HDRRenderer::SetAutoBloom);
+    APPLY_BOOL("auto_ssr",                    HDRRenderer::SetAutoSSR);
+    APPLY_BOOL("auto_motion_blur",            HDRRenderer::SetAutoMotionBlur);
+    // lut_id + lut_strength 合并调 SetGradingLUT(id, strength) 单函数
+    // (GetState 拆 2 字段输出, SetState 重组; 任一字段提供即触发, 缺省 fallback 当前值)
+    {
+        bool hasId = false, hasStrength = false;
+        uint32_t newId       = HDRRenderer::GetGradingLUTId();
+        float    newStrength = HDRRenderer::GetGradingLUTStrength();
+        lua_getfield(L, 1, "lut_id");
+        if (lua_isnumber(L, -1)) { newId = (uint32_t)lua_tointeger(L, -1); hasId = true; }
+        lua_pop(L, 1);
+        lua_getfield(L, 1, "lut_strength");
+        if (lua_isnumber(L, -1)) { newStrength = (float)lua_tonumber(L, -1); hasStrength = true; }
+        lua_pop(L, 1);
+        if (hasId || hasStrength) {
+            HDRRenderer::SetGradingLUT(newId, newStrength);
+            applied += (hasId ? 1 : 0) + (hasStrength ? 1 : 0);
+        }
+    }
+    lua_pushboolean(L, applied > 0 ? 1 : 0);
+    lua_pushinteger(L, applied);
+    return 2;
+}
+
 /// @lua_api Light.Graphics.HDR.SetVelocityFormat
 /// @brief 切换 velocity buffer 存储格式 (RG16F 默认 / RG8 节省 4x VRAM)
 /// @param fmt string "rg16f" | "rg8" (大小写敏感)
@@ -2433,6 +2502,8 @@ static const luaL_Reg hdr_funcs[] = {
     // Phase F.0.10.9.x.3 — Clone + Snapshot
     {"CloneInstance",               l_HDR_CloneInstance},
     {"GetState",                    l_HDR_GetState},
+    // Phase F.0.10.9.x.4 — SetState (反向 GetState, 一键还原 profile)
+    {"SetState",                    l_HDR_SetState},
     {NULL, NULL}
 };
 
@@ -2658,6 +2729,27 @@ static int l_Bloom_CloneInstance(lua_State* L) {
     return 1;
 }
 
+/// @lua_api Light.Graphics.Bloom.SetState — Phase F.0.10.9.x.4 (反向 GetState)
+/// @param state table  字段名匹配 GetState; enabled/supported 静默跳过
+/// @return boolean, integer  ok / applied
+/// @return nil, string       入参非 table
+static int l_Bloom_SetState(lua_State* L) {
+    if (!lua_istable(L, 1)) {
+        lua_pushnil(L);
+        lua_pushstring(L, "SetState: expect table arg");
+        return 2;
+    }
+    int applied = 0;
+    APPLY_NUM("threshold",   BloomRenderer::SetThreshold);
+    APPLY_NUM("intensity",   BloomRenderer::SetIntensity);
+    APPLY_NUM("radius",      BloomRenderer::SetRadius);
+    APPLY_INT("levels",      BloomRenderer::SetLevels);
+    APPLY_BOOL("auto_enable", BloomRenderer::SetAutoEnable);
+    lua_pushboolean(L, applied > 0 ? 1 : 0);
+    lua_pushinteger(L, applied);
+    return 2;
+}
+
 /// @lua_api Light.Graphics.Bloom.GetState — Phase F.0.10.9.x.3 (snapshot)
 static int l_Bloom_GetState(lua_State* L) {
     lua_newtable(L);
@@ -2698,6 +2790,8 @@ static const luaL_Reg bloom_funcs[] = {
     // Phase F.0.10.9.x.3 — Clone + Snapshot (1-line setup + state introspection)
     {"CloneInstance",      l_Bloom_CloneInstance},
     {"GetState",           l_Bloom_GetState},
+    // Phase F.0.10.9.x.4 — SetState (反向 GetState)
+    {"SetState",           l_Bloom_SetState},
     {NULL, NULL}
 };
 
@@ -3705,6 +3799,36 @@ static int l_SSR_CloneInstance(lua_State* L) {
     return 1;
 }
 
+/// @lua_api Light.Graphics.SSR.SetState — Phase F.0.10.9.x.4 (反向 GetState)
+/// @param state table  字段名匹配 GetState; enabled/supported 静默跳过
+/// @return boolean, integer  ok / applied
+/// @return nil, string       入参非 table
+static int l_SSR_SetState(lua_State* L) {
+    if (!lua_istable(L, 1)) {
+        lua_pushnil(L);
+        lua_pushstring(L, "SetState: expect table arg");
+        return 2;
+    }
+    int applied = 0;
+    APPLY_INT("max_steps",          SSRRenderer::SetMaxSteps);
+    APPLY_NUM("step_size",          SSRRenderer::SetStepSize);
+    APPLY_NUM("thickness",          SSRRenderer::SetThickness);
+    APPLY_NUM("max_distance",       SSRRenderer::SetMaxDistance);
+    APPLY_NUM("intensity",          SSRRenderer::SetIntensity);
+    APPLY_NUM("edge_fade",          SSRRenderer::SetEdgeFade);
+    APPLY_BOOL("blur_enabled",      SSRRenderer::SetBlurEnabled);
+    APPLY_NUM("blur_radius",        SSRRenderer::SetBlurRadius);
+    APPLY_BOOL("bilateral_enabled", SSRRenderer::SetBilateralEnabled);
+    APPLY_NUM("blur_depth_sigma",   SSRRenderer::SetBlurDepthSigma);
+    APPLY_BOOL("temporal_enabled",  SSRRenderer::SetTemporalEnabled);
+    APPLY_NUM("temporal_alpha",     SSRRenderer::SetTemporalAlpha);
+    APPLY_INT("rejection_mode",     SSRRenderer::SetRejectionMode);
+    APPLY_BOOL("auto_enable",       SSRRenderer::SetAutoEnable);
+    lua_pushboolean(L, applied > 0 ? 1 : 0);
+    lua_pushinteger(L, applied);
+    return 2;
+}
+
 /// @lua_api Light.Graphics.SSR.GetState — Phase F.0.10.9.x.3 (snapshot)
 static int l_SSR_GetState(lua_State* L) {
     lua_newtable(L);
@@ -3780,6 +3904,8 @@ static const luaL_Reg ssr_funcs[] = {
     // Phase F.0.10.9.x.3 — Clone + Snapshot
     {"CloneInstance",       l_SSR_CloneInstance},
     {"GetState",            l_SSR_GetState},
+    // Phase F.0.10.9.x.4 — SetState (反向 GetState)
+    {"SetState",            l_SSR_SetState},
     {NULL, NULL}
 };
 
@@ -3981,6 +4107,28 @@ static int l_MB_CloneInstance(lua_State* L) {
     return 1;
 }
 
+/// @lua_api Light.Graphics.MotionBlur.SetState — Phase F.0.10.9.x.4 (反向 GetState)
+/// @param state table  字段名匹配 GetState; enabled/supported 静默跳过
+/// @return boolean, integer  ok / applied
+/// @return nil, string       入参非 table
+/// @note mode 接 int (0=combined / 1=camera_only / 2=object_only), 与 GetState 输出对称
+static int l_MB_SetState(lua_State* L) {
+    if (!lua_istable(L, 1)) {
+        lua_pushnil(L);
+        lua_pushstring(L, "SetState: expect table arg");
+        return 2;
+    }
+    int applied = 0;
+    APPLY_NUM("strength",     MotionBlurRenderer::SetStrength);
+    APPLY_INT("sample_count", MotionBlurRenderer::SetSampleCount);
+    APPLY_INT("mode",         MotionBlurRenderer::SetMode);
+    APPLY_BOOL("half_res",    MotionBlurRenderer::SetHalfRes);
+    APPLY_BOOL("auto_enable", MotionBlurRenderer::SetAutoEnable);
+    lua_pushboolean(L, applied > 0 ? 1 : 0);
+    lua_pushinteger(L, applied);
+    return 2;
+}
+
 /// @lua_api Light.Graphics.MotionBlur.GetState — Phase F.0.10.9.x.3 (snapshot)
 static int l_MB_GetState(lua_State* L) {
     lua_newtable(L);
@@ -4026,6 +4174,8 @@ static const luaL_Reg mb_funcs[] = {
     // Phase F.0.10.9.x.3 — Clone + Snapshot
     {"CloneInstance",      l_MB_CloneInstance},
     {"GetState",           l_MB_GetState},
+    // Phase F.0.10.9.x.4 — SetState (反向 GetState)
+    {"SetState",           l_MB_SetState},
     {NULL, NULL}
 };
 
@@ -4502,6 +4652,37 @@ static int l_TAA_CloneInstance(lua_State* L) {
     return 1;
 }
 
+/// @lua_api Light.Graphics.TAA.SetState — Phase F.0.10.9.x.4 (反向 GetState)
+/// @param state table  字段名匹配 GetState (任 partial 子集); enabled/supported 静默跳过
+/// @return boolean, integer  ok=至少应用 1 字段 / applied=应用字段数
+/// @return nil, string       入参非 table
+/// @note clip_mode/sharpen_mode/upscale_mode 接 string (与 GetState 输出对称)
+static int l_TAA_SetState(lua_State* L) {
+    if (!lua_istable(L, 1)) {
+        lua_pushnil(L);
+        lua_pushstring(L, "SetState: expect table arg");
+        return 2;
+    }
+    int applied = 0;
+    APPLY_NUM("blend_alpha",                  TAARenderer::SetBlendAlpha);
+    APPLY_BOOL("neighborhood_clip",           TAARenderer::SetNeighborhoodClip);
+    APPLY_STR("clip_mode",                    TAARenderer::SetClipMode);
+    APPLY_BOOL("jitter_enabled",              TAARenderer::SetJitterEnabled);
+    APPLY_NUM("sharpness",                    TAARenderer::SetSharpness);
+    APPLY_NUM("variance_gamma",               TAARenderer::SetVarianceGamma);
+    APPLY_BOOL("half_res_history",            TAARenderer::SetHalfResHistory);
+    APPLY_STR("sharpen_mode",                 TAARenderer::SetSharpenMode);
+    APPLY_STR("upscale_mode",                 TAARenderer::SetUpscaleMode);
+    APPLY_BOOL("anti_flicker",                TAARenderer::SetAntiFlicker);
+    APPLY_NUM("motion_gamma",                 TAARenderer::SetMotionGamma);
+    APPLY_BOOL("motion_adaptive_gamma",       TAARenderer::SetMotionAdaptive);
+    APPLY_NUM("motion_sharpness",             TAARenderer::SetMotionSharpness);
+    APPLY_BOOL("motion_adaptive_sharpness",   TAARenderer::SetMotionAdaptiveSharpness);
+    lua_pushboolean(L, applied > 0 ? 1 : 0);
+    lua_pushinteger(L, applied);
+    return 2;
+}
+
 /// @lua_api Light.Graphics.TAA.GetState — Phase F.0.10.9.x.3 (snapshot)
 /// 补全 F.0.10.10.1: 增加 clip_mode / anti_flicker / motion_gamma 等字段方便 setup 审查
 static int l_TAA_GetState(lua_State* L) {
@@ -4642,6 +4823,8 @@ static const luaL_Reg taa_funcs[] = {
     // Phase F.0.10.9.x.3 — Clone + Snapshot
     {"CloneInstance",         l_TAA_CloneInstance},
     {"GetState",              l_TAA_GetState},
+    // Phase F.0.10.9.x.4 — SetState (反向 GetState)
+    {"SetState",              l_TAA_SetState},
     // Phase F.0.10.2 — 手动 TAA Process (region 可选, 配合 HDR.SetAutoTAA(false) 做真物理 split-screen)
     {"Process",               l_TAA_Process},
     // status (2): debug HUD 用

@@ -70,6 +70,8 @@ local fn_names = {
     "GetActiveInstance", "GetInstanceCount",
     -- Phase F.0.10.9.x.3 — Clone + Snapshot
     "CloneInstance", "GetState",
+    -- Phase F.0.10.9.x.4 — SetState (反向 GetState)
+    "SetState",
 }
 for _, k in ipairs(fn_names) do
     if type(HDR[k]) ~= "function" then
@@ -1804,6 +1806,83 @@ end
 if HDR.CloneInstance(99) ~= 0 then fail("27.4 Clone(99) expect 0") end
 if HDR.CloneInstance(-1) ~= 0 then fail("27.4 Clone(-1) expect 0") end
 pass("27.4 Clone(无效 srcId) 返 0")
+
+-- ============================================================
+-- 28. Phase F.0.10.9.x.4 — SetState 反向 GetState
+-- ============================================================
+
+HDR.SetActiveInstance(0)
+local hdr_before_setstate = HDR.GetState()
+
+-- 28.1 round-trip: GetState → 改 N 字段 → SetState → GetState 验证
+do
+    local snap = {
+        exposure = 1.7, gamma = 2.5, tonemap_mode = 1,   -- TONEMAP_REINHARD=1
+        velocity_dilation = true, auto_tonemap = false,
+        lut_strength = 0.6
+    }
+    local ok, applied = HDR.SetState(snap)
+    if not ok then fail("28.1 SetState should return true") end
+    if applied ~= 6 then fail("28.1 expected applied=6, got " .. tostring(applied)) end
+    local after = HDR.GetState()
+    if math.abs(after.exposure - 1.7) > 1e-4 then fail("28.1 exposure not applied") end
+    if math.abs(after.gamma - 2.5) > 1e-4    then fail("28.1 gamma not applied") end
+    if after.tonemap_mode ~= 1 then fail("28.1 tonemap_mode not applied (expect 1)") end
+    if after.velocity_dilation ~= true then fail("28.1 velocity_dilation not applied") end
+    if after.auto_tonemap ~= false then fail("28.1 auto_tonemap not applied") end
+    if math.abs(after.lut_strength - 0.6) > 1e-4 then fail("28.1 lut_strength not applied") end
+    pass("28.1 SetState round-trip (6 字段 全部回填)")
+end
+
+-- 28.2 partial: 只改 1 字段, 其他保持
+do
+    local before = HDR.GetState()
+    local ok, n = HDR.SetState({ exposure = 0.8 })
+    if n ~= 1 then fail("28.2 expected applied=1, got " .. tostring(n)) end
+    if math.abs(HDR.GetExposure() - 0.8) > 1e-4 then fail("28.2 exposure not applied") end
+    -- gamma 保持上一步的 2.5
+    if math.abs(HDR.GetGamma() - before.gamma) > 1e-4 then fail("28.2 gamma 被污染") end
+    pass("28.2 SetState partial (仅 1 字段)")
+end
+
+-- 28.3 类型错误 silent skip
+do
+    local _, n = HDR.SetState({ exposure = "not number", gamma = true, tonemap_mode = 0 })
+    -- 仅 tonemap_mode (int) 应用; exposure (string), gamma (bool) 都 silent skip
+    if n ~= 1 then fail("28.3 expected applied=1 (仅 tonemap_mode), got " .. tostring(n)) end
+    pass("28.3 SetState 类型错误 silent skip (3 字段中 2 错 仅 1 应用)")
+end
+
+-- 28.4 入参非 table → nil + err string
+do
+    local r, e = HDR.SetState("not a table")
+    if r ~= nil or type(e) ~= "string" then fail("28.4 SetState(string) expect nil + err string") end
+    pass("28.4 SetState 入参非 table 返 nil + err")
+end
+
+-- 28.5 enabled/supported read-only 字段 silent skip
+do
+    local _, n = HDR.SetState({ enabled = false, supported = false })
+    if n ~= 0 then fail("28.5 read-only fields silent skip, expected applied=0, got " .. tostring(n)) end
+    pass("28.5 enabled/supported silent skip (applied=0)")
+end
+
+-- 28.6 GetState → SetState 完整 round-trip 一致性
+do
+    HDR.SetExposure(1.234); HDR.SetGamma(2.345); HDR.SetTonemapper("linear")
+    local snap = HDR.GetState()
+    -- 改 default 状态, 然后用 snap 还原, 验证 GetState 输出可被 SetState 完全消费
+    HDR.SetExposure(99.0); HDR.SetGamma(99.0)
+    HDR.SetState(snap)
+    local back = HDR.GetState()
+    if math.abs(back.exposure - 1.234) > 1e-4 then fail("28.6 round-trip exposure 不一致") end
+    if math.abs(back.gamma - 2.345) > 1e-4    then fail("28.6 round-trip gamma 不一致") end
+    if back.tonemap_mode ~= 3 then fail("28.6 round-trip tonemap_mode 不一致 (expect 3=linear, got " .. back.tonemap_mode .. ")") end
+    pass("28.6 GetState → SetState round-trip 一致 (含 read-only 字段被 silent skip 不影响)")
+end
+
+-- 复原
+HDR.SetState(hdr_before_setstate)
 
 -- ============================================================
 -- Done

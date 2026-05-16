@@ -42,6 +42,8 @@ local fn_names = {
     "GetActiveInstance", "GetInstanceCount",
     -- Phase F.0.10.9.x.3 — Clone + Snapshot (1-line setup + state introspection)
     "CloneInstance", "GetState",
+    -- Phase F.0.10.9.x.4 — SetState (反向 GetState)
+    "SetState",
 }
 for _, k in ipairs(fn_names) do
     if type(Bloom[k]) ~= "function" then
@@ -456,4 +458,37 @@ Bloom.DestroyInstance(cid)
 Bloom.DestroyInstance(extra1)
 Bloom.DestroyInstance(extra2)
 
-print("[OK] Phase E.4 + F.0.10.3 + F.0.10.9.x.2 + F.0.10.9.x.3 smoke (Light.Graphics.Bloom): all checks passed")
+-- ============================================================
+-- Phase F.0.10.9.x.4 — SetState (反向 GetState)
+-- ============================================================
+Bloom.SetActiveInstance(0)
+local bloom_before_setstate = Bloom.GetState()
+
+-- SS.1 round-trip: 改 4 字段 (radius clamp [0,1])
+do
+    local ok, n = Bloom.SetState({ threshold = 1.2, intensity = 0.6, radius = 0.7, levels = 4 })
+    if not ok or n ~= 4 then fail("SS.1 expect ok+applied=4, got " .. tostring(n)) end
+    local s = Bloom.GetState()
+    if math.abs(s.threshold - 1.2) > 1e-4 then fail("SS.1 threshold not applied") end
+    if math.abs(s.intensity - 0.6) > 1e-4 then fail("SS.1 intensity not applied") end
+    if math.abs(s.radius - 0.7)    > 1e-4 then fail("SS.1 radius not applied") end
+    if s.levels ~= 4                       then fail("SS.1 levels not applied") end
+    pass("SS.1 SetState round-trip 4 字段")
+end
+
+-- SS.2 partial + invalid type silent skip
+do
+    local _, n = Bloom.SetState({ threshold = 0.9, intensity = "bad" })
+    if n ~= 1 then fail("SS.2 expect applied=1 (only threshold), got " .. tostring(n)) end
+    pass("SS.2 SetState 类型错误 silent skip")
+end
+
+-- SS.3 入参非 table → nil + err
+do
+    local r, e = Bloom.SetState(123)
+    if r ~= nil or type(e) ~= "string" then fail("SS.3 SetState(num) expect nil+err") end
+    pass("SS.3 SetState 入参非 table 返 nil + err")
+end
+
+Bloom.SetState(bloom_before_setstate)
+print("[OK] Phase E.4 + F.0.10.3 + F.0.10.9.x.2 + F.0.10.9.x.3 + F.0.10.9.x.4 smoke (Light.Graphics.Bloom): all checks passed")

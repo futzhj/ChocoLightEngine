@@ -54,6 +54,8 @@ local fn_names = {
     "GetActiveInstance", "GetInstanceCount",
     -- Phase F.0.10.9.x.3 — Clone + Snapshot
     "CloneInstance", "GetState",
+    -- Phase F.0.10.9.x.4 — SetState (反向 GetState)
+    "SetState",
 }
 for _, k in ipairs(fn_names) do
     if type(MB[k]) ~= "function" then
@@ -483,8 +485,43 @@ pass("CS.5 Clone on full slots returns 0")
 MB.DestroyInstance(cid); MB.DestroyInstance(e1); MB.DestroyInstance(e2)
 
 -- ============================================================
+-- Phase F.0.10.9.x.4 — SetState (反向 GetState)
+-- ============================================================
+MB.SetActiveInstance(0)
+local mb_before_setstate = MB.GetState()
+
+-- SS.1 round-trip: 改 4 字段 (mode int 0..2, half_res bool)
+do
+    local ok, n = MB.SetState({ strength = 0.7, sample_count = 12, mode = 1, half_res = true })
+    if not ok or n ~= 4 then fail("SS.1 expect ok+applied=4, got " .. tostring(n)) end
+    local s = MB.GetState()
+    if math.abs(s.strength - 0.7) > 1e-4 then fail("SS.1 strength not applied") end
+    if s.sample_count ~= 12              then fail("SS.1 sample_count not applied") end
+    if s.mode ~= 1                       then fail("SS.1 mode not applied") end
+    if s.half_res ~= true                then fail("SS.1 half_res not applied") end
+    pass("SS.1 SetState round-trip 4 字段")
+end
+
+-- SS.2 partial + invalid type
+do
+    local _, n = MB.SetState({ strength = 0.4, sample_count = "bad" })
+    if n ~= 1 then fail("SS.2 expect applied=1, got " .. tostring(n)) end
+    pass("SS.2 SetState 类型错误 silent skip")
+end
+
+-- SS.3 入参非 table
+do
+    local r, e = MB.SetState({})
+    -- 空 table: applied=0, ok=false (因为 applied=0 → ok=false)
+    if r ~= false then fail("SS.3 SetState({}) expect ok=false (no field applied)") end
+    pass("SS.3 SetState 空 table → ok=false applied=0")
+end
+
+MB.SetState(mb_before_setstate)
+
+-- ============================================================
 -- Final summary
 -- ============================================================
 
 print("")
-print("=== Light.Graphics.MotionBlur smoke OK (Phase E.15+E.16+E.17+F.0.10.3+F.0.10.9.x.2+F.0.10.9.x.3) ===")
+print("=== Light.Graphics.MotionBlur smoke OK (Phase E.15+E.16+E.17+F.0.10.3+F.0.10.9.x.2+F.0.10.9.x.3+F.0.10.9.x.4) ===")

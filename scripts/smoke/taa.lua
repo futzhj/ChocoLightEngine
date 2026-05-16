@@ -84,6 +84,7 @@ local fn_names = {
     "SetActiveInstance", "GetActiveInstance",       -- Phase F.0.10
     "GetInstanceCount",                              -- Phase F.0.10
     "CloneInstance", "GetState",                    -- Phase F.0.10.9.x.3 (1-line setup + snapshot)
+    "SetState",                                      -- Phase F.0.10.9.x.4 (反向 GetState)
     "Process",                                       -- Phase F.0.10.2 (manual TAA region process)
     "GetFrameCounter", "GetCurrentJitter",
 }
@@ -1440,6 +1441,46 @@ end
 -- 9.17.4 Clone 非法
 if TAA.CloneInstance(99) ~= 0 then fail("9.17.4 Clone(99) expect 0") end
 pass("9.17.4 Clone(无效 srcId) 返 0")
+
+-- ============================================================
+-- 9.18) Phase F.0.10.9.x.4 — SetState (反向 GetState)
+-- ============================================================
+TAA.SetActiveInstance(0)
+local taa_before_setstate = TAA.GetState()
+
+-- 9.18.1 round-trip: 改 7 字段 (含 string clip_mode/sharpen_mode/upscale_mode)
+do
+    local ok, n = TAA.SetState({
+        blend_alpha = 0.85, sharpness = 1.3, variance_gamma = 1.5,
+        clip_mode = "variance", sharpen_mode = "rcas", upscale_mode = "lanczos",
+        anti_flicker = true,
+    })
+    if not ok or n ~= 7 then fail("9.18.1 expect ok+applied=7, got " .. tostring(n)) end
+    local s = TAA.GetState()
+    if math.abs(s.blend_alpha - 0.85) > 1e-4 then fail("9.18.1 blend_alpha not applied") end
+    if s.clip_mode ~= "variance"   then fail("9.18.1 clip_mode not applied") end
+    if s.sharpen_mode ~= "rcas"    then fail("9.18.1 sharpen_mode not applied") end
+    if s.upscale_mode ~= "lanczos" then fail("9.18.1 upscale_mode not applied") end
+    if s.anti_flicker ~= true      then fail("9.18.1 anti_flicker not applied") end
+    pass("9.18.1 SetState round-trip 7 字段 (含 3 string)")
+end
+
+-- 9.18.2 partial + 类型错误 silent skip
+do
+    local _, n = TAA.SetState({ sharpness = 0.5, blend_alpha = "invalid" })
+    if n ~= 1 then fail("9.18.2 expect applied=1 (仅 sharpness), got " .. tostring(n)) end
+    pass("9.18.2 SetState 类型错误 silent skip")
+end
+
+-- 9.18.3 入参非 table → nil + err
+do
+    local r, e = TAA.SetState(nil)
+    if r ~= nil or type(e) ~= "string" then fail("9.18.3 SetState(nil) expect nil + err") end
+    pass("9.18.3 SetState 入参非 table 返 nil + err")
+end
+
+-- 复原
+TAA.SetState(taa_before_setstate)
 
 -- ============================================================
 -- 10) Phase F.0.10.2 — TAA.Process (manual region API)

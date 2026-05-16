@@ -58,6 +58,8 @@ local fns = {
     "GetActiveInstance", "GetInstanceCount",
     -- Phase F.0.10.9.x.3 — Clone + Snapshot
     "CloneInstance", "GetState",
+    -- Phase F.0.10.9.x.4 — SetState (反向 GetState)
+    "SetState",
 }
 for _, k in ipairs(fns) do
     if type(S[k]) ~= "function" then
@@ -763,4 +765,41 @@ pass("CS.5 Clone on full slots returns 0")
 -- 清理
 S.DestroyInstance(cid); S.DestroyInstance(e1); S.DestroyInstance(e2)
 
-print("[OK] Phase E.9+E.10+E.11+E.12+F.0.10.3+F.0.10.9.x.2+F.0.10.9.x.3 smoke (Light.Graphics.SSR): all checks passed")
+-- ============================================================
+-- Phase F.0.10.9.x.4 — SetState (反向 GetState)
+-- ============================================================
+S.SetActiveInstance(0)
+local ssr_before_setstate = S.GetState()
+
+-- SS.1 round-trip: 改 7 字段 (含 int max_steps/rejection_mode + bool blur/temporal)
+do
+    local ok, n = S.SetState({
+        max_steps = 64, intensity = 1.5, blur_enabled = true, blur_radius = 2.0,
+        temporal_enabled = false, temporal_alpha = 0.85, rejection_mode = 1,
+    })
+    if not ok or n ~= 7 then fail("SS.1 expect ok+applied=7, got " .. tostring(n)) end
+    local s = S.GetState()
+    if s.max_steps ~= 64                       then fail("SS.1 max_steps not applied") end
+    if math.abs(s.intensity - 1.5) > 1e-4      then fail("SS.1 intensity not applied") end
+    if s.blur_enabled ~= true                  then fail("SS.1 blur_enabled not applied") end
+    if math.abs(s.temporal_alpha - 0.85) > 1e-4 then fail("SS.1 temporal_alpha not applied") end
+    if s.rejection_mode ~= 1                   then fail("SS.1 rejection_mode not applied") end
+    pass("SS.1 SetState round-trip 7 字段 (含 int + bool)")
+end
+
+-- SS.2 partial + invalid type
+do
+    local _, n = S.SetState({ intensity = 0.5, max_steps = "not int" })
+    if n ~= 1 then fail("SS.2 expect applied=1 (only intensity), got " .. tostring(n)) end
+    pass("SS.2 SetState 类型错误 silent skip")
+end
+
+-- SS.3 入参非 table
+do
+    local r, e = S.SetState(false)
+    if r ~= nil or type(e) ~= "string" then fail("SS.3 SetState(false) expect nil+err") end
+    pass("SS.3 SetState 入参非 table 返 nil + err")
+end
+
+S.SetState(ssr_before_setstate)
+print("[OK] Phase E.9+E.10+E.11+E.12+F.0.10.3+F.0.10.9.x.2+F.0.10.9.x.3+F.0.10.9.x.4 smoke (Light.Graphics.SSR): all checks passed")
