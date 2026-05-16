@@ -30,6 +30,8 @@ pass("Light.Graphics.HDR subtable present")
 
 local fn_names = {
     "Enable", "Disable", "IsEnabled", "IsSupported", "Resize",
+    -- Phase F.0.10.9.2 — 手动 BeginScene/EndScene (multi-instance 同帧切换必备)
+    "BeginScene", "EndScene",
     "SetExposure", "GetExposure", "SetGamma", "GetGamma",
     "GetSceneTexture",
     -- Phase E.3.4
@@ -1711,7 +1713,46 @@ do
 end
 
 -- ============================================================
+-- 26. Phase F.0.10.9.2 — 手动 BeginScene/EndScene (multi-instance lifecycle)
+-- ============================================================
+-- 暴露内部 lifecycle 让 Lua 在双 HDR instance 同帧切换时手动控制 fbo bind/unbind.
+-- 用法: SetActive(pipId); HDR.BeginScene(); draw_scene(); HDR.EndScene(); HDR.Tonemap(rgn).
+-- 头部 fn_names 已含 BeginScene/EndScene 类型校验, 本节验证 headless 下 silent no-op.
+
+-- 26.1 HDR 未启用时 BeginScene/EndScene 应静默 no-op (不抛 / 不崩)
+do
+    -- HDR 在 smoke 流程一直未 Enable (headless), g.enabled=false 状态
+    -- BeginScene 内部短路 `if (!g.enabled || g.paused || !g.backend || !g.fbo) return`
+    local ok1, err1 = pcall(HDR.BeginScene)
+    if not ok1 then
+        fail("26.1 HDR.BeginScene() should not raise in headless / disabled state: " .. tostring(err1))
+    end
+    local ok2, err2 = pcall(HDR.EndScene)
+    if not ok2 then
+        fail("26.1 HDR.EndScene() should not raise in headless / disabled state: " .. tostring(err2))
+    end
+    pass("26.1 HDR.BeginScene/EndScene headless silent no-op ok")
+end
+
+-- 26.2 切 active instance 后 BeginScene/EndScene 仍静默 (instance 1 未 Enable)
+do
+    local id = HDR.CreateInstance()
+    if id and id > 0 then
+        HDR.SetActiveInstance(id)
+        local ok1, err1 = pcall(HDR.BeginScene)
+        if not ok1 then fail("26.2 BeginScene on unEnabled instance " .. id .. " raised: " .. tostring(err1)) end
+        local ok2, err2 = pcall(HDR.EndScene)
+        if not ok2 then fail("26.2 EndScene on unEnabled instance " .. id .. " raised: " .. tostring(err2)) end
+        HDR.SetActiveInstance(0)
+        HDR.DestroyInstance(id)
+        pass("26.2 BeginScene/EndScene on unEnabled instance silent no-op ok")
+    else
+        pass("26.2 SKIP (CreateInstance failed, 不阻塞)")
+    end
+end
+
+-- ============================================================
 -- Done
 -- ============================================================
 
-print("[Phase E.3 + E.14 + E.18.1 + E.18.2 + F.0.10.2 + F.0.10.3 + F.0.10.6 + F.0.10.8 + F.0.10.8.1 + F.0.10.8.2 + F.0.10.8.3 + F.0.10.8.4 + F.0.10.8.5 + F.0.10.8.6 + F.0.10.9 + F.0.10.9.1 + F.0.10.9.x.1] Light.Graphics.HDR smoke PASS (" .. #fn_names .. " functions)")
+print("[Phase E.3 + E.14 + E.18.1 + E.18.2 + F.0.10.2 + F.0.10.3 + F.0.10.6 + F.0.10.8 + F.0.10.8.1 + F.0.10.8.2 + F.0.10.8.3 + F.0.10.8.4 + F.0.10.8.5 + F.0.10.8.6 + F.0.10.9 + F.0.10.9.1 + F.0.10.9.x.1 + F.0.10.9.2] Light.Graphics.HDR smoke PASS (" .. #fn_names .. " functions)")

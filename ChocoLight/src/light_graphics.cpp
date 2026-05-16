@@ -1568,6 +1568,30 @@ static int l_HDR_Disable(lua_State* L) {
     return 0;
 }
 
+/// @lua_api Light.Graphics.HDR.BeginScene
+/// @brief Phase F.0.10.9.2 — 手动开始 HDR scene (bind active instance FBO + clear)
+/// @return void
+/// @note Window:__call 内部已自动调一次 (active=0 时), 手动场景:
+///       multi-instance 同帧切换 (主屏 instance 0 + PIP instance 1) 必须显式 BeginScene/EndScene
+///       配对调用. HDR 未启用 / paused / 资源失效时静默 no-op.
+static int l_HDR_BeginScene(lua_State* L) {
+    (void)L;
+    HDRRenderer::BeginScene();
+    return 0;
+}
+
+/// @lua_api Light.Graphics.HDR.EndScene
+/// @brief Phase F.0.10.9.2 — 手动结束 HDR scene (unbind FBO + SSAO/AE/LensFx + auto tonemap 若开)
+/// @return void
+/// @note Window:__call 内部已自动调一次 (active 当前 instance), 手动场景:
+///       multi-instance 同帧切换 (主屏 instance 0 + PIP instance 1) 必须显式 BeginScene/EndScene
+///       配对调用. autoTonemap=false 时 EndScene 不做 fullscreen tonemap, 用户调 HDR.Tonemap(rgn).
+static int l_HDR_EndScene(lua_State* L) {
+    (void)L;
+    HDRRenderer::EndScene();
+    return 0;
+}
+
 /// @lua_api Light.Graphics.HDR.IsEnabled
 /// @return boolean HDR 是否启用
 static int l_HDR_IsEnabled(lua_State* L) {
@@ -2310,6 +2334,9 @@ static int l_HDR_GetVelocityFormat(lua_State* L) {
 static const luaL_Reg hdr_funcs[] = {
     {"Enable",          l_HDR_Enable},
     {"Disable",         l_HDR_Disable},
+    // Phase F.0.10.9.2 — 手动 BeginScene/EndScene (multi-instance 同帧切换必备)
+    {"BeginScene",      l_HDR_BeginScene},
+    {"EndScene",        l_HDR_EndScene},
     {"IsEnabled",       l_HDR_IsEnabled},
     {"IsSupported",     l_HDR_IsSupported},
     {"Resize",          l_HDR_Resize},
