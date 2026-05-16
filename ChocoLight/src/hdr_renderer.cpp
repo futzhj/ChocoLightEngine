@@ -81,6 +81,9 @@ struct State {
     bool           autoBloom                = true;
     bool           autoSSR                  = true;
     bool           autoMotionBlur           = true;
+    // Phase F.0.10.6 — Auto-Tonemap 开关 (默认 true = 零回归; false = 用户手动 HDR.Tonemap(rgn))
+    //   split-screen 场景 P1 黄昏 vs P2 冷夜: 必关, 用 HDR.Tonemap(rgn, params) 为每 region 独立 tonemap
+    bool           autoTonemap              = true;
 };
 
 static State g;
@@ -540,7 +543,10 @@ void EndScene() {
                         : g.exposure;
 
     // Tonemap + sRGB encode → default fb (E.3.4 多 operator; 输入已含 bloom + lensDirt + streak + lensFlare 的 HDR RT)
-    g.backend->DrawTonemapFullscreen(g.sceneTex, exposure, g.gamma, g.tonemap);
+    // Phase F.0.10.6: autoTonemap=false 时跳过自动 tonemap, 让用户手动 HDR.Tonemap(rgn) 控 split-screen
+    if (g.autoTonemap) {
+        g.backend->DrawTonemapFullscreen(g.sceneTex, exposure, g.gamma, g.tonemap);
+    }
     g.backend->CommitVelocityHistory();
 }
 
@@ -668,6 +674,38 @@ bool SetAutoMotionBlur(bool on) {
     return true;
 }
 bool GetAutoMotionBlur() { return g.autoMotionBlur; }
+
+// ==================== Phase F.0.10.6 — Auto-Tonemap + per-region Tonemap ====================
+
+bool SetAutoTonemap(bool on) {
+    if (g.autoTonemap == on) return true;   // no-op (同值)
+    g.autoTonemap = on;
+    return true;
+}
+bool GetAutoTonemap() { return g.autoTonemap; }
+
+// Region 限定 tonemap pass — 复用全局 g.exposure (含 AE 叠加) / g.gamma / g.tonemap
+// HDR 未启用 / sceneTex 无效时 silent skip
+void Tonemap(int rgnX, int rgnY, int rgnW, int rgnH) {
+    if (!g.enabled || !g.backend || !g.sceneTex) return;
+    // AE 叠加 (与 EndScene 同逻辑): AE 开时 AE current 覆盖 manual; AE 关时回归 g.exposure
+    float exposure = AutoExposureRenderer::IsEnabled()
+                        ? AutoExposureRenderer::GetCurrentExposure()
+                        : g.exposure;
+    g.backend->DrawTonemapRegion(g.sceneTex, exposure, g.gamma, g.tonemap,
+                                  rgnX, rgnY, rgnW, rgnH);
+}
+
+// Region 限定 tonemap pass (params 显式版) — 完全自定义, 不叠加 AE
+// 适合: split-screen 中每 region 独立 exposure (不希望 AE 干扰)
+void Tonemap(int rgnX, int rgnY, int rgnW, int rgnH,
+              float exposure, float gamma, int tonemapMode) {
+    if (!g.enabled || !g.backend || !g.sceneTex) return;
+    // 防御性 clamp gamma (与 SetGamma 一致, 防 0/负数 崩溃)
+    if (gamma < 0.0001f) gamma = 0.0001f;
+    g.backend->DrawTonemapRegion(g.sceneTex, exposure, gamma, tonemapMode,
+                                  rgnX, rgnY, rgnW, rgnH);
+}
 
 bool GetVelocityDilation() { return g.velocityDilation; }
 

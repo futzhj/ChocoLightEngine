@@ -219,6 +219,30 @@ bool GetAutoSSR();
 bool SetAutoMotionBlur(bool on);
 bool GetAutoMotionBlur();
 
+// ==================== Phase F.0.10.6 — Auto-Tonemap + per-region Tonemap ====================
+
+/// Phase F.0.10.6 — 是否在 EndScene 内自动调 DrawTonemapFullscreen() 全屏处理.
+/// 默认 true (零回归); 设 false 后用户需手动 HDR.Tonemap(rgn) 控制时序与每 region 不同 tonemap params.
+/// 典型用法 (split-screen 多 instance, P1 黄昏 vs P2 冷夜):
+///   HDR.SetAutoTonemap(false)
+///   HDR.BeginScene()
+///   ...
+///   HDR.EndScene()
+///   HDR.Tonemap(0,    0, W/2, H, {exposure=1.5, tonemap="aces"})
+///   HDR.Tonemap(W/2,  0, W/2, H, {exposure=0.6, tonemap="uncharted2"})
+bool SetAutoTonemap(bool on);
+bool GetAutoTonemap();
+
+/// Phase F.0.10.6 — Region 限定 tonemap pass (split-screen multi-instance 必备)
+/// 用全局 g.exposure / g.gamma / g.tonemap (含 AE 叠加, 与 EndScene 一致行为)
+/// HDR 未启用 / sceneTex 为 0 时 silent skip
+void Tonemap(int rgnX, int rgnY, int rgnW, int rgnH);
+
+/// Phase F.0.10.6 — Region 限定 tonemap pass (params 显式版)
+/// exposure / gamma / tonemapMode 完全自定义, 不叠加 AE
+void Tonemap(int rgnX, int rgnY, int rgnW, int rgnH,
+              float exposure, float gamma, int tonemapMode);
+
 /// 当前 HDR RT 宽度 / 高度 (未 Enable 时 = 0)
 int GetWidth();
 int GetHeight();

@@ -1840,6 +1840,89 @@ static int l_HDR_GetAutoMotionBlur(lua_State* L) {
     return 1;
 }
 
+// ==================== Phase F.0.10.6 — Auto-Tonemap + per-region Tonemap ====================
+
+/// @lua_api Light.Graphics.HDR.SetAutoTonemap
+/// @brief 是否在 EndScene 内自动 fullscreen tonemap (默认 true 零回归)
+/// @param on boolean true=自动 (老行为) / false=用户手动 HDR.Tonemap(rgn) 控时序与每 region 不同 params
+/// @return boolean true = 设置成功; nil, string = 入参非 boolean
+/// @note split-screen 多 instance (P1 黄昏 vs P2 冷夜) 场景必须设 false, 用 HDR.Tonemap(rgn, params) 为每 region 独立 tonemap
+static int l_HDR_SetAutoTonemap(lua_State* L) {
+    if (!lua_isboolean(L, 1)) {
+        lua_pushnil(L);
+        lua_pushstring(L, "SetAutoTonemap: expect boolean");
+        return 2;
+    }
+    HDRRenderer::SetAutoTonemap(lua_toboolean(L, 1) != 0);
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+/// @lua_api Light.Graphics.HDR.GetAutoTonemap
+/// @return boolean
+static int l_HDR_GetAutoTonemap(lua_State* L) {
+    lua_pushboolean(L, HDRRenderer::GetAutoTonemap() ? 1 : 0);
+    return 1;
+}
+
+/// @lua_api Light.Graphics.HDR.Tonemap
+/// @brief 对指定 region 执行 tonemap pass (split-screen multi-instance 必备)
+/// @param rgnX integer (像素, 左下原点 GL convention)
+/// @param rgnY integer
+/// @param rgnW integer  region 宽度 (<=0 时退化为全屏 tonemap, 与 fullscreen 等价)
+/// @param rgnH integer  region 高度 (<=0 时退化为全屏)
+/// @param params table? 可选 { exposure=number, gamma=number, tonemap=string|integer }
+///                       不传 params 时用全局 (g.exposure 含 AE 叠加 / g.gamma / g.tonemap)
+///                       params.tonemap: "aces" | "reinhard" | "uncharted2" | "linear" 或 0..3 整数
+/// @return boolean true / nil, string  HDR 未启用 / sceneTex=0 时 nil + 错误描述
+static int l_HDR_Tonemap(lua_State* L) {
+    const int rgnX = (int)luaL_checkinteger(L, 1);
+    const int rgnY = (int)luaL_checkinteger(L, 2);
+    const int rgnW = (int)luaL_checkinteger(L, 3);
+    const int rgnH = (int)luaL_checkinteger(L, 4);
+
+    // HDR 未启用 silent fail (与 Bloom.Process(rgn) 同模式)
+    if (!HDRRenderer::IsEnabled() || HDRRenderer::GetSceneTexture() == 0) {
+        lua_pushnil(L);
+        lua_pushstring(L, "HDR.Tonemap: HDR not enabled (sceneTex = 0)");
+        return 2;
+    }
+
+    // params_table 可选 (第 5 参数); 不传 / 非 table 走全局 path
+    if (lua_istable(L, 5)) {
+        // 解析 3 字段, 缺省回填全局值
+        // 1) exposure
+        lua_getfield(L, 5, "exposure");
+        float exposure = lua_isnumber(L, -1) ? (float)lua_tonumber(L, -1)
+                                             : HDRRenderer::GetExposure();
+        lua_pop(L, 1);
+        // 2) gamma
+        lua_getfield(L, 5, "gamma");
+        float gamma = lua_isnumber(L, -1) ? (float)lua_tonumber(L, -1)
+                                          : HDRRenderer::GetGamma();
+        lua_pop(L, 1);
+        // 3) tonemap (string 或 int 双兼容)
+        lua_getfield(L, 5, "tonemap");
+        int mode = HDRRenderer::GetTonemapper();   // 缺省回填全局
+        if (lua_isstring(L, -1) && !lua_isnumber(L, -1)) {
+            mode = hdr_tonemap_name_to_mode(lua_tostring(L, -1));
+        } else if (lua_isnumber(L, -1)) {
+            int v = (int)lua_tointeger(L, -1);
+            if (v >= HDRRenderer::TONEMAP_ACES && v <= HDRRenderer::TONEMAP_LINEAR) {
+                mode = v;
+            }
+        }
+        lua_pop(L, 1);
+        HDRRenderer::Tonemap(rgnX, rgnY, rgnW, rgnH, exposure, gamma, mode);
+    } else {
+        // 全局 path: 用 g.exposure (含 AE) / g.gamma / g.tonemap
+        HDRRenderer::Tonemap(rgnX, rgnY, rgnW, rgnH);
+    }
+
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
 /// @lua_api Light.Graphics.HDR.SetVelocityFormat
 /// @brief 切换 velocity buffer 存储格式 (RG16F 默认 / RG8 节省 4x VRAM)
 /// @param fmt string "rg16f" | "rg8" (大小写敏感)
@@ -1905,6 +1988,10 @@ static const luaL_Reg hdr_funcs[] = {
     {"GetAutoSSR",                  l_HDR_GetAutoSSR},
     {"SetAutoMotionBlur",           l_HDR_SetAutoMotionBlur},
     {"GetAutoMotionBlur",           l_HDR_GetAutoMotionBlur},
+    // Phase F.0.10.6 — Auto-Tonemap + per-region Tonemap (split-screen multi-instance 必备)
+    {"SetAutoTonemap",              l_HDR_SetAutoTonemap},
+    {"GetAutoTonemap",              l_HDR_GetAutoTonemap},
+    {"Tonemap",                     l_HDR_Tonemap},
     {NULL, NULL}
 };
 

@@ -47,6 +47,8 @@ local fn_names = {
     "SetAutoBloom", "GetAutoBloom",
     "SetAutoSSR", "GetAutoSSR",
     "SetAutoMotionBlur", "GetAutoMotionBlur",
+    -- Phase F.0.10.6 — Auto-Tonemap + per-region Tonemap (split-screen multi-instance 必备)
+    "SetAutoTonemap", "GetAutoTonemap", "Tonemap",
 }
 for _, k in ipairs(fn_names) do
     if type(HDR[k]) ~= "function" then
@@ -522,7 +524,78 @@ for _, p in ipairs(auto_pairs) do
 end
 
 -- ============================================================
+-- 13) Phase F.0.10.6 — SetAutoTonemap / Tonemap (split-screen multi-instance 必备)
+-- ============================================================
+-- 与 SetAutoTAA / SetAutoBloom 同模式: 默认 true (零回归), round-trip, bad-arg, idempotent
+-- 额外验证 Tonemap headless 退化 (HDR 未启用时返回 nil + err string, 与 Bloom.Process 同)
+
+-- 13.1 默认 true (零回归)
+if HDR.GetAutoTonemap() ~= true then
+    fail("HDR.GetAutoTonemap() default should be true, got " .. tostring(HDR.GetAutoTonemap()))
+end
+pass("HDR.GetAutoTonemap() default = true (零回归)")
+
+-- 13.2 round-trip true → false → true
+HDR.SetAutoTonemap(false)
+if HDR.GetAutoTonemap() ~= false then
+    fail("HDR.SetAutoTonemap(false) round-trip failed")
+end
+HDR.SetAutoTonemap(true)
+if HDR.GetAutoTonemap() ~= true then
+    fail("HDR.SetAutoTonemap(true) round-trip failed")
+end
+pass("HDR.SetAutoTonemap true/false round-trip ok")
+
+-- 13.3 bad-arg → nil + err
+local r_tm, e_tm = HDR.SetAutoTonemap("yes")
+if r_tm ~= nil then fail("HDR.SetAutoTonemap('yes') should return nil") end
+if type(e_tm) ~= "string" then fail("HDR.SetAutoTonemap bad-arg err must be string") end
+pass("HDR.SetAutoTonemap bad-arg returns nil + err string")
+
+-- 13.4 idempotent no-op 同值
+HDR.SetAutoTonemap(true); HDR.SetAutoTonemap(true)
+if HDR.GetAutoTonemap() ~= true then fail("HDR.SetAutoTonemap(true) twice should remain true") end
+pass("HDR.SetAutoTonemap idempotent (no-op same value)")
+
+-- 13.5 Tonemap headless 退化 (HDR 未 Enable 时 返 nil + err)
+-- 注: 本 smoke 不起窗口, HDR.IsEnabled 应为 false; Tonemap 必返 nil + err
+if not HDR.IsEnabled() then
+    local ok_tm, err_tm = HDR.Tonemap(0, 0, 100, 100)
+    if ok_tm ~= nil then
+        fail("HDR.Tonemap headless should return nil, got " .. tostring(ok_tm))
+    end
+    if type(err_tm) ~= "string" then
+        fail("HDR.Tonemap headless err must be string, got " .. type(err_tm))
+    end
+    pass("HDR.Tonemap(rgn) headless returns nil + err: " .. err_tm)
+
+    -- 13.6 验证 Tonemap 接受 params_table (headless 仍可返 nil + err, 但不能崩)
+    local ok_p, err_p = HDR.Tonemap(0, 0, 100, 100, {
+        exposure = 1.5, gamma = 2.4, tonemap = "uncharted2",
+    })
+    if ok_p ~= nil then
+        fail("HDR.Tonemap(rgn, params) headless should return nil")
+    end
+    if type(err_p) ~= "string" then
+        fail("HDR.Tonemap(rgn, params) headless err must be string")
+    end
+    pass("HDR.Tonemap(rgn, params={...}) headless returns nil + err")
+
+    -- 13.7 验证 params.tonemap 接受 int (各合法值 headless 都不崩)
+    for _, mode_int in ipairs({0, 1, 2, 3}) do
+        local _, e = HDR.Tonemap(0, 0, 100, 100, {tonemap = mode_int})
+        if type(e) ~= "string" then
+            fail("HDR.Tonemap(rgn, {tonemap=" .. mode_int .. "}) headless err must be string")
+        end
+    end
+    pass("HDR.Tonemap(rgn, {tonemap=0..3 int}) all 4 modes accepted (headless)")
+end
+
+-- 复位 (后续 demo 不破坏)
+HDR.SetAutoTonemap(true)
+
+-- ============================================================
 -- Done
 -- ============================================================
 
-print("[Phase E.3 + E.14 + E.18.1 + E.18.2 + F.0.10.2 + F.0.10.3] Light.Graphics.HDR smoke PASS (" .. #fn_names .. " functions)")
+print("[Phase E.3 + E.14 + E.18.1 + E.18.2 + F.0.10.2 + F.0.10.3 + F.0.10.6] Light.Graphics.HDR smoke PASS (" .. #fn_names .. " functions)")

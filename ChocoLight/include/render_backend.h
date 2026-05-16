@@ -629,6 +629,27 @@ public:
                                         float /*gamma*/,
                                         int   /*tonemapMode*/ = 0) {}
 
+    /**
+     * @brief Phase F.0.10.6 — Region 限定 tonemap pass (split-screen multi-instance 必备)
+     *
+     * 与 DrawTonemapFullscreen 共享 shader / VAO / uniform location, 只多 1 步 scissor.
+     * 调用方典型场景: split-screen 中 P1 和 P2 各自独立 tonemap (不同 exposure / gamma / mode).
+     * rgnW <= 0 || rgnH <= 0 时退化为 DrawTonemapFullscreen (零回归 fallback).
+     *
+     * 与 fullscreen 行为一致:
+     *   - destructive write (无 alpha blend)
+     *   - 不恢复 depth/blend state (下次 BeginFrame 重置)
+     *   - 写到当前绑定的 framebuffer (调用方应先 UnbindFBO)
+     *
+     * 默认实现 (Legacy): no-op.
+     *
+     * @param rgnX/Y/W/H  Pixel-space region (左下角原点, GL convention)
+     */
+    virtual void DrawTonemapRegion(uint32_t /*hdrTex*/, float /*exposure*/,
+                                    float /*gamma*/, int /*tonemapMode*/,
+                                    int /*rgnX*/, int /*rgnY*/,
+                                    int /*rgnW*/, int /*rgnH*/) {}
+
     // ==================== Phase E.4 — Bloom 后处理 ====================
 
     /**

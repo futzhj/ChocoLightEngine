@@ -5462,6 +5462,46 @@ public:
         glUseProgram(0);
     }
 
+    /// Phase F.0.10.6 — Region 限定 tonemap (split-screen multi-instance 必备)
+    /// rgnW<=0 || rgnH<=0 退化为 fullscreen (零回归 fallback)
+    /// 与 fullscreen 共享 program / VAO / uniform location, 只多 scissor 1 步
+    void DrawTonemapRegion(uint32_t hdrTex, float exposure, float gamma,
+                            int tonemapMode, int rgnX, int rgnY,
+                            int rgnW, int rgnH) override {
+        if (!tonemapSupported || !hdrTex) return;
+        // 退化路径: rgn 无效时走老 fullscreen (保护性, 简化 caller)
+        if (rgnW <= 0 || rgnH <= 0) {
+            DrawTonemapFullscreen(hdrTex, exposure, gamma, tonemapMode);
+            return;
+        }
+
+        // 1. 关 depth/blend, 启 scissor (与 F.0.10.3 region 模式一致)
+        glDisable(GL_DEPTH_TEST);
+        glDisable(GL_BLEND);
+        glEnable(GL_SCISSOR_TEST);
+        glScissor(rgnX, rgnY, rgnW, rgnH);
+
+        // 2. 绑 program + uniform (与 fullscreen 一致)
+        glUseProgram(programTonemap);
+        if (locTonemap_Exposure >= 0) glUniform1f(locTonemap_Exposure, exposure);
+        if (locTonemap_Gamma    >= 0) glUniform1f(locTonemap_Gamma,    gamma);
+        if (locTonemap_Mode     >= 0) glUniform1i(locTonemap_Mode,     tonemapMode);
+
+        // 3. 绑 HDR tex
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, (GLuint)hdrTex);
+
+        // 4. 全屏 quad (scissor 限制实际写区)
+        glBindVertexArray(vaoTonemap);
+        glDrawArrays(GL_TRIANGLES, 0, 6);
+
+        // 5. 解绑 + 复位 scissor (重要: 防影响后续 pass)
+        glBindVertexArray(0);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        glUseProgram(0);
+        glDisable(GL_SCISSOR_TEST);   // Phase F.0.10.6 — 复位
+    }
+
     // ==================== Phase E.4 — Bloom 虚接口实现 ====================
 
     bool SupportsBloom() const override { return bloomSupported; }
