@@ -127,6 +127,63 @@ CHECK(not ok_wn, 'SetViewport(_, _, -100, _) raises (w<0 拒绝)')
 local ok_type = pcall(Gfx.SetViewport, 'foo', 0, 100, 100)
 CHECK(not ok_type, 'SetViewport("foo", ...) raises (类型错拒绝)')
 
+-- ==================== [4] Phase F.0.11: Screenshot / RecordPNGSequence ====================
+
+print('[4] Phase F.0.11: Screenshot / RecordPNGSequence / StopRecord / IsRecording')
+
+-- API surface: 5 函数存在
+CHECK(type(Gfx.Screenshot)           == 'function', 'Screenshot 存在')
+CHECK(type(Gfx.ScreenshotRegion)     == 'function', 'ScreenshotRegion 存在')
+CHECK(type(Gfx.RecordPNGSequence)    == 'function', 'RecordPNGSequence 存在')
+CHECK(type(Gfx.StopRecord)           == 'function', 'StopRecord 存在')
+CHECK(type(Gfx.IsRecording)          == 'function', 'IsRecording 存在')
+
+-- Screenshot headless: 无 GL context → 应返 nil + err string (不 raise)
+local ok_ss, r_ss, e_ss = pcall(Gfx.Screenshot, "headless_test.png")
+CHECK(ok_ss, 'Screenshot() 不 raise (headless 下也不抛)')
+-- headless 下 viewport w=0/h=0 → 返 nil + err (不是 true)
+if r_ss == nil then
+    CHECK(type(e_ss) == 'string', 'Screenshot headless 返 nil + err string (actual=' .. tostring(e_ss) .. ')')
+else
+    CHECK(type(r_ss) == 'boolean', 'Screenshot 返 boolean (有 GL 时)')
+end
+
+-- ScreenshotRegion: w<=0 → nil + err (参数校验)
+local ok_r, rv, re = pcall(Gfx.ScreenshotRegion, "r.png", 0, 0, -1, 100)
+CHECK(ok_r, 'ScreenshotRegion 不 raise')
+CHECK(rv == nil and type(re) == 'string', 'ScreenshotRegion(w=-1) 返 nil + err')
+
+-- IsRecording: 初始 active=false
+local ok_ir, active0, cnt0 = pcall(Gfx.IsRecording)
+CHECK(ok_ir, 'IsRecording 不 raise')
+CHECK(active0 == false, 'IsRecording 初始 active=false')
+CHECK(cnt0 == 0,        'IsRecording 初始 count=0')
+
+-- RecordPNGSequence: max_frames<0 → nil + err
+local ok_neg, rv2, re2 = pcall(Gfx.RecordPNGSequence, "frames/", -1)
+CHECK(ok_neg, 'RecordPNGSequence 不 raise')
+CHECK(rv2 == nil and type(re2) == 'string', 'RecordPNGSequence(max=-1) 返 nil + err')
+
+-- RecordPNGSequence 启动
+local ok_start, r_start = pcall(Gfx.RecordPNGSequence, "frames/", 3)
+CHECK(ok_start, 'RecordPNGSequence 不 raise')
+CHECK(r_start == true, 'RecordPNGSequence(3) 返 true')
+
+-- IsRecording 激活中
+local _, active1, _ = pcall(Gfx.IsRecording)
+CHECK(active1 == true, 'IsRecording active=true 录屏中')
+
+-- StopRecord 停止
+local ok_stop, n_stop = pcall(Gfx.StopRecord)
+CHECK(ok_stop, 'StopRecord 不 raise')
+CHECK(type(n_stop) == 'number', 'StopRecord 返 number (写入帧数)')
+-- headless 下没有 Draw 帧, frame_count 应为 0 (录屏 hook 未被 l_Window_Call 触发)
+CHECK(n_stop == 0, 'StopRecord headless 下 frame_count=0 (无 Draw 帧)')
+
+-- IsRecording 停止后 active=false
+local _, active2, _ = pcall(Gfx.IsRecording)
+CHECK(active2 == false, 'IsRecording active=false 停止后')
+
 -- ==================== 汇总 ====================
 
 print(string.format('[Light.Graphics smoke] 通过 %d / 失败 %d', PASS, FAIL))

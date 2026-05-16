@@ -68,6 +68,9 @@ extern void InputProcessEvent(const PlatformWindow::Event& ev);
 #undef CreateWindow
 #endif
 
+// Phase F.0.11 — 录屏 tick hook (实现在 light_graphics.cpp)
+extern "C" void Light_Graphics_RecordTickHook(int win_w, int win_h);
+
 // ==================== 全局状态 ====================
 
 static bool       g_platformInited = false;
@@ -708,6 +711,17 @@ static int l_Window_Call(lua_State* L) {
     // 在 g_render->EndFrame() 和 SwapBuffers 之前 (tonemap 结果就在 default fb 上).
     if (HDRRenderer::IsEnabled())     HDRRenderer::EndScene();
     if (g_render) g_render->EndFrame();
+
+    // Phase F.0.11 — 录屏 hook (PNG sequence 输出)
+    // 必须在 g_render->EndFrame() 之后, SwapBuffers 之前: default fb 内容已就绪,
+    // 但尚未 swap 出去, 读 GL_BACK 是确定的本帧画面.
+    // hook 内部检查 g_record.active, inactive 时是廉价 no-op.
+    {
+        int win_w = 0, win_h = 0;
+        PlatformWindow::GetWindowSize(g_mainWindow, &win_w, &win_h);
+        Light_Graphics_RecordTickHook(win_w, win_h);
+    }
+
     PlatformWindow::SwapBuffers(g_mainWindow);
 
     lua_pushboolean(L, 1);

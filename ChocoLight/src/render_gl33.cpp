@@ -7488,6 +7488,29 @@ public:
         glUseProgram(0);
     }
 
+    // Phase F.0.11 — 同步读 default fb 到 RGBA8 (用于 Screenshot / RecordPNGSequence)
+    //   注意: PACK_ALIGNMENT 默认 4, 对 RGBA 来说每像素 4 字节天然对齐, 但
+    //   region 起点不是 4 对齐时仍需 GL_PACK_ALIGNMENT=1 保险.
+    //
+    //   ⚠ 关键: 必须先 fully drain 之前帧累积的 GL error (HDR / TAA / SSR 等渲染期可能
+    //   产生不影响功能的 driver-specific error, 不 drain 会误报本次 readback 失败).
+    bool ReadbackDefaultFB(int x, int y, int w, int h, unsigned char* out_rgba) override {
+        if (w <= 0 || h <= 0 || !out_rgba) return false;
+        // Step 1: drain pre-existing errors (不属于本次 readback)
+        while (glGetError() != GL_NO_ERROR) {}
+        // Step 2: setup state + readback
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glPixelStorei(GL_PACK_ALIGNMENT, 1);
+        glReadPixels(x, y, w, h, GL_RGBA, GL_UNSIGNED_BYTE, out_rgba);
+        // Step 3: 仅检查 readback 自身 error
+        GLenum err = glGetError();
+        if (err != GL_NO_ERROR) {
+            while (glGetError() != GL_NO_ERROR) {}
+            return false;
+        }
+        return true;
+    }
+
     // ---- 状态 ----
     void SetColor(float r, float g, float b, float a) override {
         curColor[0] = r; curColor[1] = g; curColor[2] = b; curColor[3] = a;

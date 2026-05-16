@@ -39,6 +39,12 @@
 #include <cmath>
 #include <cstring>
 #include <vector>     // Phase F.0.10.8 — CreateLUT3D Lua table → byte buffer
+#include <string>     // Phase F.0.11   — RecordPNGSequence dir prefix
+#include <cstdio>     // Phase F.0.11   — snprintf path
+
+extern "C" {
+#include "stb_image_write.h"   // Phase F.0.11 — PNG 编码 (实现在 third_party/stb_impl.c)
+}
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -4833,6 +4839,147 @@ static const luaL_Reg taa_funcs[] = {
     {NULL, NULL}
 };
 
+// ============================================================================
+// Phase F.0.11 — Screenshot / PNG Sequence Record
+//
+// 设计:
+//   1) 单帧截图: glReadPixels(default fb) → stbi_write_png
+//   2) 录屏: 全局 g_record 状态; 在 l_Window_Call EndFrame 之后 SwapBuffers 之前
+//      由 light_ui.cpp 调 RecordTickHook() 完成每帧 readback + 写盘
+//   3) Y 翻转: OpenGL 左下原点 vs PNG 左上原点 → stbi_flip_vertically_on_write(1)
+//
+// 跨 phase 协作:
+//   - light_ui.cpp 通过 extern 调用 Light_Graphics_RecordTickHook()
+//   - PNG 编码全平台 stb_image_write (公共领域, 与 stb_image 同源)
+// ============================================================================
+
+struct RecordState {
+    bool        active        = false;
+    std::string dir_prefix;            // e.g. "frames/"
+    int         frame_count   = 0;     // 已写帧数 (自录屏开始计)
+    int         max_frames    = 0;     // 0=unlimited; 否则达此值自动 stop
+};
+static RecordState g_record;
+
+/// 共用 helper: 读 default fb (x,y,w,h) → 写 PNG
+/// @return 1=成功; 0=失败 (readback 或 PNG 写盘)
+static int do_screenshot_internal(const char* path, int x, int y, int w, int h) {
+    if (!g_render || w <= 0 || h <= 0 || !path) return 0;
+    // 分配一次性 buffer (栈太大, 1280x720x4 ≈ 3.5MB, 用 heap)
+    std::vector<unsigned char> buf((size_t)w * h * 4);
+    if (!g_render->ReadbackDefaultFB(x, y, w, h, buf.data())) return 0;
+    stbi_flip_vertically_on_write(1);   // GL 左下 → PNG 左上
+    return stbi_write_png(path, w, h, 4, buf.data(), w * 4);
+}
+
+/// 录屏 tick hook — light_ui.cpp::l_Window_Call 在 SwapBuffers 之前调用
+/// 不抛 lua 异常 (因为 light_ui 不在 lua_State* 上下文里); 录屏失败 silent
+/// 注: 录屏读 default fb 当前窗口尺寸 (用户切窗口大小后, 下一帧自动用新尺寸)
+extern "C" void Light_Graphics_RecordTickHook(int win_w, int win_h) {
+    if (!g_record.active || win_w <= 0 || win_h <= 0) return;
+    char path[512];
+    std::snprintf(path, sizeof(path), "%sframe_%04d.png",
+                  g_record.dir_prefix.c_str(), g_record.frame_count);
+    do_screenshot_internal(path, 0, 0, win_w, win_h);
+    ++g_record.frame_count;
+    if (g_record.max_frames > 0 && g_record.frame_count >= g_record.max_frames) {
+        g_record.active = false;   // auto-stop
+    }
+}
+
+/// @lua_api Light.Graphics.Screenshot
+/// @brief Phase F.0.11 — 同步截屏当前 default fb 全屏 → PNG
+/// @param path string  输出文件路径 (调用方需保证目录存在; PNG 编码 RGBA8)
+/// @return boolean true=成功; nil, string=g_render 未就绪 / readback 失败 / 写盘失败
+/// @note Y 自动翻转 (GL 左下 → PNG 左上); HDR 场景下读 default fb (tonemap 之后 LDR)
+static int l_Graphics_Screenshot(lua_State* L) {
+    const char* path = luaL_checkstring(L, 1);
+    int x = 0, y = 0, w = 0, h = 0;
+    if (g_render) g_render->GetViewport(&x, &y, &w, &h);
+    // viewport 通常 = window size; 若 0 则失败
+    if (w <= 0 || h <= 0) {
+        lua_pushnil(L);
+        lua_pushstring(L, "Screenshot: invalid viewport (w<=0 or h<=0)");
+        return 2;
+    }
+    if (do_screenshot_internal(path, 0, 0, w, h)) {
+        lua_pushboolean(L, 1);
+        return 1;
+    }
+    lua_pushnil(L);
+    lua_pushfstring(L, "Screenshot: failed to write '%s' (check dir exists + write permission)", path);
+    return 2;
+}
+
+/// @lua_api Light.Graphics.ScreenshotRegion
+/// @brief Phase F.0.11 — region 截图 (单 quad / 自定义子区域)
+/// @param path string
+/// @param x integer  region 左下角 X (OpenGL 习惯, 左下原点)
+/// @param y integer  region 左下角 Y
+/// @param w integer  region 宽
+/// @param h integer  region 高
+/// @return boolean true / nil, err
+static int l_Graphics_ScreenshotRegion(lua_State* L) {
+    const char* path = luaL_checkstring(L, 1);
+    int x = (int)luaL_checkinteger(L, 2);
+    int y = (int)luaL_checkinteger(L, 3);
+    int w = (int)luaL_checkinteger(L, 4);
+    int h = (int)luaL_checkinteger(L, 5);
+    if (w <= 0 || h <= 0) {
+        lua_pushnil(L);
+        lua_pushfstring(L, "ScreenshotRegion: w/h must be > 0 (got %d x %d)", w, h);
+        return 2;
+    }
+    if (do_screenshot_internal(path, x, y, w, h)) {
+        lua_pushboolean(L, 1);
+        return 1;
+    }
+    lua_pushnil(L);
+    lua_pushfstring(L, "ScreenshotRegion: failed to write '%s'", path);
+    return 2;
+}
+
+/// @lua_api Light.Graphics.RecordPNGSequence
+/// @brief Phase F.0.11 — 开始录屏, 每帧 PNG 序列输出到 dir
+/// @param dir_prefix string  目录前缀 (调用方需保证目录已存在); 输出名 dir/frame_NNNN.png
+/// @param max_frames integer 最大帧数 (>0 时达此值自动 stop, 0=无限直到 StopRecord)
+/// @return boolean true / nil, err
+/// @note 同 RecordPNGSequence 多次调用: 后调用复位 frame 计数; 不允许同时录多份
+static int l_Graphics_RecordPNGSequence(lua_State* L) {
+    const char* dir = luaL_checkstring(L, 1);
+    int max_frames  = (int)luaL_optinteger(L, 2, 0);
+    if (max_frames < 0) {
+        lua_pushnil(L);
+        lua_pushstring(L, "RecordPNGSequence: max_frames must be >= 0 (0=unlimited)");
+        return 2;
+    }
+    g_record.dir_prefix  = dir;
+    g_record.frame_count = 0;
+    g_record.max_frames  = max_frames;
+    g_record.active      = true;
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+/// @lua_api Light.Graphics.StopRecord
+/// @brief Phase F.0.11 — 主动停止录屏
+/// @return integer 实际写入帧数 (即停止时的 frame_count)
+static int l_Graphics_StopRecord(lua_State* L) {
+    int n = g_record.frame_count;
+    g_record.active = false;
+    lua_pushinteger(L, n);
+    return 1;
+}
+
+/// @lua_api Light.Graphics.IsRecording
+/// @brief Phase F.0.11 — 查询录屏状态
+/// @return boolean active, integer frame_count
+static int l_Graphics_IsRecording(lua_State* L) {
+    lua_pushboolean(L, g_record.active ? 1 : 0);
+    lua_pushinteger(L, g_record.frame_count);
+    return 2;
+}
+
 static const luaL_Reg graphics_funcs[] = {
     // --- 绘图基元 ---
     {"Draw",              l_Draw},
@@ -4887,6 +5034,12 @@ static const luaL_Reg graphics_funcs[] = {
     {"GetMaxPointLights",          l_GetMaxPointLights},
     // Phase AW.x — Backend 内省
     {"GetBackendName",             l_Graphics_GetBackendName},
+    // Phase F.0.11 — Screenshot / PNG Sequence Record (default fb readback)
+    {"Screenshot",                 l_Graphics_Screenshot},
+    {"ScreenshotRegion",           l_Graphics_ScreenshotRegion},
+    {"RecordPNGSequence",          l_Graphics_RecordPNGSequence},
+    {"StopRecord",                 l_Graphics_StopRecord},
+    {"IsRecording",                l_Graphics_IsRecording},
     // --- 元方法 ---
     {"__call",            l_Graphics_Call},
     {"__tostring",        l_Graphics_Tostring},

@@ -214,6 +214,8 @@ local g_warmLut, g_coolLut = nil, nil
 local g_cubeAngle, g_barAngle = 0.0, 0.0
 local g_lutOn  = true
 local g_initOk = false
+local g_recording = false  -- Phase F.0.11 录屏状态
+local g_auto_shot_frames = 3  -- Draw() 调用 N 次后自动截图 (0=已触发)
 
 -- 4 quad 的 tonemap 显式参数 (传给 HDR.Tonemap rgn 重载)
 -- tonemap: 'aces' / 'uncharted2' / 'reinhard'  exposure: 0.6~1.5
@@ -465,6 +467,7 @@ function Demo:Update(dt)
     if dt > 0.1 then dt = 0.1 end
     g_cubeAngle = g_cubeAngle + dt * math.rad(30)
     g_barAngle  = g_barAngle  + dt * math.rad(60)
+
 end
 
 -- 给 quad i 渲染 + 后处理 (在 instance i 的 fbo 内)
@@ -533,9 +536,28 @@ function Demo:Draw()
             -- quad label 显示在每 quad 左上角 (default fb 像素坐标; Y 反向: top-edge=q.y+q.h-20)
             Gfx.Print(string.format('[Q%d] %s', i, q.label), q.x + 8, q.y + q.h - 20, 0)
         end
-        Gfx.Print('Keys: 1/2/3/4=reset quad history | L=toggle LUT | ESC=quit',
+        -- F.0.11 录屏状态显示
+        local rec_status = g_recording and ' | [REC]' or ''
+        Gfx.Print('Keys: 1/2/3/4=reset history | L=LUT | F8=screenshot | R=record(PNG) | ESC=quit' .. rec_status,
               8, WIN_H - 24, 0)
         Gfx.Pop()
+    end
+
+    -- Phase F.0.11: 第 3 帧 Draw 后触发自动截图 (EndFrame hook 里执行, HDR tonemap 已完成)
+    -- demo 启动验证模式 (CHOCO_AUTO_EXIT 环境变量): 自动截图 + 退出, CI / smoke 验证用
+    if g_auto_shot_frames > 0 then
+        g_auto_shot_frames = g_auto_shot_frames - 1
+        if g_auto_shot_frames == 0 then
+            Gfx.RecordPNGSequence('docs/screenshots/', 1)
+            print('[demo_quad_split] auto screenshot → docs/screenshots/frame_0000.png'); io.flush()
+        end
+    elseif os.getenv('CHOCO_AUTO_EXIT') == '1' then
+        -- 倒计时归零后再多跑 3 帧让 hook 写完 PNG, 然后自动退出
+        g_auto_shot_frames = g_auto_shot_frames - 1   -- 继续 -1, -2, -3 ...
+        if g_auto_shot_frames <= -3 then
+            print('[demo_quad_split] CHOCO_AUTO_EXIT=1 → self:Close()'); io.flush()
+            self:Close()
+        end
     end
 end
 
@@ -553,6 +575,31 @@ function Demo:OnKey(key, scancode, action, mods)
     elseif key == string.byte('L') then
         g_lutOn = not g_lutOn
         print('[demo_quad_split] LUT toggle = ' .. tostring(g_lutOn))
+    elseif key == 297 then  -- F8 = 截图 (GLFW key code 297)
+        -- Phase F.0.11: 全屏截图
+        local path = 'docs/screenshots/quad_split.png'
+        local ok, err = Gfx.Screenshot(path)
+        if ok then
+            print('[demo_quad_split] Screenshot saved: ' .. path)
+        else
+            print('[demo_quad_split] Screenshot failed: ' .. tostring(err))
+        end
+    elseif key == string.byte('R') then
+        -- Phase F.0.11: R 键切换录屏 (PNG 序列 → frames/ 目录)
+        if not g_recording then
+            local dir = 'docs/recordings/quad/'
+            local ok, err = Gfx.RecordPNGSequence(dir, 120)  -- 录 120 帧 (~2s @ 60fps)
+            if ok then
+                g_recording = true
+                print('[demo_quad_split] RecordPNGSequence started: ' .. dir .. ' (max 120 frames)')
+            else
+                print('[demo_quad_split] RecordPNGSequence failed: ' .. tostring(err))
+            end
+        else
+            local n = Gfx.StopRecord()
+            g_recording = false
+            print(string.format('[demo_quad_split] RecordPNGSequence stopped (%d frames written)', n))
+        end
     end
 end
 

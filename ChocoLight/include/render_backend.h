@@ -160,6 +160,18 @@ public:
     virtual void BeginFrame(float clearR, float clearG, float clearB, float clearA) = 0;
     virtual void EndFrame() = 0;
 
+    /**
+     * @brief Phase F.0.11 — 同步读 default framebuffer (binding 0) 到 RGBA8 buffer
+     * @param x, y       读取起点 (左下原点, OpenGL 习惯; PNG 编码方需 Y 翻转)
+     * @param w, h       读取宽高 (像素)
+     * @param out_rgba   调用方分配, 至少 w*h*4 字节
+     * @return true=成功, false=不支持/参数非法/glGetError
+     * @note 默认实现返 false (Legacy / headless 后端). v1 是同步 readback (吃 frame stall),
+     *       v2 优化可改 PBO double-buffer 异步.
+     */
+    virtual bool ReadbackDefaultFB(int /*x*/, int /*y*/, int /*w*/, int /*h*/,
+                                    unsigned char* /*out_rgba*/) { return false; }
+
     // ---- 状态 ----
     virtual void SetColor(float r, float g, float b, float a) = 0;
     virtual void GetColor(float* r, float* g, float* b, float* a) = 0;
