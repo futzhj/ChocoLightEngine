@@ -2232,6 +2232,51 @@ static int l_HDR_SupportsHDRLUT(lua_State* L) {
     return 1;
 }
 
+// ==================== Phase F.0.10.9 — Multi-Instance HDR Lua API ====================
+
+/// @lua_api Light.Graphics.HDR.CreateInstance
+/// @brief 创建新 HDR instance (split-screen / 多窗口 / PIP 必备)
+/// @return integer instance id ∈ [1, 3]; 失败返 0 (槽满)
+/// @note 老 API 默认作用于 default instance (id=0). 切换 SetActiveInstance(id) 后透明作用于新 instance.
+static int l_HDR_CreateInstance(lua_State* L) {
+    lua_pushinteger(L, HDRRenderer::CreateInstance());
+    return 1;
+}
+
+/// @lua_api Light.Graphics.HDR.DestroyInstance
+/// @brief 销毁 instance, 释放该槽 RT + 标空闲. id=0 (default) 拒绝.
+/// @param id integer 要销毁的 instance id (1..3)
+/// @return boolean true = 成功; false = 非法 id 或 未分配
+static int l_HDR_DestroyInstance(lua_State* L) {
+    int id = (int)luaL_checkinteger(L, 1);
+    lua_pushboolean(L, HDRRenderer::DestroyInstance(id) ? 1 : 0);
+    return 1;
+}
+
+/// @lua_api Light.Graphics.HDR.SetActiveInstance
+/// @brief 切换 active instance, 后续老 API 全部作用于该 instance
+/// @param id integer instance id (0 = default, 1..3 = 用户创建)
+/// @return boolean true = 切换成功; false = 非法 id 或 未分配
+static int l_HDR_SetActiveInstance(lua_State* L) {
+    int id = (int)luaL_checkinteger(L, 1);
+    lua_pushboolean(L, HDRRenderer::SetActiveInstance(id) ? 1 : 0);
+    return 1;
+}
+
+/// @lua_api Light.Graphics.HDR.GetActiveInstance
+/// @return integer 当前 active instance id
+static int l_HDR_GetActiveInstance(lua_State* L) {
+    lua_pushinteger(L, HDRRenderer::GetActiveInstance());
+    return 1;
+}
+
+/// @lua_api Light.Graphics.HDR.GetInstanceCount
+/// @return integer 已分配 instance 数 (>=1, default 永远占用)
+static int l_HDR_GetInstanceCount(lua_State* L) {
+    lua_pushinteger(L, HDRRenderer::GetInstanceCount());
+    return 1;
+}
+
 /// @lua_api Light.Graphics.HDR.SetVelocityFormat
 /// @brief 切换 velocity buffer 存储格式 (RG16F 默认 / RG8 节省 4x VRAM)
 /// @param fmt string "rg16f" | "rg8" (大小写敏感)
@@ -2323,6 +2368,12 @@ static const luaL_Reg hdr_funcs[] = {
     {"GetLUTReloadCallback",        l_HDR_GetLUTReloadCallback},
     // Phase F.0.10.8.6 — HDR LUT 能力探测
     {"SupportsHDRLUT",              l_HDR_SupportsHDRLUT},
+    // Phase F.0.10.9 — Multi-Instance HDR (split-screen / 多窗口 / PIP)
+    {"CreateInstance",              l_HDR_CreateInstance},
+    {"DestroyInstance",             l_HDR_DestroyInstance},
+    {"SetActiveInstance",           l_HDR_SetActiveInstance},
+    {"GetActiveInstance",           l_HDR_GetActiveInstance},
+    {"GetInstanceCount",            l_HDR_GetInstanceCount},
     {NULL, NULL}
 };
 

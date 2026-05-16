@@ -63,6 +63,9 @@ local fn_names = {
     "SetLUTReloadCallback", "GetLUTReloadCallback",
     -- Phase F.0.10.8.6 — HDR LUT 能力探测
     "SupportsHDRLUT",
+    -- Phase F.0.10.9 — Multi-Instance HDR (split-screen / 多窗口 / PIP)
+    "CreateInstance", "DestroyInstance", "SetActiveInstance",
+    "GetActiveInstance", "GetInstanceCount",
 }
 for _, k in ipairs(fn_names) do
     if type(HDR[k]) ~= "function" then
@@ -1216,7 +1219,132 @@ do
 end
 
 -- ============================================================
+-- 21. Phase F.0.10.9 — Multi-Instance HDR (split-screen / PIP)
+-- ============================================================
+-- 验证 5 fn 行为:
+--   - 初始 GetInstanceCount=1, GetActiveInstance=0 (default singleton)
+--   - CreateInstance 返 1..3, GetInstanceCount 递增, 最多 4
+--   - SetActiveInstance(id) 切换, GetActiveInstance 反射变化
+--   - DestroyInstance(0) 拒绝 (default 不可销毁)
+--   - DestroyInstance(无效 id) 返 false
+--   - DestroyInstance 后 active 自动回 0
+--
+-- 设计零状态污染: 所有创建的 instance 都在本节末尾销毁
+
+-- 21.1 初始状态 (前序章节可能已 SetActiveInstance, 强制复位回 0)
+HDR.SetActiveInstance(0)   -- 防御性复位
+local cnt0 = HDR.GetInstanceCount()
+local act0 = HDR.GetActiveInstance()
+if cnt0 ~= 1 then
+    fail("初始 GetInstanceCount expect 1, got " .. tostring(cnt0))
+end
+if act0 ~= 0 then
+    fail("初始 GetActiveInstance expect 0, got " .. tostring(act0))
+end
+pass("初始 instance count=1, active=0 (default singleton)")
+
+-- 21.2 CreateInstance 返 1, count=2
+local id1 = HDR.CreateInstance()
+if id1 ~= 1 then
+    fail("CreateInstance #1 expect id=1, got " .. tostring(id1))
+end
+if HDR.GetInstanceCount() ~= 2 then
+    fail("after Create #1 count expect 2, got " .. tostring(HDR.GetInstanceCount()))
+end
+pass("CreateInstance #1 -> id=1, count=2")
+
+-- 21.3 SetActiveInstance(id1) 切换 + 切回
+if not HDR.SetActiveInstance(id1) then
+    fail("SetActiveInstance(" .. id1 .. ") returned false")
+end
+if HDR.GetActiveInstance() ~= id1 then
+    fail("after SetActive(" .. id1 .. ") active expect " .. id1 ..
+         ", got " .. tostring(HDR.GetActiveInstance()))
+end
+HDR.SetActiveInstance(0)
+if HDR.GetActiveInstance() ~= 0 then
+    fail("after SetActive(0) active expect 0, got " .. tostring(HDR.GetActiveInstance()))
+end
+pass("SetActiveInstance round-trip (0 <-> 1)")
+
+-- 21.4 创建到槽满 (MAX_INSTANCES=4: default + 3 user)
+local id2 = HDR.CreateInstance()
+local id3 = HDR.CreateInstance()
+if id2 ~= 2 or id3 ~= 3 then
+    fail("Create #2/#3 expect 2/3, got " .. tostring(id2) .. "/" .. tostring(id3))
+end
+if HDR.GetInstanceCount() ~= 4 then
+    fail("after 3 Create count expect 4, got " .. tostring(HDR.GetInstanceCount()))
+end
+local id_full = HDR.CreateInstance()
+if id_full ~= 0 then
+    fail("Create on full slots expect 0 (失败), got " .. tostring(id_full))
+end
+pass("Create until 槽满 (count=4); 第 4 次 CreateInstance() returns 0")
+
+-- 21.5 DestroyInstance(0) 拒绝 (default 不可销毁)
+if HDR.DestroyInstance(0) ~= false then
+    fail("DestroyInstance(0) should return false (default 拒绝)")
+end
+pass("DestroyInstance(0) rejected (default singleton 不可销毁)")
+
+-- 21.6 DestroyInstance(非法 id) 返 false
+if HDR.DestroyInstance(99) ~= false then
+    fail("DestroyInstance(99) should return false (out of range)")
+end
+if HDR.DestroyInstance(-1) ~= false then
+    fail("DestroyInstance(-1) should return false (negative)")
+end
+pass("DestroyInstance 非法 id 拒绝 (99 / -1)")
+
+-- 21.7 DestroyInstance(active id) 自动切回 default
+HDR.SetActiveInstance(id2)
+if HDR.GetActiveInstance() ~= id2 then
+    fail("setup: SetActive(" .. id2 .. ") failed")
+end
+if not HDR.DestroyInstance(id2) then
+    fail("DestroyInstance(" .. id2 .. ") returned false")
+end
+if HDR.GetActiveInstance() ~= 0 then
+    fail("after Destroy active expect auto-reset to 0, got " ..
+         tostring(HDR.GetActiveInstance()))
+end
+pass("DestroyInstance(active) 自动切回 active=0")
+
+-- 21.8 DestroyInstance(已销毁 id) 二次返 false
+if HDR.DestroyInstance(id2) ~= false then
+    fail("DestroyInstance(id2 二次) should return false")
+end
+pass("DestroyInstance(已销毁 id) 二次 returns false")
+
+-- 21.9 销毁后槽位可复用 (id2 再 Create 应回 2)
+local id2_reuse = HDR.CreateInstance()
+if id2_reuse ~= id2 then
+    fail("Create after Destroy expect 槽位复用 id=" .. id2 ..
+         ", got " .. tostring(id2_reuse))
+end
+pass("CreateInstance 复用已销毁槽位 (id=" .. id2_reuse .. ")")
+
+-- 21.10 SetActiveInstance(已销毁 / 未分配 id) 拒绝
+HDR.DestroyInstance(id2_reuse)
+if HDR.SetActiveInstance(id2_reuse) ~= false then
+    fail("SetActiveInstance(已销毁 id) should return false")
+end
+pass("SetActiveInstance(已销毁 id) 拒绝")
+
+-- 21.11 清理: 销毁所有用户 instance (default 留)
+HDR.DestroyInstance(id1)
+HDR.DestroyInstance(id3)
+if HDR.GetInstanceCount() ~= 1 then
+    fail("cleanup: count expect 1, got " .. tostring(HDR.GetInstanceCount()))
+end
+if HDR.GetActiveInstance() ~= 0 then
+    fail("cleanup: active expect 0, got " .. tostring(HDR.GetActiveInstance()))
+end
+pass("cleanup: 销毁全部 user instance, count=1 active=0")
+
+-- ============================================================
 -- Done
 -- ============================================================
 
-print("[Phase E.3 + E.14 + E.18.1 + E.18.2 + F.0.10.2 + F.0.10.3 + F.0.10.6 + F.0.10.8 + F.0.10.8.1 + F.0.10.8.2 + F.0.10.8.3 + F.0.10.8.4 + F.0.10.8.5 + F.0.10.8.6] Light.Graphics.HDR smoke PASS (" .. #fn_names .. " functions)")
+print("[Phase E.3 + E.14 + E.18.1 + E.18.2 + F.0.10.2 + F.0.10.3 + F.0.10.6 + F.0.10.8 + F.0.10.8.1 + F.0.10.8.2 + F.0.10.8.3 + F.0.10.8.4 + F.0.10.8.5 + F.0.10.8.6 + F.0.10.9] Light.Graphics.HDR smoke PASS (" .. #fn_names .. " functions)")

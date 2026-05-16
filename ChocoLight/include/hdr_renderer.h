@@ -277,6 +277,43 @@ bool DeleteLUT3D(uint32_t lutTex);
 /// @return true 当 backend 实现 RGB16F + 3D texture 上传; false 当 legacy / backend 未初始化.
 bool SupportsHDRLUT();
 
+// ==================== Phase F.0.10.9 — Multi-Instance HDR API ====================
+//
+// HDRRenderer 多实例支持. 老 100+ fn 默认作用于 default instance (id=0).
+// 用 SetActiveInstance(id) 切换 active 后, 老 fn 透明作用于新 instance.
+//
+// 设计:
+//   - id=0 = default singleton, 永远占用, 不可销毁 (老 API 完全等价 F.0~F.0.10.8.6)
+//   - id ∈ [1, 3] = 用户创建的 instance 槽 (split-screen 4 人足够)
+//   - 每 instance 独立: FBO/sceneTex/exposure/gamma/tonemap/autoXXX/dilation RT/LUT 应用
+//   - 全局共享 (跨 instance): LUT watch list / reload callback / hotReload 开关
+//
+// 典型用法 (split-screen 双人不同分辨率):
+//   HDR.Enable(1920, 1080)             -- default instance: 主屏 1080p
+//   local pip = HDR.CreateInstance()
+//   HDR.SetActiveInstance(pip)
+//   HDR.Enable(640, 360)               -- PIP instance: 360p
+//   ...
+//   HDR.SetActiveInstance(0)           -- 切回主屏
+
+/// Phase F.0.10.9 — 创建新 HDR instance. 返 id ∈ [1, MAX_INSTANCES-1]; 槽满返 0.
+/// 不调 backend; 新 instance 继承 default 的 backend/supported/inited, 但 enabled=false.
+int  CreateInstance();
+
+/// Phase F.0.10.9 — 销毁 instance. 释放该槽 RT + 标空闲. id=0 拒绝.
+/// 若 active 是该 id 自动切回 default (id=0).
+bool DestroyInstance(int id);
+
+/// Phase F.0.10.9 — 切换 active instance. id 必须已分配, 否则 false.
+/// 切换后所有老 fn 透明作用于新 instance.
+bool SetActiveInstance(int id);
+
+/// Phase F.0.10.9 — 当前 active instance id.
+int  GetActiveInstance();
+
+/// Phase F.0.10.9 — 已分配 instance 数 (>=1, default 永远占用).
+int  GetInstanceCount();
+
 /// Phase F.0.10.8 — 设置全局 grading LUT (作用于 autoTonemap / Tonemap(rgn) 不带 lut 参数路径).
 /// strength clamp [0, 1]; lutTex=0 即关 LUT.
 bool SetGradingLUT(uint32_t lutTex, float strength);

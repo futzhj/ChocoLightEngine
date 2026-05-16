@@ -409,6 +409,31 @@ local function run_headless_api_probe()
     else
         print('  SKIP: F.0.10.8.5 LoadCubeLUT not present')
     end
+
+    -- F.0.10.9 新增: Multi-Instance HDR (split-screen / 多窗口 / PIP)
+    -- 完整探: Create→SetActive→GetActive→Destroy→cleanup
+    if HDR.CreateInstance and HDR.DestroyInstance and HDR.SetActiveInstance
+       and HDR.GetActiveInstance and HDR.GetInstanceCount then
+        local cnt0 = HDR.GetInstanceCount()
+        local id1  = HDR.CreateInstance()
+        if id1 == 1 and HDR.GetInstanceCount() == cnt0 + 1 then
+            HDR.SetActiveInstance(id1)
+            local act = HDR.GetActiveInstance()
+            HDR.SetActiveInstance(0)
+            HDR.DestroyInstance(id1)
+            if act == id1 and HDR.GetInstanceCount() == cnt0 then
+                print('  PASS: F.0.10.9 Multi-Instance (Create/Active/Destroy round-trip ok)')
+            else
+                print('  FAIL: F.0.10.9 round-trip: act=' .. tostring(act) ..
+                      ' final_count=' .. tostring(HDR.GetInstanceCount()))
+            end
+        else
+            print('  FAIL: F.0.10.9 CreateInstance: id=' .. tostring(id1) ..
+                  ' count=' .. tostring(HDR.GetInstanceCount()))
+        end
+    else
+        print('  SKIP: F.0.10.9 Multi-Instance API not present (legacy build)')
+    end
 end
 
 if not UI or not UI.Window then

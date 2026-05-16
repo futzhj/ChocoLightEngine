@@ -92,20 +92,11 @@ struct State {
     // Phase F.0.10.6 — Auto-Tonemap 开关 (默认 true = 零回归; false = 用户手动 HDR.Tonemap(rgn))
     //   split-screen 场景 P1 黄昏 vs P2 冷夜: 必关, 用 HDR.Tonemap(rgn, params) 为每 region 独立 tonemap
     bool           autoTonemap              = true;
-    // Phase F.0.10.8 — 全局 grading LUT (作用于 autoTonemap / Tonemap(rgn) 不带 lut 参数路径)
+    // Phase F.0.10.8 — Per-instance grading LUT (每 instance 独立 LUT 应用)
+    //   每 player / region 可挂不同 LUT 做差异化调色 (P1 黄昏暖调 / P2 冷夜蓝调)
     //   lutTexId=0 或 lutStrength=0 → shader 跳过 LUT (uniform branch 短路, 性能 0 损)
     uint32_t       lutTexId                 = 0;
     float          lutStrength              = 0.0f;   // clamp [0, 1]
-
-    // Phase F.0.10.8.3 — LUT 热重载 (mtime polling)
-    //   lutHotReload  = 全局开关, 关闭后 PollLUTReloads 直接返 0 (零开销)
-    //   lutWatchList  = 已 Watch 的 LUT 文件 (path + 上次 mtime + 当前 lutId + 格式标志)
-    bool           lutHotReload             = true;
-
-    // Phase F.0.10.8.4 — LUT reload 回调 (单一全局位)
-    //   reload 成功后调用 cb(path, oldId, newId, cbUser); 失败不触发
-    LUTReloadCallback lutReloadCb           = nullptr;
-    void*             lutReloadCbUser       = nullptr;
 };
 
 // Phase F.0.10.8.3 — WatchEntry: 一条 watched LUT 文件记录
@@ -120,8 +111,37 @@ struct WatchEntry {
     bool        isHald    = false;
 };
 
-static State                   g;
-static std::vector<WatchEntry> g_lutWatchList;   // F.0.10.8.3 (放 State 外避免 forward 依赖)
+// ==================== Phase F.0.10.9 — Multi-instance support ====================
+//
+// 老 `static State g;` 单例 → `static State g_states[MAX_INSTANCES]; static int g_active = 0;`
+// 通过 macro `#define g g_states[g_active]` 让现有 100+ fn 零改动继续访问 active instance
+//   - g_states[0] 是 default singleton (老 namespace API 行为完全等价 F.0~F.0.10.8.6)
+//   - 新加 5 fn (CreateInstance / DestroyInstance / SetActiveInstance / GetActiveInstance / GetInstanceCount)
+//   - 每 instance 独立: backend ptr / enabled / FBO / sceneTex / dilation RT / tonemap params /
+//                       autoXXX 5 flags / velocityFormat / per-instance LUT 应用
+//   - MAX_INSTANCES=4: default + 3 user (split-screen 4 人足够)
+//
+// 全 instance 共享 (g_global 单一全局):
+//   - lutHotReload     系统级开关 (Poll 由用户主动调, 不区分 instance)
+//   - lutReloadCb/User 单一回调 (用户自己 multiplex by path)
+//   - lutWatchList     全局 LUT 注册表 (LUT id 全局, 跨 instance 共享, 由 instance 各自 SetGradingLUT 引用)
+struct GlobalState {
+    bool                    lutHotReload    = true;
+    LUTReloadCallback       lutReloadCb     = nullptr;
+    void*                   lutReloadCbUser = nullptr;
+    std::vector<WatchEntry> lutWatchList;
+};
+
+static constexpr int MAX_INSTANCES = 4;
+static State g_states[MAX_INSTANCES];
+static int   g_active = 0;
+static int   g_count  = 1;
+static bool  g_slot_in_use[MAX_INSTANCES] = { true, false, false, false };
+static GlobalState g_global;
+
+// 现有 100+ fn 内部沿用 `g.X` 写法; macro 透明展开到 active instance
+// 注意: 仅在 hdr_renderer.cpp 文件内有效, 不污染外部命名空间
+#define g g_states[g_active]
 
 // Phase E.18.1: 内部辅助 — 计算 dilation RT 实际存储尺寸
 // halfRes=true 时 ((W+1)/2, (H+1)/2) 向上取整 (与 Phase E.17 motion blur 同模式)
@@ -292,11 +312,16 @@ bool Init(RenderBackend* backend) {
         return false;
     }
 
-    g.backend   = backend;
-    g.supported = backend->SupportsHDR();
-    g.inited    = true;
+    // Phase F.0.10.9: 把 backend ptr / supported / inited 写入所有 MAX_INSTANCES 槽
+    //   (每个 instance 共享 backend 能力, 但独立 enabled / RT / 参数)
+    const bool supported = backend->SupportsHDR();
+    for (int i = 0; i < MAX_INSTANCES; ++i) {
+        g_states[i].backend   = backend;
+        g_states[i].supported = supported;
+        g_states[i].inited    = true;
+    }
     // Phase E.14: backend 默认 dilation ON，与 g.velocityDilation 初值一致
-    g.backend->SetVelocityDilation(g.velocityDilation);
+    backend->SetVelocityDilation(g.velocityDilation);
 
     if (g.supported) {
         CC::Log(CC::LOG_INFO, "HDRRenderer: ready (backend supports HDR)");
@@ -309,12 +334,21 @@ bool Init(RenderBackend* backend) {
 
 void Shutdown() {
     if (!g.inited) return;
-    ReleaseRT();
-    g.enabled   = false;
-    g.paused    = false;
-    g.inited    = false;
-    g.supported = false;
-    g.backend   = nullptr;
+    // Phase F.0.10.9: 遍历所有 instance 释放 RT + 重置所有 state 字段
+    //   (active instance 在循环中临时切换, 最终复位到 0)
+    const int saved_active = g_active;
+    for (int i = 0; i < MAX_INSTANCES; ++i) {
+        g_active = i;
+        if (g_states[i].inited) {
+            ReleaseRT();        // 作用于当前 g_active 槽的 RT
+        }
+        g_states[i] = State{};  // 完全清空
+    }
+    // 复位多实例分配状态: 仅 default 槽存在
+    g_active = 0;
+    g_count  = 1;
+    for (int i = 0; i < MAX_INSTANCES; ++i) g_slot_in_use[i] = (i == 0);
+    (void)saved_active;
 }
 
 bool IsInited() { return g.inited; }
@@ -1254,13 +1288,13 @@ uint32_t WatchLUT(const char* path, char* outErr, size_t errCap) {
     SDL_GetPathInfo(path, &info);   // 失败时 info 全 0
 
     // 3. 同 path 重复注册: 清旧 entry + 旧 GL tex (避免泄漏)
-    for (auto it = g_lutWatchList.begin(); it != g_lutWatchList.end(); ++it) {
+    for (auto it = g_global.lutWatchList.begin(); it != g_global.lutWatchList.end(); ++it) {
         if (it->path == path) {
             if (it->lutId && it->lutId != id && g.backend) {
                 g.backend->DeleteLUT3D(it->lutId);
                 if (g.lutTexId == it->lutId) g.lutTexId = 0u;
             }
-            g_lutWatchList.erase(it);
+            g_global.lutWatchList.erase(it);
             break;
         }
     }
@@ -1271,13 +1305,13 @@ uint32_t WatchLUT(const char* path, char* outErr, size_t errCap) {
     e.lastMtime = info.modify_time;
     e.lutId     = id;
     e.isHald    = hald;
-    g_lutWatchList.push_back(std::move(e));
+    g_global.lutWatchList.push_back(std::move(e));
     return id;
 }
 
 bool UnwatchLUT(uint32_t lutTex) {
     if (lutTex == 0u) return false;
-    for (auto it = g_lutWatchList.begin(); it != g_lutWatchList.end(); ++it) {
+    for (auto it = g_global.lutWatchList.begin(); it != g_global.lutWatchList.end(); ++it) {
         if (it->lutId == lutTex) {
             if (g.backend) g.backend->DeleteLUT3D(lutTex);
             // 同步清: 如果是当前 grading 用的 LUT, lutTexId 重置防悬挂
@@ -1285,7 +1319,7 @@ bool UnwatchLUT(uint32_t lutTex) {
                 g.lutTexId    = 0u;
                 g.lutStrength = 0.0f;
             }
-            g_lutWatchList.erase(it);
+            g_global.lutWatchList.erase(it);
             return true;
         }
     }
@@ -1294,7 +1328,7 @@ bool UnwatchLUT(uint32_t lutTex) {
 
 uint32_t GetWatchedLUTId(const char* path) {
     if (!path || !*path) return 0u;
-    for (auto& e : g_lutWatchList) {
+    for (auto& e : g_global.lutWatchList) {
         if (e.path == path) return e.lutId;
     }
     return 0u;
@@ -1302,11 +1336,11 @@ uint32_t GetWatchedLUTId(const char* path) {
 
 int PollLUTReloads() {
     // 短路: 关闭 / 列表空 → 直接返 (零 SDL 调用)
-    if (!g.lutHotReload || g_lutWatchList.empty()) return 0;
+    if (!g_global.lutHotReload || g_global.lutWatchList.empty()) return 0;
 
     int reloaded = 0;
     char errBuf[256];
-    for (auto& e : g_lutWatchList) {
+    for (auto& e : g_global.lutWatchList) {
         // 1. 取当前 mtime
         SDL_PathInfo info{};
         if (!SDL_GetPathInfo(e.path.c_str(), &info)) {
@@ -1340,10 +1374,10 @@ int PollLUTReloads() {
         if (oldId && g.backend) g.backend->DeleteLUT3D(oldId);
 
         // 6. Phase F.0.10.8.4 — 触发 reload 回调 (在 oldId 释放后, 用户拿到的 newId 可立即使用)
-        //    snapshot path 防回调内重入操作 g_lutWatchList 失效迭代器 (虽然约定不允许, 但防御性 copy)
-        if (g.lutReloadCb) {
+        //    snapshot path 防回调内重入操作 lutWatchList 失效迭代器 (虽然约定不允许, 但防御性 copy)
+        if (g_global.lutReloadCb) {
             const std::string pathSnap = e.path;
-            g.lutReloadCb(pathSnap.c_str(), oldId, newId, g.lutReloadCbUser);
+            g_global.lutReloadCb(pathSnap.c_str(), oldId, newId, g_global.lutReloadCbUser);
         }
 
         ++reloaded;
@@ -1351,17 +1385,95 @@ int PollLUTReloads() {
     return reloaded;
 }
 
-void SetLUTHotReload(bool enabled) { g.lutHotReload = enabled; }
-bool GetLUTHotReload()             { return g.lutHotReload; }
+void SetLUTHotReload(bool enabled) { g_global.lutHotReload = enabled; }
+bool GetLUTHotReload()             { return g_global.lutHotReload; }
 
 // ==================== Phase F.0.10.8.4 — LUT reload 回调 ====================
 
 void SetLUTReloadCallback(LUTReloadCallback cb, void* userData) {
-    g.lutReloadCb     = cb;
-    g.lutReloadCbUser = userData;
+    g_global.lutReloadCb     = cb;
+    g_global.lutReloadCbUser = userData;
 }
 
-bool HasLUTReloadCallback() { return g.lutReloadCb != nullptr; }
+bool HasLUTReloadCallback() { return g_global.lutReloadCb != nullptr; }
+
+// ==================== Phase F.0.10.9 — Multi-Instance API ====================
+//
+// 设计说明:
+//   - g_states[0] 是 default singleton, 永远占用; 老 100+ fn 默认作用于 [0]
+//   - CreateInstance() 找空闲槽 [1, MAX_INSTANCES-1] 返 ID, 槽满返 0
+//   - 新 instance 继承 default 的 backend/supported/inited (来自 Init() 时全量写入)
+//   - SetActiveInstance(id) 切换 active, 后续 namespace fn 作用于 [id]
+//   - DestroyInstance(id) 释放该槽 RT + 标空闲, 若 active 是该 id 自动切回 0
+//   - 不能销毁 id=0 (default), 不能 SetActiveInstance(无效 id)
+
+int CreateInstance() {
+    // Phase F.0.10.9: 仅分配槽位 + 复位 state, 不要求 default Init() 完成
+    //   (headless 环境 backend=nullptr 也允许分配槽, 后续 Enable 自然失败)
+    // 找第一个空闲槽 (跳过 [0])
+    for (int i = 1; i < MAX_INSTANCES; ++i) {
+        if (!g_slot_in_use[i]) {
+            // 复位为干净 default state, 然后继承 default 的 backend / supported / inited
+            g_states[i] = State{};
+            g_states[i].backend   = g_states[0].backend;     // 可能 nullptr (headless)
+            g_states[i].supported = g_states[0].supported;
+            g_states[i].inited    = g_states[0].inited;
+            g_slot_in_use[i] = true;
+            ++g_count;
+            CC::Log(CC::LOG_INFO,
+                    "HDRRenderer::CreateInstance: 创建 instance id=%d (count=%d, inited=%d)",
+                    i, g_count, g_states[0].inited ? 1 : 0);
+            return i;
+        }
+    }
+    CC::Log(CC::LOG_WARN,
+            "HDRRenderer::CreateInstance: 槽位已满 (MAX_INSTANCES=%d)", MAX_INSTANCES);
+    return 0;
+}
+
+bool DestroyInstance(int id) {
+    if (id <= 0 || id >= MAX_INSTANCES) {
+        CC::Log(CC::LOG_WARN,
+                "HDRRenderer::DestroyInstance: 非法 id=%d (合法范围 [1, %d])",
+                id, MAX_INSTANCES - 1);
+        return false;
+    }
+    if (!g_slot_in_use[id]) {
+        CC::Log(CC::LOG_WARN, "HDRRenderer::DestroyInstance: id=%d 未分配", id);
+        return false;
+    }
+    // 释放 RT: 临时切到该 instance, 调 ReleaseRT, 然后回原 active
+    const int saved = g_active;
+    g_active = id;
+    ReleaseRT();
+    g_states[id] = State{};       // 清空所有字段 (RT handle 等)
+    g_slot_in_use[id] = false;
+    --g_count;
+    // 若被销毁的是 active, 切回 default
+    g_active = (saved == id) ? 0 : saved;
+    CC::Log(CC::LOG_INFO,
+            "HDRRenderer::DestroyInstance: 销毁 instance id=%d (count=%d, active=%d)",
+            id, g_count, g_active);
+    return true;
+}
+
+bool SetActiveInstance(int id) {
+    if (id < 0 || id >= MAX_INSTANCES) {
+        CC::Log(CC::LOG_WARN,
+                "HDRRenderer::SetActiveInstance: 非法 id=%d (合法范围 [0, %d])",
+                id, MAX_INSTANCES - 1);
+        return false;
+    }
+    if (!g_slot_in_use[id]) {
+        CC::Log(CC::LOG_WARN, "HDRRenderer::SetActiveInstance: id=%d 未分配", id);
+        return false;
+    }
+    g_active = id;
+    return true;
+}
+
+int GetActiveInstance() { return g_active; }
+int GetInstanceCount()  { return g_count; }
 
 bool GetVelocityDilation() { return g.velocityDilation; }
 
