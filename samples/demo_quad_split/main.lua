@@ -607,6 +607,7 @@ function Demo:Draw()
     -- Phase F.0.11: 第 3 帧 Draw 后触发自动截图 (EndFrame hook 里执行, HDR tonemap 已完成)
     -- demo 启动验证模式 (CHOCO_AUTO_EXIT 环境变量): 自动截图 + 退出, CI / smoke 验证用
     -- F.0.11.2: CHOCO_RECORD_ASYNC=1 启用 PBO 异步 readback (验证零回归 + 性能)
+    -- F.0.11.4: CHOCO_SCREENSHOT_HDR=1 额外存一份 .hdr (Radiance, HDR sceneTex)
     if g_auto_shot_frames > 0 then
         g_auto_shot_frames = g_auto_shot_frames - 1
         if g_auto_shot_frames == 0 then
@@ -616,6 +617,15 @@ function Demo:Draw()
             end
             Gfx.RecordPNGSequence('docs/screenshots/', 1)
             print('[demo_quad_split] auto screenshot → docs/screenshots/frame_0000.png'); io.flush()
+            if os.getenv('CHOCO_SCREENSHOT_HDR') == '1' and Gfx.ScreenshotHDR then
+                local ok, err = Gfx.ScreenshotHDR('docs/screenshots/scene_hdr.hdr')
+                if ok then
+                    print('[demo_quad_split] HDR screenshot → docs/screenshots/scene_hdr.hdr (F.0.11.4)')
+                else
+                    print('[demo_quad_split] ScreenshotHDR failed: ' .. tostring(err))
+                end
+                io.flush()
+            end
         end
     elseif os.getenv('CHOCO_AUTO_EXIT') == '1' then
         -- 倒计时归零后再多跑 3 帧让 hook 写完 PNG, 然后自动退出

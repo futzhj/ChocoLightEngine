@@ -199,6 +199,25 @@ public:
     virtual void ReadbackAsyncShutdown() {}
 
     /**
+     * @brief Phase F.0.11.4 — 读 RGBA16F/RGBA32F 纹理到 RGBA32F CPU buf (HDR 截图)
+     *
+     * 实现策略 (跨 GL 版本兼容):
+     *   1) 创建临时 FBO, 把 tex 附为 COLOR_ATTACHMENT0
+     *   2) glReadPixels(0, 0, w, h, GL_RGBA, GL_FLOAT, out)
+     *   3) 释放临时 FBO
+     *
+     * 用途: ScreenshotHDR — 读 HDR sceneTex (RGBA16F) → 写 .hdr (Radiance RGBE 32-bit)
+     *
+     * @param tex      源 texture id (调用方负责保证有效, 通常 HDR.GetSceneTexture())
+     * @param w, h     纹理尺寸 (调用方需正确传, 通常 HDR.GetWidth/Height())
+     * @param out_rgba 输出 RGBA float buf (调用方分配 w*h*4 个 float)
+     * @return true=成功, false=不支持/参数无效/glReadPixels 失败
+     * @note Y 在 GL 中是左下原点, 写盘格式 (.hdr/.exr) 通常左上原点; 调用方自行 flip
+     */
+    virtual bool ReadbackTextureRGBAFloat(uint32_t /*tex*/, int /*w*/, int /*h*/,
+                                          float* /*out_rgba*/) { return false; }
+
+    /**
      * @brief Phase F.0.11.3 — 取出上次启动但未读的 pending PBO 数据 (用于 StopRecord 收尾)
      *
      * F.0.11.2 异步路径下, 每次 ReadbackDefaultFBAsync 启动一帧 readback 后, 数据要等

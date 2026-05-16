@@ -12,6 +12,8 @@ p(type(Gfx.IsRecording)=='function',       'IsRecording exists')
 -- F.0.11.2: PBO 异步 readback
 p(type(Gfx.SetRecordAsync)=='function',    'SetRecordAsync exists')
 p(type(Gfx.IsRecordAsync)=='function',     'IsRecordAsync exists')
+-- F.0.11.4: HDR .hdr 截图
+p(type(Gfx.ScreenshotHDR)=='function',     'ScreenshotHDR exists')
 
 -- Screenshot headless (viewport=0 → nil+err)
 local ok,r,e = pcall(Gfx.Screenshot,"out.png"); p(ok,'Screenshot no raise')
@@ -55,6 +57,10 @@ Gfx.RecordPNGSequence('f/',1)
 local _,rsa3,esa3 = pcall(Gfx.SetRecordAsync,true)
 p(rsa3==nil and type(esa3)=='string','SetRecordAsync during recording → nil+err')
 Gfx.StopRecord()
+
+-- F.0.11.4: ScreenshotHDR 在 HDR 未启用时 → nil+err
+local _,hr1,he1 = pcall(Gfx.ScreenshotHDR,'out.hdr')
+p(hr1==nil and type(he1)=='string','ScreenshotHDR no HDR → nil+err')
 
 -- RecordPNGSequence + stop
 local _,rs = pcall(Gfx.RecordPNGSequence,'f/',3); p(rs==true,'RecordPNGSequence(3) true')

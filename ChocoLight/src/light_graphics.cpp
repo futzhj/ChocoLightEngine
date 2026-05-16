@@ -5092,6 +5092,57 @@ static int l_Graphics_IsRecordAsync(lua_State* L) {
     return 1;
 }
 
+/// @lua_api Light.Graphics.ScreenshotHDR
+/// @brief Phase F.0.11.4 — 截取当前 active HDR instance 的 sceneTex (RGBA16F) → 写 .hdr
+/// @param path string  输出文件路径 (推荐扩展名 .hdr); 编码为 Radiance RGBE 32-bit
+/// @return boolean true=成功; nil, string=HDR 未启用 / readback 失败 / 写盘失败
+/// @note 用于美术 HDR 工作流 / 调试 HDR 数据 (Photoshop / Krita 可读 .hdr)
+/// @note 读 HDR sceneTex (tonemap 之前的浮点数据), 与 Screenshot 不同 (后者读 LDR default fb)
+/// @note 写 3-channel RGB (丢 alpha); stbi_write_hdr 不支持 4-channel
+static int l_Graphics_ScreenshotHDR(lua_State* L) {
+    const char* path = luaL_checkstring(L, 1);
+    if (!g_render) {
+        lua_pushnil(L); lua_pushstring(L, "ScreenshotHDR: render backend not ready");
+        return 2;
+    }
+    if (!HDRRenderer::IsEnabled()) {
+        lua_pushnil(L);
+        lua_pushstring(L, "ScreenshotHDR: HDR not enabled (call HDR.Enable first)");
+        return 2;
+    }
+    const uint32_t tex = HDRRenderer::GetSceneTexture();
+    const int w = HDRRenderer::GetWidth();
+    const int h = HDRRenderer::GetHeight();
+    if (!tex || w <= 0 || h <= 0) {
+        lua_pushnil(L);
+        lua_pushfstring(L, "ScreenshotHDR: invalid HDR scene (tex=%u, %dx%d)", tex, w, h);
+        return 2;
+    }
+    // 1) 读 RGBA float 数据 (4 channels)
+    std::vector<float> rgba((size_t)w * h * 4);
+    if (!g_render->ReadbackTextureRGBAFloat(tex, w, h, rgba.data())) {
+        lua_pushnil(L);
+        lua_pushstring(L, "ScreenshotHDR: ReadbackTextureRGBAFloat failed (backend support?)");
+        return 2;
+    }
+    // 2) 转 RGBA → RGB 紧凑 (stbi_write_hdr 仅支持 3-channel)
+    std::vector<float> rgb((size_t)w * h * 3);
+    for (int i = 0; i < w * h; ++i) {
+        rgb[i * 3 + 0] = rgba[i * 4 + 0];
+        rgb[i * 3 + 1] = rgba[i * 4 + 1];
+        rgb[i * 3 + 2] = rgba[i * 4 + 2];
+    }
+    // 3) Y 翻转 + 写 Radiance .hdr
+    stbi_flip_vertically_on_write(1);
+    if (stbi_write_hdr(path, w, h, 3, rgb.data())) {
+        lua_pushboolean(L, 1);
+        return 1;
+    }
+    lua_pushnil(L);
+    lua_pushfstring(L, "ScreenshotHDR: stbi_write_hdr failed for '%s'", path);
+    return 2;
+}
+
 static const luaL_Reg graphics_funcs[] = {
     // --- 绘图基元 ---
     {"Draw",              l_Draw},
@@ -5155,6 +5206,8 @@ static const luaL_Reg graphics_funcs[] = {
     // Phase F.0.11.2 — 异步 readback (PBO ping-pong)
     {"SetRecordAsync",             l_Graphics_SetRecordAsync},
     {"IsRecordAsync",              l_Graphics_IsRecordAsync},
+    // Phase F.0.11.4 — HDR 截图 (RGBA16F → .hdr Radiance RGBE)
+    {"ScreenshotHDR",              l_Graphics_ScreenshotHDR},
     // --- 元方法 ---
     {"__call",            l_Graphics_Call},
     {"__tostring",        l_Graphics_Tostring},

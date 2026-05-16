@@ -7601,6 +7601,50 @@ public:
         m_pbo_idx = 0;
     }
 
+    // Phase F.0.11.4 — 读 RGBA16F/RGBA32F 纹理到 RGBA32F CPU buf (HDR 截图)
+    //   策略: 创建临时 FBO 绑 tex 为 COLOR_ATTACHMENT0, glReadPixels(GL_RGBA, GL_FLOAT)
+    //   兼容: GL3.3 + GLES3 (glGetTexImage 不可用), 临时 FBO 是 safe path
+    bool ReadbackTextureRGBAFloat(uint32_t tex, int w, int h, float* out) override {
+        if (!tex || !out || w <= 0 || h <= 0) return false;
+        while (glGetError() != GL_NO_ERROR) {}
+
+        // 保存当前 FBO 绑定 (避免破坏调用方状态)
+        GLint prevFbo = 0;
+        glGetIntegerv(GL_FRAMEBUFFER_BINDING, &prevFbo);
+
+        GLuint tmpFbo = 0;
+        glGenFramebuffers(1, &tmpFbo);
+        if (!tmpFbo) return false;
+        glBindFramebuffer(GL_FRAMEBUFFER, tmpFbo);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                               GL_TEXTURE_2D, (GLuint)tex, 0);
+
+        // 检查 FBO 完整性 (RGBA16F texture 应该可作 color attachment)
+        GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+        if (status != GL_FRAMEBUFFER_COMPLETE) {
+            glBindFramebuffer(GL_FRAMEBUFFER, (GLuint)prevFbo);
+            glDeleteFramebuffers(1, &tmpFbo);
+            return false;
+        }
+
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);    // 关 PBO (走 client memory 路径)
+        glPixelStorei(GL_PACK_ALIGNMENT, 1);
+        glReadPixels(0, 0, w, h, GL_RGBA, GL_FLOAT, out);
+        GLenum err = glGetError();
+
+        // 清理: detach + delete + restore prev FBO
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                               GL_TEXTURE_2D, 0, 0);
+        glBindFramebuffer(GL_FRAMEBUFFER, (GLuint)prevFbo);
+        glDeleteFramebuffers(1, &tmpFbo);
+
+        if (err != GL_NO_ERROR) {
+            while (glGetError() != GL_NO_ERROR) {}
+            return false;
+        }
+        return true;
+    }
+
     // Phase F.0.11.3 — flush 最后一帧 pending PBO (StopRecord 时调一次, 防丢帧)
     //   pending PBO 在 m_pbo_idx (即下次将启动 readback 的位置, 对应上次启动还没取的 PBO).
     //   注: 这次 glGetBufferSubData 会 sync block 等 GPU 完成 (因为是同一帧的数据),
