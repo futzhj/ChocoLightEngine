@@ -1344,7 +1344,297 @@ end
 pass("cleanup: 销毁全部 user instance, count=1 active=0")
 
 -- ============================================================
+-- 22. Phase F.0.10.9.1 — Per-Instance State Isolation (验证 multi-HDR 不污染)
+-- ============================================================
+-- F.0.10.9 已加 instance 槽管理, 本节验证 8 类 per-instance 字段切 active 真隔离:
+--   exposure / gamma / tonemap / 5 autoXXX flag / dilation 3 flag /
+--   velocityFormat / per-instance LUT 应用 / 新 instance 默认值
+--
+-- 统一模式: get→改 0→Create→Active→检查默认→改 1→切回检查 0→cleanup→restore
+
+-- 工具: 跑 isolation 模板的封装 (减重复)
+--   getter:    fn() -> any
+--   setter:    fn(value)
+--   default_v: 0 槽默认值 (smoke 入口前的状态)
+--   value_a:   设到 0 槽的值
+--   value_b:   设到 1 槽的值
+--   expect_default_on_new: 1 槽新建时期望的初始值 (一般等于 default_v, 即 State{} 默认)
+--   eq:        相等比较 fn (默认 == ); float 用 approx
+local function test_isolation(label, getter, setter, value_a, value_b,
+                              expect_default_on_new, eq)
+    eq = eq or function(a, b) return a == b end
+    local saved = getter()
+    setter(value_a)
+    if not eq(getter(), value_a) then
+        fail(label .. ": setter(value_a) round-trip failed")
+    end
+    local id = HDR.CreateInstance()
+    if id <= 0 then fail(label .. ": CreateInstance failed") end
+    HDR.SetActiveInstance(id)
+    if not eq(getter(), expect_default_on_new) then
+        fail(label .. ": new instance expect default=" ..
+             tostring(expect_default_on_new) .. ", got " .. tostring(getter()))
+    end
+    setter(value_b)
+    if not eq(getter(), value_b) then
+        fail(label .. ": setter(value_b) on instance " .. id .. " failed")
+    end
+    HDR.SetActiveInstance(0)
+    if not eq(getter(), value_a) then
+        fail(label .. ": 切回 0 槽期望保留 value_a=" .. tostring(value_a) ..
+             ", got " .. tostring(getter()) .. " (污染!)")
+    end
+    HDR.SetActiveInstance(id)
+    if not eq(getter(), value_b) then
+        fail(label .. ": 切到 " .. id .. " 槽期望保留 value_b=" ..
+             tostring(value_b) .. ", got " .. tostring(getter()))
+    end
+    HDR.DestroyInstance(id)
+    HDR.SetActiveInstance(0)
+    setter(saved)   -- restore 0 槽不污染后续测试
+    pass(label .. " 隔离 ok (0=" .. tostring(value_a) .. " / 1=" ..
+         tostring(value_b) .. ")")
+end
+
+local function approx_eq(a, b) return math.abs(a - b) < 1e-4 end
+
+-- 22.1 exposure 隔离 (默认 1.0)
+test_isolation("22.1 exposure",
+    HDR.GetExposure, HDR.SetExposure, 0.5, 2.0, 1.0, approx_eq)
+
+-- 22.2 gamma 隔离 (默认 2.2)
+test_isolation("22.2 gamma",
+    HDR.GetGamma, HDR.SetGamma, 1.8, 2.4, 2.2, approx_eq)
+
+-- 22.3 tonemap operator 隔离 (默认 "aces"; Lua API 按字符串名, 见 §7)
+test_isolation("22.3 tonemap",
+    HDR.GetTonemapper, HDR.SetTonemapper, "reinhard", "uncharted2", "aces")
+
+-- 22.4 5 autoXXX flag 隔离 (默认全 true) — 改 0=false / 改 1=false 验证两侧独立
+do
+    local autos = {
+        {"autoTAA",        HDR.GetAutoTAA,        HDR.SetAutoTAA},
+        {"autoBloom",      HDR.GetAutoBloom,      HDR.SetAutoBloom},
+        {"autoSSR",        HDR.GetAutoSSR,        HDR.SetAutoSSR},
+        {"autoMotionBlur", HDR.GetAutoMotionBlur, HDR.SetAutoMotionBlur},
+        {"autoTonemap",    HDR.GetAutoTonemap,    HDR.SetAutoTonemap},
+    }
+    for _, t in ipairs(autos) do
+        local name, getter, setter = t[1], t[2], t[3]
+        -- value_a=false, value_b=false: 但因 0 槽改 false 后 1 槽默认应 = true (新 instance)
+        local saved = getter()
+        setter(false)
+        local id = HDR.CreateInstance()
+        HDR.SetActiveInstance(id)
+        if getter() ~= true then
+            fail("22.4 " .. name .. ": new instance expect default=true, got " ..
+                 tostring(getter()))
+        end
+        setter(false)
+        HDR.SetActiveInstance(0)
+        if getter() ~= false then
+            fail("22.4 " .. name .. ": 切回 0 expect false (保留), got " ..
+                 tostring(getter()))
+        end
+        HDR.DestroyInstance(id)
+        HDR.SetActiveInstance(0)
+        setter(saved)
+    end
+    pass("22.4 5 autoXXX flag 各自隔离 ok (autoTAA/autoBloom/autoSSR/autoMotionBlur/autoTonemap)")
+end
+
+-- 22.5 dilation 3 flag 隔离 — velocityDilation / dilationHalfRes / dilationAutoSkip
+do
+    local dilflags = {
+        {"velocityDilation", HDR.GetVelocityDilation,        HDR.SetVelocityDilation,        true},
+        {"dilationHalfRes",  HDR.GetVelocityDilationHalfRes, HDR.SetVelocityDilationHalfRes, false},
+        {"dilationAutoSkip", HDR.GetVelocityDilationAutoSkip,HDR.SetVelocityDilationAutoSkip,false},
+    }
+    for _, t in ipairs(dilflags) do
+        local name, getter, setter, default_v = t[1], t[2], t[3], t[4]
+        test_isolation("22.5 " .. name, getter, setter,
+                       not default_v, default_v, default_v)
+    end
+end
+
+-- 22.6 velocityFormat 隔离 (默认 "rg16f")
+test_isolation("22.6 velocityFormat",
+    HDR.GetVelocityFormat, HDR.SetVelocityFormat, "rg8", "rg16f", "rg16f")
+
+-- 22.7 per-instance LUT 应用 (lutTexId + lutStrength) 隔离
+--   使用虚 lut id (非真 GL tex), shader 不会真采样, 仅测 state 字段隔离
+do
+    -- 0 槽: lutTexId=12345, strength=0.7
+    HDR.SetGradingLUT(12345, 0.7)
+    if HDR.GetGradingLUTId() ~= 12345 then
+        fail("22.7 0 槽 SetGradingLUT(12345, 0.7) round-trip failed")
+    end
+    if not approx_eq(HDR.GetGradingLUTStrength(), 0.7) then
+        fail("22.7 0 槽 strength round-trip failed")
+    end
+
+    local id = HDR.CreateInstance()
+    HDR.SetActiveInstance(id)
+    -- 1 槽默认应空: lutTexId=0, strength=0
+    if HDR.GetGradingLUTId() ~= 0 or HDR.GetGradingLUTStrength() > 0 then
+        fail("22.7 new instance LUT 期望 0/0, got " ..
+             tostring(HDR.GetGradingLUTId()) .. "/" ..
+             tostring(HDR.GetGradingLUTStrength()))
+    end
+    HDR.SetGradingLUT(67890, 0.3)
+    if HDR.GetGradingLUTId() ~= 67890 then
+        fail("22.7 1 槽 SetGradingLUT(67890, 0.3) round-trip failed")
+    end
+
+    -- 切回 0 槽: 期望仍 12345/0.7
+    HDR.SetActiveInstance(0)
+    if HDR.GetGradingLUTId() ~= 12345 or
+       not approx_eq(HDR.GetGradingLUTStrength(), 0.7) then
+        fail("22.7 切回 0 槽 LUT 期望 12345/0.7, got " ..
+             tostring(HDR.GetGradingLUTId()) .. "/" ..
+             tostring(HDR.GetGradingLUTStrength()) .. " (污染!)")
+    end
+
+    HDR.DestroyInstance(id)
+    HDR.SetGradingLUT(0, 0.0)   -- restore
+    pass("22.7 per-instance LUT 应用隔离 ok (lutTexId + lutStrength)")
+end
+
+-- 22.8 新 instance 全 default — 综合校验 (Create 后所有字段是 State{} 默认)
+do
+    local id = HDR.CreateInstance()
+    HDR.SetActiveInstance(id)
+    local checks = {
+        {"exposure",      HDR.GetExposure(),         1.0,   approx_eq},
+        {"gamma",         HDR.GetGamma(),            2.2,   approx_eq},
+        {"tonemap",       HDR.GetTonemapper(),       "aces",nil},
+        {"autoTAA",       HDR.GetAutoTAA(),          true,  nil},
+        {"autoBloom",     HDR.GetAutoBloom(),        true,  nil},
+        {"autoSSR",       HDR.GetAutoSSR(),          true,  nil},
+        {"autoMotionBlur",HDR.GetAutoMotionBlur(),   true,  nil},
+        {"autoTonemap",   HDR.GetAutoTonemap(),      true,  nil},
+        {"velocityDilation", HDR.GetVelocityDilation(),true,nil},
+        {"dilHalfRes",    HDR.GetVelocityDilationHalfRes(), false, nil},
+        {"dilAutoSkip",   HDR.GetVelocityDilationAutoSkip(),false, nil},
+        {"velocityFormat",HDR.GetVelocityFormat(),   "rg16f", nil},
+        {"lutTexId",      HDR.GetGradingLUTId(),     0,     nil},
+        {"lutStrength",   HDR.GetGradingLUTStrength(),0.0,  approx_eq},
+        {"isEnabled",     HDR.IsEnabled(),           false, nil},   -- 新 instance 必未 Enable
+    }
+    for _, c in ipairs(checks) do
+        local name, got, expect, cmp = c[1], c[2], c[3], c[4]
+        local ok = cmp and cmp(got, expect) or (got == expect)
+        if not ok then
+            fail("22.8 new instance default " .. name ..
+                 " expect " .. tostring(expect) ..
+                 ", got " .. tostring(got))
+        end
+    end
+    HDR.DestroyInstance(id)
+    HDR.SetActiveInstance(0)
+    pass("22.8 new instance 默认全字段校验 ok (15 字段全 = State{} 默认)")
+end
+
+-- ============================================================
+-- 23. Phase F.0.10.9.1 — LUT Global Cross-Instance 共享
+-- ============================================================
+-- LUT 系统的 hotReload / reload callback 是 global, 切 instance 后仍生效
+
+-- 23.1 SetLUTHotReload(false) 切 instance 后仍 false (global)
+do
+    local saved = HDR.GetLUTHotReload()
+    HDR.SetLUTHotReload(false)
+
+    local id = HDR.CreateInstance()
+    HDR.SetActiveInstance(id)
+    if HDR.GetLUTHotReload() ~= false then
+        fail("23.1 切 instance 后 LUTHotReload expect 仍 false (global), got " ..
+             tostring(HDR.GetLUTHotReload()))
+    end
+    HDR.SetActiveInstance(0)
+    if HDR.GetLUTHotReload() ~= false then
+        fail("23.1 切回 0 后 LUTHotReload expect 仍 false")
+    end
+    HDR.DestroyInstance(id)
+    HDR.SetLUTHotReload(saved)
+    pass("23.1 LUTHotReload global 跨 instance 共享 ok")
+end
+
+-- 23.2 SetLUTReloadCallback 切 instance 后 HasLUTReloadCallback 仍 true (global)
+do
+    -- 注 一个 dummy callback (smoke 不真触发, 仅查 has)
+    local function dummy(path, oldId, newId) end
+    HDR.SetLUTReloadCallback(dummy)
+    if HDR.GetLUTReloadCallback() ~= true then
+        fail("23.2 SetLUTReloadCallback round-trip failed")
+    end
+
+    local id = HDR.CreateInstance()
+    HDR.SetActiveInstance(id)
+    if HDR.GetLUTReloadCallback() ~= true then
+        fail("23.2 切 instance 后 callback expect 仍存在 (global), got " ..
+             tostring(HDR.GetLUTReloadCallback()))
+    end
+    HDR.SetActiveInstance(0)
+    HDR.DestroyInstance(id)
+    HDR.SetLUTReloadCallback(nil)   -- 卸载
+    if HDR.GetLUTReloadCallback() ~= false then
+        fail("23.2 SetLUTReloadCallback(nil) 卸载失败")
+    end
+    pass("23.2 LUTReloadCallback global 跨 instance 共享 ok")
+end
+
+-- ============================================================
+-- 24. Phase F.0.10.9.1 — TAA 与 HDR active 不联动 (设计)
+-- ============================================================
+-- HDR.SetActiveInstance(1) 不会自动调 TAA.SetActiveInstance(1).
+-- 用户必须手动同步两边. 测错配场景退化合理.
+
+local TAA = Graphics.TAA
+if type(TAA) ~= "table" then
+    pass("24 SKIP: Light.Graphics.TAA not available (无回归)")
+else
+    -- 24.1 HDR.SetActiveInstance(1) 不影响 TAA active
+    local taa_act_before = TAA.GetActiveInstance()
+    if taa_act_before ~= 0 then
+        TAA.SetActiveInstance(0)   -- 防御性: 先确保 TAA active=0
+    end
+
+    local hdrId = HDR.CreateInstance()
+    HDR.SetActiveInstance(hdrId)
+    if TAA.GetActiveInstance() ~= 0 then
+        fail("24.1 HDR.SetActiveInstance(" .. hdrId .. ") 期望 TAA active 仍=0 (不联动), got " ..
+             tostring(TAA.GetActiveInstance()))
+    end
+    HDR.SetActiveInstance(0)
+    HDR.DestroyInstance(hdrId)
+    pass("24.1 HDR.SetActiveInstance 不自动联动 TAA (设计 ✅)")
+
+    -- 24.2 用户手动双向同步 (HDR + TAA 同步切到 1)
+    local taaId = TAA.CreateInstance()
+    local hdrId2 = HDR.CreateInstance()
+    if taaId > 0 and hdrId2 > 0 then
+        TAA.SetActiveInstance(taaId)
+        HDR.SetActiveInstance(hdrId2)
+        if TAA.GetActiveInstance() ~= taaId then
+            fail("24.2 TAA active expect " .. taaId .. ", got " .. TAA.GetActiveInstance())
+        end
+        if HDR.GetActiveInstance() ~= hdrId2 then
+            fail("24.2 HDR active expect " .. hdrId2 .. ", got " .. HDR.GetActiveInstance())
+        end
+        TAA.SetActiveInstance(0)
+        HDR.SetActiveInstance(0)
+        TAA.DestroyInstance(taaId)
+        HDR.DestroyInstance(hdrId2)
+        pass("24.2 HDR + TAA 用户手动双向同步 ok (taa=" ..
+             taaId .. " / hdr=" .. hdrId2 .. ")")
+    else
+        pass("24.2 SKIP (TAA/HDR Create 失败, 不阻塞)")
+    end
+end
+
+-- ============================================================
 -- Done
 -- ============================================================
 
-print("[Phase E.3 + E.14 + E.18.1 + E.18.2 + F.0.10.2 + F.0.10.3 + F.0.10.6 + F.0.10.8 + F.0.10.8.1 + F.0.10.8.2 + F.0.10.8.3 + F.0.10.8.4 + F.0.10.8.5 + F.0.10.8.6 + F.0.10.9] Light.Graphics.HDR smoke PASS (" .. #fn_names .. " functions)")
+print("[Phase E.3 + E.14 + E.18.1 + E.18.2 + F.0.10.2 + F.0.10.3 + F.0.10.6 + F.0.10.8 + F.0.10.8.1 + F.0.10.8.2 + F.0.10.8.3 + F.0.10.8.4 + F.0.10.8.5 + F.0.10.8.6 + F.0.10.9 + F.0.10.9.1] Light.Graphics.HDR smoke PASS (" .. #fn_names .. " functions)")
