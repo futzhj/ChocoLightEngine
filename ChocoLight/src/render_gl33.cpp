@@ -1094,16 +1094,20 @@ void main() {
 }
 )";
 
-// ---- FS_TONEMAP (GLES 3.0) Phase E.3.4 — 多 tonemap operator ----
+// ---- FS_TONEMAP (GLES 3.0) Phase E.3.4 + F.0.10.8 — 多 tonemap operator + 3D LUT color grading ----
 static const char* FS_TONEMAP_SOURCE = R"(#version 300 es
 precision highp float;
+precision highp sampler3D;
 in  vec2 vUV;
 out vec4 FragColor;
 
 uniform sampler2D uHDRTex;
+uniform sampler3D uLUT;          // Phase F.0.10.8 — 3D color grading LUT (未用时默认 unit 1)
 uniform float uExposure;
 uniform float uGamma;
-uniform int   uTonemapMode;   // 0=ACES 1=Reinhard 2=Uncharted2 3=Linear
+uniform int   uTonemapMode;      // 0=ACES 1=Reinhard 2=Uncharted2 3=Linear
+uniform float uLUTStrength;      // Phase F.0.10.8 — LUT 混合强度 [0,1]
+uniform int   uLUTEnabled;       // Phase F.0.10.8 — 0=跳过 LUT, 1=采样 LUT
 
 // ACES filmic (Krzysztof Narkowicz 2016 fit)
 vec3 TonemapACES(vec3 x) {
@@ -1143,6 +1147,11 @@ void main() {
     else if (uTonemapMode == 2) ldr = TonemapUncharted2(hdr);
     else if (uTonemapMode == 3) ldr = TonemapLinear(hdr);
     else                        ldr = TonemapACES(hdr);   // 0 或其他值 → ACES
+    // Phase F.0.10.8: LUT 混合 (uniform branch, GPU 零成本)
+    if (uLUTEnabled != 0) {
+        vec3 graded = texture(uLUT, clamp(ldr, 0.0, 1.0)).rgb;
+        ldr = mix(ldr, graded, uLUTStrength);
+    }
     vec3 srgb = pow(ldr, vec3(1.0 / max(uGamma, 0.0001)));
     FragColor = vec4(srgb, 1.0);
 }
@@ -1375,16 +1384,19 @@ void main() {
 }
 )";
 
-// ---- FS_TONEMAP (GL 3.3) Phase E.3.4 — 多 tonemap operator ----
+// ---- FS_TONEMAP (GL 3.3) Phase E.3.4 + F.0.10.8 — 多 tonemap operator + 3D LUT color grading ----
 static const char* FS_TONEMAP_SOURCE = R"(
 #version 330 core
 in  vec2 vUV;
 out vec4 FragColor;
 
 uniform sampler2D uHDRTex;
+uniform sampler3D uLUT;          // Phase F.0.10.8 — 3D color grading LUT
 uniform float uExposure;
 uniform float uGamma;
-uniform int   uTonemapMode;   // 0=ACES 1=Reinhard 2=Uncharted2 3=Linear
+uniform int   uTonemapMode;      // 0=ACES 1=Reinhard 2=Uncharted2 3=Linear
+uniform float uLUTStrength;      // Phase F.0.10.8 — LUT 混合强度 [0,1]
+uniform int   uLUTEnabled;       // Phase F.0.10.8 — 0=跳过 LUT, 1=采样 LUT
 
 // ACES filmic (Krzysztof Narkowicz 2016 fit)
 vec3 TonemapACES(vec3 x) {
@@ -1424,6 +1436,11 @@ void main() {
     else if (uTonemapMode == 2) ldr = TonemapUncharted2(hdr);
     else if (uTonemapMode == 3) ldr = TonemapLinear(hdr);
     else                        ldr = TonemapACES(hdr);   // 0 或其他值 → ACES
+    // Phase F.0.10.8: LUT 混合 (uniform branch, GPU 零成本)
+    if (uLUTEnabled != 0) {
+        vec3 graded = texture(uLUT, clamp(ldr, 0.0, 1.0)).rgb;
+        ldr = mix(ldr, graded, uLUTStrength);
+    }
     vec3 srgb = pow(ldr, vec3(1.0 / max(uGamma, 0.0001)));
     FragColor = vec4(srgb, 1.0);
 }
@@ -3624,10 +3641,13 @@ class GL33Backend : public RenderBackend {
     GLuint vboTonemap     = 0;
     GLuint programTonemap = 0;        // 编译 + link 成功后非 0
     bool   tonemapSupported = false;  // VBO/VAO + program 全部就绪后置 true
-    GLint  locTonemap_HDRTex   = -1;
-    GLint  locTonemap_Exposure = -1;
-    GLint  locTonemap_Gamma    = -1;
-    GLint  locTonemap_Mode     = -1;   // Phase E.3.4 — uTonemapMode (int)
+    GLint  locTonemap_HDRTex      = -1;
+    GLint  locTonemap_Exposure    = -1;
+    GLint  locTonemap_Gamma       = -1;
+    GLint  locTonemap_Mode        = -1;   // Phase E.3.4 — uTonemapMode (int)
+    GLint  locTonemap_LUT         = -1;   // Phase F.0.10.8 — sampler3D uLUT
+    GLint  locTonemap_LUTStrength = -1;   // Phase F.0.10.8 — float uLUTStrength
+    GLint  locTonemap_LUTEnabled  = -1;   // Phase F.0.10.8 — int uLUTEnabled
     // HDR FBO → depth RBO 关系映射 (CreateHDRFBO 写入, DeleteHDRFBO 查询并释放)
     std::unordered_map<uint32_t, uint32_t> hdrFboDepthRB;
     // Phase E.8.x — HDR FBO → normal RT 关系映射 (MRT G-buffer view-space normal)
@@ -4408,14 +4428,22 @@ public:
         }
 
         // 缓存 uniform location
-        locTonemap_HDRTex   = glGetUniformLocation(programTonemap, "uHDRTex");
-        locTonemap_Exposure = glGetUniformLocation(programTonemap, "uExposure");
-        locTonemap_Gamma    = glGetUniformLocation(programTonemap, "uGamma");
-        locTonemap_Mode     = glGetUniformLocation(programTonemap, "uTonemapMode");
+        locTonemap_HDRTex      = glGetUniformLocation(programTonemap, "uHDRTex");
+        locTonemap_Exposure    = glGetUniformLocation(programTonemap, "uExposure");
+        locTonemap_Gamma       = glGetUniformLocation(programTonemap, "uGamma");
+        locTonemap_Mode        = glGetUniformLocation(programTonemap, "uTonemapMode");
+        // Phase F.0.10.8: 3 个 LUT uniform (用 sampler3D 占 unit 1)
+        locTonemap_LUT         = glGetUniformLocation(programTonemap, "uLUT");
+        locTonemap_LUTStrength = glGetUniformLocation(programTonemap, "uLUTStrength");
+        locTonemap_LUTEnabled  = glGetUniformLocation(programTonemap, "uLUTEnabled");
 
-        // 一次性绑 sampler 到 texture unit 0
+        // 一次性绑 sampler 到 texture unit (HDR=unit0, LUT=unit1)
         glUseProgram(programTonemap);
         if (locTonemap_HDRTex >= 0) glUniform1i(locTonemap_HDRTex, 0);
+        if (locTonemap_LUT    >= 0) glUniform1i(locTonemap_LUT,    1);
+        // 默认 LUT 不启用 (零回归: 无 LUT 用户调用走 fullscreen 路径行为不变)
+        if (locTonemap_LUTEnabled  >= 0) glUniform1i(locTonemap_LUTEnabled,  0);
+        if (locTonemap_LUTStrength >= 0) glUniform1f(locTonemap_LUTStrength, 0.0f);
         glUseProgram(0);
 
         tonemapSupported = true;
@@ -5031,6 +5059,8 @@ public:
         if (vboTonemap)     { glDeleteBuffers(1, &vboTonemap); vboTonemap = 0; }
         if (vaoTonemap)     { glDeleteVertexArrays(1, &vaoTonemap); vaoTonemap = 0; }
         locTonemap_HDRTex = locTonemap_Exposure = locTonemap_Gamma = locTonemap_Mode = -1;
+        // Phase F.0.10.8: 复位 LUT uniform locs
+        locTonemap_LUT = locTonemap_LUTStrength = locTonemap_LUTEnabled = -1;
         // 清理 CreateHDRFBO 遗留的 depth RBO (HDRRenderer::Shutdown 未配对 DeleteHDRFBO 时的兜底)
         for (auto& kv : hdrFboDepthRB) {
             if (kv.second) { GLuint rb = kv.second; glDeleteRenderbuffers(1, &rb); }
@@ -5430,11 +5460,34 @@ public:
         }
     }
 
+    // Phase F.0.10.8 helper: 上传 LUT uniforms + 绑/解 unit 1 sampler3D
+    // useLUT = lutTex != 0 && lutStrength > 0
+    void uploadTonemapLUTUniforms_(uint32_t lutTex, float lutStrength) {
+        const bool useLUT = (lutTex != 0u && lutStrength > 0.0f);
+        if (locTonemap_LUTEnabled  >= 0) glUniform1i(locTonemap_LUTEnabled,  useLUT ? 1 : 0);
+        if (locTonemap_LUTStrength >= 0) glUniform1f(locTonemap_LUTStrength, useLUT ? lutStrength : 0.0f);
+        if (useLUT) {
+            glActiveTexture(GL_TEXTURE1);
+            glBindTexture(GL_TEXTURE_3D, (GLuint)lutTex);
+            glActiveTexture(GL_TEXTURE0);  // 复位回 unit 0 (与 HDR tex 一致)
+        }
+    }
+    void unbindTonemapLUT_(uint32_t lutTex, float lutStrength) {
+        const bool useLUT = (lutTex != 0u && lutStrength > 0.0f);
+        if (!useLUT) return;
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_3D, 0);
+        glActiveTexture(GL_TEXTURE0);
+    }
+
     /// ACES tonemap 全屏 pass: HDR 纹理 → 当前绑定 framebuffer
     /// Phase E.3.4: 支持 4 个 operator (ACES / Reinhard / Uncharted2 / Linear)
+    /// Phase F.0.10.8: 加 lutTex/lutStrength (默认 0/0 = 不应用 LUT)
     /// 调用方负责: 先 UnbindFBO() 切到 default fb, 调用后不需要恢复 depth/blend state.
     void DrawTonemapFullscreen(uint32_t hdrTex, float exposure, float gamma,
-                                int tonemapMode = 0) override {
+                                int tonemapMode = 0,
+                                uint32_t lutTex = 0,
+                                float lutStrength = 0.0f) override {
         if (!tonemapSupported || !hdrTex) return;
 
         // 1. 关 depth / blend (tonemap 是 destructive full-screen write)
@@ -5447,6 +5500,8 @@ public:
         if (locTonemap_Exposure >= 0) glUniform1f(locTonemap_Exposure, exposure);
         if (locTonemap_Gamma    >= 0) glUniform1f(locTonemap_Gamma,    gamma);
         if (locTonemap_Mode     >= 0) glUniform1i(locTonemap_Mode,     tonemapMode);
+        // Phase F.0.10.8: LUT uniform + 可选 unit 1 绑定
+        uploadTonemapLUTUniforms_(lutTex, lutStrength);
 
         // 3. 绑 HDR 纹理到 texture unit 0
         glActiveTexture(GL_TEXTURE0);
@@ -5459,19 +5514,23 @@ public:
         // 5. 解绑 (不恢复 depth / blend: 下次 BeginFrame 会重置)
         glBindVertexArray(0);
         glBindTexture(GL_TEXTURE_2D, 0);
+        unbindTonemapLUT_(lutTex, lutStrength);   // Phase F.0.10.8
         glUseProgram(0);
     }
 
     /// Phase F.0.10.6 — Region 限定 tonemap (split-screen multi-instance 必备)
     /// rgnW<=0 || rgnH<=0 退化为 fullscreen (零回归 fallback)
     /// 与 fullscreen 共享 program / VAO / uniform location, 只多 scissor 1 步
+    /// Phase F.0.10.8: 加 lutTex/lutStrength (默认 0/0 = 不应用 LUT)
     void DrawTonemapRegion(uint32_t hdrTex, float exposure, float gamma,
                             int tonemapMode, int rgnX, int rgnY,
-                            int rgnW, int rgnH) override {
+                            int rgnW, int rgnH,
+                            uint32_t lutTex = 0,
+                            float lutStrength = 0.0f) override {
         if (!tonemapSupported || !hdrTex) return;
         // 退化路径: rgn 无效时走老 fullscreen (保护性, 简化 caller)
         if (rgnW <= 0 || rgnH <= 0) {
-            DrawTonemapFullscreen(hdrTex, exposure, gamma, tonemapMode);
+            DrawTonemapFullscreen(hdrTex, exposure, gamma, tonemapMode, lutTex, lutStrength);
             return;
         }
 
@@ -5486,6 +5545,8 @@ public:
         if (locTonemap_Exposure >= 0) glUniform1f(locTonemap_Exposure, exposure);
         if (locTonemap_Gamma    >= 0) glUniform1f(locTonemap_Gamma,    gamma);
         if (locTonemap_Mode     >= 0) glUniform1i(locTonemap_Mode,     tonemapMode);
+        // Phase F.0.10.8: LUT uniform + 可选 unit 1 绑定
+        uploadTonemapLUTUniforms_(lutTex, lutStrength);
 
         // 3. 绑 HDR tex
         glActiveTexture(GL_TEXTURE0);
@@ -5498,8 +5559,44 @@ public:
         // 5. 解绑 + 复位 scissor (重要: 防影响后续 pass)
         glBindVertexArray(0);
         glBindTexture(GL_TEXTURE_2D, 0);
+        unbindTonemapLUT_(lutTex, lutStrength);   // Phase F.0.10.8
         glUseProgram(0);
         glDisable(GL_SCISSOR_TEST);   // Phase F.0.10.6 — 复位
+    }
+
+    /// Phase F.0.10.8 — 创建 3D LUT 纹理 (RGB8 + LINEAR + CLAMP_TO_EDGE)
+    /// 不依赖 tonemapSupported (LUT 是用户资源, 与 tonemap shader 解耦)
+    uint32_t CreateLUT3D(int size, const uint8_t* data) override {
+        if (size < 1 || !data) return 0u;
+        GLuint tex = 0;
+        glGenTextures(1, &tex);
+        if (!tex) return 0u;
+        glBindTexture(GL_TEXTURE_3D, tex);
+        glTexImage3D(GL_TEXTURE_3D, 0, GL_RGB8,
+                     size, size, size,
+                     0, GL_RGB, GL_UNSIGNED_BYTE, data);
+        glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
+        const GLenum err = glGetError();
+        glBindTexture(GL_TEXTURE_3D, 0);
+        if (err != GL_NO_ERROR) {
+            glDeleteTextures(1, &tex);
+            CC::Log(CC::LOG_WARN,
+                    "GL33: Phase F.0.10.8 CreateLUT3D failed (size=%d, gl err=0x%x)", size, err);
+            return 0u;
+        }
+        return (uint32_t)tex;
+    }
+
+    /// Phase F.0.10.8 — 删除 3D LUT 纹理
+    bool DeleteLUT3D(uint32_t lutTex) override {
+        if (!lutTex) return false;
+        GLuint t = (GLuint)lutTex;
+        glDeleteTextures(1, &t);
+        return true;
     }
 
     // ==================== Phase E.4 — Bloom 虚接口实现 ====================

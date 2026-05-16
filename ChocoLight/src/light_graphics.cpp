@@ -38,6 +38,7 @@
 #include "taa_renderer.h"             // Phase F.0 — TAA 主管线
 #include <cmath>
 #include <cstring>
+#include <vector>     // Phase F.0.10.8 — CreateLUT3D Lua table → byte buffer
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -1890,7 +1891,7 @@ static int l_HDR_Tonemap(lua_State* L) {
 
     // params_table 可选 (第 5 参数); 不传 / 非 table 走全局 path
     if (lua_istable(L, 5)) {
-        // 解析 3 字段, 缺省回填全局值
+        // 解析 5 字段, 缺省回填全局值
         // 1) exposure
         lua_getfield(L, 5, "exposure");
         float exposure = lua_isnumber(L, -1) ? (float)lua_tonumber(L, -1)
@@ -1913,13 +1914,121 @@ static int l_HDR_Tonemap(lua_State* L) {
             }
         }
         lua_pop(L, 1);
-        HDRRenderer::Tonemap(rgnX, rgnY, rgnW, rgnH, exposure, gamma, mode);
+        // Phase F.0.10.8 — 4) lut, 5) lutStrength (缺省回填全局)
+        lua_getfield(L, 5, "lut");
+        uint32_t lutTex = lua_isnumber(L, -1) ? (uint32_t)lua_tointeger(L, -1)
+                                              : HDRRenderer::GetGradingLUTId();
+        lua_pop(L, 1);
+        lua_getfield(L, 5, "lutStrength");
+        float lutStrength = lua_isnumber(L, -1) ? (float)lua_tonumber(L, -1)
+                                                : HDRRenderer::GetGradingLUTStrength();
+        lua_pop(L, 1);
+        // 显式走 6 参重载 (params 5 字段完全覆盖, 不混叠 AE / 不沿用全局 LUT)
+        HDRRenderer::Tonemap(rgnX, rgnY, rgnW, rgnH, exposure, gamma, mode,
+                             lutTex, lutStrength);
     } else {
-        // 全局 path: 用 g.exposure (含 AE) / g.gamma / g.tonemap
+        // 全局 path: 用 g.exposure (含 AE) / g.gamma / g.tonemap / g.lutTexId / g.lutStrength
         HDRRenderer::Tonemap(rgnX, rgnY, rgnW, rgnH);
     }
 
     lua_pushboolean(L, 1);
+    return 1;
+}
+
+// ==================== Phase F.0.10.8 — 3D LUT (Color Grading) ====================
+
+/// @lua_api Light.Graphics.HDR.CreateLUT3D
+/// @param size int LUT 边长 [4, 64]
+/// @param data string (binary RGB bytes) 或 table (int array, 0..255)
+/// @return integer tex_id (> 0) / nil, string
+/// @note data 长度必须 = size^3 * 3 bytes RGB (R 变化最快)
+static int l_HDR_CreateLUT3D(lua_State* L) {
+    const int size = (int)luaL_checkinteger(L, 1);
+    if (size < 4 || size > 64) {
+        lua_pushnil(L);
+        lua_pushfstring(L, "CreateLUT3D: size %d out of range [4,64]", size);
+        return 2;
+    }
+    const size_t expected = (size_t)size * (size_t)size * (size_t)size * 3u;
+
+    // data 支持 string (binary) 或 table (int array)
+    const int t = lua_type(L, 2);
+    std::vector<uint8_t> buf;
+    const uint8_t* dataPtr = nullptr;
+    size_t dataLen = 0;
+
+    if (t == LUA_TSTRING) {
+        size_t len = 0;
+        const char* s = lua_tolstring(L, 2, &len);
+        dataPtr = reinterpret_cast<const uint8_t*>(s);
+        dataLen = len;
+    } else if (t == LUA_TTABLE) {
+        const size_t n = (size_t)lua_objlen(L, 2);   // Lua 5.1 (lumen) API
+        buf.resize(n);
+        for (size_t i = 0; i < n; ++i) {
+            lua_rawgeti(L, 2, (int)(i + 1));
+            int v = (int)lua_tointeger(L, -1);
+            lua_pop(L, 1);
+            if (v < 0) v = 0;
+            else if (v > 255) v = 255;
+            buf[i] = (uint8_t)v;
+        }
+        dataPtr = buf.data();
+        dataLen = buf.size();
+    } else {
+        lua_pushnil(L);
+        lua_pushfstring(L, "CreateLUT3D: data must be string or table (got %s)",
+                        lua_typename(L, t));
+        return 2;
+    }
+
+    if (dataLen != expected) {
+        lua_pushnil(L);
+        lua_pushfstring(L, "CreateLUT3D: data length %zu != expected %zu (size^3 * 3)",
+                        dataLen, expected);
+        return 2;
+    }
+    uint32_t id = HDRRenderer::CreateLUT3D(size, dataPtr, dataLen);
+    if (!id) {
+        lua_pushnil(L);
+        lua_pushstring(L, "CreateLUT3D: backend create failed (HDR backend not supported / OOM)");
+        return 2;
+    }
+    lua_pushinteger(L, (lua_Integer)id);
+    return 1;
+}
+
+/// @lua_api Light.Graphics.HDR.DeleteLUT3D
+/// @param tex_id integer 来自 CreateLUT3D 的 id
+/// @return boolean
+static int l_HDR_DeleteLUT3D(lua_State* L) {
+    const uint32_t id = (uint32_t)luaL_checkinteger(L, 1);
+    bool ok = HDRRenderer::DeleteLUT3D(id);
+    lua_pushboolean(L, ok ? 1 : 0);
+    return 1;
+}
+
+/// @lua_api Light.Graphics.HDR.SetGradingLUT
+/// @param tex_id integer LUT id (0 = 关 LUT)
+/// @param strength number 混合强度 [0, 1]
+/// @return boolean
+static int l_HDR_SetGradingLUT(lua_State* L) {
+    const uint32_t id = (uint32_t)luaL_checkinteger(L, 1);
+    const float    s  = (float)luaL_checknumber(L, 2);
+    bool ok = HDRRenderer::SetGradingLUT(id, s);
+    lua_pushboolean(L, ok ? 1 : 0);
+    return 1;
+}
+
+/// @lua_api Light.Graphics.HDR.GetGradingLUTId
+static int l_HDR_GetGradingLUTId(lua_State* L) {
+    lua_pushinteger(L, (lua_Integer)HDRRenderer::GetGradingLUTId());
+    return 1;
+}
+
+/// @lua_api Light.Graphics.HDR.GetGradingLUTStrength
+static int l_HDR_GetGradingLUTStrength(lua_State* L) {
+    lua_pushnumber(L, (lua_Number)HDRRenderer::GetGradingLUTStrength());
     return 1;
 }
 
@@ -1992,6 +2101,12 @@ static const luaL_Reg hdr_funcs[] = {
     {"SetAutoTonemap",              l_HDR_SetAutoTonemap},
     {"GetAutoTonemap",              l_HDR_GetAutoTonemap},
     {"Tonemap",                     l_HDR_Tonemap},
+    // Phase F.0.10.8 — 3D LUT (Color Grading)
+    {"CreateLUT3D",                 l_HDR_CreateLUT3D},
+    {"DeleteLUT3D",                 l_HDR_DeleteLUT3D},
+    {"SetGradingLUT",               l_HDR_SetGradingLUT},
+    {"GetGradingLUTId",             l_HDR_GetGradingLUTId},
+    {"GetGradingLUTStrength",       l_HDR_GetGradingLUTStrength},
     {NULL, NULL}
 };
 

@@ -627,7 +627,9 @@ public:
     virtual void DrawTonemapFullscreen(uint32_t /*hdrTex*/,
                                         float /*exposure*/,
                                         float /*gamma*/,
-                                        int   /*tonemapMode*/ = 0) {}
+                                        int   /*tonemapMode*/ = 0,
+                                        uint32_t /*lutTex*/ = 0,
+                                        float /*lutStrength*/ = 0.0f) {}
 
     /**
      * @brief Phase F.0.10.6 — Region 限定 tonemap pass (split-screen multi-instance 必备)
@@ -643,12 +645,44 @@ public:
      *
      * 默认实现 (Legacy): no-op.
      *
+     * Phase F.0.10.8: 加 lutTex / lutStrength 参数 (默认 0/0 = 不应用 LUT, 零回归)
+     *
      * @param rgnX/Y/W/H  Pixel-space region (左下角原点, GL convention)
+     * @param lutTex      3D LUT texture id (来自 CreateLUT3D, 0 = 不应用)
+     * @param lutStrength LUT 混合强度 [0, 1] (0 = 关 LUT)
      */
     virtual void DrawTonemapRegion(uint32_t /*hdrTex*/, float /*exposure*/,
                                     float /*gamma*/, int /*tonemapMode*/,
                                     int /*rgnX*/, int /*rgnY*/,
-                                    int /*rgnW*/, int /*rgnH*/) {}
+                                    int /*rgnW*/, int /*rgnH*/,
+                                    uint32_t /*lutTex*/ = 0,
+                                    float /*lutStrength*/ = 0.0f) {}
+
+    // ==================== Phase F.0.10.8 — 3D LUT (Color Grading) ====================
+
+    /**
+     * @brief Phase F.0.10.8 — 创建 3D LUT 纹理 (用于 tonemap shader color grading)
+     *
+     * 内部 glTexImage3D(GL_RGB8) + GL_LINEAR (硬件 trilinear 插值) + GL_CLAMP_TO_EDGE.
+     * 数据布局: data[((b*size + g)*size + r) * 3 + ch], R 变化最快.
+     *
+     * 默认实现 (Legacy): 返回 0 (LUT 不可用, caller 应 fallback no-LUT).
+     *
+     * @param size   LUT 边长 (4..64 推荐), 总 voxel = size^3
+     * @param data   size^3 * 3 字节 RGB 数据 (调用方负责长度正确)
+     * @return       GL texture id (> 0 = 成功; 0 = 失败, 如不支持 GL_TEXTURE_3D / OOM)
+     */
+    virtual uint32_t CreateLUT3D(int /*size*/, const uint8_t* /*data*/) { return 0; }
+
+    /**
+     * @brief Phase F.0.10.8 — 删除 LUT3D 纹理 (与 CreateLUT3D 配对)
+     *
+     * 默认实现 (Legacy): no-op, 返回 false.
+     *
+     * @param lutTex 来自 CreateLUT3D 的 id
+     * @return       true=成功删除; false=无效 id / 未实现
+     */
+    virtual bool DeleteLUT3D(uint32_t /*lutTex*/) { return false; }
 
     // ==================== Phase E.4 — Bloom 后处理 ====================
 

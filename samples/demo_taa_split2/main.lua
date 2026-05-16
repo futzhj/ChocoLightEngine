@@ -127,6 +127,16 @@ else
     print('[demo_taa_split2] Phase F.0.10.6 API not present (demo 降级: 全屏单一 tonemap)')
 end
 
+-- F.0.10.8 新 API 依赖 (3D LUT color grading)
+local hasF10_8 = (not api_missing(HDR, 'CreateLUT3D'))
+             and (not api_missing(HDR, 'DeleteLUT3D'))
+             and (not api_missing(HDR, 'SetGradingLUT'))
+if hasF10_8 then
+    print('[demo_taa_split2] Phase F.0.10.8 API ready (HDR 3D LUT color grading)')
+else
+    print('[demo_taa_split2] Phase F.0.10.8 API not present')
+end
+
 print('==== ChocoLight Phase F.0.10.7 True Physical Split-Screen Demo ====')
 print('  (TAA + Bloom + SSR + MotionBlur + Tonemap all per-region with different profiles)')
 print('[demo_taa_split2] Backend          = ' .. tostring(Gfx.GetBackendName and Gfx.GetBackendName() or '?'))
@@ -226,6 +236,35 @@ local function run_headless_api_probe()
         end
     else
         print('  SKIP: F.0.10.6 API not present (legacy build)')
+    end
+
+    -- F.0.10.8 新增: 3D LUT API 探针
+    if hasF10_8 then
+        -- CreateLUT3D size 越界拒绝
+        local r1, e1 = HDR.CreateLUT3D(2, '\0\0\0\0\0\0\0\0')
+        if r1 == nil and type(e1) == 'string' then
+            print('  PASS: HDR.CreateLUT3D(size=2) rejected: ' .. e1)
+        else
+            print('  FAIL: HDR.CreateLUT3D(2) should reject')
+        end
+
+        -- SetGradingLUT round-trip
+        HDR.SetGradingLUT(0, 0.0)
+        if HDR.GetGradingLUTId() == 0 and HDR.GetGradingLUTStrength() == 0.0 then
+            print('  PASS: HDR.SetGradingLUT(0,0) + Get round-trip ok')
+        else
+            print('  FAIL: SetGradingLUT round-trip')
+        end
+
+        -- Tonemap with LUT params
+        local r3, e3 = HDR.Tonemap(0, 0, 100, 100, {lut=999, lutStrength=0.5})
+        if r3 == nil and type(e3) == 'string' then
+            print('  PASS: HDR.Tonemap(rgn, {lut,lutStrength}) headless ok')
+        else
+            print('  FAIL: HDR.Tonemap with lut params')
+        end
+    else
+        print('  SKIP: F.0.10.8 API not present (legacy build)')
     end
 end
 

@@ -84,6 +84,10 @@ struct State {
     // Phase F.0.10.6 — Auto-Tonemap 开关 (默认 true = 零回归; false = 用户手动 HDR.Tonemap(rgn))
     //   split-screen 场景 P1 黄昏 vs P2 冷夜: 必关, 用 HDR.Tonemap(rgn, params) 为每 region 独立 tonemap
     bool           autoTonemap              = true;
+    // Phase F.0.10.8 — 全局 grading LUT (作用于 autoTonemap / Tonemap(rgn) 不带 lut 参数路径)
+    //   lutTexId=0 或 lutStrength=0 → shader 跳过 LUT (uniform branch 短路, 性能 0 损)
+    uint32_t       lutTexId                 = 0;
+    float          lutStrength              = 0.0f;   // clamp [0, 1]
 };
 
 static State g;
@@ -544,8 +548,10 @@ void EndScene() {
 
     // Tonemap + sRGB encode → default fb (E.3.4 多 operator; 输入已含 bloom + lensDirt + streak + lensFlare 的 HDR RT)
     // Phase F.0.10.6: autoTonemap=false 时跳过自动 tonemap, 让用户手动 HDR.Tonemap(rgn) 控 split-screen
+    // Phase F.0.10.8: 透传全局 LUT (lutTexId=0 或 strength=0 → shader 短路, 零回归)
     if (g.autoTonemap) {
-        g.backend->DrawTonemapFullscreen(g.sceneTex, exposure, g.gamma, g.tonemap);
+        g.backend->DrawTonemapFullscreen(g.sceneTex, exposure, g.gamma, g.tonemap,
+                                          g.lutTexId, g.lutStrength);
     }
     g.backend->CommitVelocityHistory();
 }
@@ -684,10 +690,11 @@ bool SetAutoTonemap(bool on) {
 }
 bool GetAutoTonemap() { return g.autoTonemap; }
 
-// Region 限定 tonemap pass — 复用全局 g.exposure (含 AE 叠加) / g.gamma / g.tonemap
+// Region 限定 tonemap pass — 复用全局 g.exposure (含 AE 叠加) / g.gamma / g.tonemap / LUT
 // HDR 未启用 / sceneTex 无效时 silent skip
 // Phase F.0.10.7 fix: 必须先 UnbindFBO 切到 default fb (因为调用方典型在 EndScene 之前,
 //                    HDR fbo 仍绑着; 不 unbind 会把 tonemap 写回 HDR RT, 黑屏)
+// Phase F.0.10.8: 透传全局 g.lutTexId / g.lutStrength
 void Tonemap(int rgnX, int rgnY, int rgnW, int rgnH) {
     if (!g.enabled || !g.backend || !g.sceneTex) return;
     g.backend->UnbindFBO();   // F.0.10.7 fix: 切到 default fb
@@ -696,12 +703,14 @@ void Tonemap(int rgnX, int rgnY, int rgnW, int rgnH) {
                         ? AutoExposureRenderer::GetCurrentExposure()
                         : g.exposure;
     g.backend->DrawTonemapRegion(g.sceneTex, exposure, g.gamma, g.tonemap,
-                                  rgnX, rgnY, rgnW, rgnH);
+                                  rgnX, rgnY, rgnW, rgnH,
+                                  g.lutTexId, g.lutStrength);
 }
 
-// Region 限定 tonemap pass (params 显式版) — 完全自定义, 不叠加 AE
-// 适合: split-screen 中每 region 独立 exposure (不希望 AE 干扰)
+// Region 限定 tonemap pass (params 显式版) — 完全自定义, 不叠加 AE, 沿用全局 LUT
+// 适合: split-screen 中每 region 独立 exposure (不希望 AE 干扰), LUT 共享
 // Phase F.0.10.7 fix: 同上, 必须先 UnbindFBO 切到 default fb
+// Phase F.0.10.8: 透传全局 g.lutTexId / g.lutStrength (兼容老 caller; 新 caller 用 6 参重载完全覆盖)
 void Tonemap(int rgnX, int rgnY, int rgnW, int rgnH,
               float exposure, float gamma, int tonemapMode) {
     if (!g.enabled || !g.backend || !g.sceneTex) return;
@@ -709,8 +718,59 @@ void Tonemap(int rgnX, int rgnY, int rgnW, int rgnH,
     // 防御性 clamp gamma (与 SetGamma 一致, 防 0/负数 崩溃)
     if (gamma < 0.0001f) gamma = 0.0001f;
     g.backend->DrawTonemapRegion(g.sceneTex, exposure, gamma, tonemapMode,
-                                  rgnX, rgnY, rgnW, rgnH);
+                                  rgnX, rgnY, rgnW, rgnH,
+                                  g.lutTexId, g.lutStrength);
 }
+
+// Phase F.0.10.8 — Region 限定 tonemap pass (完全显式版: params + LUT 全自定义)
+// 适合: split-screen 中每 region 独立 exposure + 独立 LUT (P1 黄昏暖调 LUT, P2 冷夜蓝调 LUT)
+// lutTex=0 或 lutStrength<=0 → shader 跳过 LUT (uniform branch 短路)
+void Tonemap(int rgnX, int rgnY, int rgnW, int rgnH,
+              float exposure, float gamma, int tonemapMode,
+              uint32_t lutTex, float lutStrength) {
+    if (!g.enabled || !g.backend || !g.sceneTex) return;
+    g.backend->UnbindFBO();   // F.0.10.7 fix: 切到 default fb
+    if (gamma < 0.0001f) gamma = 0.0001f;
+    // strength clamp [0, 1] (防数值漂移)
+    if (lutStrength < 0.0f) lutStrength = 0.0f;
+    else if (lutStrength > 1.0f) lutStrength = 1.0f;
+    g.backend->DrawTonemapRegion(g.sceneTex, exposure, gamma, tonemapMode,
+                                  rgnX, rgnY, rgnW, rgnH,
+                                  lutTex, lutStrength);
+}
+
+// ==================== Phase F.0.10.8 — 3D LUT (Color Grading) ====================
+
+uint32_t CreateLUT3D(int size, const uint8_t* data, size_t dataLen) {
+    if (!g.backend) return 0u;          // backend 未初始化
+    if (size < 4 || size > 64) return 0u;
+    if (!data) return 0u;
+    // 校验 data 长度 = size^3 * 3 bytes RGB
+    const size_t expected = (size_t)size * (size_t)size * (size_t)size * 3u;
+    if (dataLen != expected) return 0u;
+    return g.backend->CreateLUT3D(size, data);
+}
+
+bool DeleteLUT3D(uint32_t lutTex) {
+    if (!g.backend || !lutTex) return false;
+    // 如果删的是当前全局 LUT, 同步清状态防悬挂
+    if (g.lutTexId == lutTex) {
+        g.lutTexId   = 0;
+        g.lutStrength = 0.0f;
+    }
+    return g.backend->DeleteLUT3D(lutTex);
+}
+
+bool SetGradingLUT(uint32_t lutTex, float strength) {
+    if (strength < 0.0f) strength = 0.0f;
+    else if (strength > 1.0f) strength = 1.0f;
+    g.lutTexId    = lutTex;
+    g.lutStrength = strength;
+    return true;
+}
+
+uint32_t GetGradingLUTId()       { return g.lutTexId; }
+float    GetGradingLUTStrength() { return g.lutStrength; }
 
 bool GetVelocityDilation() { return g.velocityDilation; }
 

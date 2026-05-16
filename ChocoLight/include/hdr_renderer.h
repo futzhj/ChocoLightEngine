@@ -243,6 +243,36 @@ void Tonemap(int rgnX, int rgnY, int rgnW, int rgnH);
 void Tonemap(int rgnX, int rgnY, int rgnW, int rgnH,
               float exposure, float gamma, int tonemapMode);
 
+/// Phase F.0.10.8 — Region 限定 tonemap pass (params + LUT 完全显式版)
+/// 与上一版相同, 加 lutTex / lutStrength 覆盖全局 LUT 状态.
+/// lutTex=0 或 lutStrength=0 时 shader 跳过 LUT (uniform branch 短路).
+void Tonemap(int rgnX, int rgnY, int rgnW, int rgnH,
+              float exposure, float gamma, int tonemapMode,
+              uint32_t lutTex, float lutStrength);
+
+// ==================== Phase F.0.10.8 — 3D LUT (Color Grading) ====================
+
+/// Phase F.0.10.8 — 创建 3D LUT 纹理 (RGB8 + LINEAR + CLAMP_TO_EDGE).
+/// 内部走 backend->CreateLUT3D + 入参校验.
+/// @param size      LUT 边长 [4, 64]
+/// @param data      size^3 * 3 字节 RGB 数据 (R 变化最快)
+/// @param dataLen   data 长度 (字节), 必须 = size^3 * 3
+/// @return          GL texture id (> 0 = 成功; 0 = 失败 — backend 不支持 / 入参错 / OOM)
+uint32_t CreateLUT3D(int size, const uint8_t* data, size_t dataLen);
+
+/// Phase F.0.10.8 — 删除 LUT3D 纹理. 0 = silent fail.
+bool DeleteLUT3D(uint32_t lutTex);
+
+/// Phase F.0.10.8 — 设置全局 grading LUT (作用于 autoTonemap / Tonemap(rgn) 不带 lut 参数路径).
+/// strength clamp [0, 1]; lutTex=0 即关 LUT.
+bool SetGradingLUT(uint32_t lutTex, float strength);
+
+/// Phase F.0.10.8 — 当前全局 LUT id (0 = 未设).
+uint32_t GetGradingLUTId();
+
+/// Phase F.0.10.8 — 当前全局 LUT strength [0, 1].
+float    GetGradingLUTStrength();
+
 /// 当前 HDR RT 宽度 / 高度 (未 Enable 时 = 0)
 int GetWidth();
 int GetHeight();

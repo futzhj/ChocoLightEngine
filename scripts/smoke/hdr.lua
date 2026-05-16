@@ -49,6 +49,9 @@ local fn_names = {
     "SetAutoMotionBlur", "GetAutoMotionBlur",
     -- Phase F.0.10.6 — Auto-Tonemap + per-region Tonemap (split-screen multi-instance 必备)
     "SetAutoTonemap", "GetAutoTonemap", "Tonemap",
+    -- Phase F.0.10.8 — 3D LUT (Color Grading)
+    "CreateLUT3D", "DeleteLUT3D",
+    "SetGradingLUT", "GetGradingLUTId", "GetGradingLUTStrength",
 }
 for _, k in ipairs(fn_names) do
     if type(HDR[k]) ~= "function" then
@@ -595,7 +598,110 @@ end
 HDR.SetAutoTonemap(true)
 
 -- ============================================================
+-- 14. Phase F.0.10.8 — 3D LUT (Color Grading)
+-- ============================================================
+
+-- 14.1 CreateLUT3D size 越界 (< 4) 拒绝
+--      data 使用合法长度 (3*3*3*3=81 bytes), 但 size=3 本身越界
+local small = string.rep("\0", 3 * 3 * 3 * 3)
+local r1, e1 = HDR.CreateLUT3D(3, small)
+if r1 ~= nil then
+    fail("CreateLUT3D(size=3) should be rejected")
+end
+if type(e1) ~= "string" then
+    fail("CreateLUT3D(size=3) err must be string")
+end
+pass("CreateLUT3D(size=3) rejected: " .. e1)
+
+-- 14.2 CreateLUT3D size 越界 (> 64) 拒绝
+local big = string.rep("\0", 65 * 65 * 65 * 3)
+local r2, e2 = HDR.CreateLUT3D(65, big)
+if r2 ~= nil then
+    fail("CreateLUT3D(size=65) should be rejected")
+end
+pass("CreateLUT3D(size=65) rejected: " .. (e2 or "?"))
+
+-- 14.3 CreateLUT3D data 长度错 拒绝
+local bad_data = string.rep("\0", 100)  -- 100 != 16*16*16*3 = 12288
+local r3, e3 = HDR.CreateLUT3D(16, bad_data)
+if r3 ~= nil then
+    fail("CreateLUT3D(size=16, len=100) should be rejected")
+end
+pass("CreateLUT3D(data len mismatch) rejected: " .. (e3 or "?"))
+
+-- 14.4 CreateLUT3D headless 路径 (HDR 未 Enable 但 backend 存在)
+--      合法 size + data, headless GL context 可能返 0 (backend create 失败) 或 成功返 id
+--      smoke 涧仅验证 未崩 + 返值类型正确
+local identity_data = string.rep("\0", 16 * 16 * 16 * 3)
+local r4, e4 = HDR.CreateLUT3D(16, identity_data)
+if r4 ~= nil and type(r4) ~= "number" then
+    fail("CreateLUT3D(16, valid) ret type: expected number or nil, got " .. type(r4))
+end
+pass("CreateLUT3D(16, valid_data) headless ok (id=" .. tostring(r4) .. ", err=" .. tostring(e4) .. ")")
+-- 成功创建后需 Delete 防泄露
+if type(r4) == "number" and r4 > 0 then
+    local d_ok = HDR.DeleteLUT3D(r4)
+    if d_ok ~= true then
+        fail("DeleteLUT3D(valid id) should return true")
+    end
+    pass("DeleteLUT3D(valid id) round-trip ok")
+end
+
+-- 14.5 DeleteLUT3D(0) silent fail (不崩)
+if HDR.DeleteLUT3D(0) ~= false then
+    fail("DeleteLUT3D(0) should return false")
+end
+pass("DeleteLUT3D(0) returns false (silent)")
+
+-- 14.6 SetGradingLUT(0, 0.0) round-trip (默认状态)
+if HDR.SetGradingLUT(0, 0.0) ~= true then
+    fail("SetGradingLUT(0, 0.0) failed")
+end
+if HDR.GetGradingLUTId() ~= 0 then
+    fail("GetGradingLUTId(0) round-trip failed")
+end
+if HDR.GetGradingLUTStrength() ~= 0.0 then
+    fail("GetGradingLUTStrength(0) round-trip failed")
+end
+pass("SetGradingLUT(0, 0.0) round-trip ok")
+
+-- 14.7 SetGradingLUT(123, 0.7) round-trip
+if HDR.SetGradingLUT(123, 0.7) ~= true then
+    fail("SetGradingLUT(123, 0.7) failed")
+end
+if HDR.GetGradingLUTId() ~= 123 then
+    fail("GetGradingLUTId(123) round-trip failed")
+end
+if math.abs(HDR.GetGradingLUTStrength() - 0.7) > 1e-4 then
+    fail("GetGradingLUTStrength(0.7) round-trip failed")
+end
+pass("SetGradingLUT(123, 0.7) round-trip ok")
+
+-- 14.8 SetGradingLUT strength clamp [0, 1]
+HDR.SetGradingLUT(456, -1.0)
+if HDR.GetGradingLUTStrength() ~= 0.0 then
+    fail("strength=-1 should clamp to 0")
+end
+HDR.SetGradingLUT(456, 2.5)
+if HDR.GetGradingLUTStrength() ~= 1.0 then
+    fail("strength=2.5 should clamp to 1")
+end
+pass("SetGradingLUT strength clamp [0, 1] ok")
+
+-- 14.9 Tonemap params 接收 lut + lutStrength 字段 (headless 仍返 nil + err, 不崩)
+local ok_lp, err_lp = HDR.Tonemap(0, 0, 100, 100, {
+    lut = 999, lutStrength = 0.5,
+})
+if ok_lp ~= nil or type(err_lp) ~= "string" then
+    fail("HDR.Tonemap(rgn, {lut, lutStrength}) headless err")
+end
+pass("HDR.Tonemap(rgn, {lut, lutStrength}) headless returns nil + err")
+
+-- 复位
+HDR.SetGradingLUT(0, 0.0)
+
+-- ============================================================
 -- Done
 -- ============================================================
 
-print("[Phase E.3 + E.14 + E.18.1 + E.18.2 + F.0.10.2 + F.0.10.3 + F.0.10.6] Light.Graphics.HDR smoke PASS (" .. #fn_names .. " functions)")
+print("[Phase E.3 + E.14 + E.18.1 + E.18.2 + F.0.10.2 + F.0.10.3 + F.0.10.6 + F.0.10.8] Light.Graphics.HDR smoke PASS (" .. #fn_names .. " functions)")
