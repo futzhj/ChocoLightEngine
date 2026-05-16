@@ -29,6 +29,7 @@
 #pragma once
 
 #include <cstdint>
+#include <cstddef>  // Phase F.0.10.8 CI fix: size_t (GCC/Clang strict, MSVC 隐式)
 
 class RenderBackend;
 // Phase E.14 — 前向声明，避免拉 render_backend.h 进 header (依赖面)
