@@ -7529,8 +7529,8 @@ public:
     //
     // 关键 GL 习语:
     //   1) 绑 GL_PIXEL_PACK_BUFFER + glReadPixels (ptr=0): GPU→PBO 异步 DMA 启动, 不 stall
-    //   2) glGetBufferSubData(PBO[N-1]): 取上一帧数据; 若 GPU 未完成会 sync block
-    //      (但因为是上一帧的, 实际几乎总是已就绪)
+    //   2) glMapBufferRange(PBO[N-1], MAP_READ_BIT): 取上一帧数据 + memcpy + Unmap;
+    //      GLES3.0+ 与 GL3.0+ 都支持 (glGetBufferSubData 不在 GLES 中, 不能用)
     //   3) PBO 大小固定后复用; 仅尺寸变更时重建
     //
     // 第一次调用: PBO[0] 启动, PBO[1] 无数据 → 返 false (out_rgba 不写)
@@ -7569,10 +7569,15 @@ public:
         bool got = false;
         if (m_pbo_pending[prev_idx]) {
             glBindBuffer(GL_PIXEL_PACK_BUFFER, m_pbo[prev_idx]);
-            // glGetBufferSubData 比 glMapBuffer + memcpy 更安全 (不需 unmap 配对)
-            glGetBufferSubData(GL_PIXEL_PACK_BUFFER, 0, (GLsizeiptr)w * h * 4, out_rgba);
-            m_pbo_pending[prev_idx] = false;
-            got = true;
+            // glMapBufferRange + memcpy + glUnmapBuffer (跳 GLES 不支持的 glGetBufferSubData)
+            const GLsizeiptr bytes = (GLsizeiptr)w * h * 4;
+            void* mapped = glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, bytes, GL_MAP_READ_BIT);
+            if (mapped) {
+                std::memcpy(out_rgba, mapped, (size_t)bytes);
+                glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
+                m_pbo_pending[prev_idx] = false;
+                got = true;
+            }
         }
 
         // Step 4: cleanup + flip ping-pong index
@@ -7647,7 +7652,7 @@ public:
 
     // Phase F.0.11.3 — flush 最后一帧 pending PBO (StopRecord 时调一次, 防丢帧)
     //   pending PBO 在 m_pbo_idx (即下次将启动 readback 的位置, 对应上次启动还没取的 PBO).
-    //   注: 这次 glGetBufferSubData 会 sync block 等 GPU 完成 (因为是同一帧的数据),
+    //   注: glMapBufferRange 会 sync block 等 GPU 完成 (因为是同一帧的数据),
     //       但仅 1 次, 不影响异步主路径.
     bool ReadbackAsyncFlushLast(unsigned char* out_rgba) override {
         if (!out_rgba || m_pbo_w <= 0 || m_pbo_h <= 0) return false;
@@ -7658,16 +7663,23 @@ public:
 
         while (glGetError() != GL_NO_ERROR) {}
         glBindBuffer(GL_PIXEL_PACK_BUFFER, m_pbo[waiting]);
-        glGetBufferSubData(GL_PIXEL_PACK_BUFFER, 0,
-                           (GLsizeiptr)m_pbo_w * m_pbo_h * 4, out_rgba);
+        // glMapBufferRange + memcpy + glUnmapBuffer (跳 GLES 不支持的 glGetBufferSubData)
+        const GLsizeiptr bytes = (GLsizeiptr)m_pbo_w * m_pbo_h * 4;
+        bool got = false;
+        void* mapped = glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, bytes, GL_MAP_READ_BIT);
+        if (mapped) {
+            std::memcpy(out_rgba, mapped, (size_t)bytes);
+            glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
+            got = true;
+        }
         glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
         m_pbo_pending[waiting] = false;
 
-        // 容错: glGetError 失败仍返 true (out_rgba 已填, best-effort)
+        // 容错: glGetError 失败仍返 got (out_rgba 已填, best-effort)
         if (glGetError() != GL_NO_ERROR) {
             while (glGetError() != GL_NO_ERROR) {}
         }
-        return true;
+        return got;
     }
 
     // ---- 状态 ----
