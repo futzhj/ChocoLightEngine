@@ -4867,10 +4867,11 @@ struct RecordState {
     // Phase F.0.11.2: 异步 readback (PBO ping-pong, GPU 无 stall)
     //   true  = 用 backend->ReadbackDefaultFBAsync (PNG 写盘与下一帧渲染并行)
     //   false = 用同步 ReadbackDefaultFB (默认, 与 F.0.11 行为一致)
-    //
-    //   注: async=true 时录屏延迟 1 帧 (首次启动写不出, 之后取上一帧数据), 用户不可感知;
-    //   StopRecord 时若 PBO 内还有 1 帧 pending 数据会丢失 (可接受)
     bool        use_async     = false;
+    // Phase F.0.11.3: 缓存上次 readback 的尺寸, 用于 StopRecord 时 flush 最后 1 帧
+    //   StopRecord 时 last_w/last_h > 0 且 use_async 且 backend 支持 → 调 FlushLast 取数据写 PNG
+    int         last_w        = 0;
+    int         last_h        = 0;
 };
 static RecordState g_record;
 
@@ -4900,6 +4901,9 @@ extern "C" void Light_Graphics_RecordTickHook(int win_w, int win_h) {
     //   第 2+ 次启动新 readback + 取上一帧数据 → 写 PNG
     //   用户场景: 录 60 帧 (max_frames=60), 实际渲染 ~61 帧, 输出 60 PNG, ffmpeg 不漏号
     if (g_record.use_async) {
+        // F.0.11.3: 缓存尺寸供 StopRecord flush 用
+        g_record.last_w = win_w;
+        g_record.last_h = win_h;
         std::vector<unsigned char> buf((size_t)win_w * win_h * 4);
         if (g_render->ReadbackDefaultFBAsync(0, 0, win_w, win_h, buf.data())) {
             // 取到上一帧数据 → 写盘
@@ -5014,11 +5018,33 @@ static int l_Graphics_RecordPNGSequence(lua_State* L) {
 }
 
 /// @lua_api Light.Graphics.StopRecord
-/// @brief Phase F.0.11 — 主动停止录屏
-/// @return integer 实际写入帧数 (即停止时的 frame_count)
+/// @brief Phase F.0.11 — 主动停止录屏; F.0.11.3 async 模式下 flush 最后 1 帧 PBO 防丢
+/// @return integer 实际写入帧数 (含 flush 的最后一帧)
+/// @note async 模式下, 上次 ReadbackDefaultFBAsync 启动的 readback 数据未取就 stop 会丢 1 帧.
+///       F.0.11.3 加 backend->ReadbackAsyncFlushLast() 同步取出 (会 sync block 1 次, ~3-8ms).
 static int l_Graphics_StopRecord(lua_State* L) {
+    // F.0.11.3: async 模式下 flush 最后 1 帧 pending PBO
+    //   触发条件: 有 g_render, 用 async, 缓存尺寸有效, max_frames 未达上限 (避免写超额 PNG)
+    if (g_record.use_async && g_render &&
+        g_record.last_w > 0 && g_record.last_h > 0 &&
+        (g_record.max_frames <= 0 || g_record.frame_count < g_record.max_frames)) {
+        const int w = g_record.last_w;
+        const int h = g_record.last_h;
+        std::vector<unsigned char> buf((size_t)w * h * 4);
+        if (g_render->ReadbackAsyncFlushLast(buf.data())) {
+            char path[512];
+            std::snprintf(path, sizeof(path), "%sframe_%04d.png",
+                          g_record.dir_prefix.c_str(), g_record.frame_count);
+            stbi_flip_vertically_on_write(1);
+            if (stbi_write_png(path, w, h, 4, buf.data(), w * 4)) {
+                ++g_record.frame_count;
+            }
+        }
+    }
     int n = g_record.frame_count;
     g_record.active = false;
+    g_record.last_w = 0;
+    g_record.last_h = 0;
     lua_pushinteger(L, n);
     return 1;
 }

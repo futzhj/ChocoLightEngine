@@ -7601,6 +7601,31 @@ public:
         m_pbo_idx = 0;
     }
 
+    // Phase F.0.11.3 — flush 最后一帧 pending PBO (StopRecord 时调一次, 防丢帧)
+    //   pending PBO 在 m_pbo_idx (即下次将启动 readback 的位置, 对应上次启动还没取的 PBO).
+    //   注: 这次 glGetBufferSubData 会 sync block 等 GPU 完成 (因为是同一帧的数据),
+    //       但仅 1 次, 不影响异步主路径.
+    bool ReadbackAsyncFlushLast(unsigned char* out_rgba) override {
+        if (!out_rgba || m_pbo_w <= 0 || m_pbo_h <= 0) return false;
+        // 找 pending=true 的 PBO (理论上最多 1 个, 因为 ping-pong 总是取上一次留下一次)
+        int waiting = -1;
+        for (int i = 0; i < 2; ++i) if (m_pbo_pending[i]) { waiting = i; break; }
+        if (waiting < 0) return false;
+
+        while (glGetError() != GL_NO_ERROR) {}
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, m_pbo[waiting]);
+        glGetBufferSubData(GL_PIXEL_PACK_BUFFER, 0,
+                           (GLsizeiptr)m_pbo_w * m_pbo_h * 4, out_rgba);
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+        m_pbo_pending[waiting] = false;
+
+        // 容错: glGetError 失败仍返 true (out_rgba 已填, best-effort)
+        if (glGetError() != GL_NO_ERROR) {
+            while (glGetError() != GL_NO_ERROR) {}
+        }
+        return true;
+    }
+
     // ---- 状态 ----
     void SetColor(float r, float g, float b, float a) override {
         curColor[0] = r; curColor[1] = g; curColor[2] = b; curColor[3] = a;

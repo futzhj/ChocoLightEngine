@@ -198,6 +198,20 @@ public:
     /// @brief Phase F.0.11.2 — 释放异步 readback PBO (Shutdown 路径或用户切回同步时调)
     virtual void ReadbackAsyncShutdown() {}
 
+    /**
+     * @brief Phase F.0.11.3 — 取出上次启动但未读的 pending PBO 数据 (用于 StopRecord 收尾)
+     *
+     * F.0.11.2 异步路径下, 每次 ReadbackDefaultFBAsync 启动一帧 readback 后, 数据要等
+     * 下一次调用才取出. StopRecord 时若直接 active=false, 最后一帧 PBO 数据丢失.
+     *
+     * 本函数允许 StopRecord 同步 flush 这帧数据 (会 sync block 等 GPU 完成, 但仅 1 次).
+     *
+     * @param out_rgba 输出 RGBA8 buf (调用方负责至少 last_w * last_h * 4 字节)
+     * @return true=有 pending 数据, 已写到 out_rgba; false=无 pending / 不支持
+     * @note backend 内部已知 PBO 尺寸 (上次 readback 的 w/h); 调用方需自行知道这个尺寸
+     */
+    virtual bool ReadbackAsyncFlushLast(unsigned char* /*out_rgba*/) { return false; }
+
     // ---- 状态 ----
     virtual void SetColor(float r, float g, float b, float a) = 0;
     virtual void GetColor(float* r, float* g, float* b, float* a) = 0;
