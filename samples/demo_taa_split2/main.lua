@@ -372,6 +372,31 @@ local function run_headless_api_probe()
     else
         print('  SKIP: F.0.10.8.4 API not present (legacy build)')
     end
+
+    -- F.0.10.8.5 新增: HDR LUT (DOMAIN > 1.0) probe
+    -- 透明扩展无新 Lua API, 用 LoadCubeLUT + DOMAIN_MAX 4 4 4 验证 parser
+    if HDR.LoadCubeLUT then
+        -- 探: 用现有的 LoadCubeLUT 透明加载 HDR domain .cube (内存 string 路径不存在, 走文件路径)
+        -- 写一个临时 HDR .cube; 失败 (no backend) err 应包含 isHDR=1
+        local IO_ = require('Light.IOStream')
+        local FS_ = require('Light.Filesystem')
+        local tmp_dir = FS_.GetPrefPath('ChocoLight', 'demo_taa_split2') or ''
+        local p = tmp_dir .. '_tmp_demo_hdr.cube'
+        local lines = {'LUT_3D_SIZE 4', 'DOMAIN_MIN 0 0 0', 'DOMAIN_MAX 4 4 4'}
+        for b = 0, 3 do for g = 0, 3 do for r = 0, 3 do
+            lines[#lines + 1] = string.format('%.4f %.4f %.4f', r/3, g/3, b/3)
+        end end end
+        IO_.SaveFile(p, table.concat(lines, '\n') .. '\n')
+        local r, e = HDR.LoadCubeLUT(p)
+        if FS_.RemovePath then FS_.RemovePath(p) end
+        if r == nil and type(e) == 'string' and e:find('isHDR=1', 1, true) then
+            print('  PASS: F.0.10.8.5 HDR .cube (DOMAIN_MAX 4 4 4) parsed as isHDR=1')
+        else
+            print('  FAIL: F.0.10.8.5 HDR parse: r=' .. tostring(r) .. ' e=' .. tostring(e))
+        end
+    else
+        print('  SKIP: F.0.10.8.5 LoadCubeLUT not present')
+    end
 end
 
 if not UI or not UI.Window then

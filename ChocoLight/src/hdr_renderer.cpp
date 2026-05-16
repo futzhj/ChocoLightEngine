@@ -851,8 +851,13 @@ uint32_t LoadCubeLUTFromString(const char* text, size_t textLen,
     bool seenSize3D = false;
     int  lineNo     = 0;
     int  dataRow    = 0;
-    std::vector<uint8_t> bytes;
-    int  expectedRows = 0;   // size^3, 见到 LUT_3D_SIZE 后填
+    std::vector<uint8_t> bytes;     // LDR 路径: clamp[0,1] 量化字节
+    std::vector<float>   floats;    // Phase F.0.10.8.5 — HDR 路径: 原始 float 值
+    int  expectedRows = 0;          // size^3, 见到 LUT_3D_SIZE 后填
+
+    // Phase F.0.10.8.5 — DOMAIN_MIN / DOMAIN_MAX (默认 [0,1] LDR)
+    float domainMin[3] = {0.0f, 0.0f, 0.0f};
+    float domainMax[3] = {1.0f, 1.0f, 1.0f};
 
     const char* p   = text;
     const char* end = text + textLen;
@@ -889,8 +894,9 @@ uint32_t LoadCubeLUTFromString(const char* text, size_t textLen,
             size          = (int)sz;
             seenSize3D    = true;
             expectedRows  = size * size * size;
-            // 预分配 (size 64 时 ~768KB, 一次到位避免重分配)
+            // 预分配 (size 64 时: bytes ~768KB, floats ~3MB; 一次到位避免重分配)
             bytes.reserve((size_t)expectedRows * 3u);
+            floats.reserve((size_t)expectedRows * 3u);   // Phase F.0.10.8.5
             goto next_line;
         }
         if (matchKeyword_(tok, lineEnd, "LUT_1D_SIZE")) {
@@ -898,11 +904,36 @@ uint32_t LoadCubeLUTFromString(const char* text, size_t textLen,
                       "line %d: 1D LUT not supported (use LUT_3D_SIZE)", lineNo);
             return 0u;
         }
-        if (matchKeyword_(tok, lineEnd, "TITLE") ||
-            matchKeyword_(tok, lineEnd, "DOMAIN_MIN") ||
-            matchKeyword_(tok, lineEnd, "DOMAIN_MAX")) {
-            // 本 phase 忽略 (TITLE 不存; DOMAIN clamp [0,1])
-            goto next_line;
+        if (matchKeyword_(tok, lineEnd, "TITLE")) {
+            goto next_line;   // TITLE 不存
+        }
+        // Phase F.0.10.8.5 — 解析 DOMAIN_MIN / DOMAIN_MAX 三 float (R G B)
+        // 用于检测 HDR LUT (DOMAIN_MAX 任一分量 > 1.0 → 走 CreateLUT3DFloat)
+        {
+            const bool isMin = matchKeyword_(tok, lineEnd, "DOMAIN_MIN");
+            const bool isMax = matchKeyword_(tok, lineEnd, "DOMAIN_MAX");
+            if (isMin || isMax) {
+                tok += std::strlen(isMin ? "DOMAIN_MIN" : "DOMAIN_MAX");
+                float v[3] = {0.0f, 0.0f, 0.0f};
+                for (int i = 0; i < 3; ++i) {
+                    char* ep = nullptr;
+                    const float f = std::strtof(tok, &ep);
+                    if (ep == tok || ep > lineEnd) {
+                        writeErr_(outErr, errCap,
+                                  "line %d: %s expected 3 floats, parse failed at component %d",
+                                  lineNo, isMin ? "DOMAIN_MIN" : "DOMAIN_MAX", i);
+                        return 0u;
+                    }
+                    v[i] = f;
+                    tok = ep;
+                }
+                if (isMin) {
+                    domainMin[0] = v[0]; domainMin[1] = v[1]; domainMin[2] = v[2];
+                } else {
+                    domainMax[0] = v[0]; domainMax[1] = v[1]; domainMax[2] = v[2];
+                }
+                goto next_line;
+            }
         }
 
         // 5. 数据行: 必须先见过 LUT_3D_SIZE
@@ -941,9 +972,12 @@ uint32_t LoadCubeLUTFromString(const char* text, size_t textLen,
                           "line %d: data row count exceeds size^3=%d", lineNo, expectedRows);
                 return 0u;
             }
-            bytes.push_back(quantize_(r));
+            bytes.push_back(quantize_(r));    // LDR 路径
             bytes.push_back(quantize_(g_));
             bytes.push_back(quantize_(b));
+            floats.push_back(r);              // Phase F.0.10.8.5 — HDR 路径原始值
+            floats.push_back(g_);
+            floats.push_back(b);
             ++dataRow;
         }
 
@@ -968,16 +1002,39 @@ uint32_t LoadCubeLUTFromString(const char* text, size_t textLen,
         return 0u;
     }
 
-    // 9. 调 backend 创建 GL texture (此处才检 backend, 让 parser err 优先)
+    // 9. Phase F.0.10.8.5 — 检测 HDR LUT (DOMAIN_MAX 任一分量 > 1.0)
+    //    Resolve / ACES workflow 输出的 LUT 通常 DOMAIN_MAX = (4, 4, 4) 或 (10, 10, 10)
+    //    LDR LUT (Photoshop / DaVinci 默认) DOMAIN_MAX = (1, 1, 1) → 走传统 RGB8 路径
+    const bool isHDR = (domainMax[0] > 1.0f || domainMax[1] > 1.0f || domainMax[2] > 1.0f);
+
+    // 10. 调 backend 创建 GL texture (此处才检 backend, 让 parser err 优先)
     if (!g.backend) {
         writeErr_(outErr, errCap,
-                  "HDR backend not initialized (parse ok for size=%d)", size);
+                  "HDR backend not initialized (parse ok for size=%d, isHDR=%d, "
+                  "domainMax=%.3f/%.3f/%.3f)",
+                  size, isHDR ? 1 : 0, domainMax[0], domainMax[1], domainMax[2]);
         return 0u;
     }
-    const uint32_t id = g.backend->CreateLUT3D(size, bytes.data());
+
+    // 11. 双路径: HDR 走 RGB16F, LDR 走 RGB8
+    uint32_t id = 0u;
+    if (isHDR) {
+        id = g.backend->CreateLUT3DFloat(size, floats.data());
+        if (id == 0u) {
+            // backend 不支持 RGB16F → 自动 fallback 到 LDR 路径 (clamp/quantize), 报 warn
+            CC::Log(CC::LOG_WARN,
+                    "HDRRenderer: HDR LUT (size=%d, domainMax=%.2f/%.2f/%.2f) "
+                    "CreateLUT3DFloat failed, fallback to RGB8 (high values clamped)",
+                    size, domainMax[0], domainMax[1], domainMax[2]);
+            id = g.backend->CreateLUT3D(size, bytes.data());
+        }
+    } else {
+        id = g.backend->CreateLUT3D(size, bytes.data());
+    }
     if (id == 0u) {
         writeErr_(outErr, errCap,
-                  "backend CreateLUT3D failed (size=%d, GL not ready or OOM)", size);
+                  "backend CreateLUT3D%s failed (size=%d, GL not ready or OOM)",
+                  isHDR ? "Float" : "", size);
         return 0u;
     }
     return id;
@@ -1010,9 +1067,91 @@ uint32_t LoadHaldLUTFile(const char* path, char* outErr, size_t errCap) {
         return 0u;
     }
 
-    // 1. stb_image decode (强制 4 通道 RGBA, 不翻转)
-    int w = 0, h = 0, ch = 0;
+    // Phase F.0.10.8.5 — 探测位深 (PNG 16-bit / 8-bit; 其他格式 stbi_is_16_bit 返 0)
+    //   16-bit PNG 走 stbi_load_16 + RGB16F backend (保留更高精度, ACES workflow 关键)
+    //   8-bit 路径 (PNG/JPG/BMP/TGA) 走原 stbi_load + RGB8 backend
     stbi_set_flip_vertically_on_load(0);
+    const bool is16bit = (stbi_is_16_bit(path) != 0);
+
+    int w = 0, h = 0, ch = 0;
+
+    if (is16bit) {
+        // ===== 16-bit 路径 (HDR-friendly) =====
+        stbi_us* px16 = stbi_load_16(path, &w, &h, &ch, /*force RGBA*/ 4);
+        if (!px16) {
+            const char* sr = stbi_failure_reason();
+            writeErr_(outErr, errCap,
+                      "stbi_load_16 failed: %s (path: %s)",
+                      (sr && *sr) ? sr : "unknown", path);
+            return 0u;
+        }
+        // 验证方阵 + HALD 维度
+        if (w != h) {
+            stbi_image_free(px16);
+            writeErr_(outErr, errCap,
+                      "HALD image not square: %dx%d (path: %s)", w, h, path);
+            return 0u;
+        }
+        int N = 0;
+        for (int n = 2; n <= 8; ++n) if (n * n * n == w) { N = n; break; }
+        if (N == 0) {
+            stbi_image_free(px16);
+            writeErr_(outErr, errCap,
+                      "HALD width %d is not N^3 for any N in [2,8] "
+                      "(expected: 8/27/64/125/216/343/512)", w);
+            return 0u;
+        }
+        const int size = N * N;
+        if (size < 4 || size > 64) {
+            stbi_image_free(px16);
+            writeErr_(outErr, errCap,
+                      "HALD level %d -> LUT size %d out of range [4, 64]", N, size);
+            return 0u;
+        }
+        // RGBA(uint16) → RGB float 流 (归一化到 [0, 1])
+        const size_t totalPx = (size_t)w * (size_t)h;
+        std::vector<float> floats;
+        floats.resize(totalPx * 3u);
+        const float inv = 1.0f / 65535.0f;
+        for (size_t i = 0; i < totalPx; ++i) {
+            floats[i * 3u + 0u] = (float)px16[i * 4u + 0u] * inv;
+            floats[i * 3u + 1u] = (float)px16[i * 4u + 1u] * inv;
+            floats[i * 3u + 2u] = (float)px16[i * 4u + 2u] * inv;
+        }
+        stbi_image_free(px16);
+
+        if (!g.backend) {
+            writeErr_(outErr, errCap,
+                      "HDR backend not initialized (HALD16 parse ok: level=%d, size=%d)",
+                      N, size);
+            return 0u;
+        }
+        // 16-bit HALD → RGB16F (高精度, 即使范围在 [0,1] 也能保留 16-bit 精度)
+        uint32_t id = g.backend->CreateLUT3DFloat(size, floats.data());
+        if (id == 0u) {
+            // RGB16F 不支持 → fallback 到 RGB8 (转 byte)
+            CC::Log(CC::LOG_WARN,
+                    "HDRRenderer: 16-bit HALD (level=%d, size=%d) CreateLUT3DFloat failed, "
+                    "fallback to RGB8 (精度损失到 8-bit)", N, size);
+            std::vector<uint8_t> bytes;
+            bytes.resize(totalPx * 3u);
+            for (size_t i = 0; i < totalPx; ++i) {
+                bytes[i * 3u + 0u] = quantize_(floats[i * 3u + 0u]);
+                bytes[i * 3u + 1u] = quantize_(floats[i * 3u + 1u]);
+                bytes[i * 3u + 2u] = quantize_(floats[i * 3u + 2u]);
+            }
+            id = g.backend->CreateLUT3D(size, bytes.data());
+        }
+        if (id == 0u) {
+            writeErr_(outErr, errCap,
+                      "backend CreateLUT3D{,Float} failed (HALD16 level=%d, size=%d)",
+                      N, size);
+            return 0u;
+        }
+        return id;
+    }
+
+    // ===== 8-bit 路径 (原 F.0.10.8.2 逻辑, 零回归) =====
     unsigned char* px = stbi_load(path, &w, &h, &ch, /*force RGBA*/ 4);
     if (!px) {
         const char* sr = stbi_failure_reason();
@@ -1021,21 +1160,14 @@ uint32_t LoadHaldLUTFile(const char* path, char* outErr, size_t errCap) {
                   (sr && *sr) ? sr : "unknown", path);
         return 0u;
     }
-
-    // 2. 验证方阵
     if (w != h) {
         stbi_image_free(px);
         writeErr_(outErr, errCap,
                   "HALD image not square: %dx%d (path: %s)", w, h, path);
         return 0u;
     }
-
-    // 3. 求 level N ∈ [2, 8] 使 N³ == w
-    //    主流值: 8(N=2) / 27(N=3) / 64(N=4) / 125(N=5) / 216(N=6) / 343(N=7) / 512(N=8)
     int N = 0;
-    for (int n = 2; n <= 8; ++n) {
-        if (n * n * n == w) { N = n; break; }
-    }
+    for (int n = 2; n <= 8; ++n) if (n * n * n == w) { N = n; break; }
     if (N == 0) {
         stbi_image_free(px);
         writeErr_(outErr, errCap,
@@ -1043,8 +1175,6 @@ uint32_t LoadHaldLUTFile(const char* path, char* outErr, size_t errCap) {
                   "(expected: 8/27/64/125/216/343/512)", w);
         return 0u;
     }
-
-    // 4. LUT size = N²; 验证 [4, 64] (本应该总是满足, 防御性检查)
     const int size = N * N;
     if (size < 4 || size > 64) {
         stbi_image_free(px);
@@ -1052,22 +1182,16 @@ uint32_t LoadHaldLUTFile(const char* path, char* outErr, size_t errCap) {
                   "HALD level %d -> LUT size %d out of range [4, 64]", N, size);
         return 0u;
     }
-
-    // 5. RGBA → RGB byte stream (drop alpha)
-    //    HALD 像素 raster scan 顺序 = LUT byte 顺序 (R 最快变, 与 GL 3D texture 完全一致)
-    //    零 reshape, 仅去 alpha 通道
-    const size_t totalPx = (size_t)w * (size_t)h;  // = size^3 (已校验 N³==w + 方阵)
+    const size_t totalPx = (size_t)w * (size_t)h;
     std::vector<uint8_t> bytes;
     bytes.resize(totalPx * 3u);
     for (size_t i = 0; i < totalPx; ++i) {
-        bytes[i * 3u + 0u] = px[i * 4u + 0u];  // R
-        bytes[i * 3u + 1u] = px[i * 4u + 1u];  // G
-        bytes[i * 3u + 2u] = px[i * 4u + 2u];  // B
-        // alpha 丢弃
+        bytes[i * 3u + 0u] = px[i * 4u + 0u];
+        bytes[i * 3u + 1u] = px[i * 4u + 1u];
+        bytes[i * 3u + 2u] = px[i * 4u + 2u];
     }
     stbi_image_free(px);
 
-    // 6. backend null 延后检查 (与 F.0.10.8.1 同模式: parse err 优先报告)
     if (!g.backend) {
         writeErr_(outErr, errCap,
                   "HDR backend not initialized (HALD parse ok: level=%d, size=%d)", N, size);

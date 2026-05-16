@@ -5591,12 +5591,42 @@ public:
         return (uint32_t)tex;
     }
 
-    /// Phase F.0.10.8 — 删除 3D LUT 纹理
+    /// Phase F.0.10.8 — 删除 3D LUT 纹理 (与 CreateLUT3D / CreateLUT3DFloat 配对)
     bool DeleteLUT3D(uint32_t lutTex) override {
         if (!lutTex) return false;
         GLuint t = (GLuint)lutTex;
         glDeleteTextures(1, &t);
         return true;
+    }
+
+    /// Phase F.0.10.8.5 — 创建 HDR float 3D LUT (RGB16F + LINEAR + CLAMP_TO_EDGE)
+    /// 用于 .cube DOMAIN_MAX > 1.0 / 16-bit HALD PNG / ACES workflow
+    uint32_t CreateLUT3DFloat(int size, const float* data) override {
+        if (size < 1 || !data) return 0u;
+        GLuint tex = 0;
+        glGenTextures(1, &tex);
+        if (!tex) return 0u;
+        glBindTexture(GL_TEXTURE_3D, tex);
+        // 关键差异: 内部格式 GL_RGB16F (vs RGB8) + 上传类型 GL_FLOAT (vs UNSIGNED_BYTE)
+        // 移动端要求 EXT_color_buffer_half_float (大多数 GLES3 设备已支持)
+        glTexImage3D(GL_TEXTURE_3D, 0, GL_RGB16F,
+                     size, size, size,
+                     0, GL_RGB, GL_FLOAT, data);
+        glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
+        const GLenum err = glGetError();
+        glBindTexture(GL_TEXTURE_3D, 0);
+        if (err != GL_NO_ERROR) {
+            glDeleteTextures(1, &tex);
+            CC::Log(CC::LOG_WARN,
+                    "GL33: Phase F.0.10.8.5 CreateLUT3DFloat failed (size=%d, gl err=0x%x)",
+                    size, err);
+            return 0u;
+        }
+        return (uint32_t)tex;
     }
 
     // ==================== Phase E.4 — Bloom 虚接口实现 ====================

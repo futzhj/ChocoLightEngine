@@ -675,14 +675,32 @@ public:
     virtual uint32_t CreateLUT3D(int /*size*/, const uint8_t* /*data*/) { return 0; }
 
     /**
-     * @brief Phase F.0.10.8 — 删除 LUT3D 纹理 (与 CreateLUT3D 配对)
+     * @brief Phase F.0.10.8 — 删除 LUT3D 纹理 (与 CreateLUT3D / CreateLUT3DFloat 配对)
      *
      * 默认实现 (Legacy): no-op, 返回 false.
      *
-     * @param lutTex 来自 CreateLUT3D 的 id
+     * @param lutTex 来自 CreateLUT3D 或 CreateLUT3DFloat 的 id
      * @return       true=成功删除; false=无效 id / 未实现
      */
     virtual bool DeleteLUT3D(uint32_t /*lutTex*/) { return false; }
+
+    /**
+     * @brief Phase F.0.10.8.5 — 创建 HDR float 3D LUT (RGB16F)
+     *
+     * 与 CreateLUT3D 同语义但 data 为 float* (HDR 范围, 如 .cube DOMAIN_MAX > 1.0).
+     * 用于 ACES / Resolve HDR workflow / 16-bit HALD PNG.
+     *
+     * 默认实现 (Legacy): no-op 返 0u (老 backend 不支持 → hdr_renderer
+     * 自动 fallback 到 CreateLUT3D + clamp/quantize 路径).
+     *
+     * @param size 边长 [4, 64], 与 CreateLUT3D 一致
+     * @param data size^3 * 3 floats (R 最快变, GL byte order); HDR 数据可超 [0,1]
+     * @return     GL texture id (>0 成功; 0 失败 — 不支持 RGB16F / OOM)
+     *
+     * @note 内部格式 GL_RGB16F + 上传 GL_FLOAT, 目标设备需支持半浮点 3D 纹理
+     * @note 与 CreateLUT3D 共用 DeleteLUT3D
+     */
+    virtual uint32_t CreateLUT3DFloat(int /*size*/, const float* /*data*/) { return 0; }
 
     // ==================== Phase E.4 — Bloom 后处理 ====================
 

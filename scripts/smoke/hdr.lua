@@ -1100,7 +1100,107 @@ do
 end
 
 -- ============================================================
+-- 19. Phase F.0.10.8.5 — HDR LUT (DOMAIN > 1.0 + 16-bit PNG)
+-- ============================================================
+-- headless 环境无法真正创建 GL tex (backend stub), 但可通过 error 文本验证 parser:
+--   LDR 路径错误: "isHDR=0, domainMax=1.000/1.000/1.000"
+--   HDR 路径错误: "isHDR=1, domainMax=4.000/..."
+-- 这种探测式验证与 §16 LoadCube headless 模式一致.
+
+-- 辅助: 构造 4³ identity .cube (LDR or HDR domain 可选)
+local function build_4cube_with_domain(domain_max_str)
+    local lines = {"LUT_3D_SIZE 4"}
+    if domain_max_str then
+        lines[#lines + 1] = "DOMAIN_MIN 0 0 0"
+        lines[#lines + 1] = "DOMAIN_MAX " .. domain_max_str
+    end
+    for b = 0, 3 do for g = 0, 3 do for r = 0, 3 do
+        lines[#lines + 1] = string.format("%.4f %.4f %.4f", r/3, g/3, b/3)
+    end end end
+    return table.concat(lines, "\n") .. "\n"
+end
+
+-- 19.1 LDR .cube (无 DOMAIN_MAX → 默认 (1,1,1) → isHDR=0)
+do
+    local p_ldr = tmp_base .. "_tmp_smoke_ldr.cube"
+    IO.SaveFile(p_ldr, build_4cube_with_domain(nil))
+    local r, e = HDR.LoadCubeLUT(p_ldr)
+    cleanup_tmp(p_ldr)
+    if r ~= nil then
+        fail("LDR .cube expected headless backend fail, got id=" .. tostring(r))
+    end
+    if not (type(e) == "string" and e:find("isHDR=0", 1, true)) then
+        fail("LDR .cube err should contain 'isHDR=0', got: " .. tostring(e))
+    end
+    pass("LDR .cube (no DOMAIN_MAX) parsed as isHDR=0: " .. e:sub(1, 80))
+end
+
+-- 19.2 HDR .cube (DOMAIN_MAX 4 4 4 → isHDR=1)
+do
+    local p_hdr = tmp_base .. "_tmp_smoke_hdr.cube"
+    IO.SaveFile(p_hdr, build_4cube_with_domain("4 4 4"))
+    local r, e = HDR.LoadCubeLUT(p_hdr)
+    cleanup_tmp(p_hdr)
+    if r ~= nil then
+        fail("HDR .cube expected headless backend fail, got id=" .. tostring(r))
+    end
+    if not (type(e) == "string" and e:find("isHDR=1", 1, true)) then
+        fail("HDR .cube err should contain 'isHDR=1', got: " .. tostring(e))
+    end
+    if not e:find("domainMax=4.000", 1, true) then
+        fail("HDR .cube err should contain 'domainMax=4.000', got: " .. tostring(e))
+    end
+    pass("HDR .cube (DOMAIN_MAX 4 4 4) parsed as isHDR=1 + domainMax=4.000: " .. e:sub(1, 80))
+end
+
+-- 19.3 部分分量 > 1.0 (DOMAIN_MAX 1 4 1 → isHDR=1, 只要任一 > 1)
+do
+    local p_partial = tmp_base .. "_tmp_smoke_partial.cube"
+    IO.SaveFile(p_partial, build_4cube_with_domain("1 4 1"))
+    local r, e = HDR.LoadCubeLUT(p_partial)
+    cleanup_tmp(p_partial)
+    if r ~= nil then
+        fail("partial HDR .cube expected headless fail, got id=" .. tostring(r))
+    end
+    if not (type(e) == "string" and e:find("isHDR=1", 1, true)) then
+        fail("partial DOMAIN_MAX (1 4 1) should still be isHDR=1, got: " .. tostring(e))
+    end
+    pass("Partial DOMAIN_MAX (1 4 1) detected as isHDR=1")
+end
+
+-- 19.4 DOMAIN_MAX 全 <= 1.0 (但有显式指定 0.5 1 0.8) → isHDR=0
+do
+    local p_subldr = tmp_base .. "_tmp_smoke_subldr.cube"
+    IO.SaveFile(p_subldr, build_4cube_with_domain("0.5 1 0.8"))
+    local r, e = HDR.LoadCubeLUT(p_subldr)
+    cleanup_tmp(p_subldr)
+    if r ~= nil then
+        fail("sub-LDR .cube expected headless fail, got id=" .. tostring(r))
+    end
+    if not (type(e) == "string" and e:find("isHDR=0", 1, true)) then
+        fail("DOMAIN_MAX (0.5 1 0.8) should be isHDR=0 (all <= 1.0), got: " .. tostring(e))
+    end
+    pass("Explicit DOMAIN_MAX (0.5 1 0.8) all <= 1.0 → isHDR=0")
+end
+
+-- 19.5 DOMAIN_MAX parse error (只 2 float, 缺第 3)
+do
+    local p_bad = tmp_base .. "_tmp_smoke_bad_domain.cube"
+    IO.SaveFile(p_bad, "LUT_3D_SIZE 4\nDOMAIN_MAX 1 1\n0 0 0\n")
+    local r, e = HDR.LoadCubeLUT(p_bad)
+    cleanup_tmp(p_bad)
+    if r ~= nil then
+        fail("Bad DOMAIN_MAX (2 floats) expected reject, got id=" .. tostring(r))
+    end
+    if not (type(e) == "string" and e:find("DOMAIN_MAX", 1, true)
+                              and e:find("parse failed", 1, true)) then
+        fail("Bad DOMAIN_MAX err should mention parse failure, got: " .. tostring(e))
+    end
+    pass("DOMAIN_MAX parse error (2 floats) rejected: " .. e:sub(1, 80))
+end
+
+-- ============================================================
 -- Done
 -- ============================================================
 
-print("[Phase E.3 + E.14 + E.18.1 + E.18.2 + F.0.10.2 + F.0.10.3 + F.0.10.6 + F.0.10.8 + F.0.10.8.1 + F.0.10.8.2 + F.0.10.8.3 + F.0.10.8.4] Light.Graphics.HDR smoke PASS (" .. #fn_names .. " functions)")
+print("[Phase E.3 + E.14 + E.18.1 + E.18.2 + F.0.10.2 + F.0.10.3 + F.0.10.6 + F.0.10.8 + F.0.10.8.1 + F.0.10.8.2 + F.0.10.8.3 + F.0.10.8.4 + F.0.10.8.5] Light.Graphics.HDR smoke PASS (" .. #fn_names .. " functions)")
