@@ -137,6 +137,14 @@ else
     print('[demo_taa_split2] Phase F.0.10.8 API not present')
 end
 
+-- F.0.10.8.1 新 API 依赖 (.cube 文件解析)
+local hasF10_8_1 = not api_missing(HDR, 'LoadCubeLUT')
+if hasF10_8_1 then
+    print('[demo_taa_split2] Phase F.0.10.8.1 API ready (HDR.LoadCubeLUT .cube file parser)')
+else
+    print('[demo_taa_split2] Phase F.0.10.8.1 API not present')
+end
+
 print('==== ChocoLight Phase F.0.10.7 True Physical Split-Screen Demo ====')
 print('  (TAA + Bloom + SSR + MotionBlur + Tonemap all per-region with different profiles)')
 print('[demo_taa_split2] Backend          = ' .. tostring(Gfx.GetBackendName and Gfx.GetBackendName() or '?'))
@@ -265,6 +273,20 @@ local function run_headless_api_probe()
         end
     else
         print('  SKIP: F.0.10.8 API not present (legacy build)')
+    end
+
+    -- F.0.10.8.1 新增: .cube 文件解析探针
+    if hasF10_8_1 then
+        -- 不存在文件 → nil + err
+        local r1, e1 = HDR.LoadCubeLUT('definitely_not_exist.cube')
+        if r1 == nil and type(e1) == 'string' and e1:find('file read failed') then
+            print('  PASS: HDR.LoadCubeLUT(missing file) rejected: ' .. e1)
+        else
+            print('  FAIL: HDR.LoadCubeLUT(missing file) expected file read err, got: '
+                  .. tostring(e1))
+        end
+    else
+        print('  SKIP: F.0.10.8.1 API not present (legacy build)')
     end
 end
 

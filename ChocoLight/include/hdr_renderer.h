@@ -273,6 +273,50 @@ uint32_t GetGradingLUTId();
 /// Phase F.0.10.8 — 当前全局 LUT strength [0, 1].
 float    GetGradingLUTStrength();
 
+// ==================== Phase F.0.10.8.1 — `.cube` LUT 文件解析 ====================
+
+/**
+ * @brief Phase F.0.10.8.1 — 从 .cube 文件加载 3D LUT (Adobe Cube LUT 1.0 标准)
+ *
+ * 内部: SDL_LoadFile → LoadCubeLUTFromString → CreateLUT3D
+ * 支持:
+ *   - LUT_3D_SIZE N (N ∈ [4, 64])
+ *   - 注释 (#) + 空行 + LF/CRLF 行尾
+ *   - DOMAIN_MIN/MAX 解析但本 phase clamp [0, 1]
+ *   - TITLE 忽略
+ * 不支持:
+ *   - LUT_1D_SIZE → 立即报错
+ *   - DOMAIN > 1.0 (HDR LUT) → clamp [0,1]
+ *
+ * 错误情况 (outErr 总写):
+ *   - 文件 I/O 失败
+ *   - LUT_1D_SIZE 出现
+ *   - LUT_3D_SIZE 缺失或越界 [4, 64]
+ *   - 数据行数 mismatch (≠ size^3)
+ *   - 数据行非数字
+ *
+ * @param path    .cube 文件路径 (相对 CWD 或绝对)
+ * @param outErr  [out] 错误描述缓冲 (失败时填; 成功时不动)
+ * @param errCap  outErr 缓冲容量 (推荐 256)
+ * @return        GL texture id (> 0); 0 = 失败 (查 outErr)
+ */
+uint32_t LoadCubeLUTFile(const char* path, char* outErr, size_t errCap);
+
+/**
+ * @brief Phase F.0.10.8.1 — 从内存字符串解析 .cube LUT
+ *
+ * 与 LoadCubeLUTFile 共享 parser, 仅去掉文件 I/O.
+ * 用于 smoke 测试 (in-memory test fixture).
+ *
+ * @param text     .cube 文件文本内容
+ * @param textLen  text 字节数
+ * @param outErr   [out] 错误描述
+ * @param errCap   outErr 缓冲容量
+ * @return         GL texture id (> 0); 0 = 失败
+ */
+uint32_t LoadCubeLUTFromString(const char* text, size_t textLen,
+                                char* outErr, size_t errCap);
+
 /// 当前 HDR RT 宽度 / 高度 (未 Enable 时 = 0)
 int GetWidth();
 int GetHeight();

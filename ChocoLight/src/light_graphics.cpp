@@ -2032,6 +2032,26 @@ static int l_HDR_GetGradingLUTStrength(lua_State* L) {
     return 1;
 }
 
+/// @lua_api Light.Graphics.HDR.LoadCubeLUT
+/// @brief Phase F.0.10.8.1 — 从 .cube 文件加载 3D LUT (Adobe Cube LUT 1.0)
+/// @param path string .cube 文件路径 (相对 CWD 或绝对)
+/// @return integer | nil tex_id (>0), string? err
+/// @note 不支持 LUT_1D_SIZE; size 必须 ∈ [4, 64]; 注释 + 空行自动 skip
+/// @usage local id = HDR.LoadCubeLUT("assets/luts/sunset.cube")
+///        if id then HDR.SetGradingLUT(id, 0.8) end
+static int l_HDR_LoadCubeLUT(lua_State* L) {
+    const char* path = luaL_checkstring(L, 1);
+    char errBuf[256] = {0};
+    uint32_t id = HDRRenderer::LoadCubeLUTFile(path, errBuf, sizeof(errBuf));
+    if (!id) {
+        lua_pushnil(L);
+        lua_pushstring(L, errBuf[0] ? errBuf : "LoadCubeLUT: unknown error");
+        return 2;
+    }
+    lua_pushinteger(L, (lua_Integer)id);
+    return 1;
+}
+
 /// @lua_api Light.Graphics.HDR.SetVelocityFormat
 /// @brief 切换 velocity buffer 存储格式 (RG16F 默认 / RG8 节省 4x VRAM)
 /// @param fmt string "rg16f" | "rg8" (大小写敏感)
@@ -2107,6 +2127,8 @@ static const luaL_Reg hdr_funcs[] = {
     {"SetGradingLUT",               l_HDR_SetGradingLUT},
     {"GetGradingLUTId",             l_HDR_GetGradingLUTId},
     {"GetGradingLUTStrength",       l_HDR_GetGradingLUTStrength},
+    // Phase F.0.10.8.1 — .cube LUT 文件解析 (Adobe Cube LUT 1.0)
+    {"LoadCubeLUT",                 l_HDR_LoadCubeLUT},
     {NULL, NULL}
 };
 

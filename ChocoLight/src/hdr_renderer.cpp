@@ -19,6 +19,12 @@
 #include "light.h"         // CC::Log
 
 #include <chrono>
+#include <vector>          // Phase F.0.10.8.1 — .cube parser byte buffer
+#include <cstdio>          // Phase F.0.10.8.1 — snprintf
+#include <cstdlib>         // Phase F.0.10.8.1 — strtof / strtol
+#include <cstring>         // Phase F.0.10.8.1 — strncmp
+#include <cstdarg>         // Phase F.0.10.8.1 — writeErr_ vsnprintf
+#include <SDL3/SDL.h>      // Phase F.0.10.8.1 — SDL_LoadFile / SDL_free
 
 namespace HDRRenderer {
 
@@ -771,6 +777,205 @@ bool SetGradingLUT(uint32_t lutTex, float strength) {
 
 uint32_t GetGradingLUTId()       { return g.lutTexId; }
 float    GetGradingLUTStrength() { return g.lutStrength; }
+
+// ==================== Phase F.0.10.8.1 — .cube LUT 文件解析 ====================
+
+namespace {
+
+// 安全的 outErr 写入 (caller 可能传 nullptr / errCap=0)
+inline void writeErr_(char* outErr, size_t errCap, const char* fmt, ...) {
+    if (!outErr || errCap == 0) return;
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(outErr, errCap, fmt, ap);
+    va_end(ap);
+}
+
+// 关键字精确匹配 (避免 substring 误匹: "LUT_3D_SIZE" 不能匹 "LUT_3D_SIZE2")
+// tok 必须是 lineEnd 内 trim 后的起始指针
+// 匹配后必须紧跟 whitespace / 行尾 / EOF
+inline bool matchKeyword_(const char* tok, const char* lineEnd, const char* kw) {
+    const size_t kwLen = std::strlen(kw);
+    if ((size_t)(lineEnd - tok) < kwLen) return false;
+    if (std::strncmp(tok, kw, kwLen) != 0) return false;
+    if (tok + kwLen >= lineEnd) return true;       // EOF / 行尾
+    const char nextCh = tok[kwLen];
+    return (nextCh == ' ' || nextCh == '\t');
+}
+
+// float [0,1] → byte [0,255] (含 clamp + 四舍五入)
+inline uint8_t quantize_(float f) {
+    if (f < 0.0f) return 0;
+    if (f > 1.0f) return 255;
+    return (uint8_t)(f * 255.0f + 0.5f);
+}
+
+}  // anonymous namespace
+
+uint32_t LoadCubeLUTFromString(const char* text, size_t textLen,
+                                char* outErr, size_t errCap) {
+    // 边界: 空指针 / 空文本立即报错 (避免 parser 内复杂检查)
+    if (!text || textLen == 0) {
+        writeErr_(outErr, errCap, "LoadCubeLUTFromString: empty input");
+        return 0u;
+    }
+    // 注: backend null 检查延后到 step 9 (CreateLUT3D 调用前), 让 parser err 优先报告
+    // 这样 LUT_1D_SIZE / 缺 SIZE / size 越界 等用户文件错误能精确反馈
+
+    int  size       = 0;
+    bool seenSize3D = false;
+    int  lineNo     = 0;
+    int  dataRow    = 0;
+    std::vector<uint8_t> bytes;
+    int  expectedRows = 0;   // size^3, 见到 LUT_3D_SIZE 后填
+
+    const char* p   = text;
+    const char* end = text + textLen;
+
+    while (p < end) {
+        ++lineNo;
+
+        // 1. 找行尾 (LF / CRLF / EOF)
+        const char* lineStart = p;
+        const char* lineEnd   = p;
+        while (lineEnd < end && *lineEnd != '\n' && *lineEnd != '\r') ++lineEnd;
+
+        // 2. 行首 trim whitespace (空格 + tab)
+        const char* tok = lineStart;
+        while (tok < lineEnd && (*tok == ' ' || *tok == '\t')) ++tok;
+
+        // 3. skip 空行 / 注释 (行首 #)
+        if (tok >= lineEnd || *tok == '#') goto next_line;
+
+        // 4. 关键字识别 (按出现频率排序)
+        if (matchKeyword_(tok, lineEnd, "LUT_3D_SIZE")) {
+            tok += std::strlen("LUT_3D_SIZE");
+            // strtol 自动 skip 前置 whitespace
+            char* ep = nullptr;
+            // 注意: strtol 需 null-terminated, 我们传 tok 但其后续是 lineEnd 后的字符
+            // 因为 lineEnd 之外是 \n/\r 或 EOF 字节, strtol 会停在数字结束位置, 不会越界读
+            long sz = std::strtol(tok, &ep, 10);
+            if (ep == tok || sz < 4 || sz > 64) {
+                writeErr_(outErr, errCap,
+                          "line %d: LUT_3D_SIZE %ld out of range [4, 64]",
+                          lineNo, sz);
+                return 0u;
+            }
+            size          = (int)sz;
+            seenSize3D    = true;
+            expectedRows  = size * size * size;
+            // 预分配 (size 64 时 ~768KB, 一次到位避免重分配)
+            bytes.reserve((size_t)expectedRows * 3u);
+            goto next_line;
+        }
+        if (matchKeyword_(tok, lineEnd, "LUT_1D_SIZE")) {
+            writeErr_(outErr, errCap,
+                      "line %d: 1D LUT not supported (use LUT_3D_SIZE)", lineNo);
+            return 0u;
+        }
+        if (matchKeyword_(tok, lineEnd, "TITLE") ||
+            matchKeyword_(tok, lineEnd, "DOMAIN_MIN") ||
+            matchKeyword_(tok, lineEnd, "DOMAIN_MAX")) {
+            // 本 phase 忽略 (TITLE 不存; DOMAIN clamp [0,1])
+            goto next_line;
+        }
+
+        // 5. 数据行: 必须先见过 LUT_3D_SIZE
+        if (!seenSize3D) {
+            writeErr_(outErr, errCap,
+                      "line %d: data row before LUT_3D_SIZE directive", lineNo);
+            return 0u;
+        }
+
+        // 6. 解析 3 个 float (R G B)
+        {
+            char* ep = nullptr;
+            float r = std::strtof(tok, &ep);
+            if (ep == tok || ep > lineEnd) {
+                writeErr_(outErr, errCap,
+                          "line %d: expected 3 floats for data row, parse R failed", lineNo);
+                return 0u;
+            }
+            tok = ep;
+            float g_ = std::strtof(tok, &ep);
+            if (ep == tok || ep > lineEnd) {
+                writeErr_(outErr, errCap,
+                          "line %d: expected 3 floats for data row, parse G failed", lineNo);
+                return 0u;
+            }
+            tok = ep;
+            float b = std::strtof(tok, &ep);
+            if (ep == tok || ep > lineEnd) {
+                writeErr_(outErr, errCap,
+                          "line %d: expected 3 floats for data row, parse B failed", lineNo);
+                return 0u;
+            }
+            // 防御: 数据行超过预期数量 (避免 vector OOM)
+            if (dataRow >= expectedRows) {
+                writeErr_(outErr, errCap,
+                          "line %d: data row count exceeds size^3=%d", lineNo, expectedRows);
+                return 0u;
+            }
+            bytes.push_back(quantize_(r));
+            bytes.push_back(quantize_(g_));
+            bytes.push_back(quantize_(b));
+            ++dataRow;
+        }
+
+      next_line:
+        p = lineEnd;
+        // 跨过 CRLF / LF / CR (Windows / Unix / 老 Mac 兼容)
+        if (p < end && *p == '\r') ++p;
+        if (p < end && *p == '\n') ++p;
+    }
+
+    // 7. 必须见过 LUT_3D_SIZE
+    if (!seenSize3D) {
+        writeErr_(outErr, errCap, "missing LUT_3D_SIZE directive");
+        return 0u;
+    }
+
+    // 8. 数据行数必须匹配
+    if (dataRow != expectedRows) {
+        writeErr_(outErr, errCap,
+                  "data row count %d mismatch (expected %d for size %d)",
+                  dataRow, expectedRows, size);
+        return 0u;
+    }
+
+    // 9. 调 backend 创建 GL texture (此处才检 backend, 让 parser err 优先)
+    if (!g.backend) {
+        writeErr_(outErr, errCap,
+                  "HDR backend not initialized (parse ok for size=%d)", size);
+        return 0u;
+    }
+    const uint32_t id = g.backend->CreateLUT3D(size, bytes.data());
+    if (id == 0u) {
+        writeErr_(outErr, errCap,
+                  "backend CreateLUT3D failed (size=%d, GL not ready or OOM)", size);
+        return 0u;
+    }
+    return id;
+}
+
+uint32_t LoadCubeLUTFile(const char* path, char* outErr, size_t errCap) {
+    if (!path || !*path) {
+        writeErr_(outErr, errCap, "LoadCubeLUTFile: empty path");
+        return 0u;
+    }
+    size_t sz = 0;
+    void* data = SDL_LoadFile(path, &sz);
+    if (!data) {
+        const char* sdlErr = SDL_GetError();
+        writeErr_(outErr, errCap,
+                  "file read failed: %s (path: %s)",
+                  (sdlErr && *sdlErr) ? sdlErr : "unknown", path);
+        return 0u;
+    }
+    const uint32_t id = LoadCubeLUTFromString((const char*)data, sz, outErr, errCap);
+    SDL_free(data);
+    return id;
+}
 
 bool GetVelocityDilation() { return g.velocityDilation; }
 

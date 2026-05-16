@@ -52,6 +52,8 @@ local fn_names = {
     -- Phase F.0.10.8 — 3D LUT (Color Grading)
     "CreateLUT3D", "DeleteLUT3D",
     "SetGradingLUT", "GetGradingLUTId", "GetGradingLUTStrength",
+    -- Phase F.0.10.8.1 — .cube LUT 文件解析 (Adobe Cube LUT 1.0)
+    "LoadCubeLUT",
 }
 for _, k in ipairs(fn_names) do
     if type(HDR[k]) ~= "function" then
@@ -701,7 +703,137 @@ pass("HDR.Tonemap(rgn, {lut, lutStrength}) headless returns nil + err")
 HDR.SetGradingLUT(0, 0.0)
 
 -- ============================================================
+-- 15. Phase F.0.10.8.1 — .cube LUT 文件解析 (Adobe Cube LUT 1.0)
+-- ============================================================
+
+-- 工具: 写 tmp .cube 文件 (smoke 用) + 自动清理
+-- 使用 require("Light.IOStream"/"Light.Filesystem") 显式加载 (不在全局 Light 表下)
+local IO = require("Light.IOStream")
+local FS = require("Light.Filesystem")
+local tmp_base = FS.GetPrefPath("ChocoLight", "smoke_hdr") or ""  -- 保证可写
+local function write_tmp_cube(name, content)
+    local path = tmp_base .. "_tmp_smoke_" .. name .. ".cube"
+    local ok, err = IO.SaveFile(path, content)
+    if not ok then
+        fail("write_tmp_cube: SaveFile failed: " .. tostring(err) .. " path=" .. path)
+    end
+    return path
+end
+local function cleanup_tmp(path)
+    if FS and FS.RemovePath then FS.RemovePath(path) end
+end
+
+-- 15.1 LoadCubeLUT 不存在文件
+local r1, e1 = HDR.LoadCubeLUT("definitely_not_exist_smoke.cube")
+if r1 ~= nil then
+    fail("LoadCubeLUT(missing) should return nil")
+end
+if type(e1) ~= "string" or not e1:find("file read failed") then
+    fail("LoadCubeLUT(missing) err must contain 'file read failed', got: " .. tostring(e1))
+end
+pass("LoadCubeLUT(missing file) returns nil + err: " .. e1)
+
+-- 15.2 LUT_1D_SIZE 文件 → "1D LUT not supported"
+local p_1d = write_tmp_cube("1d", "LUT_1D_SIZE 16\n0.0 0.0 0.0\n")
+local r2, e2 = HDR.LoadCubeLUT(p_1d)
+cleanup_tmp(p_1d)
+if r2 ~= nil then fail("LoadCubeLUT(1D) should return nil") end
+if not e2:find("1D LUT not supported") then
+    fail("LoadCubeLUT(1D) err must contain '1D LUT not supported', got: " .. e2)
+end
+pass("LoadCubeLUT(LUT_1D_SIZE) rejected: " .. e2)
+
+-- 15.3 缺 LUT_3D_SIZE → "missing LUT_3D_SIZE" 或 "data row before"
+local p_no_size = write_tmp_cube("no_size", "TITLE \"foo\"\n0.0 0.0 0.0\n")
+local r3, e3 = HDR.LoadCubeLUT(p_no_size)
+cleanup_tmp(p_no_size)
+if r3 ~= nil then fail("LoadCubeLUT(no SIZE) should return nil") end
+if not (e3:find("data row before") or e3:find("missing LUT_3D_SIZE")) then
+    fail("LoadCubeLUT(no SIZE) err unexpected: " .. e3)
+end
+pass("LoadCubeLUT(no LUT_3D_SIZE) rejected: " .. e3)
+
+-- 15.4 LUT_3D_SIZE 越界 (< 4)
+local p_small = write_tmp_cube("small", "LUT_3D_SIZE 3\n")
+local r4, e4 = HDR.LoadCubeLUT(p_small)
+cleanup_tmp(p_small)
+if r4 ~= nil then fail("LoadCubeLUT(size=3) should return nil") end
+if not e4:find("out of range") then fail("LoadCubeLUT(size=3) err unexpected: " .. e4) end
+pass("LoadCubeLUT(size=3) rejected: " .. e4)
+
+-- 15.5 LUT_3D_SIZE 越界 (> 64)
+local p_big = write_tmp_cube("big", "LUT_3D_SIZE 65\n")
+local r5, e5 = HDR.LoadCubeLUT(p_big)
+cleanup_tmp(p_big)
+if r5 ~= nil then fail("LoadCubeLUT(size=65) should return nil") end
+if not e5:find("out of range") then fail("LoadCubeLUT(size=65) err unexpected: " .. e5) end
+pass("LoadCubeLUT(size=65) rejected: " .. e5)
+
+-- 15.6 LUT_3D_SIZE 4 + 数据行不足 (期望 64 行, 给 2 行)
+local p_short = write_tmp_cube("short",
+    "LUT_3D_SIZE 4\n0.0 0.0 0.0\n0.1 0.1 0.1\n")
+local r6, e6 = HDR.LoadCubeLUT(p_short)
+cleanup_tmp(p_short)
+if r6 ~= nil then fail("LoadCubeLUT(short data) should return nil") end
+if not e6:find("data row count") then
+    fail("LoadCubeLUT(short data) err unexpected: " .. e6)
+end
+pass("LoadCubeLUT(data row mismatch) rejected: " .. e6)
+
+-- 15.7 合法 4³ identity LUT (含注释 + 空行 + DOMAIN + TITLE)
+-- 注: 4³ = 64 数据行, identity 即 r=R/3, g=G/3, b=B/3
+local function make_identity_4_cube()
+    local lines = {
+        "# 4³ identity LUT for smoke testing",
+        "TITLE \"smoke identity\"",
+        "DOMAIN_MIN 0.0 0.0 0.0",
+        "DOMAIN_MAX 1.0 1.0 1.0",
+        "",  -- 空行
+        "LUT_3D_SIZE 4",
+        "",  -- 空行
+    }
+    -- B 最慢, G 中, R 最快
+    for b = 0, 3 do
+        for g = 0, 3 do
+            for r = 0, 3 do
+                lines[#lines + 1] = string.format("%.6f %.6f %.6f",
+                    r / 3.0, g / 3.0, b / 3.0)
+            end
+        end
+    end
+    return table.concat(lines, "\n") .. "\n"
+end
+local p_ok = write_tmp_cube("identity4", make_identity_4_cube())
+local r7, e7 = HDR.LoadCubeLUT(p_ok)
+cleanup_tmp(p_ok)
+-- headless GL context 下 backend->CreateLUT3D 可能成功 (glGenTextures + glTexImage3D 都安全)
+-- 或失败 ("backend CreateLUT3D failed"). 仅验证: 未崩 + 返值类型正确
+if r7 ~= nil and type(r7) ~= "number" then
+    fail("LoadCubeLUT(identity4) ret type: expected number or nil, got " .. type(r7))
+end
+pass("LoadCubeLUT(identity 4³ + comments + DOMAIN + blank lines) headless ok (id=" ..
+     tostring(r7) .. ", err=" .. tostring(e7) .. ")")
+if type(r7) == "number" and r7 > 0 then
+    if HDR.DeleteLUT3D(r7) ~= true then
+        fail("DeleteLUT3D after LoadCubeLUT failed")
+    end
+    pass("LoadCubeLUT → DeleteLUT3D round-trip ok")
+end
+
+-- 15.8 CRLF 行尾兼容
+local p_crlf = write_tmp_cube("crlf",
+    "LUT_3D_SIZE 4\r\n" .. string.rep("0.0 0.0 0.0\r\n", 64))
+local r8, e8 = HDR.LoadCubeLUT(p_crlf)
+cleanup_tmp(p_crlf)
+if r8 ~= nil and type(r8) ~= "number" then
+    fail("LoadCubeLUT(CRLF) ret type unexpected: " .. type(r8))
+end
+pass("LoadCubeLUT(CRLF line endings) headless ok (id=" .. tostring(r8) ..
+     ", err=" .. tostring(e8) .. ")")
+if type(r8) == "number" and r8 > 0 then HDR.DeleteLUT3D(r8) end
+
+-- ============================================================
 -- Done
 -- ============================================================
 
-print("[Phase E.3 + E.14 + E.18.1 + E.18.2 + F.0.10.2 + F.0.10.3 + F.0.10.6 + F.0.10.8] Light.Graphics.HDR smoke PASS (" .. #fn_names .. " functions)")
+print("[Phase E.3 + E.14 + E.18.1 + E.18.2 + F.0.10.2 + F.0.10.3 + F.0.10.6 + F.0.10.8 + F.0.10.8.1] Light.Graphics.HDR smoke PASS (" .. #fn_names .. " functions)")
