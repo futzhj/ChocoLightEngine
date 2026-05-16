@@ -4856,8 +4856,14 @@ static const luaL_Reg taa_funcs[] = {
 struct RecordState {
     bool        active        = false;
     std::string dir_prefix;            // e.g. "frames/"
-    int         frame_count   = 0;     // 已写帧数 (自录屏开始计)
-    int         max_frames    = 0;     // 0=unlimited; 否则达此值自动 stop
+    int         frame_count   = 0;     // 已写 PNG 数 (递增, 用作文件名 frame_NNNN)
+    int         max_frames    = 0;     // 0=unlimited; 否则达此值自动 stop (按已写 PNG 数算)
+    // Phase F.0.11.1: 帧跳过 (降低录屏 IO 开销)
+    //   frame_skip=1 → 每渲染帧写 1 张 (默认, 与 F.0.11 行为一致)
+    //   frame_skip=2 → 每 2 帧写 1 张 (60fps 渲染 → 30fps 录屏)
+    //   frame_skip=3 → 每 3 帧写 1 张 (60fps 渲染 → 20fps 录屏, 显著降卡顿)
+    int         frame_skip    = 1;
+    int         tick_count    = 0;     // 渲染帧累计 (内部, 用于 % frame_skip 判断)
 };
 static RecordState g_record;
 
@@ -4877,13 +4883,18 @@ static int do_screenshot_internal(const char* path, int x, int y, int w, int h) 
 /// 注: 录屏读 default fb 当前窗口尺寸 (用户切窗口大小后, 下一帧自动用新尺寸)
 extern "C" void Light_Graphics_RecordTickHook(int win_w, int win_h) {
     if (!g_record.active || win_w <= 0 || win_h <= 0) return;
+    // Phase F.0.11.1: frame_skip 检查 — 每 N 渲染帧才实际写 1 张 PNG
+    // tick_count 从 1 起递增, 仅当 (tick_count % frame_skip == 0) 写盘
+    ++g_record.tick_count;
+    if (g_record.frame_skip > 1 && (g_record.tick_count % g_record.frame_skip) != 0) return;
+    // 写 PNG (frame_count 递增, 文件名连续编号方便 ffmpeg 拼接)
     char path[512];
     std::snprintf(path, sizeof(path), "%sframe_%04d.png",
                   g_record.dir_prefix.c_str(), g_record.frame_count);
     do_screenshot_internal(path, 0, 0, win_w, win_h);
     ++g_record.frame_count;
     if (g_record.max_frames > 0 && g_record.frame_count >= g_record.max_frames) {
-        g_record.active = false;   // auto-stop
+        g_record.active = false;   // auto-stop (按已写 PNG 数算, 不算 skip 跳过的)
     }
 }
 
@@ -4940,22 +4951,33 @@ static int l_Graphics_ScreenshotRegion(lua_State* L) {
 }
 
 /// @lua_api Light.Graphics.RecordPNGSequence
-/// @brief Phase F.0.11 — 开始录屏, 每帧 PNG 序列输出到 dir
+/// @brief Phase F.0.11 — 开始录屏, PNG 序列输出到 dir; F.0.11.1 加 frame_skip 性能优化
 /// @param dir_prefix string  目录前缀 (调用方需保证目录已存在); 输出名 dir/frame_NNNN.png
 /// @param max_frames integer 最大帧数 (>0 时达此值自动 stop, 0=无限直到 StopRecord)
+/// @param frame_skip integer? 每 N 渲染帧写 1 张 (默认 1=每帧都写; 2=隔帧, 3=每 3 帧, ...)
 /// @return boolean true / nil, err
-/// @note 同 RecordPNGSequence 多次调用: 后调用复位 frame 计数; 不允许同时录多份
+/// @note 同 RecordPNGSequence 多次调用: 后调用复位计数; 不允许同时录多份.
+/// @note frame_skip 与 max_frames 独立: max_frames 是已写 PNG 数, 不计 skip 跳过的渲染帧.
+///       例: frame_skip=3, max_frames=60 → 录到 60 张 PNG, 实际跨 ~180 渲染帧.
 static int l_Graphics_RecordPNGSequence(lua_State* L) {
     const char* dir = luaL_checkstring(L, 1);
     int max_frames  = (int)luaL_optinteger(L, 2, 0);
+    int frame_skip  = (int)luaL_optinteger(L, 3, 1);
     if (max_frames < 0) {
         lua_pushnil(L);
         lua_pushstring(L, "RecordPNGSequence: max_frames must be >= 0 (0=unlimited)");
         return 2;
     }
+    if (frame_skip < 1) {
+        lua_pushnil(L);
+        lua_pushfstring(L, "RecordPNGSequence: frame_skip must be >= 1 (got %d)", frame_skip);
+        return 2;
+    }
     g_record.dir_prefix  = dir;
     g_record.frame_count = 0;
     g_record.max_frames  = max_frames;
+    g_record.frame_skip  = frame_skip;
+    g_record.tick_count  = 0;     // 复位渲染帧计数
     g_record.active      = true;
     lua_pushboolean(L, 1);
     return 1;

@@ -24,6 +24,22 @@ local _,a,n = pcall(Gfx.IsRecording); p(a==false,'IsRecording init active=false'
 -- RecordPNGSequence max<0
 local _,rv2,re2 = pcall(Gfx.RecordPNGSequence,'f/',-1); p(rv2==nil,'RecordPNGSequence(-1) nil+err')
 
+-- F.0.11.1: frame_skip < 1 验证 (新参数边界)
+local _,rv3,re3 = pcall(Gfx.RecordPNGSequence,'f/',10,0)
+p(rv3==nil and type(re3)=='string','RecordPNGSequence frame_skip=0 → nil+err')
+local _,rv4,re4 = pcall(Gfx.RecordPNGSequence,'f/',10,-2)
+p(rv4==nil and type(re4)=='string','RecordPNGSequence frame_skip=-2 → nil+err')
+
+-- F.0.11.1: frame_skip 默认值 (向后兼容, 不传第 3 参数)
+local _,rs0 = pcall(Gfx.RecordPNGSequence,'f/',5)
+p(rs0==true,'RecordPNGSequence(dir,5) backwards-compat (default frame_skip=1)')
+Gfx.StopRecord()
+
+-- F.0.11.1: frame_skip 显式传 3 (隔 3 帧写)
+local _,rs1 = pcall(Gfx.RecordPNGSequence,'f/',5,3)
+p(rs1==true,'RecordPNGSequence(dir,5,3) frame_skip=3 accepted')
+Gfx.StopRecord()
+
 -- RecordPNGSequence + stop
 local _,rs = pcall(Gfx.RecordPNGSequence,'f/',3); p(rs==true,'RecordPNGSequence(3) true')
 local _,a2 = pcall(Gfx.IsRecording); p(a2==true,'IsRecording active after start')
