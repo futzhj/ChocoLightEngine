@@ -101,6 +101,11 @@ struct State {
     //   lutHotReload  = 全局开关, 关闭后 PollLUTReloads 直接返 0 (零开销)
     //   lutWatchList  = 已 Watch 的 LUT 文件 (path + 上次 mtime + 当前 lutId + 格式标志)
     bool           lutHotReload             = true;
+
+    // Phase F.0.10.8.4 — LUT reload 回调 (单一全局位)
+    //   reload 成功后调用 cb(path, oldId, newId, cbUser); 失败不触发
+    LUTReloadCallback lutReloadCb           = nullptr;
+    void*             lutReloadCbUser       = nullptr;
 };
 
 // Phase F.0.10.8.3 — WatchEntry: 一条 watched LUT 文件记录
@@ -1204,6 +1209,13 @@ int PollLUTReloads() {
         // 5. 删旧 GL tex
         if (oldId && g.backend) g.backend->DeleteLUT3D(oldId);
 
+        // 6. Phase F.0.10.8.4 — 触发 reload 回调 (在 oldId 释放后, 用户拿到的 newId 可立即使用)
+        //    snapshot path 防回调内重入操作 g_lutWatchList 失效迭代器 (虽然约定不允许, 但防御性 copy)
+        if (g.lutReloadCb) {
+            const std::string pathSnap = e.path;
+            g.lutReloadCb(pathSnap.c_str(), oldId, newId, g.lutReloadCbUser);
+        }
+
         ++reloaded;
     }
     return reloaded;
@@ -1211,6 +1223,15 @@ int PollLUTReloads() {
 
 void SetLUTHotReload(bool enabled) { g.lutHotReload = enabled; }
 bool GetLUTHotReload()             { return g.lutHotReload; }
+
+// ==================== Phase F.0.10.8.4 — LUT reload 回调 ====================
+
+void SetLUTReloadCallback(LUTReloadCallback cb, void* userData) {
+    g.lutReloadCb     = cb;
+    g.lutReloadCbUser = userData;
+}
+
+bool HasLUTReloadCallback() { return g.lutReloadCb != nullptr; }
 
 bool GetVelocityDilation() { return g.velocityDilation; }
 

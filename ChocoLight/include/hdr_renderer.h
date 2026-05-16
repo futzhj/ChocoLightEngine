@@ -407,6 +407,36 @@ void SetLUTHotReload(bool enabled);
 /// 查全局热重载开关 (默认 true)
 bool GetLUTHotReload();
 
+// ==================== Phase F.0.10.8.4 — LUT 热重载回调 ====================
+
+/**
+ * @brief Phase F.0.10.8.4 — LUT reload 回调签名
+ *
+ * 当 PollLUTReloads() 检测到 mtime 变化并成功 reload 后调用.
+ *
+ * @param path     已 reload 的 LUT 文件路径 (与 WatchLUT 入参一致)
+ * @param oldId    reload 前的 GL tex id (已被 DeleteLUT3D 释放, 仅供日志/UI)
+ * @param newId    reload 后的新 GL tex id (== GetWatchedLUTId(path))
+ * @param userData 注册时透传的不透明指针 (Lua trampoline 用作 lua_State*)
+ *
+ * @note 回调期间不应再调 PollLUTReloads (递归); 不应 DeleteLUT3D(newId).
+ * @note reload 失败 → 不触发回调 (entry 保留, 下次 Poll 再试)
+ */
+typedef void (*LUTReloadCallback)(const char* path, uint32_t oldId, uint32_t newId, void* userData);
+
+/**
+ * @brief 注册 LUT reload 全局回调 (单一回调, 后注册者覆盖前者)
+ * @param cb        回调函数 (nullptr = 取消注册)
+ * @param userData  透传给 cb 的指针 (典型: lua_State*)
+ *
+ * @note 仅一个全局回调位; 多次调以最后一次为准
+ * @note Lua 端通过 light_graphics 的 trampoline 间接持 Lua function ref
+ */
+void SetLUTReloadCallback(LUTReloadCallback cb, void* userData);
+
+/// 查询当前是否注册了 LUT reload 回调
+bool HasLUTReloadCallback();
+
 /// 当前 HDR RT 宽度 / 高度 (未 Enable 时 = 0)
 int GetWidth();
 int GetHeight();

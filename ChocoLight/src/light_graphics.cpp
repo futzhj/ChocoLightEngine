@@ -2142,6 +2142,84 @@ static int l_HDR_GetLUTHotReload(lua_State* L) {
     return 1;
 }
 
+// ==================== Phase F.0.10.8.4 — LUT reload 回调 (Lua trampoline) ====================
+//
+// 设计:
+//   - HDRRenderer 提供 C-style fn ptr 接口 (不依赖 lua_State).
+//   - light_graphics 在 Lua 侧用 Registry ref 持 Lua function, 注册一个
+//     C-style trampoline 给 HDRRenderer; trampoline 收到 reload 通知后
+//     把参数推到 Lua 栈, lua_pcall 调真 callback, 错误用 CC::Log 报.
+//   - 用 userData 传 lua_State*, 避免单例 lua_State 假设.
+//   - SetLUTReloadCallback(nil) 清: luaL_unref ref + HDRRenderer Set(nullptr, nullptr).
+//
+// 状态:
+//   s_lutReloadCbRef = LUA_NOREF 时表示无 Lua callback (但 trampoline 仍可能注册到 HDRRenderer);
+//   每次 Set 时先 unref 旧 ref + ref 新 callback, 一一对应.
+static int s_lutReloadCbRef = LUA_NOREF;   // Lua function ref in registry (LUA_NOREF = none)
+
+// C-style trampoline: 由 HDRRenderer::PollLUTReloads 触发
+static void LUTReloadTrampoline_(const char* path, uint32_t oldId, uint32_t newId, void* userData) {
+    lua_State* L = static_cast<lua_State*>(userData);
+    if (!L || s_lutReloadCbRef == LUA_NOREF) return;
+    // 推 Lua function
+    lua_rawgeti(L, LUA_REGISTRYINDEX, s_lutReloadCbRef);
+    if (!lua_isfunction(L, -1)) {   // 防御: ref 失效
+        lua_pop(L, 1);
+        return;
+    }
+    // 推 3 参: path, oldId, newId
+    lua_pushstring(L, path ? path : "");
+    lua_pushinteger(L, (lua_Integer)oldId);
+    lua_pushinteger(L, (lua_Integer)newId);
+    if (lua_pcall(L, 3, 0, 0) != 0) {
+        const char* err = lua_tostring(L, -1);
+        CC::Log(CC::LOG_WARN, "HDR.LUTReloadCallback error: %s", err ? err : "unknown");
+        lua_pop(L, 1);
+    }
+}
+
+/// @lua_api Light.Graphics.HDR.SetLUTReloadCallback
+/// @brief Phase F.0.10.8.4 — 注册 LUT reload 回调
+/// @param cb function | nil 回调 fn(path, oldId, newId), 或 nil 清除
+/// @return nil
+/// @note 单一全局回调, 后注册者覆盖前者
+/// @note 回调内**禁止**调 PollLUTReloads / UnwatchLUT / SetLUTReloadCallback (递归)
+/// @usage HDR.SetLUTReloadCallback(function(path, oldId, newId)
+///            print('LUT reloaded:', path, oldId, '→', newId)
+///        end)
+static int l_HDR_SetLUTReloadCallback(lua_State* L) {
+    // 接受 function 或 nil
+    const int t = lua_type(L, 1);
+    if (t != LUA_TFUNCTION && t != LUA_TNIL && t != LUA_TNONE) {
+        return luaL_error(L, "SetLUTReloadCallback: expected function or nil, got %s",
+                           lua_typename(L, t));
+    }
+
+    // 清旧 ref (无论新值是 fn 还是 nil)
+    if (s_lutReloadCbRef != LUA_NOREF) {
+        luaL_unref(L, LUA_REGISTRYINDEX, s_lutReloadCbRef);
+        s_lutReloadCbRef = LUA_NOREF;
+    }
+
+    if (t == LUA_TFUNCTION) {
+        lua_pushvalue(L, 1);
+        s_lutReloadCbRef = luaL_ref(L, LUA_REGISTRYINDEX);
+        HDRRenderer::SetLUTReloadCallback(&LUTReloadTrampoline_, L);
+    } else {
+        // nil / none → 清 backend 注册
+        HDRRenderer::SetLUTReloadCallback(nullptr, nullptr);
+    }
+    return 0;
+}
+
+/// @lua_api Light.Graphics.HDR.GetLUTReloadCallback
+/// @brief 查询当前是否注册了 reload 回调
+/// @return boolean true = 已注册, false = 未注册
+static int l_HDR_GetLUTReloadCallback(lua_State* L) {
+    lua_pushboolean(L, HDRRenderer::HasLUTReloadCallback() ? 1 : 0);
+    return 1;
+}
+
 /// @lua_api Light.Graphics.HDR.SetVelocityFormat
 /// @brief 切换 velocity buffer 存储格式 (RG16F 默认 / RG8 节省 4x VRAM)
 /// @param fmt string "rg16f" | "rg8" (大小写敏感)
@@ -2228,6 +2306,9 @@ static const luaL_Reg hdr_funcs[] = {
     {"PollLUTReloads",              l_HDR_PollLUTReloads},
     {"SetLUTHotReload",             l_HDR_SetLUTHotReload},
     {"GetLUTHotReload",             l_HDR_GetLUTHotReload},
+    // Phase F.0.10.8.4 — LUT reload 回调
+    {"SetLUTReloadCallback",        l_HDR_SetLUTReloadCallback},
+    {"GetLUTReloadCallback",        l_HDR_GetLUTReloadCallback},
     {NULL, NULL}
 };
 

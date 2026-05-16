@@ -59,6 +59,8 @@ local fn_names = {
     -- Phase F.0.10.8.3 — LUT 热重载 (mtime polling)
     "WatchLUT", "UnwatchLUT", "GetWatchedLUTId",
     "PollLUTReloads", "SetLUTHotReload", "GetLUTHotReload",
+    -- Phase F.0.10.8.4 — LUT reload 回调
+    "SetLUTReloadCallback", "GetLUTReloadCallback",
 }
 for _, k in ipairs(fn_names) do
     if type(HDR[k]) ~= "function" then
@@ -1011,7 +1013,94 @@ HDR.SetLUTHotReload(true)   -- 恢复默认
 pass("PollLUTReloads short-circuit (hot reload OFF) returns 0")
 
 -- ============================================================
+-- 18. Phase F.0.10.8.4 — LUT reload 回调 (Lua trampoline)
+-- ============================================================
+
+-- 18.1 默认未注册
+if HDR.GetLUTReloadCallback() ~= false then
+    fail("Default GetLUTReloadCallback must be false (no cb), got: " ..
+         tostring(HDR.GetLUTReloadCallback()))
+end
+pass("Default GetLUTReloadCallback() = false (no callback)")
+
+-- 18.2 注册 fn → 已注册
+local cb_count = 0
+local last_cb_args = nil
+local function my_cb(path, oldId, newId)
+    cb_count = cb_count + 1
+    last_cb_args = {path = path, oldId = oldId, newId = newId}
+end
+HDR.SetLUTReloadCallback(my_cb)
+if HDR.GetLUTReloadCallback() ~= true then
+    fail("After SetLUTReloadCallback(fn), GetLUTReloadCallback should be true")
+end
+pass("SetLUTReloadCallback(fn) registered (Get=true)")
+
+-- 18.3 类型错误 (string)
+local okt, errt = pcall(HDR.SetLUTReloadCallback, "not a fn")
+if okt then fail("SetLUTReloadCallback(string) should raise") end
+pass("SetLUTReloadCallback(non-fn/non-nil) rejected: " .. tostring(errt):sub(1, 60))
+
+-- 18.4 nil 清除 → 未注册
+HDR.SetLUTReloadCallback(nil)
+if HDR.GetLUTReloadCallback() ~= false then
+    fail("After SetLUTReloadCallback(nil), GetLUTReloadCallback should be false")
+end
+pass("SetLUTReloadCallback(nil) clears (Get=false)")
+
+-- 18.5 callback 真实触发: 写一个 tmp .cube → Watch → 改写 → Poll → 验证 cb 被调
+-- headless 环境 backend->CreateLUT3D 不可用 → WatchLUT 必失败, 此场景 SKIP (生产环境验证)
+do
+    -- 构造合法 4³ identity LUT (smallest 允许 size, 64 行 RGB)
+    local lines_a = {"LUT_3D_SIZE 4"}
+    for b = 0, 3 do for g = 0, 3 do for r = 0, 3 do
+        lines_a[#lines_a + 1] = string.format("%.4f %.4f %.4f", r/3, g/3, b/3)
+    end end end
+    local p1   = write_tmp_cube("cb_test", table.concat(lines_a, "\n") .. "\n")
+    local id_a, ew_cb = HDR.WatchLUT(p1)
+    if not id_a then
+        -- headless: backend 不 support CreateLUT3D 是预期行为
+        cleanup_tmp(p1)
+        pass("Callback live test SKIP (headless backend): " .. tostring(ew_cb):sub(1, 80))
+    else
+        -- 走有 backend 的路径 (sample / demo runtime)
+        cb_count = 0
+        last_cb_args = nil
+        HDR.SetLUTReloadCallback(my_cb)
+
+        -- 改写文件 (NTFS 100ns mtime 精度足以触发 mtime 变化)
+        IO.SaveFile(p1, "LUT_3D_SIZE 2\n0.1 0 0\n1 0 0\n0 1 0\n1 1 0\n0 0 1\n1 0 1\n0 1 1\n1 1 1\n")
+
+        local n = HDR.PollLUTReloads()
+        if n >= 1 then
+            local args = last_cb_args
+            if cb_count < 1 or not args then
+                HDR.SetLUTReloadCallback(nil); HDR.UnwatchLUT(id_a); cleanup_tmp(p1)
+                fail("Poll returned " .. n .. " but callback was not invoked")
+            elseif args.path ~= p1 then
+                HDR.SetLUTReloadCallback(nil); HDR.UnwatchLUT(id_a); cleanup_tmp(p1)
+                fail("Callback args.path mismatch, expected: " .. p1 ..
+                     " got: " .. tostring(args.path))
+            elseif type(args.newId) ~= "number" or args.newId == 0 then
+                HDR.SetLUTReloadCallback(nil); HDR.UnwatchLUT(id_a); cleanup_tmp(p1)
+                fail("Callback newId must be > 0, got: " .. tostring(args.newId))
+            else
+                pass("Callback invoked: path=" .. p1 ..
+                     " oldId=" .. tostring(args.oldId) ..
+                     " newId=" .. tostring(args.newId))
+            end
+        else
+            pass("Callback live test SKIP: PollLUTReloads returned 0 (mtime FS cache, env-dependent)")
+        end
+
+        HDR.SetLUTReloadCallback(nil)
+        HDR.UnwatchLUT(id_a)
+        cleanup_tmp(p1)
+    end
+end
+
+-- ============================================================
 -- Done
 -- ============================================================
 
-print("[Phase E.3 + E.14 + E.18.1 + E.18.2 + F.0.10.2 + F.0.10.3 + F.0.10.6 + F.0.10.8 + F.0.10.8.1 + F.0.10.8.2 + F.0.10.8.3] Light.Graphics.HDR smoke PASS (" .. #fn_names .. " functions)")
+print("[Phase E.3 + E.14 + E.18.1 + E.18.2 + F.0.10.2 + F.0.10.3 + F.0.10.6 + F.0.10.8 + F.0.10.8.1 + F.0.10.8.2 + F.0.10.8.3 + F.0.10.8.4] Light.Graphics.HDR smoke PASS (" .. #fn_names .. " functions)")

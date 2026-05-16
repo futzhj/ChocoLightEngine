@@ -344,6 +344,34 @@ local function run_headless_api_probe()
     else
         print('  SKIP: F.0.10.8.3 API not present (legacy build)')
     end
+
+    -- F.0.10.8.4 新增: LUT reload 回调 probe
+    local hasF10_8_4 = (not api_missing(HDR, 'SetLUTReloadCallback'))
+                  and (not api_missing(HDR, 'GetLUTReloadCallback'))
+    if hasF10_8_4 then
+        -- 默认未注册
+        if HDR.GetLUTReloadCallback() == false then
+            print('  PASS: HDR.GetLUTReloadCallback() default = false')
+        else
+            print('  FAIL: GetLUTReloadCallback default not false')
+        end
+        -- 注册 → true
+        HDR.SetLUTReloadCallback(function() end)
+        if HDR.GetLUTReloadCallback() == true then
+            print('  PASS: HDR.SetLUTReloadCallback(fn) → registered')
+        else
+            print('  FAIL: SetLUTReloadCallback(fn) not registered')
+        end
+        -- nil 清除
+        HDR.SetLUTReloadCallback(nil)
+        if HDR.GetLUTReloadCallback() == false then
+            print('  PASS: HDR.SetLUTReloadCallback(nil) → cleared')
+        else
+            print('  FAIL: SetLUTReloadCallback(nil) not cleared')
+        end
+    else
+        print('  SKIP: F.0.10.8.4 API not present (legacy build)')
+    end
 end
 
 if not UI or not UI.Window then
