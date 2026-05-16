@@ -208,8 +208,12 @@ local BAR_COLORS = {
 local Demo = Light(Light.UI.Window):New()
 
 local g_cubeMesh, g_barMesh, g_planeMesh = nil, nil, nil
-local g_hdr_ids = { [0] = 0 }   -- quad i → HDR instance id (i=0 用 default 0)
-local g_taa_ids = {}            -- quad i → TAA instance id
+local g_hdr_ids   = { [0] = 0 }   -- quad i → HDR instance id (i=0 用 default 0)
+local g_taa_ids   = {}            -- quad i → TAA instance id
+-- Phase F.0.10.10.2: Bloom/SSR/MB multi-instance (与 HDR/TAA 同模板)
+local g_bloom_ids = { [0] = 0 }
+local g_ssr_ids   = { [0] = 0 }
+local g_mb_ids    = { [0] = 0 }
 local g_warmLut, g_coolLut = nil, nil
 local g_cubeAngle, g_barAngle = 0.0, 0.0
 local g_lutOn  = true
@@ -288,29 +292,47 @@ local function setup_taa_instance(i)
     end
 end
 
--- 4 quad 的 Bloom/SSR/MB profile (每帧切换, 因为是全局单例)
--- 注: Bloom.SetRadius clamp [0, 1], 原版 demo 1.5/1.2 都被 silent clamp 到 1.0; 已修正
+-- ============================================================================
+-- Phase F.0.10.10.2 — Bloom/SSR/MB multi-instance (与 HDR/TAA 同 Clone 模式)
+--
+-- 旧 (F.0.10.10.1): 每帧 16 次 SetXxx 切换全局 Bloom/SSR/MB 单例 → 状态污染风险高
+-- 新 (本 phase):    OnOpen 阶段 Clone + SetState 一次性写 profile,
+--                    render_quad 里仅 3 次 SetActiveInstance(id) 切换 instance
+--                    优势: 状态隔离 + 切换更快 + 与 HDR/TAA 同范式 (全 5 renderer 统一)
+-- ============================================================================
+
+-- 4 quad 的 Bloom/SSR/MB profile (一次性 SetState 写入, 不再每帧切换)
+-- 注: Bloom.SetRadius clamp [0, 1]; 原 1.5/1.2 已 silent clamp 到 1.0
+local BLOOM_PROFILES = {
+    [0] = { intensity = 1.5, threshold = 0.8, radius = 1.0 },
+    [1] = { intensity = 0.4, threshold = 1.5, radius = 0.8 },
+    [2] = { intensity = 0.8, threshold = 1.0, radius = 0.9 },
+    [3] = { intensity = 1.2, threshold = 0.9, radius = 1.0 },
+}
+local SSR_PROFILES = {
+    [0] = { intensity = 0.4, temporal_enabled = false },
+    [1] = { intensity = 1.0, temporal_enabled = true  },
+    [2] = { intensity = 0.7, temporal_enabled = true  },
+    [3] = { intensity = 0.6, temporal_enabled = true  },
+}
+local MB_PROFILES = {
+    [0] = { strength = 0.8, sample_count = 12 },
+    [1] = { strength = 0.0 },
+    [2] = { strength = 0.3, sample_count = 8  },
+    [3] = { strength = 0.5, sample_count = 10 },
+}
+
+-- 切换 active instance (1 instance = 1 quad 的 Bloom/SSR/MB 状态快照)
+-- 与 HDR.SetActiveInstance / TAA.SetActiveInstance 模式一致, 每帧仅 3 次切换
 local function apply_postfx_profile(i)
-    if Bloom and Bloom.IsEnabled and Bloom.IsEnabled() then
-        if     i == 0 then Bloom.SetIntensity(1.5); Bloom.SetThreshold(0.8); Bloom.SetRadius(1.0)
-        elseif i == 1 then Bloom.SetIntensity(0.4); Bloom.SetThreshold(1.5); Bloom.SetRadius(0.8)
-        elseif i == 2 then Bloom.SetIntensity(0.8); Bloom.SetThreshold(1.0); Bloom.SetRadius(0.9)
-        elseif i == 3 then Bloom.SetIntensity(1.2); Bloom.SetThreshold(0.9); Bloom.SetRadius(1.0)
-        end
+    if Bloom and Bloom.IsEnabled and Bloom.IsEnabled() and g_bloom_ids[i] then
+        Bloom.SetActiveInstance(g_bloom_ids[i])
     end
-    if SSR and SSR.IsEnabled and SSR.IsEnabled() then
-        if     i == 0 then SSR.SetIntensity(0.4); if SSR.SetTemporalEnabled then SSR.SetTemporalEnabled(false) end
-        elseif i == 1 then SSR.SetIntensity(1.0); if SSR.SetTemporalEnabled then SSR.SetTemporalEnabled(true) end
-        elseif i == 2 then SSR.SetIntensity(0.7); if SSR.SetTemporalEnabled then SSR.SetTemporalEnabled(true) end
-        elseif i == 3 then SSR.SetIntensity(0.6); if SSR.SetTemporalEnabled then SSR.SetTemporalEnabled(true) end
-        end
+    if SSR and SSR.IsEnabled and SSR.IsEnabled() and g_ssr_ids[i] then
+        SSR.SetActiveInstance(g_ssr_ids[i])
     end
-    if MB and MB.IsEnabled and MB.IsEnabled() then
-        if     i == 0 then MB.SetStrength(0.8); MB.SetSampleCount(12)
-        elseif i == 1 then MB.SetStrength(0.0)
-        elseif i == 2 then MB.SetStrength(0.3); MB.SetSampleCount(8)
-        elseif i == 3 then MB.SetStrength(0.5); MB.SetSampleCount(10)
-        end
+    if MB and MB.IsEnabled and MB.IsEnabled() and g_mb_ids[i] then
+        MB.SetActiveInstance(g_mb_ids[i])
     end
 end
 
@@ -392,15 +414,54 @@ function Demo:OnOpen()
               tostring(g_warmLut), tostring(g_coolLut)))
     end
 
-    -- Bloom/SSR/MB 启用 + 关 auto* (每帧手动 .Process(rgn))
-    if Bloom and Bloom.IsSupported and Bloom.IsSupported() and Bloom.Enable then
-        Bloom.Enable(HALF_W, HALF_H); HDR.SetAutoBloom(false)
+    -- ============ Bloom / SSR / MotionBlur multi-instance setup (F.0.10.10.2) ============
+    -- 模式: default instance (id=0) Enable + 写 base profile;
+    --       Clone(0) × 3 user instance + 写各 quad 差异 profile (SetState 一次性 N 字段)
+    --
+    -- 与 HDR/TAA 同范式: 5 renderer 全部走 multi-instance, 完整统一.
+    --
+    -- helper: 给单 renderer 创建 4 instance, 写入 profiles 表 (per-i field map)
+    local function setup_4_instance(RND, name, w, h, profiles, id_table)
+        if not (RND and RND.IsSupported and RND.IsSupported() and RND.Enable) then
+            print('[demo_quad_split] ' .. name .. ' not supported, skip multi-instance setup')
+            return false
+        end
+        -- 1) default instance (id=0)
+        RND.SetActiveInstance(0)
+        if not RND.Enable(w, h) then
+            print('[demo_quad_split] ' .. name .. '.Enable(default) failed'); return false
+        end
+        if RND.SetState then RND.SetState(profiles[0]) end
+        id_table[0] = 0
+        -- 2) Clone default 到 quad 1/2/3, 各自 SetState 差异 profile
+        for i = 1, 3 do
+            local id = RND.CloneInstance(0)
+            if not id or id <= 0 then
+                print(string.format('[demo_quad_split] %s.CloneInstance(0) #%d failed', name, i))
+                return false
+            end
+            id_table[i] = id
+            RND.SetActiveInstance(id)
+            if not RND.Enable(w, h) then
+                print(string.format('[demo_quad_split] %s.Enable cloned instance %d failed', name, id))
+                return false
+            end
+            if RND.SetState then RND.SetState(profiles[i]) end
+        end
+        RND.SetActiveInstance(0)
+        print(string.format('[demo_quad_split] 4 %s instance via Clone: ids=[%d,%d,%d,%d]',
+              name, id_table[0], id_table[1], id_table[2], id_table[3]))
+        return true
     end
-    if SSR and SSR.IsSupported and SSR.IsSupported() and SSR.Enable then
-        SSR.Enable(HALF_W, HALF_H); HDR.SetAutoSSR(false)
+
+    if setup_4_instance(Bloom, 'Bloom', HALF_W, HALF_H, BLOOM_PROFILES, g_bloom_ids) then
+        HDR.SetAutoBloom(false)
     end
-    if MB and MB.IsSupported and MB.IsSupported() and MB.Enable then
-        MB.Enable(HALF_W, HALF_H); HDR.SetAutoMotionBlur(false)
+    if setup_4_instance(SSR,   'SSR',   HALF_W, HALF_H, SSR_PROFILES,   g_ssr_ids) then
+        HDR.SetAutoSSR(false)
+    end
+    if setup_4_instance(MB,    'MB',    HALF_W, HALF_H, MB_PROFILES,    g_mb_ids) then
+        HDR.SetAutoMotionBlur(false)
     end
 
     -- ============ TAA multi-instance setup (Clone 模式, F.0.10.9.x.3) ============
@@ -605,7 +666,7 @@ end
 
 local function cleanup_demo()
     if not g_initOk then return end
-    print('[demo_quad_split] cleanup: releasing 4 HDR + 4 TAA instances, LUTs, meshes')
+    print('[demo_quad_split] cleanup: releasing 4× (HDR/TAA/Bloom/SSR/MB) instances, LUTs, meshes')
 
     -- LUTs (RemapLUTIdAcrossInstances 跨 instance 同步清)
     if g_warmLut then HDR.DeleteLUT3D(g_warmLut); g_warmLut = nil end
@@ -623,10 +684,23 @@ local function cleanup_demo()
     TAA.SetActiveInstance(0)
     if TAA.IsEnabled() then TAA.Disable() end
 
-    -- Bloom/SSR/MB Disable + 复位 auto*
-    if MB and MB.IsEnabled and MB.IsEnabled() then MB.Disable() end
-    if SSR and SSR.IsEnabled and SSR.IsEnabled() then SSR.Disable() end
-    if Bloom and Bloom.IsEnabled and Bloom.IsEnabled() then Bloom.Disable() end
+    -- ============ Bloom/SSR/MB multi-instance cleanup (F.0.10.10.2) ============
+    -- 与 HDR/TAA 对称: Disable user instance + DestroyInstance, 最后 Disable default
+    local function teardown_4_instance(RND, name, id_table)
+        if not RND or not RND.IsEnabled then return end
+        for i = 3, 1, -1 do
+            if id_table[i] and id_table[i] > 0 then
+                RND.SetActiveInstance(id_table[i])
+                if RND.IsEnabled() then RND.Disable() end
+                if RND.DestroyInstance then RND.DestroyInstance(id_table[i]) end
+            end
+        end
+        RND.SetActiveInstance(0)
+        if RND.IsEnabled() then RND.Disable() end
+    end
+    teardown_4_instance(MB,    'MB',    g_mb_ids)
+    teardown_4_instance(SSR,   'SSR',   g_ssr_ids)
+    teardown_4_instance(Bloom, 'Bloom', g_bloom_ids)
     HDR.SetAutoBloom(true); HDR.SetAutoSSR(true); HDR.SetAutoMotionBlur(true); HDR.SetAutoTAA(true)
 
     -- HDR: Disable + Destroy user instance + 复位 autoTonemap
