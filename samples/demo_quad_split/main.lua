@@ -1,0 +1,547 @@
+-- ============================================================================
+-- ChocoLight Phase F.0.10.10 — Quad-Split Linkage Demo (callback-model)
+-- ============================================================================
+-- 真物理 4-screen split-screen, 4 个 HDR instance × 4 个 TAA instance,
+-- 每 quad 各自独立 LUT / exposure / tonemap / sharpen profile, 集 F.0.10.9.x 之大成.
+--
+-- Quad 布局 (1280×720, 各 quad 640×360):
+--   ┌──────────────┬──────────────┐
+--   │  TL (quad 0) │  TR (quad 1) │
+--   │  黄昏暖调      │  冷夜冷调      │
+--   ├──────────────┼──────────────┤
+--   │  BL (quad 2) │  BR (quad 3) │
+--   │  复古中性      │  赛博青蓝      │
+--   └──────────────┴──────────────┘
+--
+-- 4 Profile (LUT × exposure × tonemap × sharpen):
+--   TL: warm LUT,  exp=1.5, ACES,       RCAS sharp=1.2,  strong Bloom + strong MB
+--   TR: cool LUT,  exp=0.6, Uncharted2, Lanczos halfRes, light Bloom + temporal SSR
+--   BL: 无 LUT,    exp=1.0, Reinhard,   unsharp=0.5,    mid Bloom + mid SSR
+--   BR: cool LUT,  exp=1.2, ACES,       RCAS sharp=1.5, AntiFlicker + variance clip
+--
+-- 帧流程 (per quad i):
+--   apply_postfx_profile(i)
+--   HDR.SetActiveInstance(hdr_ids[i])     # 切到 instance i 的 fbo
+--   HDR.BeginScene()                       # bind instance i 的 fbo + clear
+--   Gfx.SetViewport(0, 0, HALF_W, HALF_H)  # 在 instance i 的 sceneTex 上渲染
+--   SetCamera(camera_i); drawScene()
+--   Bloom.Process / SSR.Process / MB.Process(0, 0, HALF_W, HALF_H)  # 全屏 region
+--   TAA.SetActiveInstance(taa_ids[i]); TAA.ApplyJitter(); TAA.Process(0, 0, HALF_W, HALF_H)
+--   HDR.EndScene()                          # unbind instance i 的 fbo
+-- 完成 4 instance 渲染后 tonemap pass:
+--   for i in 0..3:
+--     HDR.SetActiveInstance(hdr_ids[i])
+--     HDR.Tonemap(quad_x[i], quad_y[i], HALF_W, HALF_H, params_i)  # 4 instance → 4 quad
+--
+-- 控制:
+--   1/2/3/4 : 重置对应 instance history
+--   L       : 全局 LUT toggle
+--   ESC     : 退出
+-- ============================================================================
+
+local function safe_require(n) local ok, m = pcall(require, n); if ok and type(m) == 'table' then return m end; return nil end
+local UI  = safe_require('Light.UI')
+local Gfx = safe_require('Light.Graphics')
+
+if not Gfx then print('[demo_quad_split] Light.Graphics 不可用'); print('demo_quad_split ok (no graphics)'); return end
+local HDR, TAA = Gfx.HDR, Gfx.TAA
+local Bloom, SSR, MB = Gfx.Bloom, Gfx.SSR, Gfx.MotionBlur
+if type(HDR) ~= 'table' or type(TAA) ~= 'table' then
+    print('[demo_quad_split] HDR/TAA 子表缺失'); print('demo_quad_split ok (subtable missing)'); return
+end
+
+-- 必需 multi-instance API + region API
+local function api_missing(t, name) return type(t[name]) ~= 'function' end
+if api_missing(HDR, 'CreateInstance') or api_missing(HDR, 'SetActiveInstance')
+    or api_missing(HDR, 'BeginScene') or api_missing(HDR, 'EndScene')
+    or api_missing(HDR, 'Tonemap') or api_missing(HDR, 'SetAutoTonemap')
+    or api_missing(TAA, 'CreateInstance') or api_missing(TAA, 'Process')
+    or api_missing(Gfx, 'SetViewport') then
+    print('[demo_quad_split] Phase F.0.10.x API missing (need HDR/TAA multi-instance + region API)')
+    print('demo_quad_split ok (legacy build)'); return
+end
+
+print('==== ChocoLight Phase F.0.10.10 Quad-Split Linkage Demo (callback-model) ====')
+print('[demo_quad_split] Backend         = ' .. tostring(Gfx.GetBackendName and Gfx.GetBackendName() or '?'))
+print('[demo_quad_split] HDR.IsSupported = ' .. tostring(HDR.IsSupported()))
+print('[demo_quad_split] TAA.IsSupported = ' .. tostring(TAA.IsSupported()))
+
+-- ============================================================================
+-- Headless API probe (CI 兼容)
+-- ============================================================================
+local function run_headless_api_probe()
+    print('[demo_quad_split] running headless API probe (no UI window)')
+
+    -- 1) HDR multi-instance Create/Destroy round-trip
+    local cnt0 = HDR.GetInstanceCount()
+    local ids = {}
+    for i = 1, 3 do ids[i] = HDR.CreateInstance() end
+    if HDR.GetInstanceCount() == cnt0 + 3 then
+        print('  PASS: HDR.CreateInstance x3 (count=' .. HDR.GetInstanceCount() .. ')')
+    else print('  FAIL: HDR multi-instance Create') end
+    for i = 3, 1, -1 do if ids[i] and ids[i] > 0 then HDR.DestroyInstance(ids[i]) end end
+    if HDR.GetInstanceCount() == cnt0 then print('  PASS: HDR.DestroyInstance x3 cleanup ok')
+    else print('  FAIL: HDR.DestroyInstance cleanup') end
+
+    -- 2) TAA multi-instance Create/Destroy round-trip
+    local tcnt0 = TAA.GetInstanceCount()
+    local tids = {}
+    for i = 1, 3 do tids[i] = TAA.CreateInstance() end
+    if TAA.GetInstanceCount() == tcnt0 + 3 then
+        print('  PASS: TAA.CreateInstance x3 (count=' .. TAA.GetInstanceCount() .. ')')
+    else print('  FAIL: TAA multi-instance Create') end
+    for i = 3, 1, -1 do if tids[i] and tids[i] > 0 then TAA.DestroyInstance(tids[i]) end end
+
+    -- 3) HDR.BeginScene/EndScene headless silent no-op (HDR 未 Enable)
+    local ok1, _ = pcall(HDR.BeginScene)
+    local ok2, _ = pcall(HDR.EndScene)
+    if ok1 and ok2 then print('  PASS: HDR.BeginScene/EndScene headless silent no-op')
+    else print('  FAIL: HDR.BeginScene/EndScene 抛异常') end
+
+    -- 4) Tonemap headless 退化 (HDR 未启用 → nil + err)
+    local r, e = HDR.Tonemap(0, 0, 100, 100)
+    if r == nil and type(e) == 'string' then print('  PASS: HDR.Tonemap(rgn) headless: ' .. e)
+    else print('  FAIL: HDR.Tonemap expected nil + err') end
+
+    -- 5) Bloom/SSR/MB.Process headless 退化
+    if type(Bloom) == 'table' and not api_missing(Bloom, 'Process') then
+        local r, e = Bloom.Process(0, 0, 100, 100)
+        if r == nil and type(e) == 'string' then print('  PASS: Bloom.Process(rgn) headless: ' .. e) end
+    end
+    if type(SSR) == 'table' and not api_missing(SSR, 'Process') then
+        local r, e = SSR.Process(0, 0, 100, 100)
+        if r == nil and type(e) == 'string' then print('  PASS: SSR.Process(rgn) headless: ' .. e) end
+    end
+    if type(MB) == 'table' and not api_missing(MB, 'Process') then
+        local r, e = MB.Process(0, 0, 100, 100)
+        if r == nil and type(e) == 'string' then print('  PASS: MB.Process(rgn) headless: ' .. e) end
+    end
+
+    -- 6) MAX_INSTANCES = 4 (default + 3 user) 验证: 第 4 个 user instance 应失败
+    local extra = {}
+    for i = 1, 4 do extra[i] = HDR.CreateInstance() end
+    if extra[4] == 0 or extra[4] == nil then
+        print('  PASS: HDR MAX_INSTANCES=4 enforced (4th create returns 0/nil)')
+    else
+        print('  FAIL: HDR MAX_INSTANCES not enforced (got id=' .. tostring(extra[4]) .. ')')
+    end
+    for i = 1, 4 do if extra[i] and extra[i] > 0 then HDR.DestroyInstance(extra[i]) end end
+end
+
+if not UI or not UI.Window then
+    run_headless_api_probe()
+    print('demo_quad_split ok (headless API check, no UI.Window)')
+    return
+end
+if type(Light) ~= 'function' and type(Light) ~= 'table' then
+    print('[demo_quad_split] Light global 不可用')
+    run_headless_api_probe()
+    print('demo_quad_split ok (no Light global)')
+    return
+end
+
+-- ============================================================================
+-- 几何 + 全局常量
+-- ============================================================================
+local WIN_W, WIN_H   = 1280, 720
+local HALF_W, HALF_H = WIN_W / 2, WIN_H / 2
+-- 4 quad 屏幕坐标 (Tonemap 目标位置, default fb 像素坐标)
+local QUAD_RECTS = {
+    [0] = { x = 0,      y = HALF_H, w = HALF_W, h = HALF_H, label = 'TL  Warm Sunset (ACES + warm LUT + RCAS)' },
+    [1] = { x = HALF_W, y = HALF_H, w = HALF_W, h = HALF_H, label = 'TR  Cool Night (Uncharted2 + cool LUT + Lanczos)' },
+    [2] = { x = 0,      y = 0,      w = HALF_W, h = HALF_H, label = 'BL  Neutral Vintage (Reinhard, no LUT)' },
+    [3] = { x = HALF_W, y = 0,      w = HALF_W, h = HALF_H, label = 'BR  Cyber Cyan (ACES + cool LUT + AntiFlicker)' },
+}
+-- 注意: Y 轴向上 (OpenGL viewport), TL 视觉左上 = y=HALF_H (上半屏), BL 视觉左下 = y=0
+
+-- 4 quad 不同相机角度 (展示同场景不同视角)
+local CAMERAS = {
+    [0] = { eye = {  3.0, 4.0,  6.0 }, at = { 0.0, 0.6, 0.0 } },   -- TL: 高远 overview
+    [1] = { eye = { -3.5, 1.0,  3.0 }, at = { 0.0, 0.8, 0.0 } },   -- TR: 低近 ground-level
+    [2] = { eye = {  0.0, 6.0,  0.1 }, at = { 0.0, 0.0, 0.0 } },   -- BL: 顶视
+    [3] = { eye = {  5.5, 0.8,  1.2 }, at = { 0.0, 0.6, 0.0 } },   -- BR: 侧近 cinematic
+}
+
+local function buildCube(s)
+    s = s or 0.5; local v, idx = {}, {}
+    local function addQuad(p1, p2, p3, p4, n)
+        local base = #v / 12
+        for _, p in ipairs({p1, p2, p3, p4}) do
+            v[#v+1]=p[1]; v[#v+1]=p[2]; v[#v+1]=p[3]
+            v[#v+1]=n[1]; v[#v+1]=n[2]; v[#v+1]=n[3]
+            v[#v+1]=0; v[#v+1]=0
+            v[#v+1]=1; v[#v+1]=1; v[#v+1]=1; v[#v+1]=1
+        end
+        idx[#idx+1]=base+1; idx[#idx+1]=base+2; idx[#idx+1]=base+3
+        idx[#idx+1]=base+1; idx[#idx+1]=base+3; idx[#idx+1]=base+4
+    end
+    addQuad({ s,-s,-s},{ s, s,-s},{ s, s, s},{ s,-s, s},{ 1, 0, 0})
+    addQuad({-s,-s, s},{-s, s, s},{-s, s,-s},{-s,-s,-s},{-1, 0, 0})
+    addQuad({-s, s,-s},{-s, s, s},{ s, s, s},{ s, s,-s},{ 0, 1, 0})
+    addQuad({-s,-s, s},{-s,-s,-s},{ s,-s,-s},{ s,-s, s},{ 0,-1, 0})
+    addQuad({-s,-s, s},{ s,-s, s},{ s, s, s},{-s, s, s},{ 0, 0, 1})
+    addQuad({ s,-s,-s},{-s,-s,-s},{-s, s,-s},{ s, s,-s},{ 0, 0,-1})
+    return v, idx
+end
+local function buildPlane()
+    local s = 6.0
+    local v = { -s,0,-s, 0,1,0, 0,0, 0.04,0.04,0.05,1,
+                 s,0,-s, 0,1,0, 1,0, 0.04,0.04,0.05,1,
+                 s,0, s, 0,1,0, 1,1, 0.04,0.04,0.05,1,
+                -s,0, s, 0,1,0, 0,1, 0.04,0.04,0.05,1 }
+    return v, { 1, 2, 3, 1, 3, 4 }
+end
+
+local BAR_COLORS = {
+    {1.0, 0.2, 0.2}, {1.0, 0.6, 0.2}, {1.0, 1.0, 0.2}, {0.2, 1.0, 0.2},
+    {0.2, 1.0, 1.0}, {0.2, 0.5, 1.0}, {0.7, 0.2, 1.0}, {1.0, 0.2, 0.7},
+}
+
+-- ============================================================================
+-- Demo 类
+-- ============================================================================
+local Demo = Light(Light.UI.Window):New()
+
+local g_cubeMesh, g_barMesh, g_planeMesh = nil, nil, nil
+local g_hdr_ids = { [0] = 0 }   -- quad i → HDR instance id (i=0 用 default 0)
+local g_taa_ids = {}            -- quad i → TAA instance id
+local g_warmLut, g_coolLut = nil, nil
+local g_cubeAngle, g_barAngle = 0.0, 0.0
+local g_lutOn  = true
+local g_initOk = false
+
+-- 4 quad 的 tonemap 显式参数 (传给 HDR.Tonemap rgn 重载)
+-- tonemap: 'aces' / 'uncharted2' / 'reinhard'  exposure: 0.6~1.5
+local function build_tm_params(i)
+    if     i == 0 then return { exposure = 1.5, gamma = 2.2, tonemap = 'aces',
+                                 lut = g_lutOn and g_warmLut or 0, lutStrength = 0.85 }
+    elseif i == 1 then return { exposure = 0.6, gamma = 2.4, tonemap = 'uncharted2',
+                                 lut = g_lutOn and g_coolLut or 0, lutStrength = 0.85 }
+    elseif i == 2 then return { exposure = 1.0, gamma = 2.2, tonemap = 'reinhard',
+                                 lut = 0, lutStrength = 0.0 }
+    elseif i == 3 then return { exposure = 1.2, gamma = 2.2, tonemap = 'aces',
+                                 lut = g_lutOn and g_coolLut or 0, lutStrength = 0.50 }
+    end
+    return nil
+end
+
+-- 4 quad 的 TAA per-instance setup (sharpen / clip mode / antiflicker)
+local function setup_taa_instance(i)
+    TAA.SetActiveInstance(g_taa_ids[i])
+    TAA.Enable(HALF_W, HALF_H)
+    if     i == 0 then  -- TL: RCAS strong sharpen
+        TAA.SetClipMode('ycocg'); TAA.SetSharpness(1.2)
+        if TAA.SetSharpenMode then TAA.SetSharpenMode('rcas') end
+        if TAA.SetAntiFlicker then TAA.SetAntiFlicker(true) end
+    elseif i == 1 then  -- TR: Lanczos high-quality upscale
+        TAA.SetClipMode('variance')
+        if TAA.SetVarianceGamma then TAA.SetVarianceGamma(1.0) end
+        TAA.SetSharpness(0.0)
+        if TAA.SetSharpenMode then TAA.SetSharpenMode('unsharp') end
+        if TAA.SetHalfResHistory then TAA.SetHalfResHistory(true) end
+        if TAA.SetUpscaleMode then TAA.SetUpscaleMode('lanczos') end
+        if TAA.SetAntiFlicker then TAA.SetAntiFlicker(true) end
+    elseif i == 2 then  -- BL: 中性 unsharp
+        TAA.SetClipMode('rgb'); TAA.SetSharpness(0.5)
+        if TAA.SetSharpenMode then TAA.SetSharpenMode('unsharp') end
+        if TAA.SetAntiFlicker then TAA.SetAntiFlicker(false) end
+    elseif i == 3 then  -- BR: AntiFlicker + variance + RCAS
+        TAA.SetClipMode('variance')
+        if TAA.SetVarianceGamma then TAA.SetVarianceGamma(0.8) end
+        TAA.SetSharpness(1.5)
+        if TAA.SetSharpenMode then TAA.SetSharpenMode('rcas') end
+        if TAA.SetAntiFlicker then TAA.SetAntiFlicker(true) end
+    end
+end
+
+-- 4 quad 的 Bloom/SSR/MB profile (每帧切换, 因为是全局单例)
+local function apply_postfx_profile(i)
+    if Bloom and Bloom.IsEnabled and Bloom.IsEnabled() then
+        if     i == 0 then Bloom.SetIntensity(1.5); Bloom.SetThreshold(0.8); Bloom.SetRadius(1.5)
+        elseif i == 1 then Bloom.SetIntensity(0.4); Bloom.SetThreshold(1.5); Bloom.SetRadius(0.8)
+        elseif i == 2 then Bloom.SetIntensity(0.8); Bloom.SetThreshold(1.0); Bloom.SetRadius(1.0)
+        elseif i == 3 then Bloom.SetIntensity(1.2); Bloom.SetThreshold(0.9); Bloom.SetRadius(1.2)
+        end
+    end
+    if SSR and SSR.IsEnabled and SSR.IsEnabled() then
+        if     i == 0 then SSR.SetIntensity(0.4); if SSR.SetTemporalEnabled then SSR.SetTemporalEnabled(false) end
+        elseif i == 1 then SSR.SetIntensity(1.0); if SSR.SetTemporalEnabled then SSR.SetTemporalEnabled(true) end
+        elseif i == 2 then SSR.SetIntensity(0.7); if SSR.SetTemporalEnabled then SSR.SetTemporalEnabled(true) end
+        elseif i == 3 then SSR.SetIntensity(0.6); if SSR.SetTemporalEnabled then SSR.SetTemporalEnabled(true) end
+        end
+    end
+    if MB and MB.IsEnabled and MB.IsEnabled() then
+        if     i == 0 then MB.SetStrength(0.8); MB.SetSampleCount(12)
+        elseif i == 1 then MB.SetStrength(0.0)
+        elseif i == 2 then MB.SetStrength(0.3); MB.SetSampleCount(8)
+        elseif i == 3 then MB.SetStrength(0.5); MB.SetSampleCount(10)
+        end
+    end
+end
+
+local function drawScene()
+    if g_planeMesh then
+        Gfx.Push(); Gfx.SetColor(0.04, 0.04, 0.05, 1.0); g_planeMesh:Draw(0); Gfx.Pop()
+    end
+    Gfx.Push()
+    Gfx.Translate(0.0, 0.6, 0.0); Gfx.Rotate(math.deg(g_cubeAngle), 0, 1, 0)
+    Gfx.Scale(1.2, 1.2, 1.2); Gfx.SetColor(1.0, 0.9, 0.7, 1.0)
+    if g_cubeMesh then g_cubeMesh:Draw(0) end
+    Gfx.Pop()
+    local R = 2.5
+    for i = 1, 8 do
+        local theta = g_barAngle + (i - 1) * math.pi * 2.0 / 8.0
+        local bx, bz = math.cos(theta) * R, math.sin(theta) * R
+        local c = BAR_COLORS[i]
+        Gfx.Push()
+        Gfx.Translate(bx, 0.6, bz); Gfx.Rotate(math.deg(theta) + 90, 0, 1, 0)
+        Gfx.Scale(0.04, 1.2, 0.04); Gfx.SetColor(c[1], c[2], c[3], 1.0)
+        if g_barMesh then g_barMesh:Draw(0) end
+        Gfx.Pop()
+    end
+    Gfx.SetColor(1, 1, 1, 1)
+end
+
+function Demo:OnOpen()
+    print('[demo_quad_split] OnOpen: setup 4 HDR + 4 TAA instance, LUTs, postfx')
+
+    -- Mesh
+    local Mesh = Gfx.Mesh
+    if not Mesh or type(Mesh.New) ~= 'function' then
+        print('[demo_quad_split] Mesh.New 不可用'); self:Close(); return
+    end
+    local cv, ci = buildCube(0.5); local bv, bi = buildCube(1.0); local pv, pi = buildPlane()
+    g_cubeMesh = Mesh.New(cv, ci); g_barMesh = Mesh.New(bv, bi); g_planeMesh = Mesh.New(pv, pi)
+    if not g_cubeMesh or not g_barMesh or not g_planeMesh then
+        print('[demo_quad_split] mesh build failed'); self:Close(); return
+    end
+
+    -- HDR multi-instance: instance 0 (default) + 3 new = 4 total
+    if not HDR.IsSupported() then
+        print('[demo_quad_split] HDR not supported, abort'); self:Close(); return
+    end
+    -- Quad 0 用 instance 0
+    if not HDR.Enable(HALF_W, HALF_H) then
+        print('[demo_quad_split] Quad 0 (instance 0) HDR.Enable failed'); self:Close(); return
+    end
+    -- Quad 1/2/3 创建 user instance
+    for i = 1, 3 do
+        local id = HDR.CreateInstance()
+        if not id or id <= 0 then
+            print(string.format('[demo_quad_split] HDR.CreateInstance #%d failed', i))
+            self:Close(); return
+        end
+        g_hdr_ids[i] = id
+        HDR.SetActiveInstance(id)
+        if not HDR.Enable(HALF_W, HALF_H) then
+            print(string.format('[demo_quad_split] HDR.Enable instance %d failed', id))
+            self:Close(); return
+        end
+    end
+    HDR.SetActiveInstance(0)
+    print(string.format('[demo_quad_split] 4 HDR instance ready: ids=[%d, %d, %d, %d], each %dx%d',
+          g_hdr_ids[0], g_hdr_ids[1], g_hdr_ids[2], g_hdr_ids[3], HALF_W, HALF_H))
+
+    -- 关 4 instance 的 autoTonemap (每帧手动 HDR.Tonemap(rgn, params))
+    for i = 0, 3 do
+        HDR.SetActiveInstance(g_hdr_ids[i])
+        HDR.SetAutoTonemap(false)
+    end
+    HDR.SetActiveInstance(0)
+
+    -- LUT 加载 (lut id 是 backend 全局, 任 instance 可引用)
+    if HDR.LoadCubeLUT then
+        g_warmLut = HDR.LoadCubeLUT('samples/demo_quad_split/luts/warm_red.cube')
+        g_coolLut = HDR.LoadCubeLUT('samples/demo_quad_split/luts/cool_blue.cube')
+        print(string.format('[demo_quad_split] LUT loaded: warm=%s, cool=%s',
+              tostring(g_warmLut), tostring(g_coolLut)))
+    end
+
+    -- Bloom/SSR/MB 启用 + 关 auto* (每帧手动 .Process(rgn))
+    if Bloom and Bloom.IsSupported and Bloom.IsSupported() and Bloom.Enable then
+        Bloom.Enable(HALF_W, HALF_H); HDR.SetAutoBloom(false)
+    end
+    if SSR and SSR.IsSupported and SSR.IsSupported() and SSR.Enable then
+        SSR.Enable(HALF_W, HALF_H); HDR.SetAutoSSR(false)
+    end
+    if MB and MB.IsSupported and MB.IsSupported() and MB.Enable then
+        MB.Enable(HALF_W, HALF_H); HDR.SetAutoMotionBlur(false)
+    end
+
+    -- 4 个 TAA instance: instance 0 (default) + 3 new
+    -- TAA instance 0 默认就有, 直接用. 创建 3 个 user instance.
+    g_taa_ids[0] = 0
+    HDR.SetAutoTAA(false)   -- 关 auto TAA (我们手动 TAA.Process)
+    for i = 1, 3 do
+        local id = TAA.CreateInstance()
+        if not id or id <= 0 then
+            print(string.format('[demo_quad_split] TAA.CreateInstance #%d failed', i))
+            self:Close(); return
+        end
+        g_taa_ids[i] = id
+    end
+    -- per-instance TAA setup
+    for i = 0, 3 do setup_taa_instance(i) end
+    TAA.SetActiveInstance(0)
+    print(string.format('[demo_quad_split] 4 TAA instance ready: ids=[%d, %d, %d, %d]',
+          g_taa_ids[0], g_taa_ids[1], g_taa_ids[2], g_taa_ids[3]))
+
+    -- 相机 + 光照 (project ratio 用 quad 的, 因为每 quad 是 640x360)
+    if type(Gfx.SetPerspective) == 'function' then
+        Gfx.SetPerspective(60, HALF_W / HALF_H, 0.1, 100.0)
+    end
+    if type(Gfx.SetDepthTest) == 'function' then Gfx.SetDepthTest(true) end
+    if type(Gfx.SetDirectionalLight) == 'function' then
+        Gfx.SetDirectionalLight(0.5, -1.0, -0.3, 1.0, 0.95, 0.85, 5.0)
+    end
+
+    g_initOk = true
+    print('[demo_quad_split] OnOpen: setup ok, entering render loop')
+end
+
+function Demo:Update(dt)
+    if dt > 0.1 then dt = 0.1 end
+    g_cubeAngle = g_cubeAngle + dt * math.rad(30)
+    g_barAngle  = g_barAngle  + dt * math.rad(60)
+end
+
+-- 给 quad i 渲染 + 后处理 (在 instance i 的 fbo 内)
+local function render_quad(i)
+    apply_postfx_profile(i)
+
+    HDR.SetActiveInstance(g_hdr_ids[i])
+    HDR.BeginScene()                                  -- bind instance i 的 fbo + clear
+
+    Gfx.SetViewport(0, 0, HALF_W, HALF_H)             -- 在 instance i 的 sceneTex 上
+    local cam = CAMERAS[i]
+    if type(Gfx.SetCamera) == 'function' then
+        Gfx.SetCamera(cam.eye[1], cam.eye[2], cam.eye[3], cam.at[1], cam.at[2], cam.at[3])
+    end
+    drawScene()
+
+    -- 后处理链: Bloom → SSR → MB → TAA (顺序与 EndScene 自动路径一致)
+    if Bloom and Bloom.IsEnabled and Bloom.IsEnabled() then
+        Bloom.Process(0, 0, HALF_W, HALF_H)
+    end
+    if SSR and SSR.IsEnabled and SSR.IsEnabled() then
+        SSR.Process(0, 0, HALF_W, HALF_H)
+    end
+    if MB and MB.IsEnabled and MB.IsEnabled() then
+        MB.Process(0, 0, HALF_W, HALF_H)
+    end
+
+    TAA.SetActiveInstance(g_taa_ids[i])
+    if TAA.ApplyJitter then TAA.ApplyJitter() end
+    TAA.Process(0, 0, HALF_W, HALF_H)
+
+    HDR.EndScene()                                    -- unbind instance i 的 fbo
+end
+
+function Demo:Draw()
+    if not g_initOk then return end
+
+    -- 4 quad scene 渲染 + 后处理 (各自独立 instance, history 不互扰)
+    for i = 0, 3 do render_quad(i) end
+
+    -- Tonemap pass: 4 instance 各自整张 sceneTex (640×360) → default fb 的对应 quad
+    Gfx.SetViewport(0, 0, WIN_W, WIN_H)
+    for i = 0, 3 do
+        HDR.SetActiveInstance(g_hdr_ids[i])
+        local q = QUAD_RECTS[i]
+        local p = build_tm_params(i)
+        if p then HDR.Tonemap(q.x, q.y, q.w, q.h, p) end
+    end
+
+    -- 切回 default 防止 EndFrame 重复处理
+    HDR.SetActiveInstance(0)
+    TAA.SetActiveInstance(0)
+
+    -- HUD (default fb 上)
+    if Gfx.Print then
+        Gfx.Push()
+        Gfx.SetColor(1, 1, 1, 1)
+        Gfx.Print('=== Phase F.0.10.10 Quad-Split Linkage Demo (4 HDR x 4 TAA) ===', 8, 8, 0)
+        Gfx.Print(string.format('Window=%dx%d  Each quad=%dx%d  HDR ids=[%d,%d,%d,%d]  TAA ids=[%d,%d,%d,%d]',
+              WIN_W, WIN_H, HALF_W, HALF_H,
+              g_hdr_ids[0], g_hdr_ids[1], g_hdr_ids[2], g_hdr_ids[3],
+              g_taa_ids[0], g_taa_ids[1], g_taa_ids[2], g_taa_ids[3]),
+              8, 28, 0)
+        for i = 0, 3 do
+            local q = QUAD_RECTS[i]
+            -- quad label 显示在每 quad 左上角 (default fb 像素坐标; Y 反向: top-edge=q.y+q.h-20)
+            Gfx.Print(string.format('[Q%d] %s', i, q.label), q.x + 8, q.y + q.h - 20, 0)
+        end
+        Gfx.Print('Keys: 1/2/3/4=reset quad history | L=toggle LUT | ESC=quit',
+              8, WIN_H - 24, 0)
+        Gfx.Pop()
+    end
+end
+
+function Demo:OnKey(key, scancode, action, mods)
+    if action ~= 1 then return end
+    if key == 256 then self:Close()
+    elseif key >= string.byte('1') and key <= string.byte('4') then
+        local i = key - string.byte('1')   -- 1→0, 2→1, 3→2, 4→3
+        TAA.SetActiveInstance(g_taa_ids[i])
+        if TAA.IsEnabled() then TAA.Disable() end
+        setup_taa_instance(i)
+        TAA.SetActiveInstance(0)
+        print(string.format('[demo_quad_split] Reset quad %d history (TAA instance %d)',
+              i, g_taa_ids[i]))
+    elseif key == string.byte('L') then
+        g_lutOn = not g_lutOn
+        print('[demo_quad_split] LUT toggle = ' .. tostring(g_lutOn))
+    end
+end
+
+local function cleanup_demo()
+    if not g_initOk then return end
+    print('[demo_quad_split] cleanup: releasing 4 HDR + 4 TAA instances, LUTs, meshes')
+
+    -- LUTs (RemapLUTIdAcrossInstances 跨 instance 同步清)
+    if g_warmLut then HDR.DeleteLUT3D(g_warmLut); g_warmLut = nil end
+    if g_coolLut then HDR.DeleteLUT3D(g_coolLut); g_coolLut = nil end
+
+    -- TAA: Disable + Destroy user instance
+    for i = 1, 3 do
+        if g_taa_ids[i] and g_taa_ids[i] > 0 then
+            TAA.SetActiveInstance(g_taa_ids[i])
+            if TAA.IsEnabled() then TAA.Disable() end
+            TAA.DestroyInstance(g_taa_ids[i])
+        end
+    end
+    -- TAA instance 0 (default)
+    TAA.SetActiveInstance(0)
+    if TAA.IsEnabled() then TAA.Disable() end
+
+    -- Bloom/SSR/MB Disable + 复位 auto*
+    if MB and MB.IsEnabled and MB.IsEnabled() then MB.Disable() end
+    if SSR and SSR.IsEnabled and SSR.IsEnabled() then SSR.Disable() end
+    if Bloom and Bloom.IsEnabled and Bloom.IsEnabled() then Bloom.Disable() end
+    HDR.SetAutoBloom(true); HDR.SetAutoSSR(true); HDR.SetAutoMotionBlur(true); HDR.SetAutoTAA(true)
+
+    -- HDR: Disable + Destroy user instance + 复位 autoTonemap
+    for i = 3, 1, -1 do
+        if g_hdr_ids[i] and g_hdr_ids[i] > 0 then
+            HDR.SetActiveInstance(g_hdr_ids[i])
+            HDR.SetAutoTonemap(true)
+            if HDR.IsEnabled() then HDR.Disable() end
+            HDR.DestroyInstance(g_hdr_ids[i])
+        end
+    end
+    HDR.SetActiveInstance(0)
+    HDR.SetAutoTonemap(true)
+    if HDR.IsEnabled() then HDR.Disable() end
+
+    -- Mesh
+    if g_cubeMesh  then g_cubeMesh:Delete();  g_cubeMesh  = nil end
+    if g_barMesh   then g_barMesh:Delete();   g_barMesh   = nil end
+    if g_planeMesh then g_planeMesh:Delete(); g_planeMesh = nil end
+
+    g_initOk = false
+end
+
+Demo:Open(WIN_W, WIN_H, 'Phase F.0.10.10 - Quad-Split Linkage Demo (4 HDR x 4 TAA)')
+while Light.UI.Loop() do Light.UI.Resume() end
+cleanup_demo()
+print('demo_quad_split ok')
