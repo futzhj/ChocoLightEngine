@@ -145,6 +145,14 @@ else
     print('[demo_taa_split2] Phase F.0.10.8.1 API not present')
 end
 
+-- F.0.10.8.2 新 API 依赖 (HALD CLUT 图像 LUT 解析)
+local hasF10_8_2 = not api_missing(HDR, 'LoadHaldLUT')
+if hasF10_8_2 then
+    print('[demo_taa_split2] Phase F.0.10.8.2 API ready (HDR.LoadHaldLUT image LUT parser)')
+else
+    print('[demo_taa_split2] Phase F.0.10.8.2 API not present')
+end
+
 print('==== ChocoLight Phase F.0.10.7 True Physical Split-Screen Demo ====')
 print('  (TAA + Bloom + SSR + MotionBlur + Tonemap all per-region with different profiles)')
 print('[demo_taa_split2] Backend          = ' .. tostring(Gfx.GetBackendName and Gfx.GetBackendName() or '?'))
@@ -287,6 +295,20 @@ local function run_headless_api_probe()
         end
     else
         print('  SKIP: F.0.10.8.1 API not present (legacy build)')
+    end
+
+    -- F.0.10.8.2 新增: HALD CLUT 图像 LUT 解析探针
+    if hasF10_8_2 then
+        -- 不存在文件 → nil + err
+        local r1, e1 = HDR.LoadHaldLUT('definitely_not_exist.png')
+        if r1 == nil and type(e1) == 'string' and e1:find('stbi_load failed') then
+            print('  PASS: HDR.LoadHaldLUT(missing file) rejected: ' .. e1)
+        else
+            print('  FAIL: HDR.LoadHaldLUT(missing file) expected stbi_load err, got: '
+                  .. tostring(e1))
+        end
+    else
+        print('  SKIP: F.0.10.8.2 API not present (legacy build)')
     end
 end
 

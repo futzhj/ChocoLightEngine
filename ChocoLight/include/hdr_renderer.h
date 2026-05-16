@@ -317,6 +317,34 @@ uint32_t LoadCubeLUTFile(const char* path, char* outErr, size_t errCap);
 uint32_t LoadCubeLUTFromString(const char* text, size_t textLen,
                                 char* outErr, size_t errCap);
 
+// ==================== Phase F.0.10.8.2 — HALD CLUT 图像 LUT 加载 ====================
+
+/**
+ * @brief Phase F.0.10.8.2 — 从 HALD CLUT 图像 (PNG/JPG/BMP/TGA) 加载 3D LUT
+ *
+ * HALD CLUT 标准 (ImageMagick / GIMP / Photoshop "Color Lookup"):
+ *   - 图像分辨率: N³ × N³ 像素 (level N)
+ *   - LUT size = N²
+ *   - 像素 raster scan 顺序 = LUT byte 顺序 (R 最快变, 与 GL 3D texture 一致)
+ *
+ * 支持 level N ∈ [2, 8] → LUT size ∈ [4, 64] (与 F.0.10.8 CreateLUT3D 一致)
+ * 主流: N=8 → 512×512 PNG → 64³ LUT (Photoshop 默认)
+ *
+ * 内部: stbi_load (force RGBA) → 验证方阵 + N³ → drop alpha → CreateLUT3D
+ *
+ * 错误情况 (outErr 总写):
+ *   - 文件 I/O / 解码失败
+ *   - 非方阵 (w ≠ h)
+ *   - width 不是 N³ for any N ∈ [2, 8]
+ *   - LUT size 越界 [4, 64]
+ *
+ * @param path    PNG/JPG/BMP/TGA 文件路径
+ * @param outErr  [out] 错误描述
+ * @param errCap  outErr 容量 (推荐 256)
+ * @return        GL texture id (>0); 0 = 失败
+ */
+uint32_t LoadHaldLUTFile(const char* path, char* outErr, size_t errCap);
+
 /// 当前 HDR RT 宽度 / 高度 (未 Enable 时 = 0)
 int GetWidth();
 int GetHeight();

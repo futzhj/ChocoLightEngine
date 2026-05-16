@@ -2052,6 +2052,26 @@ static int l_HDR_LoadCubeLUT(lua_State* L) {
     return 1;
 }
 
+/// @lua_api Light.Graphics.HDR.LoadHaldLUT
+/// @brief Phase F.0.10.8.2 — 从 HALD CLUT 图像 (PNG/JPG/BMP/TGA) 加载 3D LUT
+/// @param path string 图像文件路径
+/// @return integer | nil tex_id (>0), string? err
+/// @note HALD level N ∈ [2, 8] → LUT size ∈ [4, 64]; 图像必须方阵 N³×N³
+/// @usage local id = HDR.LoadHaldLUT("assets/luts/sepia_hald8.png")
+///        if id then HDR.SetGradingLUT(id, 1.0) end
+static int l_HDR_LoadHaldLUT(lua_State* L) {
+    const char* path = luaL_checkstring(L, 1);
+    char errBuf[256] = {0};
+    uint32_t id = HDRRenderer::LoadHaldLUTFile(path, errBuf, sizeof(errBuf));
+    if (!id) {
+        lua_pushnil(L);
+        lua_pushstring(L, errBuf[0] ? errBuf : "LoadHaldLUT: unknown error");
+        return 2;
+    }
+    lua_pushinteger(L, (lua_Integer)id);
+    return 1;
+}
+
 /// @lua_api Light.Graphics.HDR.SetVelocityFormat
 /// @brief 切换 velocity buffer 存储格式 (RG16F 默认 / RG8 节省 4x VRAM)
 /// @param fmt string "rg16f" | "rg8" (大小写敏感)
@@ -2129,6 +2149,8 @@ static const luaL_Reg hdr_funcs[] = {
     {"GetGradingLUTStrength",       l_HDR_GetGradingLUTStrength},
     // Phase F.0.10.8.1 — .cube LUT 文件解析 (Adobe Cube LUT 1.0)
     {"LoadCubeLUT",                 l_HDR_LoadCubeLUT},
+    // Phase F.0.10.8.2 — HALD CLUT 图像 LUT 加载 (PNG/JPG/BMP/TGA)
+    {"LoadHaldLUT",                 l_HDR_LoadHaldLUT},
     {NULL, NULL}
 };
 

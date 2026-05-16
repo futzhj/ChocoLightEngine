@@ -54,6 +54,8 @@ local fn_names = {
     "SetGradingLUT", "GetGradingLUTId", "GetGradingLUTStrength",
     -- Phase F.0.10.8.1 — .cube LUT 文件解析 (Adobe Cube LUT 1.0)
     "LoadCubeLUT",
+    -- Phase F.0.10.8.2 — HALD CLUT 图像 LUT (PNG/JPG/BMP/TGA)
+    "LoadHaldLUT",
 }
 for _, k in ipairs(fn_names) do
     if type(HDR[k]) ~= "function" then
@@ -833,7 +835,112 @@ pass("LoadCubeLUT(CRLF line endings) headless ok (id=" .. tostring(r8) ..
 if type(r8) == "number" and r8 > 0 then HDR.DeleteLUT3D(r8) end
 
 -- ============================================================
+-- 16. Phase F.0.10.8.2 — HALD CLUT 图像 LUT (PNG/JPG/BMP/TGA)
+-- ============================================================
+
+-- 工具: BMP 24-bit 编码 helpers (Lua 5.1 兼容, 用 math.floor; 复用 audio.lua 模式)
+local function u32_le(v)
+    return string.char(v % 256, math.floor(v/256) % 256,
+                       math.floor(v/65536) % 256, math.floor(v/16777216) % 256)
+end
+local function u16_le(v) return string.char(v % 256, math.floor(v/256) % 256) end
+
+-- 构造一个 W×H 24-bit BMP (bottom-up, 全单色像素)
+-- BMP 24-bit 文件 layout:
+--   14 byte FileHeader + 40 byte DIBHeader(BITMAPINFOHEADER) + W*H*3 bytes BGR pixel data
+--   每 row 必须 4-byte 对齐 (row_bytes % 4 == 0); 全单色像素故 top-down/bottom-up 无差
+local function make_bmp_solid(W, H, R, G, B)
+    local row_bytes  = 3 * W
+    local pad        = (4 - (row_bytes % 4)) % 4
+    local row_padded = row_bytes + pad
+    local img_size   = row_padded * H
+    local file_size  = 14 + 40 + img_size
+
+    -- BMP File Header (14 bytes) + DIB Header (40 bytes BITMAPINFOHEADER)
+    local hdr = "BM" .. u32_le(file_size) .. u32_le(0) .. u32_le(54)
+             .. u32_le(40) .. u32_le(W) .. u32_le(H)
+             .. u16_le(1)                 -- planes
+             .. u16_le(24)                -- bpp
+             .. u32_le(0)                 -- compression BI_RGB
+             .. u32_le(img_size)          -- image size
+             .. u32_le(0) .. u32_le(0)    -- PPM x/y
+             .. u32_le(0) .. u32_le(0)    -- colors used / important
+    -- pixel data: BGR 字节流 (row 4-byte align)
+    local one_pixel = string.char(B % 256, G % 256, R % 256)
+    local one_row   = string.rep(one_pixel, W) .. string.rep("\0", pad)
+    local data      = string.rep(one_row, H)
+    return hdr .. data
+end
+
+-- 16.1 LoadHaldLUT 不存在文件
+local rh1, eh1 = HDR.LoadHaldLUT("definitely_not_exist_smoke.png")
+if rh1 ~= nil then fail("LoadHaldLUT(missing) should return nil") end
+if type(eh1) ~= "string" or not eh1:find("stbi_load failed") then
+    fail("LoadHaldLUT(missing) err must contain 'stbi_load failed', got: " .. tostring(eh1))
+end
+pass("LoadHaldLUT(missing file) returns nil + err: " .. eh1)
+
+-- 16.2 .txt 假装是 image (非合法图像)
+local p_txt = write_tmp_cube("not_image", "this is not an image\nfoo bar\n")
+-- 注: write_tmp_cube 写 .cube 扩展名, 但 stb_image 按内容判 magic, 与扩展名无关
+local rh2, eh2 = HDR.LoadHaldLUT(p_txt)
+cleanup_tmp(p_txt)
+if rh2 ~= nil then fail("LoadHaldLUT(txt file) should return nil") end
+if not eh2:find("stbi_load failed") then
+    fail("LoadHaldLUT(txt) err must contain 'stbi_load failed', got: " .. eh2)
+end
+pass("LoadHaldLUT(non-image content) rejected: " .. eh2)
+
+-- 16.3 1×1 BMP (合法解码但 width 1 不是 N³)
+local p_1x1 = tmp_base .. "_tmp_smoke_1x1.bmp"
+do
+    local ok, err = IO.SaveFile(p_1x1, make_bmp_solid(1, 1, 128, 128, 128))
+    if not ok then fail("write 1x1 BMP failed: " .. tostring(err)) end
+end
+local rh3, eh3 = HDR.LoadHaldLUT(p_1x1)
+cleanup_tmp(p_1x1)
+if rh3 ~= nil then fail("LoadHaldLUT(1x1) should return nil") end
+if not (eh3:find("is not N") or eh3:find("not square")) then
+    fail("LoadHaldLUT(1x1) err unexpected: " .. eh3)
+end
+pass("LoadHaldLUT(1x1 BMP, width=1 non-HALD) rejected: " .. eh3)
+
+-- 16.4 矩形非方阵 (4×2 BMP)
+local p_rect = tmp_base .. "_tmp_smoke_4x2.bmp"
+do
+    local ok = IO.SaveFile(p_rect, make_bmp_solid(4, 2, 0, 255, 0))
+    if not ok then fail("write 4x2 BMP failed") end
+end
+local rh4, eh4 = HDR.LoadHaldLUT(p_rect)
+cleanup_tmp(p_rect)
+if rh4 ~= nil then fail("LoadHaldLUT(4x2) should return nil") end
+if not eh4:find("not square") then
+    fail("LoadHaldLUT(4x2) err must contain 'not square', got: " .. eh4)
+end
+pass("LoadHaldLUT(4x2 BMP non-square) rejected: " .. eh4)
+
+-- 16.5 8×8 BMP HALD level=2 (合法尺寸; identity 内容简化为全 gray, parser 通过)
+local p_hald2 = tmp_base .. "_tmp_smoke_hald2.bmp"
+do
+    local ok = IO.SaveFile(p_hald2, make_bmp_solid(8, 8, 128, 128, 128))
+    if not ok then fail("write 8x8 BMP failed") end
+end
+local rh5, eh5 = HDR.LoadHaldLUT(p_hald2)
+cleanup_tmp(p_hald2)
+-- headless: backend null → "HDR backend not initialized (HALD parse ok: level=2, size=4)"
+-- 或合法 → tex_id > 0
+if rh5 ~= nil and type(rh5) ~= "number" then
+    fail("LoadHaldLUT(8x8 HALD) ret type unexpected: " .. type(rh5))
+end
+if rh5 == nil and not eh5:find("parse ok") and not eh5:find("backend") then
+    fail("LoadHaldLUT(8x8 HALD) headless err unexpected: " .. tostring(eh5))
+end
+pass("LoadHaldLUT(8x8 HALD level=2) headless ok (id=" ..
+     tostring(rh5) .. ", err=" .. tostring(eh5) .. ")")
+if type(rh5) == "number" and rh5 > 0 then HDR.DeleteLUT3D(rh5) end
+
+-- ============================================================
 -- Done
 -- ============================================================
 
-print("[Phase E.3 + E.14 + E.18.1 + E.18.2 + F.0.10.2 + F.0.10.3 + F.0.10.6 + F.0.10.8 + F.0.10.8.1] Light.Graphics.HDR smoke PASS (" .. #fn_names .. " functions)")
+print("[Phase E.3 + E.14 + E.18.1 + E.18.2 + F.0.10.2 + F.0.10.3 + F.0.10.6 + F.0.10.8 + F.0.10.8.1 + F.0.10.8.2] Light.Graphics.HDR smoke PASS (" .. #fn_names .. " functions)")

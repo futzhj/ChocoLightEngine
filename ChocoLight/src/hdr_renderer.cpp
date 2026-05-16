@@ -25,6 +25,7 @@
 #include <cstring>         // Phase F.0.10.8.1 — strncmp
 #include <cstdarg>         // Phase F.0.10.8.1 — writeErr_ vsnprintf
 #include <SDL3/SDL.h>      // Phase F.0.10.8.1 — SDL_LoadFile / SDL_free
+#include "stb_image.h"     // Phase F.0.10.8.2 — HALD CLUT 图像 LUT 解码 (实现在 third_party/stb_impl.c)
 
 namespace HDRRenderer {
 
@@ -974,6 +975,86 @@ uint32_t LoadCubeLUTFile(const char* path, char* outErr, size_t errCap) {
     }
     const uint32_t id = LoadCubeLUTFromString((const char*)data, sz, outErr, errCap);
     SDL_free(data);
+    return id;
+}
+
+// ==================== Phase F.0.10.8.2 — HALD CLUT 图像 LUT 加载 ====================
+
+uint32_t LoadHaldLUTFile(const char* path, char* outErr, size_t errCap) {
+    if (!path || !*path) {
+        writeErr_(outErr, errCap, "LoadHaldLUTFile: empty path");
+        return 0u;
+    }
+
+    // 1. stb_image decode (强制 4 通道 RGBA, 不翻转)
+    int w = 0, h = 0, ch = 0;
+    stbi_set_flip_vertically_on_load(0);
+    unsigned char* px = stbi_load(path, &w, &h, &ch, /*force RGBA*/ 4);
+    if (!px) {
+        const char* sr = stbi_failure_reason();
+        writeErr_(outErr, errCap,
+                  "stbi_load failed: %s (path: %s)",
+                  (sr && *sr) ? sr : "unknown", path);
+        return 0u;
+    }
+
+    // 2. 验证方阵
+    if (w != h) {
+        stbi_image_free(px);
+        writeErr_(outErr, errCap,
+                  "HALD image not square: %dx%d (path: %s)", w, h, path);
+        return 0u;
+    }
+
+    // 3. 求 level N ∈ [2, 8] 使 N³ == w
+    //    主流值: 8(N=2) / 27(N=3) / 64(N=4) / 125(N=5) / 216(N=6) / 343(N=7) / 512(N=8)
+    int N = 0;
+    for (int n = 2; n <= 8; ++n) {
+        if (n * n * n == w) { N = n; break; }
+    }
+    if (N == 0) {
+        stbi_image_free(px);
+        writeErr_(outErr, errCap,
+                  "HALD width %d is not N^3 for any N in [2,8] "
+                  "(expected: 8/27/64/125/216/343/512)", w);
+        return 0u;
+    }
+
+    // 4. LUT size = N²; 验证 [4, 64] (本应该总是满足, 防御性检查)
+    const int size = N * N;
+    if (size < 4 || size > 64) {
+        stbi_image_free(px);
+        writeErr_(outErr, errCap,
+                  "HALD level %d -> LUT size %d out of range [4, 64]", N, size);
+        return 0u;
+    }
+
+    // 5. RGBA → RGB byte stream (drop alpha)
+    //    HALD 像素 raster scan 顺序 = LUT byte 顺序 (R 最快变, 与 GL 3D texture 完全一致)
+    //    零 reshape, 仅去 alpha 通道
+    const size_t totalPx = (size_t)w * (size_t)h;  // = size^3 (已校验 N³==w + 方阵)
+    std::vector<uint8_t> bytes;
+    bytes.resize(totalPx * 3u);
+    for (size_t i = 0; i < totalPx; ++i) {
+        bytes[i * 3u + 0u] = px[i * 4u + 0u];  // R
+        bytes[i * 3u + 1u] = px[i * 4u + 1u];  // G
+        bytes[i * 3u + 2u] = px[i * 4u + 2u];  // B
+        // alpha 丢弃
+    }
+    stbi_image_free(px);
+
+    // 6. backend null 延后检查 (与 F.0.10.8.1 同模式: parse err 优先报告)
+    if (!g.backend) {
+        writeErr_(outErr, errCap,
+                  "HDR backend not initialized (HALD parse ok: level=%d, size=%d)", N, size);
+        return 0u;
+    }
+    const uint32_t id = g.backend->CreateLUT3D(size, bytes.data());
+    if (id == 0u) {
+        writeErr_(outErr, errCap,
+                  "backend CreateLUT3D failed (HALD level=%d, size=%d)", N, size);
+        return 0u;
+    }
     return id;
 }
 
