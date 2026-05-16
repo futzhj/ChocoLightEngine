@@ -177,4 +177,28 @@ void Process(uint32_t hdrFbo, uint32_t hdrTex);
 void Process(uint32_t hdrFbo, uint32_t hdrTex,
              int rgnX, int rgnY, int rgnW, int rgnH);
 
+// ==================== Phase F.0.10.9.x.2 — Multi-Instance ====================
+//
+// 仿 HDRRenderer multi-instance 模型: 4 instance (default + 3 user),
+// 每 instance 各自独立 depth/reflect/blur/history RT + 参数 + temporal state (prevViewProj).
+// 切 active instance 后, 现有 namespace fn 自动作用于该 instance.
+// 用途: split-screen 4 player 各自 SSR profile (强度/temporal/blur 全独立).
+//
+// 与 HDR/TAA/Bloom/MotionBlur multi-instance API 命名/语义完全一致.
+
+/// 创建新 SSR instance, 返 id [1, 3] / 0 (槽满)
+int CreateInstance();
+
+/// 销毁 user instance (id 1..3); 不能销毁 id=0
+bool DestroyInstance(int id);
+
+/// 切换 active instance, 后续 namespace fn 作用于该 instance
+bool SetActiveInstance(int id);
+
+/// 当前 active instance id (默认 0)
+int GetActiveInstance();
+
+/// 已分配 instance 总数 (default 0 占 1, 范围 [1, 4])
+int GetInstanceCount();
+
 } // namespace SSRRenderer

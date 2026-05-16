@@ -49,6 +49,9 @@ local fn_names = {
     "SetMode", "GetMode",                       -- Phase E.16
     "SetHalfRes", "GetHalfRes",                 -- Phase E.17
     "Process",                                  -- Phase F.0.10.3 (region overload)
+    -- Phase F.0.10.9.x.2 — Multi-Instance MotionBlur (5 fn)
+    "CreateInstance", "DestroyInstance", "SetActiveInstance",
+    "GetActiveInstance", "GetInstanceCount",
 }
 for _, k in ipairs(fn_names) do
     if type(MB[k]) ~= "function" then
@@ -377,8 +380,58 @@ end
 pass("HDR.SetAutoMotionBlur type error returns nil + err")
 
 -- ============================================================
+-- Phase F.0.10.9.x.2 — Multi-Instance MotionBlur (5 fn round-trip)
+-- ============================================================
+
+MB.SetActiveInstance(0)   -- 防御性复位
+
+-- MI.1 初始
+if MB.GetInstanceCount() ~= 1 then fail("MI.1 初始 count expect 1") end
+if MB.GetActiveInstance() ~= 0 then fail("MI.1 初始 active expect 0") end
+pass("MI.1 初始 instance count=1, active=0")
+
+-- MI.2 Create x3 + 槽满
+local mid1, mid2, mid3 = MB.CreateInstance(), MB.CreateInstance(), MB.CreateInstance()
+if mid1 ~= 1 or mid2 ~= 2 or mid3 ~= 3 then
+    fail("MI.2 Create x3 expect 1/2/3, got " .. tostring(mid1) .. "/" .. tostring(mid2) .. "/" .. tostring(mid3))
+end
+if MB.GetInstanceCount() ~= 4 then fail("MI.2 count expect 4") end
+if MB.CreateInstance() ~= 0 then fail("MI.2 第 4 次 Create expect 0") end
+pass("MI.2 Create x3 + 第 4 次 returns 0 (槽满)")
+
+-- MI.3 SetActiveInstance round-trip
+if not MB.SetActiveInstance(mid2) then fail("MI.3 SetActive(2) failed") end
+if MB.GetActiveInstance() ~= 2 then fail("MI.3 GetActive expect 2") end
+MB.SetActiveInstance(0)
+pass("MI.3 SetActiveInstance round-trip (0 <-> 2)")
+
+-- MI.4 Per-instance 参数隔离 (strength)
+MB.SetActiveInstance(0); MB.SetStrength(0.5)
+MB.SetActiveInstance(mid1); MB.SetStrength(2.5)
+MB.SetActiveInstance(0)
+if math.abs(MB.GetStrength() - 0.5) > 1e-4 then
+    fail("MI.4 instance 0 strength expect 0.5, got " .. MB.GetStrength())
+end
+MB.SetActiveInstance(mid1)
+if math.abs(MB.GetStrength() - 2.5) > 1e-4 then
+    fail("MI.4 instance 1 strength expect 2.5, got " .. MB.GetStrength())
+end
+MB.SetActiveInstance(0)
+pass("MI.4 Per-instance 参数隔离 (strength 0=0.5, 1=2.5)")
+
+-- MI.5 DestroyInstance(0) 拒绝 + SetActiveInstance(无效) 拒绝
+if MB.DestroyInstance(0) ~= false then fail("MI.5 Destroy(0) should reject") end
+if MB.SetActiveInstance(99) ~= false then fail("MI.5 SetActive(99) should reject") end
+pass("MI.5 DestroyInstance(0) + SetActiveInstance(无效) 双拒绝")
+
+-- MI.6 清理
+MB.DestroyInstance(mid1); MB.DestroyInstance(mid2); MB.DestroyInstance(mid3)
+if MB.GetInstanceCount() ~= 1 then fail("MI.6 cleanup count expect 1") end
+pass("MI.6 Destroy 全部 user instance, count=1")
+
+-- ============================================================
 -- Final summary
 -- ============================================================
 
 print("")
-print("=== Light.Graphics.MotionBlur smoke OK (Phase E.15+E.16+E.17+F.0.10.3) ===")
+print("=== Light.Graphics.MotionBlur smoke OK (Phase E.15+E.16+E.17+F.0.10.3+F.0.10.9.x.2) ===")

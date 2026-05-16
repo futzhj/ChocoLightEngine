@@ -37,6 +37,9 @@ local fn_names = {
     "SetRadius", "GetRadius",
     "SetLevels", "GetLevels",
     "Process",                              -- Phase F.0.10.3 (region overload)
+    -- Phase F.0.10.9.x.2 — Multi-Instance Bloom (5 fn, 与 HDR/TAA 同模板)
+    "CreateInstance", "DestroyInstance", "SetActiveInstance",
+    "GetActiveInstance", "GetInstanceCount",
 }
 for _, k in ipairs(fn_names) do
     if type(Bloom[k]) ~= "function" then
@@ -321,4 +324,78 @@ if ok6 then
 end
 pass("Bloom.Process type error throws luaL_error")
 
-print("[OK] Phase E.4 + F.0.10.3 smoke (Light.Graphics.Bloom): all checks passed")
+-- ============================================================
+-- Phase F.0.10.9.x.2 — Multi-Instance Bloom (5 fn round-trip)
+-- 与 HDR/TAA multi-instance 同模板: default + 3 user, MAX=4
+-- ============================================================
+
+-- 防御性: 强制复位 active=0 (前面章节可能切走)
+Bloom.SetActiveInstance(0)
+
+-- I.1 初始状态
+local mi_cnt0 = Bloom.GetInstanceCount()
+local mi_act0 = Bloom.GetActiveInstance()
+if mi_cnt0 ~= 1 then fail("MI.1 初始 count expect 1, got " .. tostring(mi_cnt0)) end
+if mi_act0 ~= 0 then fail("MI.1 初始 active expect 0, got " .. tostring(mi_act0)) end
+pass("MI.1 初始 instance count=1, active=0")
+
+-- I.2 CreateInstance × 3 → id 应为 1, 2, 3
+local id1 = Bloom.CreateInstance()
+local id2 = Bloom.CreateInstance()
+local id3 = Bloom.CreateInstance()
+if id1 ~= 1 or id2 ~= 2 or id3 ~= 3 then
+    fail("MI.2 Create x3 expect 1/2/3, got " .. tostring(id1) .. "/" .. tostring(id2) .. "/" .. tostring(id3))
+end
+if Bloom.GetInstanceCount() ~= 4 then
+    fail("MI.2 after Create x3 count expect 4, got " .. tostring(Bloom.GetInstanceCount()))
+end
+pass("MI.2 Create x3 -> id=1/2/3, count=4")
+
+-- I.3 第 4 次 Create 应返 0 (槽满, MAX_INSTANCES=4)
+local id_full = Bloom.CreateInstance()
+if id_full ~= 0 then fail("MI.3 Create on full slots expect 0, got " .. tostring(id_full)) end
+pass("MI.3 第 4 次 CreateInstance returns 0 (槽满)")
+
+-- I.4 SetActiveInstance round-trip
+if not Bloom.SetActiveInstance(id2) then fail("MI.4 SetActive(2) failed") end
+if Bloom.GetActiveInstance() ~= 2 then fail("MI.4 GetActive after set expect 2") end
+Bloom.SetActiveInstance(0)
+if Bloom.GetActiveInstance() ~= 0 then fail("MI.4 切回 0 失败") end
+pass("MI.4 SetActiveInstance round-trip (0 <-> 2)")
+
+-- I.5 Per-instance 参数隔离 (instance 0 vs 1 各自 SetIntensity 不互扰)
+Bloom.SetActiveInstance(0); Bloom.SetIntensity(0.3)
+Bloom.SetActiveInstance(id1); Bloom.SetIntensity(1.5)
+Bloom.SetActiveInstance(0)
+if math.abs(Bloom.GetIntensity() - 0.3) > 1e-4 then
+    fail("MI.5 instance 0 intensity 被污染, expect 0.3, got " .. Bloom.GetIntensity())
+end
+Bloom.SetActiveInstance(id1)
+if math.abs(Bloom.GetIntensity() - 1.5) > 1e-4 then
+    fail("MI.5 instance 1 intensity 期望 1.5, got " .. Bloom.GetIntensity())
+end
+Bloom.SetActiveInstance(0)
+pass("MI.5 Per-instance 参数隔离 (instance 0=0.3, 1=1.5)")
+
+-- I.6 DestroyInstance(0) 拒绝 (default 不可销毁)
+if Bloom.DestroyInstance(0) ~= false then fail("MI.6 Destroy(0) should reject") end
+pass("MI.6 DestroyInstance(0) 拒绝 (default 不可销毁)")
+
+-- I.7 SetActiveInstance(无效 id) 拒绝
+if Bloom.SetActiveInstance(99) ~= false then fail("MI.7 SetActive(99) should reject") end
+if Bloom.SetActiveInstance(-1) ~= false then fail("MI.7 SetActive(-1) should reject") end
+pass("MI.7 SetActiveInstance(无效 id) 拒绝")
+
+-- I.8 清理: Destroy 全部 user instance + 验证 count
+Bloom.DestroyInstance(id1)
+Bloom.DestroyInstance(id2)
+Bloom.DestroyInstance(id3)
+if Bloom.GetInstanceCount() ~= 1 then
+    fail("MI.8 cleanup count expect 1, got " .. tostring(Bloom.GetInstanceCount()))
+end
+if Bloom.GetActiveInstance() ~= 0 then
+    fail("MI.8 cleanup active expect 0, got " .. tostring(Bloom.GetActiveInstance()))
+end
+pass("MI.8 Destroy 全部 user instance, count=1, active=0")
+
+print("[OK] Phase E.4 + F.0.10.3 + F.0.10.9.x.2 smoke (Light.Graphics.Bloom): all checks passed")

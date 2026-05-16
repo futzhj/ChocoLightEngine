@@ -144,7 +144,16 @@ struct State {
     uint64_t  frameCounter       = 0;           // jitter 序列索引 (% 8)
 };
 
-static State g;
+// ==================== Phase F.0.10.9.x.2 — Multi-instance support ====================
+// 与 HDR/TAA/Bloom/MotionBlur 同模板: g_states[MAX_INSTANCES] + g_active + macro `g`
+// SSR 状态最复杂 (~30 字段含 8 RT id + 16 float prevViewProj + 4 ping-pong),
+// 但 multi-instance 改造模式同 HDR (DestroyResources 替代 ReleaseRT/ReleasePyramid)
+static constexpr int MAX_INSTANCES = 4;
+static State g_states[MAX_INSTANCES];
+static int   g_active = 0;
+static int   g_count  = 1;
+static bool  g_slot_in_use[MAX_INSTANCES] = { true, false, false, false };
+#define g g_states[g_active]
 
 // ==================== 内部资源管理 ====================
 
@@ -219,6 +228,8 @@ static bool AllocateResources(int w, int h) {
 // ==================== 生命周期 ====================
 
 void Init(RenderBackend* backend) {
+    // Phase F.0.10.9.x.2: 仅初始化 g_states[0] (default singleton)
+    g_active = 0;
     g.backend   = backend;
     g.supported = (backend && backend->SupportsSSR());
     if (g.supported) {
@@ -230,10 +241,23 @@ void Init(RenderBackend* backend) {
 }
 
 void Shutdown() {
+    // Phase F.0.10.9.x.2: 反向遍历, 销毁所有 user instance, 最后清 default
+    for (int i = MAX_INSTANCES - 1; i >= 1; --i) {
+        if (g_slot_in_use[i]) {
+            const int saved = g_active;
+            g_active = i;
+            DestroyResources();
+            g_states[i] = State{};
+            g_slot_in_use[i] = false;
+            g_active = saved;
+        }
+    }
+    g_active = 0;
     DestroyResources();
     g.enabled   = false;
     g.backend   = nullptr;
     g.supported = false;
+    g_count = 1;
 }
 
 bool Enable(int w, int h) {
@@ -497,5 +521,69 @@ void Process(uint32_t hdrFbo, uint32_t hdrTex,
     // Phase E.12 — 帧计数器推进 (仅 Halton 索引用, 不重置)
     ++g.frameCounter;
 }
+
+// ==================== Phase F.0.10.9.x.2 — Multi-Instance API ====================
+// 与 HDR/TAA/Bloom/MotionBlur 同模板 (SSR 无 inited 字段, CreateInstance 仅继承 backend/supported)
+
+int CreateInstance() {
+    for (int i = 1; i < MAX_INSTANCES; ++i) {
+        if (!g_slot_in_use[i]) {
+            g_states[i] = State{};
+            g_states[i].backend   = g_states[0].backend;
+            g_states[i].supported = g_states[0].supported;
+            g_slot_in_use[i] = true;
+            ++g_count;
+            CC::Log(CC::LOG_INFO,
+                    "SSRRenderer::CreateInstance: 创建 instance id=%d (count=%d, supported=%d)",
+                    i, g_count, g_states[0].supported ? 1 : 0);
+            return i;
+        }
+    }
+    CC::Log(CC::LOG_WARN,
+            "SSRRenderer::CreateInstance: 槽位已满 (MAX_INSTANCES=%d)", MAX_INSTANCES);
+    return 0;
+}
+
+bool DestroyInstance(int id) {
+    if (id <= 0 || id >= MAX_INSTANCES) {
+        CC::Log(CC::LOG_WARN,
+                "SSRRenderer::DestroyInstance: 非法 id=%d (合法范围 [1, %d])",
+                id, MAX_INSTANCES - 1);
+        return false;
+    }
+    if (!g_slot_in_use[id]) {
+        CC::Log(CC::LOG_WARN, "SSRRenderer::DestroyInstance: id=%d 未分配", id);
+        return false;
+    }
+    const int saved = g_active;
+    g_active = id;
+    DestroyResources();
+    g_states[id] = State{};
+    g_slot_in_use[id] = false;
+    --g_count;
+    g_active = (saved == id) ? 0 : saved;
+    CC::Log(CC::LOG_INFO,
+            "SSRRenderer::DestroyInstance: 销毁 instance id=%d (count=%d, active=%d)",
+            id, g_count, g_active);
+    return true;
+}
+
+bool SetActiveInstance(int id) {
+    if (id < 0 || id >= MAX_INSTANCES) {
+        CC::Log(CC::LOG_WARN,
+                "SSRRenderer::SetActiveInstance: 非法 id=%d (合法范围 [0, %d])",
+                id, MAX_INSTANCES - 1);
+        return false;
+    }
+    if (!g_slot_in_use[id]) {
+        CC::Log(CC::LOG_WARN, "SSRRenderer::SetActiveInstance: id=%d 未分配", id);
+        return false;
+    }
+    g_active = id;
+    return true;
+}
+
+int GetActiveInstance() { return g_active; }
+int GetInstanceCount()  { return g_count; }
 
 } // namespace SSRRenderer

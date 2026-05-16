@@ -2577,6 +2577,48 @@ static int l_Bloom_Process(lua_State* L) {
     return 1;
 }
 
+// ==================== Phase F.0.10.9.x.2 — Bloom Multi-Instance API ====================
+
+/// @lua_api Light.Graphics.Bloom.CreateInstance
+/// @brief 创建新 Bloom instance (split-screen 4 player 各自不同 profile)
+/// @return integer instance id ∈ [1, 3]; 失败返 0 (槽满)
+static int l_Bloom_CreateInstance(lua_State* L) {
+    lua_pushinteger(L, BloomRenderer::CreateInstance());
+    return 1;
+}
+
+/// @lua_api Light.Graphics.Bloom.DestroyInstance
+/// @param id integer 要销毁的 instance id (1..3)
+/// @return boolean true = 成功; false = 非法 id 或 未分配
+static int l_Bloom_DestroyInstance(lua_State* L) {
+    int id = (int)luaL_checkinteger(L, 1);
+    lua_pushboolean(L, BloomRenderer::DestroyInstance(id) ? 1 : 0);
+    return 1;
+}
+
+/// @lua_api Light.Graphics.Bloom.SetActiveInstance
+/// @param id integer instance id (0 = default, 1..3 = 用户创建)
+/// @return boolean true = 切换成功; false = 非法 id 或 未分配
+static int l_Bloom_SetActiveInstance(lua_State* L) {
+    int id = (int)luaL_checkinteger(L, 1);
+    lua_pushboolean(L, BloomRenderer::SetActiveInstance(id) ? 1 : 0);
+    return 1;
+}
+
+/// @lua_api Light.Graphics.Bloom.GetActiveInstance
+/// @return integer 当前 active instance id
+static int l_Bloom_GetActiveInstance(lua_State* L) {
+    lua_pushinteger(L, BloomRenderer::GetActiveInstance());
+    return 1;
+}
+
+/// @lua_api Light.Graphics.Bloom.GetInstanceCount
+/// @return integer 已分配 instance 数 (>=1, default 永远占用)
+static int l_Bloom_GetInstanceCount(lua_State* L) {
+    lua_pushinteger(L, BloomRenderer::GetInstanceCount());
+    return 1;
+}
+
 static const luaL_Reg bloom_funcs[] = {
     {"Enable",          l_Bloom_Enable},
     {"Disable",         l_Bloom_Disable},
@@ -2595,6 +2637,12 @@ static const luaL_Reg bloom_funcs[] = {
     {"GetLevels",       l_Bloom_GetLevels},
     // Phase F.0.10.3 — 手动 region Bloom (配合 HDR.SetAutoBloom(false) 做真物理 split-screen)
     {"Process",         l_Bloom_Process},
+    // Phase F.0.10.9.x.2 — Multi-Instance Bloom (4 instance, default + 3 user)
+    {"CreateInstance",     l_Bloom_CreateInstance},
+    {"DestroyInstance",    l_Bloom_DestroyInstance},
+    {"SetActiveInstance",  l_Bloom_SetActiveInstance},
+    {"GetActiveInstance",  l_Bloom_GetActiveInstance},
+    {"GetInstanceCount",   l_Bloom_GetInstanceCount},
     {NULL, NULL}
 };
 
@@ -3559,6 +3607,42 @@ static int l_SSR_Process(lua_State* L) {
     return 1;
 }
 
+// ==================== Phase F.0.10.9.x.2 — SSR Multi-Instance API ====================
+
+/// @lua_api Light.Graphics.SSR.CreateInstance
+/// @brief 创建新 SSR instance, 各自独立 depth/reflect/blur/history RT + temporal state
+/// @return integer instance id ∈ [1, 3]; 失败返 0 (槽满)
+static int l_SSR_CreateInstance(lua_State* L) {
+    lua_pushinteger(L, SSRRenderer::CreateInstance());
+    return 1;
+}
+
+/// @lua_api Light.Graphics.SSR.DestroyInstance
+static int l_SSR_DestroyInstance(lua_State* L) {
+    int id = (int)luaL_checkinteger(L, 1);
+    lua_pushboolean(L, SSRRenderer::DestroyInstance(id) ? 1 : 0);
+    return 1;
+}
+
+/// @lua_api Light.Graphics.SSR.SetActiveInstance
+static int l_SSR_SetActiveInstance(lua_State* L) {
+    int id = (int)luaL_checkinteger(L, 1);
+    lua_pushboolean(L, SSRRenderer::SetActiveInstance(id) ? 1 : 0);
+    return 1;
+}
+
+/// @lua_api Light.Graphics.SSR.GetActiveInstance
+static int l_SSR_GetActiveInstance(lua_State* L) {
+    lua_pushinteger(L, SSRRenderer::GetActiveInstance());
+    return 1;
+}
+
+/// @lua_api Light.Graphics.SSR.GetInstanceCount
+static int l_SSR_GetInstanceCount(lua_State* L) {
+    lua_pushinteger(L, SSRRenderer::GetInstanceCount());
+    return 1;
+}
+
 static const luaL_Reg ssr_funcs[] = {
     // lifecycle (5)
     {"Enable",              l_SSR_Enable},
@@ -3603,6 +3687,12 @@ static const luaL_Reg ssr_funcs[] = {
     {"GetReflectionTexId",  l_SSR_GetReflectionTexId},
     // Phase F.0.10.3 — 手动 region SSR (配合 HDR.SetAutoSSR(false) 做真物理 split-screen)
     {"Process",             l_SSR_Process},
+    // Phase F.0.10.9.x.2 — Multi-Instance SSR (4 instance, default + 3 user)
+    {"CreateInstance",      l_SSR_CreateInstance},
+    {"DestroyInstance",     l_SSR_DestroyInstance},
+    {"SetActiveInstance",   l_SSR_SetActiveInstance},
+    {"GetActiveInstance",   l_SSR_GetActiveInstance},
+    {"GetInstanceCount",    l_SSR_GetInstanceCount},
     {NULL, NULL}
 };
 
@@ -3763,6 +3853,40 @@ static int l_MB_Process(lua_State* L) {
     return 1;
 }
 
+// ==================== Phase F.0.10.9.x.2 — MotionBlur Multi-Instance API ====================
+
+/// @lua_api Light.Graphics.MotionBlur.CreateInstance
+static int l_MB_CreateInstance(lua_State* L) {
+    lua_pushinteger(L, MotionBlurRenderer::CreateInstance());
+    return 1;
+}
+
+/// @lua_api Light.Graphics.MotionBlur.DestroyInstance
+static int l_MB_DestroyInstance(lua_State* L) {
+    int id = (int)luaL_checkinteger(L, 1);
+    lua_pushboolean(L, MotionBlurRenderer::DestroyInstance(id) ? 1 : 0);
+    return 1;
+}
+
+/// @lua_api Light.Graphics.MotionBlur.SetActiveInstance
+static int l_MB_SetActiveInstance(lua_State* L) {
+    int id = (int)luaL_checkinteger(L, 1);
+    lua_pushboolean(L, MotionBlurRenderer::SetActiveInstance(id) ? 1 : 0);
+    return 1;
+}
+
+/// @lua_api Light.Graphics.MotionBlur.GetActiveInstance
+static int l_MB_GetActiveInstance(lua_State* L) {
+    lua_pushinteger(L, MotionBlurRenderer::GetActiveInstance());
+    return 1;
+}
+
+/// @lua_api Light.Graphics.MotionBlur.GetInstanceCount
+static int l_MB_GetInstanceCount(lua_State* L) {
+    lua_pushinteger(L, MotionBlurRenderer::GetInstanceCount());
+    return 1;
+}
+
 static const luaL_Reg mb_funcs[] = {
     // lifecycle (5)
     {"Enable",         l_MB_Enable},
@@ -3786,6 +3910,12 @@ static const luaL_Reg mb_funcs[] = {
     {"GetHalfRes",     l_MB_GetHalfRes},
     // Phase F.0.10.3 — 手动 region MotionBlur (配合 HDR.SetAutoMotionBlur(false) 做真物理 split-screen)
     {"Process",        l_MB_Process},
+    // Phase F.0.10.9.x.2 — Multi-Instance MotionBlur (4 instance, default + 3 user)
+    {"CreateInstance",     l_MB_CreateInstance},
+    {"DestroyInstance",    l_MB_DestroyInstance},
+    {"SetActiveInstance",  l_MB_SetActiveInstance},
+    {"GetActiveInstance",  l_MB_GetActiveInstance},
+    {"GetInstanceCount",   l_MB_GetInstanceCount},
     {NULL, NULL}
 };
 

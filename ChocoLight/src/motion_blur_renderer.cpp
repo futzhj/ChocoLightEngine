@@ -36,7 +36,14 @@ struct State {
     bool           halfRes     = false;     // Phase E.17: half-res motion blur 开关
 };
 
-static State g;
+// ==================== Phase F.0.10.9.x.2 — Multi-instance support ====================
+// 与 HDR/TAA/Bloom 同模板: g_states[MAX_INSTANCES] + g_active + macro `g`
+static constexpr int MAX_INSTANCES = 4;
+static State g_states[MAX_INSTANCES];
+static int   g_active = 0;
+static int   g_count  = 1;
+static bool  g_slot_in_use[MAX_INSTANCES] = { true, false, false, false };
+#define g g_states[g_active]
 
 // 内部辅助: 释放 RT 资源 (不改 strength/sampleCount)
 void ReleaseRT() {
@@ -98,6 +105,8 @@ inline int ClampI(int v, int lo, int hi) {
 // ==================== 生命周期 ====================
 
 void Init(RenderBackend* backend) {
+    // Phase F.0.10.9.x.2: 仅初始化 g_states[0] (default singleton)
+    g_active = 0;
     g.backend   = backend;
     g.inited    = (backend != nullptr);
     g.supported = g.inited && backend->SupportsMotionBlur();
@@ -110,11 +119,24 @@ void Init(RenderBackend* backend) {
 }
 
 void Shutdown() {
+    // Phase F.0.10.9.x.2: 反向遍历, 销毁所有 user instance, 最后清 default
+    for (int i = MAX_INSTANCES - 1; i >= 1; --i) {
+        if (g_slot_in_use[i]) {
+            const int saved = g_active;
+            g_active = i;
+            ReleaseRT();
+            g_states[i] = State{};
+            g_slot_in_use[i] = false;
+            g_active = saved;
+        }
+    }
+    g_active = 0;
     ReleaseRT();
     g.backend    = nullptr;
     g.inited     = false;
     g.supported  = false;
     g.enabled    = false;
+    g_count = 1;
     // 参数保留 (与 Bloom/HDR 同风格, 下次 Init+Enable 继承)
 }
 
@@ -263,5 +285,70 @@ void Process(uint32_t hdrFbo, uint32_t hdrTex,
                                rtW, rtH,                           // ★ Phase E.17
                                rgnX, rgnY, rgnW, rgnH);            // ★ Phase F.0.10.3
 }
+
+// ==================== Phase F.0.10.9.x.2 — Multi-Instance API ====================
+// 与 HDR/TAA/Bloom 同模板, 设计说明详见 motion_blur_renderer.h
+
+int CreateInstance() {
+    for (int i = 1; i < MAX_INSTANCES; ++i) {
+        if (!g_slot_in_use[i]) {
+            g_states[i] = State{};
+            g_states[i].backend   = g_states[0].backend;
+            g_states[i].supported = g_states[0].supported;
+            g_states[i].inited    = g_states[0].inited;
+            g_slot_in_use[i] = true;
+            ++g_count;
+            CC::Log(CC::LOG_INFO,
+                    "MotionBlurRenderer::CreateInstance: 创建 instance id=%d (count=%d, inited=%d)",
+                    i, g_count, g_states[0].inited ? 1 : 0);
+            return i;
+        }
+    }
+    CC::Log(CC::LOG_WARN,
+            "MotionBlurRenderer::CreateInstance: 槽位已满 (MAX_INSTANCES=%d)", MAX_INSTANCES);
+    return 0;
+}
+
+bool DestroyInstance(int id) {
+    if (id <= 0 || id >= MAX_INSTANCES) {
+        CC::Log(CC::LOG_WARN,
+                "MotionBlurRenderer::DestroyInstance: 非法 id=%d (合法范围 [1, %d])",
+                id, MAX_INSTANCES - 1);
+        return false;
+    }
+    if (!g_slot_in_use[id]) {
+        CC::Log(CC::LOG_WARN, "MotionBlurRenderer::DestroyInstance: id=%d 未分配", id);
+        return false;
+    }
+    const int saved = g_active;
+    g_active = id;
+    ReleaseRT();
+    g_states[id] = State{};
+    g_slot_in_use[id] = false;
+    --g_count;
+    g_active = (saved == id) ? 0 : saved;
+    CC::Log(CC::LOG_INFO,
+            "MotionBlurRenderer::DestroyInstance: 销毁 instance id=%d (count=%d, active=%d)",
+            id, g_count, g_active);
+    return true;
+}
+
+bool SetActiveInstance(int id) {
+    if (id < 0 || id >= MAX_INSTANCES) {
+        CC::Log(CC::LOG_WARN,
+                "MotionBlurRenderer::SetActiveInstance: 非法 id=%d (合法范围 [0, %d])",
+                id, MAX_INSTANCES - 1);
+        return false;
+    }
+    if (!g_slot_in_use[id]) {
+        CC::Log(CC::LOG_WARN, "MotionBlurRenderer::SetActiveInstance: id=%d 未分配", id);
+        return false;
+    }
+    g_active = id;
+    return true;
+}
+
+int GetActiveInstance() { return g_active; }
+int GetInstanceCount()  { return g_count; }
 
 } // namespace MotionBlurRenderer

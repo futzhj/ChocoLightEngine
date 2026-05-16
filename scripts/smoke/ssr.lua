@@ -53,6 +53,9 @@ local fns = {
     "SetRejectionMode", "GetRejectionMode",         -- Phase E.12
     "GetReflectionTexId",
     "Process",                                       -- Phase F.0.10.3 (region overload)
+    -- Phase F.0.10.9.x.2 — Multi-Instance SSR (5 fn, 与 HDR/TAA/Bloom 同模板)
+    "CreateInstance", "DestroyInstance", "SetActiveInstance",
+    "GetActiveInstance", "GetInstanceCount",
 }
 for _, k in ipairs(fns) do
     if type(S[k]) ~= "function" then
@@ -631,4 +634,75 @@ if ok6 then
 end
 pass("SSR.Process type error throws luaL_error")
 
-print("[OK] Phase E.9+E.10+E.11+E.12+F.0.10.3 smoke (Light.Graphics.SSR): all checks passed")
+-- ============================================================
+-- Phase F.0.10.9.x.2 — Multi-Instance SSR (5 fn round-trip)
+-- 与 HDR/TAA/Bloom multi-instance 同模板: default + 3 user, MAX=4
+-- ============================================================
+
+S.SetActiveInstance(0)   -- 防御性复位
+
+-- MI.1 初始状态
+if S.GetInstanceCount() ~= 1 then
+    fail("MI.1 初始 count expect 1, got " .. tostring(S.GetInstanceCount()))
+end
+if S.GetActiveInstance() ~= 0 then
+    fail("MI.1 初始 active expect 0, got " .. tostring(S.GetActiveInstance()))
+end
+pass("MI.1 初始 instance count=1, active=0")
+
+-- MI.2 Create x3 + 槽满
+local sid1 = S.CreateInstance()
+local sid2 = S.CreateInstance()
+local sid3 = S.CreateInstance()
+if sid1 ~= 1 or sid2 ~= 2 or sid3 ~= 3 then
+    fail("MI.2 Create x3 expect 1/2/3, got " .. tostring(sid1) .. "/" .. tostring(sid2) .. "/" .. tostring(sid3))
+end
+if S.GetInstanceCount() ~= 4 then fail("MI.2 count expect 4") end
+if S.CreateInstance() ~= 0 then fail("MI.2 第 4 次 Create expect 0") end
+pass("MI.2 Create x3 + 第 4 次 returns 0 (槽满)")
+
+-- MI.3 SetActiveInstance round-trip
+if not S.SetActiveInstance(sid2) then fail("MI.3 SetActive(2) failed") end
+if S.GetActiveInstance() ~= 2 then fail("MI.3 GetActive after set expect 2") end
+S.SetActiveInstance(0)
+pass("MI.3 SetActiveInstance round-trip (0 <-> 2)")
+
+-- MI.4 Per-instance 参数隔离 (intensity)
+S.SetActiveInstance(0); S.SetIntensity(0.2)
+S.SetActiveInstance(sid1); S.SetIntensity(1.8)
+S.SetActiveInstance(0)
+if math.abs(S.GetIntensity() - 0.2) > 1e-4 then
+    fail("MI.4 instance 0 intensity 被污染, expect 0.2, got " .. S.GetIntensity())
+end
+S.SetActiveInstance(sid1)
+if math.abs(S.GetIntensity() - 1.8) > 1e-4 then
+    fail("MI.4 instance 1 intensity expect 1.8, got " .. S.GetIntensity())
+end
+S.SetActiveInstance(0)
+pass("MI.4 Per-instance 参数隔离 (intensity 0=0.2, 1=1.8)")
+
+-- MI.5 Per-instance temporal state 隔离 (rejectionMode)
+S.SetActiveInstance(0); S.SetRejectionMode(0)
+S.SetActiveInstance(sid1); S.SetRejectionMode(1)
+S.SetActiveInstance(0)
+if S.GetRejectionMode() ~= 0 then
+    fail("MI.5 instance 0 rejectionMode expect 0, got " .. S.GetRejectionMode())
+end
+pass("MI.5 Per-instance temporal state 隔离 (rejectionMode 0=0, 1=1)")
+
+-- MI.6 DestroyInstance(0) 拒绝
+if S.DestroyInstance(0) ~= false then fail("MI.6 Destroy(0) should reject") end
+pass("MI.6 DestroyInstance(0) 拒绝")
+
+-- MI.7 SetActiveInstance(无效) 拒绝
+if S.SetActiveInstance(99) ~= false then fail("MI.7 SetActive(99) should reject") end
+pass("MI.7 SetActiveInstance(无效 id) 拒绝")
+
+-- MI.8 清理
+S.DestroyInstance(sid1)
+S.DestroyInstance(sid2)
+S.DestroyInstance(sid3)
+if S.GetInstanceCount() ~= 1 then fail("MI.8 cleanup count expect 1") end
+pass("MI.8 Destroy 全部 user instance, count=1")
+
+print("[OK] Phase E.9+E.10+E.11+E.12+F.0.10.3+F.0.10.9.x.2 smoke (Light.Graphics.SSR): all checks passed")

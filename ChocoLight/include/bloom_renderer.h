@@ -161,4 +161,32 @@ void Process(uint32_t hdrFbo, uint32_t hdrTex,
  */
 uint32_t GetPyramidTopTex();
 
+// ==================== Phase F.0.10.9.x.2 — Multi-Instance ====================
+//
+// 仿 HDRRenderer multi-instance 模型: 4 instance (default + 3 user),
+// 每 instance 各自独立 pyramid + 参数 (threshold/intensity/radius).
+// 切 active instance 后, 现有 namespace fn (Process/SetIntensity/...) 自动作用于该 instance.
+// 用途: split-screen 4 player 各自 Bloom profile, 不再依赖每帧切参数 hack.
+//
+// 与 HDR/TAA multi-instance API 命名/语义完全一致:
+//   - instance 0 = default singleton (永远占用, 不可销毁)
+//   - CreateInstance() 返 [1, 3] / 0 (槽满)
+//   - SetActiveInstance(id) 切换, 后续 namespace fn 作用于该 instance
+//   - DestroyInstance(id) 释放该 instance 的 pyramid + 标空闲
+
+/// 创建新 Bloom instance, 返 id [1, 3] / 0 (槽满)
+int CreateInstance();
+
+/// 销毁 user instance (id 1..3), 返 true 成功; id<=0/未分配返 false
+bool DestroyInstance(int id);
+
+/// 切换 active instance, 后续 namespace fn 作用于该 instance; 返 true 成功
+bool SetActiveInstance(int id);
+
+/// 当前 active instance id (默认 0)
+int GetActiveInstance();
+
+/// 已分配 instance 总数 (default 0 占 1, 范围 [1, 4])
+int GetInstanceCount();
+
 } // namespace BloomRenderer

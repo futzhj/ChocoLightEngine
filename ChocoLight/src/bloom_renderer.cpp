@@ -42,7 +42,24 @@ struct State {
     int   requestedLevels = 5;      // 下次 Enable/Resize 应用
 };
 
-static State g;
+// ==================== Phase F.0.10.9.x.2 — Multi-instance support ====================
+//
+// 老 `static State g;` 单例 → `static State g_states[MAX_INSTANCES]; static int g_active = 0;`
+// 通过 macro `#define g g_states[g_active]` 让现有 fn 零改动继续访问 active instance
+//   - g_states[0] 是 default singleton (老 namespace API 行为完全等价 Phase E.4~F.0.10.10)
+//   - 新加 5 fn (CreateInstance / DestroyInstance / SetActiveInstance / GetActiveInstance / GetInstanceCount)
+//   - 每 instance 独立: backend ptr / supported / inited / enabled / pyramid (fbos[8] + texs[8] + actualLevels) /
+//                       width/height / threshold/intensity/radius/requestedLevels / autoEnable
+//   - MAX_INSTANCES=4: default + 3 user (与 HDR/TAA 一致)
+static constexpr int MAX_INSTANCES = 4;
+static State g_states[MAX_INSTANCES];
+static int   g_active = 0;
+static int   g_count  = 1;
+static bool  g_slot_in_use[MAX_INSTANCES] = { true, false, false, false };
+
+// 现有 fn 沿用 `g.X` 写法; macro 透明展开到 active instance
+// 仅在 bloom_renderer.cpp 内部有效
+#define g g_states[g_active]
 
 /// 内部辅助: 释放 pyramid 资源 + 重置状态字段 (不改参数)
 void ReleasePyramid() {
@@ -76,6 +93,8 @@ namespace BloomRenderer {
 // ==================== 生命周期 ====================
 
 void Init(RenderBackend* backend) {
+    // Phase F.0.10.9.x.2: 仅初始化 g_states[0] (default singleton)
+    g_active = 0;       // 显式回到 default, 后续 g.X 即作用于 [0]
     g.backend = backend;
     g.inited  = (backend != nullptr);
     g.supported = g.inited && backend->SupportsBloom();
@@ -83,11 +102,25 @@ void Init(RenderBackend* backend) {
 }
 
 void Shutdown() {
+    // Phase F.0.10.9.x.2: 反向遍历, 销毁所有 user instance, 最后清 default
+    for (int i = MAX_INSTANCES - 1; i >= 1; --i) {
+        if (g_slot_in_use[i]) {
+            const int saved = g_active;
+            g_active = i;
+            ReleasePyramid();
+            g_states[i] = State{};
+            g_slot_in_use[i] = false;
+            g_active = saved;
+        }
+    }
+    // 清 default (i=0)
+    g_active = 0;
     ReleasePyramid();
     g.backend   = nullptr;
     g.inited    = false;
     g.supported = false;
     g.enabled   = false;
+    g_count = 1;        // 仅 default 占用
     // 参数保留 (下次 Init + Enable 继承; 与 HDRRenderer 同风格)
 }
 
@@ -326,5 +359,81 @@ uint32_t GetPyramidTopTex() {
     if (!g.enabled || g.actualLevels < 1) return 0;
     return g.texs[0];
 }
+
+// ==================== Phase F.0.10.9.x.2 — Multi-Instance API ====================
+//
+// 设计说明 (与 HDR/TAA multi-instance 完全一致):
+//   - g_states[0] 是 default singleton, 永远占用; 老 namespace API 默认作用于 [0]
+//   - CreateInstance() 找空闲槽 [1, MAX_INSTANCES-1] 返 ID, 槽满返 0
+//   - 新 instance 继承 default 的 backend/supported/inited (来自 Init)
+//   - SetActiveInstance(id) 切换 active, 后续 namespace fn 作用于 [id]
+//   - DestroyInstance(id) 释放该槽 pyramid + 标空闲, 若 active=该 id 自动切回 0
+//   - 不能销毁 id=0 (default), 不能 SetActiveInstance(无效 id)
+
+int CreateInstance() {
+    // 找第一个空闲槽 (跳过 [0])
+    for (int i = 1; i < MAX_INSTANCES; ++i) {
+        if (!g_slot_in_use[i]) {
+            // 复位为干净 default state, 然后继承 default 的 backend / supported / inited
+            g_states[i] = State{};
+            g_states[i].backend   = g_states[0].backend;
+            g_states[i].supported = g_states[0].supported;
+            g_states[i].inited    = g_states[0].inited;
+            g_slot_in_use[i] = true;
+            ++g_count;
+            CC::Log(CC::LOG_INFO,
+                    "BloomRenderer::CreateInstance: 创建 instance id=%d (count=%d, inited=%d)",
+                    i, g_count, g_states[0].inited ? 1 : 0);
+            return i;
+        }
+    }
+    CC::Log(CC::LOG_WARN,
+            "BloomRenderer::CreateInstance: 槽位已满 (MAX_INSTANCES=%d)", MAX_INSTANCES);
+    return 0;
+}
+
+bool DestroyInstance(int id) {
+    if (id <= 0 || id >= MAX_INSTANCES) {
+        CC::Log(CC::LOG_WARN,
+                "BloomRenderer::DestroyInstance: 非法 id=%d (合法范围 [1, %d])",
+                id, MAX_INSTANCES - 1);
+        return false;
+    }
+    if (!g_slot_in_use[id]) {
+        CC::Log(CC::LOG_WARN, "BloomRenderer::DestroyInstance: id=%d 未分配", id);
+        return false;
+    }
+    // 释放 pyramid: 临时切到该 instance, 调 ReleasePyramid, 然后回原 active
+    const int saved = g_active;
+    g_active = id;
+    ReleasePyramid();
+    g_states[id] = State{};            // 清空所有字段 (RT handle 等)
+    g_slot_in_use[id] = false;
+    --g_count;
+    // 若被销毁的是 active, 切回 default
+    g_active = (saved == id) ? 0 : saved;
+    CC::Log(CC::LOG_INFO,
+            "BloomRenderer::DestroyInstance: 销毁 instance id=%d (count=%d, active=%d)",
+            id, g_count, g_active);
+    return true;
+}
+
+bool SetActiveInstance(int id) {
+    if (id < 0 || id >= MAX_INSTANCES) {
+        CC::Log(CC::LOG_WARN,
+                "BloomRenderer::SetActiveInstance: 非法 id=%d (合法范围 [0, %d])",
+                id, MAX_INSTANCES - 1);
+        return false;
+    }
+    if (!g_slot_in_use[id]) {
+        CC::Log(CC::LOG_WARN, "BloomRenderer::SetActiveInstance: id=%d 未分配", id);
+        return false;
+    }
+    g_active = id;
+    return true;
+}
+
+int GetActiveInstance() { return g_active; }
+int GetInstanceCount()  { return g_count; }
 
 } // namespace BloomRenderer
