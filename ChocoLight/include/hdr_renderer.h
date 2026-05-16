@@ -314,6 +314,11 @@ int  GetActiveInstance();
 /// Phase F.0.10.9 — 已分配 instance 数 (>=1, default 永远占用).
 int  GetInstanceCount();
 
+/// Phase F.0.10.9.x.3 — 复制 srcId 全部调参字段 (exposure/tonemap_mode/lut_tex/lut_strength/...) 到新 instance,
+/// scene/velocity/lutPrev RT 不复制 (新 instance 待自己 Enable). 用于 1 行 split-screen setup.
+/// 失败条件: srcId 非法 / srcId 未分配 / 槽满 → 返 0.
+int  CloneInstance(int srcId);
+
 /// Phase F.0.10.8 — 设置全局 grading LUT (作用于 autoTonemap / Tonemap(rgn) 不带 lut 参数路径).
 /// strength clamp [0, 1]; lutTex=0 即关 LUT.
 bool SetGradingLUT(uint32_t lutTex, float strength);

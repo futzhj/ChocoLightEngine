@@ -201,4 +201,12 @@ int GetActiveInstance();
 /// 已分配 instance 总数 (default 0 占 1, 范围 [1, 4])
 int GetInstanceCount();
 
+// ==================== Phase F.0.10.9.x.3 — Clone (1-line setup) ====================
+//
+// 复制 srcId 全部调参字段 (max_steps/intensity/blur_radius/temporal_alpha/...) 到新 instance,
+// 全部 RT (depth/reflect/blur×2/history×2) + temporal state (prevViewProj/hasPrevViewProj/frameCounter/historyIdx)
+// 不复制 — 新 instance 待自己调 Enable + 第一帧从 cur 路径走.
+// 失败条件: srcId 非法 / srcId 未分配 / 槽满 → 返 0.
+int CloneInstance(int srcId);
+
 } // namespace SSRRenderer

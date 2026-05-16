@@ -236,6 +236,11 @@ int GetActiveInstance();
 /// 已分配 instance 数 (含 default, 范围 [1, 4])
 int GetInstanceCount();
 
+/// Phase F.0.10.9.x.3 — 复制 srcId 全部调参字段 (alpha/clip_scale/jitter_strength/half_res_history/...) 到新 instance,
+/// history RT × 2 + temporal state 不复制 (新 instance 第一帧 fallback 走 cur 路径).
+/// 失败条件: srcId 非法 / srcId 未分配 / 槽满 → 返 0.
+int CloneInstance(int srcId);
+
 // ==================== 内部状态查询 (debug HUD 用) ====================
 
 /// 当前帧 Halton 索引 (% 8), 累加帧计数器低 3 位

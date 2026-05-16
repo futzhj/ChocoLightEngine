@@ -68,6 +68,8 @@ local fn_names = {
     -- Phase F.0.10.9 — Multi-Instance HDR (split-screen / 多窗口 / PIP)
     "CreateInstance", "DestroyInstance", "SetActiveInstance",
     "GetActiveInstance", "GetInstanceCount",
+    -- Phase F.0.10.9.x.3 — Clone + Snapshot
+    "CloneInstance", "GetState",
 }
 for _, k in ipairs(fn_names) do
     if type(HDR[k]) ~= "function" then
@@ -1752,7 +1754,59 @@ do
 end
 
 -- ============================================================
+-- 27. Phase F.0.10.9.x.3 — Clone + GetState
+-- ============================================================
+
+HDR.SetActiveInstance(0)
+
+-- 27.1 GetState 字段完整 (15 字段)
+do
+    local s = HDR.GetState()
+    if type(s) ~= "table" then fail("27.1 GetState should return table") end
+    local req = { "exposure", "tonemap_mode", "gamma",
+                  "velocity_dilation", "velocity_dilation_half_res", "velocity_dilation_auto_skip",
+                  "auto_tonemap", "auto_taa", "auto_bloom", "auto_ssr", "auto_motion_blur",
+                  "lut_id", "lut_strength", "enabled", "supported" }
+    for _, k in ipairs(req) do
+        if s[k] == nil then fail("27.1 GetState missing field: " .. k) end
+    end
+    pass("27.1 GetState 字段完整 (" .. #req .. " 字段)")
+end
+
+-- 27.2 Clone(0) 复制 default profile
+do
+    HDR.SetActiveInstance(0)
+    -- 注: SetTonemapper 接 string ("aces"/"reinhard"/"uncharted2"/"linear"), 不接 integer
+    HDR.SetExposure(2.0); HDR.SetGamma(2.4); HDR.SetTonemapper("uncharted2")
+    local cid = HDR.CloneInstance(0)
+    if cid <= 0 or cid > 3 then fail("27.2 Clone(0) expect [1,3], got " .. cid) end
+    HDR.SetActiveInstance(cid)
+    local sc = HDR.GetState()
+    if math.abs(sc.exposure - 2.0) > 1e-4 then fail("27.2 cloned exposure expect 2.0, got " .. sc.exposure) end
+    if math.abs(sc.gamma    - 2.4) > 1e-4 then fail("27.2 cloned gamma expect 2.4, got " .. sc.gamma) end
+    -- TONEMAP_UNCHARTED2 = 2
+    if sc.tonemap_mode      ~= 2   then fail("27.2 cloned tonemap_mode expect 2 (uncharted2), got " .. sc.tonemap_mode) end
+    if sc.enabled           ~= false then fail("27.2 cloned enabled expect false") end
+    pass("27.2 Clone(0) 复制调参 + enabled=false")
+
+    -- 27.3 Per-instance 隔离
+    HDR.SetActiveInstance(cid); HDR.SetExposure(0.5)
+    HDR.SetActiveInstance(0)
+    if math.abs(HDR.GetExposure() - 2.0) > 1e-4 then
+        fail("27.3 default exposure 被污染, expect 2.0, got " .. HDR.GetExposure())
+    end
+    pass("27.3 Per-instance 修改隔离")
+
+    HDR.DestroyInstance(cid)
+end
+
+-- 27.4 Clone 非法 srcId
+if HDR.CloneInstance(99) ~= 0 then fail("27.4 Clone(99) expect 0") end
+if HDR.CloneInstance(-1) ~= 0 then fail("27.4 Clone(-1) expect 0") end
+pass("27.4 Clone(无效 srcId) 返 0")
+
+-- ============================================================
 -- Done
 -- ============================================================
 
-print("[Phase E.3 + E.14 + E.18.1 + E.18.2 + F.0.10.2 + F.0.10.3 + F.0.10.6 + F.0.10.8 + F.0.10.8.1 + F.0.10.8.2 + F.0.10.8.3 + F.0.10.8.4 + F.0.10.8.5 + F.0.10.8.6 + F.0.10.9 + F.0.10.9.1 + F.0.10.9.x.1 + F.0.10.9.2] Light.Graphics.HDR smoke PASS (" .. #fn_names .. " functions)")
+print("[Phase E.3 + E.14 + E.18.1 + E.18.2 + F.0.10.2 + F.0.10.3 + F.0.10.6 + F.0.10.8 + F.0.10.8.1 + F.0.10.8.2 + F.0.10.8.3 + F.0.10.8.4 + F.0.10.8.5 + F.0.10.8.6 + F.0.10.9 + F.0.10.9.1 + F.0.10.9.x.1 + F.0.10.9.2 + F.0.10.9.x.3] Light.Graphics.HDR smoke PASS (" .. #fn_names .. " functions)")

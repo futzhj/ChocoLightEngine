@@ -83,6 +83,7 @@ local fn_names = {
     "CreateInstance", "DestroyInstance",            -- Phase F.0.10
     "SetActiveInstance", "GetActiveInstance",       -- Phase F.0.10
     "GetInstanceCount",                              -- Phase F.0.10
+    "CloneInstance", "GetState",                    -- Phase F.0.10.9.x.3 (1-line setup + snapshot)
     "Process",                                       -- Phase F.0.10.2 (manual TAA region process)
     "GetFrameCounter", "GetCurrentJitter",
 }
@@ -1385,6 +1386,57 @@ if rid1 ~= 1 then fail("Reusable: CreateInstance after cleanup must return 1, go
 TAA.DestroyInstance(rid1)
 if TAA.GetInstanceCount() ~= 1 then fail("After re-destroy, count=1") end
 pass("槽位复用: Create → Destroy → Create 返同一 id")
+
+-- ============================================================
+-- 9.17) Phase F.0.10.9.x.3 — Clone + GetState
+-- ============================================================
+print("")
+print("--- Phase F.0.10.9.x.3 (Clone + GetState) ---")
+
+TAA.SetActiveInstance(0)
+
+-- 9.17.1 GetState 字段完整 (10 字段)
+do
+    local s = TAA.GetState()
+    if type(s) ~= "table" then fail("9.17.1 GetState should return table") end
+    local req = { "blend_alpha", "neighborhood_clip", "jitter_enabled", "sharpness",
+                  "variance_gamma", "half_res_history", "sharpen_mode", "upscale_mode",
+                  "enabled", "supported" }
+    for _, k in ipairs(req) do
+        if s[k] == nil then fail("9.17.1 GetState missing field: " .. k) end
+    end
+    pass("9.17.1 GetState 字段完整 (" .. #req .. " 字段)")
+end
+
+-- 9.17.2 Clone(0) 复制 default profile
+do
+    TAA.SetActiveInstance(0)
+    TAA.SetBlendAlpha(0.95); TAA.SetSharpness(0.8); TAA.SetSharpenMode("rcas"); TAA.SetHalfResHistory(true)
+    local cid = TAA.CloneInstance(0)
+    if cid <= 0 or cid > 3 then fail("9.17.2 Clone(0) expect [1,3], got " .. cid) end
+    TAA.SetActiveInstance(cid)
+    local sc = TAA.GetState()
+    if math.abs(sc.blend_alpha - 0.95) > 1e-4 then fail("9.17.2 cloned blend_alpha expect 0.95, got " .. sc.blend_alpha) end
+    if math.abs(sc.sharpness   - 0.8 ) > 1e-4 then fail("9.17.2 cloned sharpness expect 0.8, got " .. sc.sharpness) end
+    if sc.sharpen_mode         ~= "rcas" then fail("9.17.2 cloned sharpen_mode expect 'rcas', got " .. tostring(sc.sharpen_mode)) end
+    if sc.half_res_history     ~= true then fail("9.17.2 cloned half_res_history expect true") end
+    if sc.enabled              ~= false then fail("9.17.2 cloned enabled expect false") end
+    pass("9.17.2 Clone(0) 复制调参 + enabled=false")
+
+    -- Per-instance 隔离
+    TAA.SetActiveInstance(cid); TAA.SetBlendAlpha(0.7)
+    TAA.SetActiveInstance(0)
+    if math.abs(TAA.GetBlendAlpha() - 0.95) > 1e-4 then
+        fail("9.17.3 default blend_alpha 被污染, expect 0.95, got " .. TAA.GetBlendAlpha())
+    end
+    pass("9.17.3 Per-instance 修改隔离")
+
+    TAA.DestroyInstance(cid)
+end
+
+-- 9.17.4 Clone 非法
+if TAA.CloneInstance(99) ~= 0 then fail("9.17.4 Clone(99) expect 0") end
+pass("9.17.4 Clone(无效 srcId) 返 0")
 
 -- ============================================================
 -- 10) Phase F.0.10.2 — TAA.Process (manual region API)

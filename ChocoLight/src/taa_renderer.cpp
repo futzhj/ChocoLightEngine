@@ -678,4 +678,42 @@ int GetInstanceCount() {
     return g_count;
 }
 
+// ==================== Phase F.0.10.9.x.3 — Clone (1-line setup) ====================
+
+int CloneInstance(int srcId) {
+    if (srcId < 0 || srcId >= MAX_INSTANCES) {
+        CC::Log(CC::LOG_WARN,
+                "TAARenderer::CloneInstance: 非法 srcId=%d (合法范围 [0, %d])",
+                srcId, MAX_INSTANCES - 1);
+        return 0;
+    }
+    if (!g_slot_in_use[srcId]) {
+        CC::Log(CC::LOG_WARN, "TAARenderer::CloneInstance: srcId=%d 未分配", srcId);
+        return 0;
+    }
+    for (int i = 1; i < MAX_INSTANCES; ++i) {
+        if (!g_slot_in_use[i]) {
+            // 全字段复制 (含 backend/inited/supported/blendAlpha/halfResHistory/sharpenMode/...)
+            g_states[i] = g_states[srcId];
+            // 复位 backend 创建的 RT (history × 2)
+            g_states[i].historyFbos[0] = 0; g_states[i].historyFbos[1] = 0;
+            g_states[i].historyTexs[0] = 0; g_states[i].historyTexs[1] = 0;
+            g_states[i].width   = 0; g_states[i].height   = 0;
+            g_states[i].historyW = 0; g_states[i].historyH = 0;
+            g_states[i].enabled = false;
+            // 复位 temporal state (新 instance 第一帧 fallback 走 cur 路径)
+            g_states[i].historyIdx = 0;
+            g_states[i].hasHistory = false;
+            g_slot_in_use[i] = true;
+            ++g_count;
+            CC::Log(CC::LOG_INFO,
+                    "TAARenderer::CloneInstance: srcId=%d -> id=%d (count=%d)",
+                    srcId, i, g_count);
+            return i;
+        }
+    }
+    CC::Log(CC::LOG_WARN, "TAARenderer::CloneInstance: 槽位已满");
+    return 0;
+}
+
 } // namespace TAARenderer

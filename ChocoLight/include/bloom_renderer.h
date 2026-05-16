@@ -189,4 +189,16 @@ int GetActiveInstance();
 /// 已分配 instance 总数 (default 0 占 1, 范围 [1, 4])
 int GetInstanceCount();
 
+// ==================== Phase F.0.10.9.x.3 — Clone (1-line setup) ====================
+//
+// 复制 srcId 全部调参字段 (threshold/intensity/radius/requestedLevels) 到新 instance,
+// pyramid RT 不复制 (新 instance 状态 = 未 Enable, 待自己调 Enable).
+// 用途: split-screen setup 一行代码 setup 多 player profile:
+//   local id = BloomRenderer.CloneInstance(0)   -- 复制 default
+//   BloomRenderer.SetActiveInstance(id)
+//   BloomRenderer.SetIntensity(profile_intensity)   -- 仅微调差异
+//
+// 失败条件: srcId 非法 / srcId 未分配 / 槽满 → 返 0.
+int CloneInstance(int srcId);
+
 } // namespace BloomRenderer

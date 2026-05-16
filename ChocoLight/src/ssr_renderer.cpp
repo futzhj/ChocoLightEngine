@@ -586,4 +586,49 @@ bool SetActiveInstance(int id) {
 int GetActiveInstance() { return g_active; }
 int GetInstanceCount()  { return g_count; }
 
+// ==================== Phase F.0.10.9.x.3 — Clone (1-line setup) ====================
+
+int CloneInstance(int srcId) {
+    if (srcId < 0 || srcId >= MAX_INSTANCES) {
+        CC::Log(CC::LOG_WARN,
+                "SSRRenderer::CloneInstance: 非法 srcId=%d (合法范围 [0, %d])",
+                srcId, MAX_INSTANCES - 1);
+        return 0;
+    }
+    if (!g_slot_in_use[srcId]) {
+        CC::Log(CC::LOG_WARN, "SSRRenderer::CloneInstance: srcId=%d 未分配", srcId);
+        return 0;
+    }
+    for (int i = 1; i < MAX_INSTANCES; ++i) {
+        if (!g_slot_in_use[i]) {
+            // 全字段复制 (含 backend/supported/maxSteps/intensity/blurRadius/temporalAlpha/...)
+            g_states[i] = g_states[srcId];
+            // 复位 backend 创建的 RT (depth + reflect + blur×2 + history×2)
+            g_states[i].depthFbo   = 0; g_states[i].depthTex   = 0;
+            g_states[i].reflectFbo = 0; g_states[i].reflectTex = 0;
+            for (int k = 0; k < 2; ++k) {
+                g_states[i].blurFbos[k]    = 0; g_states[i].blurTexs[k]    = 0;
+                g_states[i].historyFbos[k] = 0; g_states[i].historyTexs[k] = 0;
+            }
+            // 复位尺寸 + enabled (新 instance 待自己 Enable)
+            g_states[i].srcW = 0; g_states[i].srcH = 0;
+            g_states[i].blurW = 0; g_states[i].blurH = 0;
+            g_states[i].enabled = false;
+            // 复位 temporal state (新 instance 第一帧 fallback 走 cur 路径, 不继承 src history)
+            g_states[i].historyIdx       = 0;
+            g_states[i].hasPrevViewProj  = false;
+            for (int k = 0; k < 16; ++k) g_states[i].prevViewProj[k] = 0.0f;
+            g_states[i].frameCounter     = 0;
+            g_slot_in_use[i] = true;
+            ++g_count;
+            CC::Log(CC::LOG_INFO,
+                    "SSRRenderer::CloneInstance: srcId=%d -> id=%d (count=%d)",
+                    srcId, i, g_count);
+            return i;
+        }
+    }
+    CC::Log(CC::LOG_WARN, "SSRRenderer::CloneInstance: 槽位已满");
+    return 0;
+}
+
 } // namespace SSRRenderer

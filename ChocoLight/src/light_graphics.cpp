@@ -2301,6 +2301,35 @@ static int l_HDR_GetInstanceCount(lua_State* L) {
     return 1;
 }
 
+/// @lua_api Light.Graphics.HDR.CloneInstance — Phase F.0.10.9.x.3 (1-line setup)
+static int l_HDR_CloneInstance(lua_State* L) {
+    int srcId = (int)luaL_checkinteger(L, 1);
+    lua_pushinteger(L, HDRRenderer::CloneInstance(srcId));
+    return 1;
+}
+
+/// @lua_api Light.Graphics.HDR.GetState — Phase F.0.10.9.x.3 (snapshot)
+/// 返回当前 active instance 全部调参字段 (exposure / tonemap_mode / gamma / dilation / auto-* / lut / ...)
+static int l_HDR_GetState(lua_State* L) {
+    lua_newtable(L);
+    lua_pushnumber(L, (lua_Number)HDRRenderer::GetExposure());                lua_setfield(L, -2, "exposure");
+    lua_pushinteger(L, (lua_Integer)HDRRenderer::GetTonemapper());            lua_setfield(L, -2, "tonemap_mode");
+    lua_pushnumber(L, (lua_Number)HDRRenderer::GetGamma());                   lua_setfield(L, -2, "gamma");
+    lua_pushboolean(L, HDRRenderer::GetVelocityDilation() ? 1 : 0);           lua_setfield(L, -2, "velocity_dilation");
+    lua_pushboolean(L, HDRRenderer::GetVelocityDilationHalfRes() ? 1 : 0);    lua_setfield(L, -2, "velocity_dilation_half_res");
+    lua_pushboolean(L, HDRRenderer::GetVelocityDilationAutoSkip() ? 1 : 0);   lua_setfield(L, -2, "velocity_dilation_auto_skip");
+    lua_pushboolean(L, HDRRenderer::GetAutoTonemap() ? 1 : 0);                lua_setfield(L, -2, "auto_tonemap");
+    lua_pushboolean(L, HDRRenderer::GetAutoTAA() ? 1 : 0);                    lua_setfield(L, -2, "auto_taa");
+    lua_pushboolean(L, HDRRenderer::GetAutoBloom() ? 1 : 0);                  lua_setfield(L, -2, "auto_bloom");
+    lua_pushboolean(L, HDRRenderer::GetAutoSSR() ? 1 : 0);                    lua_setfield(L, -2, "auto_ssr");
+    lua_pushboolean(L, HDRRenderer::GetAutoMotionBlur() ? 1 : 0);             lua_setfield(L, -2, "auto_motion_blur");
+    lua_pushinteger(L, (lua_Integer)HDRRenderer::GetGradingLUTId());          lua_setfield(L, -2, "lut_id");
+    lua_pushnumber(L, (lua_Number)HDRRenderer::GetGradingLUTStrength());      lua_setfield(L, -2, "lut_strength");
+    lua_pushboolean(L, HDRRenderer::IsEnabled() ? 1 : 0);                     lua_setfield(L, -2, "enabled");
+    lua_pushboolean(L, HDRRenderer::IsSupported() ? 1 : 0);                   lua_setfield(L, -2, "supported");
+    return 1;
+}
+
 /// @lua_api Light.Graphics.HDR.SetVelocityFormat
 /// @brief 切换 velocity buffer 存储格式 (RG16F 默认 / RG8 节省 4x VRAM)
 /// @param fmt string "rg16f" | "rg8" (大小写敏感)
@@ -2401,6 +2430,9 @@ static const luaL_Reg hdr_funcs[] = {
     {"SetActiveInstance",           l_HDR_SetActiveInstance},
     {"GetActiveInstance",           l_HDR_GetActiveInstance},
     {"GetInstanceCount",            l_HDR_GetInstanceCount},
+    // Phase F.0.10.9.x.3 — Clone + Snapshot
+    {"CloneInstance",               l_HDR_CloneInstance},
+    {"GetState",                    l_HDR_GetState},
     {NULL, NULL}
 };
 
@@ -2619,6 +2651,26 @@ static int l_Bloom_GetInstanceCount(lua_State* L) {
     return 1;
 }
 
+/// @lua_api Light.Graphics.Bloom.CloneInstance — Phase F.0.10.9.x.3 (1-line setup)
+static int l_Bloom_CloneInstance(lua_State* L) {
+    int srcId = (int)luaL_checkinteger(L, 1);
+    lua_pushinteger(L, BloomRenderer::CloneInstance(srcId));
+    return 1;
+}
+
+/// @lua_api Light.Graphics.Bloom.GetState — Phase F.0.10.9.x.3 (snapshot)
+static int l_Bloom_GetState(lua_State* L) {
+    lua_newtable(L);
+    lua_pushnumber(L, (lua_Number)BloomRenderer::GetThreshold()); lua_setfield(L, -2, "threshold");
+    lua_pushnumber(L, (lua_Number)BloomRenderer::GetIntensity()); lua_setfield(L, -2, "intensity");
+    lua_pushnumber(L, (lua_Number)BloomRenderer::GetRadius());    lua_setfield(L, -2, "radius");
+    lua_pushinteger(L, (lua_Integer)BloomRenderer::GetLevels());  lua_setfield(L, -2, "levels");
+    lua_pushboolean(L, BloomRenderer::GetAutoEnable() ? 1 : 0);   lua_setfield(L, -2, "auto_enable");
+    lua_pushboolean(L, BloomRenderer::IsEnabled() ? 1 : 0);       lua_setfield(L, -2, "enabled");
+    lua_pushboolean(L, BloomRenderer::IsSupported() ? 1 : 0);     lua_setfield(L, -2, "supported");
+    return 1;
+}
+
 static const luaL_Reg bloom_funcs[] = {
     {"Enable",          l_Bloom_Enable},
     {"Disable",         l_Bloom_Disable},
@@ -2643,6 +2695,9 @@ static const luaL_Reg bloom_funcs[] = {
     {"SetActiveInstance",  l_Bloom_SetActiveInstance},
     {"GetActiveInstance",  l_Bloom_GetActiveInstance},
     {"GetInstanceCount",   l_Bloom_GetInstanceCount},
+    // Phase F.0.10.9.x.3 — Clone + Snapshot (1-line setup + state introspection)
+    {"CloneInstance",      l_Bloom_CloneInstance},
+    {"GetState",           l_Bloom_GetState},
     {NULL, NULL}
 };
 
@@ -3643,6 +3698,35 @@ static int l_SSR_GetInstanceCount(lua_State* L) {
     return 1;
 }
 
+/// @lua_api Light.Graphics.SSR.CloneInstance — Phase F.0.10.9.x.3
+static int l_SSR_CloneInstance(lua_State* L) {
+    int srcId = (int)luaL_checkinteger(L, 1);
+    lua_pushinteger(L, SSRRenderer::CloneInstance(srcId));
+    return 1;
+}
+
+/// @lua_api Light.Graphics.SSR.GetState — Phase F.0.10.9.x.3 (snapshot)
+static int l_SSR_GetState(lua_State* L) {
+    lua_newtable(L);
+    lua_pushinteger(L, (lua_Integer)SSRRenderer::GetMaxSteps());          lua_setfield(L, -2, "max_steps");
+    lua_pushnumber(L, (lua_Number)SSRRenderer::GetStepSize());            lua_setfield(L, -2, "step_size");
+    lua_pushnumber(L, (lua_Number)SSRRenderer::GetThickness());           lua_setfield(L, -2, "thickness");
+    lua_pushnumber(L, (lua_Number)SSRRenderer::GetMaxDistance());         lua_setfield(L, -2, "max_distance");
+    lua_pushnumber(L, (lua_Number)SSRRenderer::GetIntensity());           lua_setfield(L, -2, "intensity");
+    lua_pushnumber(L, (lua_Number)SSRRenderer::GetEdgeFade());            lua_setfield(L, -2, "edge_fade");
+    lua_pushboolean(L, SSRRenderer::GetBlurEnabled() ? 1 : 0);            lua_setfield(L, -2, "blur_enabled");
+    lua_pushnumber(L, (lua_Number)SSRRenderer::GetBlurRadius());          lua_setfield(L, -2, "blur_radius");
+    lua_pushboolean(L, SSRRenderer::GetBilateralEnabled() ? 1 : 0);       lua_setfield(L, -2, "bilateral_enabled");
+    lua_pushnumber(L, (lua_Number)SSRRenderer::GetBlurDepthSigma());      lua_setfield(L, -2, "blur_depth_sigma");
+    lua_pushboolean(L, SSRRenderer::GetTemporalEnabled() ? 1 : 0);        lua_setfield(L, -2, "temporal_enabled");
+    lua_pushnumber(L, (lua_Number)SSRRenderer::GetTemporalAlpha());       lua_setfield(L, -2, "temporal_alpha");
+    lua_pushinteger(L, (lua_Integer)SSRRenderer::GetRejectionMode());     lua_setfield(L, -2, "rejection_mode");
+    lua_pushboolean(L, SSRRenderer::GetAutoEnable() ? 1 : 0);             lua_setfield(L, -2, "auto_enable");
+    lua_pushboolean(L, SSRRenderer::IsEnabled() ? 1 : 0);                 lua_setfield(L, -2, "enabled");
+    lua_pushboolean(L, SSRRenderer::IsSupported() ? 1 : 0);               lua_setfield(L, -2, "supported");
+    return 1;
+}
+
 static const luaL_Reg ssr_funcs[] = {
     // lifecycle (5)
     {"Enable",              l_SSR_Enable},
@@ -3693,6 +3777,9 @@ static const luaL_Reg ssr_funcs[] = {
     {"SetActiveInstance",   l_SSR_SetActiveInstance},
     {"GetActiveInstance",   l_SSR_GetActiveInstance},
     {"GetInstanceCount",    l_SSR_GetInstanceCount},
+    // Phase F.0.10.9.x.3 — Clone + Snapshot
+    {"CloneInstance",       l_SSR_CloneInstance},
+    {"GetState",            l_SSR_GetState},
     {NULL, NULL}
 };
 
@@ -3887,6 +3974,26 @@ static int l_MB_GetInstanceCount(lua_State* L) {
     return 1;
 }
 
+/// @lua_api Light.Graphics.MotionBlur.CloneInstance — Phase F.0.10.9.x.3
+static int l_MB_CloneInstance(lua_State* L) {
+    int srcId = (int)luaL_checkinteger(L, 1);
+    lua_pushinteger(L, MotionBlurRenderer::CloneInstance(srcId));
+    return 1;
+}
+
+/// @lua_api Light.Graphics.MotionBlur.GetState — Phase F.0.10.9.x.3 (snapshot)
+static int l_MB_GetState(lua_State* L) {
+    lua_newtable(L);
+    lua_pushnumber(L, (lua_Number)MotionBlurRenderer::GetStrength());        lua_setfield(L, -2, "strength");
+    lua_pushinteger(L, (lua_Integer)MotionBlurRenderer::GetSampleCount());   lua_setfield(L, -2, "sample_count");
+    lua_pushinteger(L, (lua_Integer)MotionBlurRenderer::GetMode());          lua_setfield(L, -2, "mode");
+    lua_pushboolean(L, MotionBlurRenderer::GetHalfRes() ? 1 : 0);            lua_setfield(L, -2, "half_res");
+    lua_pushboolean(L, MotionBlurRenderer::GetAutoEnable() ? 1 : 0);         lua_setfield(L, -2, "auto_enable");
+    lua_pushboolean(L, MotionBlurRenderer::IsEnabled() ? 1 : 0);             lua_setfield(L, -2, "enabled");
+    lua_pushboolean(L, MotionBlurRenderer::IsSupported() ? 1 : 0);           lua_setfield(L, -2, "supported");
+    return 1;
+}
+
 static const luaL_Reg mb_funcs[] = {
     // lifecycle (5)
     {"Enable",         l_MB_Enable},
@@ -3916,6 +4023,9 @@ static const luaL_Reg mb_funcs[] = {
     {"SetActiveInstance",  l_MB_SetActiveInstance},
     {"GetActiveInstance",  l_MB_GetActiveInstance},
     {"GetInstanceCount",   l_MB_GetInstanceCount},
+    // Phase F.0.10.9.x.3 — Clone + Snapshot
+    {"CloneInstance",      l_MB_CloneInstance},
+    {"GetState",           l_MB_GetState},
     {NULL, NULL}
 };
 
@@ -4385,6 +4495,29 @@ static int l_TAA_GetInstanceCount(lua_State* L) {
     return 1;
 }
 
+/// @lua_api Light.Graphics.TAA.CloneInstance — Phase F.0.10.9.x.3 (1-line setup)
+static int l_TAA_CloneInstance(lua_State* L) {
+    int srcId = (int)luaL_checkinteger(L, 1);
+    lua_pushinteger(L, TAARenderer::CloneInstance(srcId));
+    return 1;
+}
+
+/// @lua_api Light.Graphics.TAA.GetState — Phase F.0.10.9.x.3 (snapshot)
+static int l_TAA_GetState(lua_State* L) {
+    lua_newtable(L);
+    lua_pushnumber(L, (lua_Number)TAARenderer::GetBlendAlpha());        lua_setfield(L, -2, "blend_alpha");
+    lua_pushboolean(L, TAARenderer::GetNeighborhoodClip() ? 1 : 0);     lua_setfield(L, -2, "neighborhood_clip");
+    lua_pushboolean(L, TAARenderer::GetJitterEnabled() ? 1 : 0);        lua_setfield(L, -2, "jitter_enabled");
+    lua_pushnumber(L, (lua_Number)TAARenderer::GetSharpness());         lua_setfield(L, -2, "sharpness");
+    lua_pushnumber(L, (lua_Number)TAARenderer::GetVarianceGamma());     lua_setfield(L, -2, "variance_gamma");
+    lua_pushboolean(L, TAARenderer::GetHalfResHistory() ? 1 : 0);       lua_setfield(L, -2, "half_res_history");
+    lua_pushstring(L, TAARenderer::GetSharpenMode());                   lua_setfield(L, -2, "sharpen_mode");
+    lua_pushstring(L, TAARenderer::GetUpscaleMode());                   lua_setfield(L, -2, "upscale_mode");
+    lua_pushboolean(L, TAARenderer::IsEnabled() ? 1 : 0);               lua_setfield(L, -2, "enabled");
+    lua_pushboolean(L, TAARenderer::IsSupported() ? 1 : 0);             lua_setfield(L, -2, "supported");
+    return 1;
+}
+
 /// @lua_api Light.Graphics.TAA.GetCurrentJitter
 /// @return number, number 本帧 sub-pixel jitter offset (±0.5 pixel, 仅 enabled+jitter 时非零)
 static int l_TAA_GetCurrentJitter(lua_State* L) {
@@ -4499,6 +4632,9 @@ static const luaL_Reg taa_funcs[] = {
     {"SetActiveInstance",     l_TAA_SetActiveInstance},
     {"GetActiveInstance",     l_TAA_GetActiveInstance},
     {"GetInstanceCount",      l_TAA_GetInstanceCount},
+    // Phase F.0.10.9.x.3 — Clone + Snapshot
+    {"CloneInstance",         l_TAA_CloneInstance},
+    {"GetState",              l_TAA_GetState},
     // Phase F.0.10.2 — 手动 TAA Process (region 可选, 配合 HDR.SetAutoTAA(false) 做真物理 split-screen)
     {"Process",               l_TAA_Process},
     // status (2): debug HUD 用

@@ -40,6 +40,8 @@ local fn_names = {
     -- Phase F.0.10.9.x.2 — Multi-Instance Bloom (5 fn, 与 HDR/TAA 同模板)
     "CreateInstance", "DestroyInstance", "SetActiveInstance",
     "GetActiveInstance", "GetInstanceCount",
+    -- Phase F.0.10.9.x.3 — Clone + Snapshot (1-line setup + state introspection)
+    "CloneInstance", "GetState",
 }
 for _, k in ipairs(fn_names) do
     if type(Bloom[k]) ~= "function" then
@@ -398,4 +400,60 @@ if Bloom.GetActiveInstance() ~= 0 then
 end
 pass("MI.8 Destroy 全部 user instance, count=1, active=0")
 
-print("[OK] Phase E.4 + F.0.10.3 + F.0.10.9.x.2 smoke (Light.Graphics.Bloom): all checks passed")
+-- ============================================================
+-- Phase F.0.10.9.x.3 — Clone + GetState (1-line setup + snapshot)
+-- ============================================================
+
+Bloom.SetActiveInstance(0)
+
+-- CS.1 GetState 字段完整性 (default instance)
+local s0 = Bloom.GetState()
+if type(s0) ~= "table" then fail("CS.1 GetState should return table") end
+local required = { "threshold", "intensity", "radius", "levels", "auto_enable", "enabled", "supported" }
+for _, k in ipairs(required) do
+    if s0[k] == nil then fail("CS.1 GetState missing field: " .. k) end
+end
+pass("CS.1 GetState 字段完整 (" .. #required .. " 字段)")
+
+-- CS.2 Clone(0) 复制 default profile 到新 instance + 字段一致
+-- 注: threshold ∈ [0, +∞), intensity ∈ [0, +∞), radius ∈ [0, 1] (BloomRenderer clamp)
+Bloom.SetActiveInstance(0)
+Bloom.SetThreshold(1.5); Bloom.SetIntensity(0.8); Bloom.SetRadius(0.7)
+local cid = Bloom.CloneInstance(0)
+if cid <= 0 or cid > 3 then fail("CS.2 Clone(0) expect [1,3], got " .. cid) end
+Bloom.SetActiveInstance(cid)
+local sc = Bloom.GetState()
+if math.abs(sc.threshold - 1.5) > 1e-4 then fail("CS.2 cloned threshold expect 1.5, got " .. sc.threshold) end
+if math.abs(sc.intensity - 0.8) > 1e-4 then fail("CS.2 cloned intensity expect 0.8, got " .. sc.intensity) end
+if math.abs(sc.radius    - 0.7) > 1e-4 then fail("CS.2 cloned radius expect 0.7, got " .. sc.radius) end
+if sc.enabled ~= false then fail("CS.2 cloned instance expect enabled=false (待自己 Enable)") end
+pass("CS.2 Clone(0) 复制调参 + enabled=false")
+
+-- CS.3 Clone 后修改新 instance 不影响原 instance (per-instance 隔离)
+Bloom.SetActiveInstance(cid)
+Bloom.SetIntensity(99.0)   -- 此值会被 clamp 到 [0, 4], 但仅修改 cloned instance
+Bloom.SetActiveInstance(0)
+if math.abs(Bloom.GetIntensity() - 0.8) > 1e-4 then
+    fail("CS.3 default instance intensity 被污染, expect 0.8, got " .. Bloom.GetIntensity())
+end
+pass("CS.3 Clone 后 per-instance 修改隔离 (default 不被污染)")
+
+-- CS.4 Clone(srcId) 非法参数拒绝
+if Bloom.CloneInstance(99) ~= 0  then fail("CS.4 Clone(99) expect 0") end
+if Bloom.CloneInstance(-1) ~= 0  then fail("CS.4 Clone(-1) expect 0") end
+pass("CS.4 Clone(无效 srcId) 返 0")
+
+-- CS.5 槽满后 Clone 返 0
+local extra1 = Bloom.CloneInstance(0)
+local extra2 = Bloom.CloneInstance(0)
+if extra1 == 0 or extra2 == 0 then fail("CS.5 setup: Clone x2 should both succeed") end
+local extra3 = Bloom.CloneInstance(0)
+if extra3 ~= 0 then fail("CS.5 第 4 次 Clone expect 0 (槽满), got " .. extra3) end
+pass("CS.5 Clone on full slots returns 0")
+
+-- 清理
+Bloom.DestroyInstance(cid)
+Bloom.DestroyInstance(extra1)
+Bloom.DestroyInstance(extra2)
+
+print("[OK] Phase E.4 + F.0.10.3 + F.0.10.9.x.2 + F.0.10.9.x.3 smoke (Light.Graphics.Bloom): all checks passed")

@@ -152,4 +152,11 @@ int GetActiveInstance();
 /// 已分配 instance 总数 (default 0 占 1, 范围 [1, 4])
 int GetInstanceCount();
 
+// ==================== Phase F.0.10.9.x.3 — Clone (1-line setup) ====================
+//
+// 复制 srcId 全部调参字段 (strength/sampleCount/mode/halfRes) 到新 instance,
+// motionBlur RT 不复制 (新 instance 状态 = 未 Enable, 待自己调 Enable).
+// 失败条件: srcId 非法 / srcId 未分配 / 槽满 → 返 0.
+int CloneInstance(int srcId);
+
 } // namespace MotionBlurRenderer

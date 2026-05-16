@@ -52,6 +52,8 @@ local fn_names = {
     -- Phase F.0.10.9.x.2 — Multi-Instance MotionBlur (5 fn)
     "CreateInstance", "DestroyInstance", "SetActiveInstance",
     "GetActiveInstance", "GetInstanceCount",
+    -- Phase F.0.10.9.x.3 — Clone + Snapshot
+    "CloneInstance", "GetState",
 }
 for _, k in ipairs(fn_names) do
     if type(MB[k]) ~= "function" then
@@ -430,8 +432,59 @@ if MB.GetInstanceCount() ~= 1 then fail("MI.6 cleanup count expect 1") end
 pass("MI.6 Destroy 全部 user instance, count=1")
 
 -- ============================================================
+-- Phase F.0.10.9.x.3 — Clone + GetState
+-- ============================================================
+
+MB.SetActiveInstance(0)
+
+-- CS.1 GetState 字段完整
+local s0 = MB.GetState()
+if type(s0) ~= "table" then fail("CS.1 GetState should return table") end
+local req = { "strength", "sample_count", "mode", "half_res",
+              "auto_enable", "enabled", "supported" }
+for _, k in ipairs(req) do
+    if s0[k] == nil then fail("CS.1 GetState missing field: " .. k) end
+end
+pass("CS.1 GetState 字段完整 (" .. #req .. " 字段)")
+
+-- CS.2 Clone(0) 复制 default profile
+MB.SetActiveInstance(0)
+MB.SetStrength(1.5); MB.SetSampleCount(12); MB.SetMode(1); MB.SetHalfRes(true)
+local cid = MB.CloneInstance(0)
+if cid <= 0 or cid > 3 then fail("CS.2 Clone(0) expect [1,3], got " .. cid) end
+MB.SetActiveInstance(cid)
+local sc = MB.GetState()
+if math.abs(sc.strength - 1.5) > 1e-4 then fail("CS.2 cloned strength expect 1.5, got " .. sc.strength) end
+if sc.sample_count       ~= 12   then fail("CS.2 cloned sample_count expect 12, got "  .. sc.sample_count) end
+if sc.mode               ~= 1    then fail("CS.2 cloned mode expect 1, got " .. sc.mode) end
+if sc.half_res           ~= true then fail("CS.2 cloned half_res expect true") end
+if sc.enabled            ~= false then fail("CS.2 cloned instance expect enabled=false") end
+pass("CS.2 Clone(0) 复制调参 + enabled=false")
+
+-- CS.3 Per-instance 隔离
+MB.SetActiveInstance(cid); MB.SetStrength(3.0)
+MB.SetActiveInstance(0)
+if math.abs(MB.GetStrength() - 1.5) > 1e-4 then
+    fail("CS.3 default strength 被污染, expect 1.5, got " .. MB.GetStrength())
+end
+pass("CS.3 Per-instance 修改隔离")
+
+-- CS.4 Clone 非法
+if MB.CloneInstance(99) ~= 0 then fail("CS.4 Clone(99) expect 0") end
+pass("CS.4 Clone(无效 srcId) 返 0")
+
+-- CS.5 槽满
+local e1 = MB.CloneInstance(0); local e2 = MB.CloneInstance(0)
+if e1 == 0 or e2 == 0 then fail("CS.5 setup: Clone x2 should succeed") end
+if MB.CloneInstance(0) ~= 0 then fail("CS.5 第 4 次 Clone expect 0 (槽满)") end
+pass("CS.5 Clone on full slots returns 0")
+
+-- 清理
+MB.DestroyInstance(cid); MB.DestroyInstance(e1); MB.DestroyInstance(e2)
+
+-- ============================================================
 -- Final summary
 -- ============================================================
 
 print("")
-print("=== Light.Graphics.MotionBlur smoke OK (Phase E.15+E.16+E.17+F.0.10.3+F.0.10.9.x.2) ===")
+print("=== Light.Graphics.MotionBlur smoke OK (Phase E.15+E.16+E.17+F.0.10.3+F.0.10.9.x.2+F.0.10.9.x.3) ===")

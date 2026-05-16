@@ -56,6 +56,8 @@ local fns = {
     -- Phase F.0.10.9.x.2 — Multi-Instance SSR (5 fn, 与 HDR/TAA/Bloom 同模板)
     "CreateInstance", "DestroyInstance", "SetActiveInstance",
     "GetActiveInstance", "GetInstanceCount",
+    -- Phase F.0.10.9.x.3 — Clone + Snapshot
+    "CloneInstance", "GetState",
 }
 for _, k in ipairs(fns) do
     if type(S[k]) ~= "function" then
@@ -705,4 +707,60 @@ S.DestroyInstance(sid3)
 if S.GetInstanceCount() ~= 1 then fail("MI.8 cleanup count expect 1") end
 pass("MI.8 Destroy 全部 user instance, count=1")
 
-print("[OK] Phase E.9+E.10+E.11+E.12+F.0.10.3+F.0.10.9.x.2 smoke (Light.Graphics.SSR): all checks passed")
+-- ============================================================
+-- Phase F.0.10.9.x.3 — Clone + GetState
+-- ============================================================
+
+S.SetActiveInstance(0)
+
+-- CS.1 GetState 字段完整 (16 字段)
+local s0 = S.GetState()
+if type(s0) ~= "table" then fail("CS.1 GetState should return table") end
+local req = { "max_steps", "step_size", "thickness", "max_distance", "intensity",
+              "edge_fade", "blur_enabled", "blur_radius", "bilateral_enabled",
+              "blur_depth_sigma", "temporal_enabled", "temporal_alpha", "rejection_mode",
+              "auto_enable", "enabled", "supported" }
+for _, k in ipairs(req) do
+    if s0[k] == nil then fail("CS.1 GetState missing field: " .. k) end
+end
+pass("CS.1 GetState 字段完整 (" .. #req .. " 字段)")
+
+-- CS.2 Clone(0) 复制 default profile
+S.SetActiveInstance(0)
+S.SetIntensity(1.2); S.SetMaxSteps(80); S.SetTemporalAlpha(0.85); S.SetRejectionMode(0)
+local cid = S.CloneInstance(0)
+if cid <= 0 or cid > 3 then fail("CS.2 Clone(0) expect [1,3], got " .. cid) end
+S.SetActiveInstance(cid)
+local sc = S.GetState()
+if math.abs(sc.intensity      - 1.2) > 1e-4 then fail("CS.2 cloned intensity expect 1.2, got " .. sc.intensity) end
+if sc.max_steps               ~= 80  then fail("CS.2 cloned max_steps expect 80, got "  .. sc.max_steps) end
+if math.abs(sc.temporal_alpha - 0.85) > 1e-4 then fail("CS.2 cloned temporal_alpha expect 0.85, got " .. sc.temporal_alpha) end
+if sc.rejection_mode          ~= 0   then fail("CS.2 cloned rejection_mode expect 0, got " .. sc.rejection_mode) end
+if sc.enabled                 ~= false then fail("CS.2 cloned instance expect enabled=false") end
+pass("CS.2 Clone(0) 复制调参 + enabled=false")
+
+-- CS.3 Per-instance 隔离 (改 cloned 不影响 default)
+S.SetActiveInstance(cid)
+S.SetIntensity(1.9)
+S.SetActiveInstance(0)
+if math.abs(S.GetIntensity() - 1.2) > 1e-4 then
+    fail("CS.3 default intensity 被污染, expect 1.2, got " .. S.GetIntensity())
+end
+pass("CS.3 Per-instance 修改隔离")
+
+-- CS.4 Clone(无效 srcId) 拒绝
+if S.CloneInstance(99) ~= 0 then fail("CS.4 Clone(99) expect 0") end
+if S.CloneInstance(-1) ~= 0 then fail("CS.4 Clone(-1) expect 0") end
+pass("CS.4 Clone(无效 srcId) 返 0")
+
+-- CS.5 槽满 Clone 返 0
+local e1 = S.CloneInstance(0)
+local e2 = S.CloneInstance(0)
+if e1 == 0 or e2 == 0 then fail("CS.5 setup: Clone x2 should both succeed") end
+if S.CloneInstance(0) ~= 0 then fail("CS.5 第 4 次 Clone expect 0 (槽满)") end
+pass("CS.5 Clone on full slots returns 0")
+
+-- 清理
+S.DestroyInstance(cid); S.DestroyInstance(e1); S.DestroyInstance(e2)
+
+print("[OK] Phase E.9+E.10+E.11+E.12+F.0.10.3+F.0.10.9.x.2+F.0.10.9.x.3 smoke (Light.Graphics.SSR): all checks passed")
