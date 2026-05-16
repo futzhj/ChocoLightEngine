@@ -1634,7 +1634,84 @@ else
 end
 
 -- ============================================================
+-- 25. Phase F.0.10.9.x.1 — 跨 instance LUT id 悬挂修验证
+-- ============================================================
+-- 老 bug: DeleteLUT3D / UnwatchLUT / PollLUTReloads 只清 active instance 的 lutTexId,
+-- 多 HDR instance 引用同一 LUT id 时其他 instance 悬挂. 本节验证修复后跨 instance 同步.
+--
+-- 测试范围:
+-- - §25.1 DeleteLUT3D: 多 instance 引用同 mock id, Delete 后所有 instance 的 lutTexId 都清 0
+-- - §25.2 / §25.3 (UnwatchLUT / PollLUTReloads): 依赖真 GL + 真 LUT 文件, headless 不可构造,
+--                                                 留待真 GL 环境 demo 验证 (走相同 RemapLUTIdAcrossInstances 路径)
+
+-- 25.1 DeleteLUT3D 跨 instance 清引用 (核心修复点)
+do
+    local mockLutId = 99999    -- mock id, SetGradingLUT 仅写 state, 不调 backend
+
+    -- 默认 instance 0 + 新建 instance 1 + 新建 instance 2 — 3 个都引用同一 mock id
+    HDR.SetGradingLUT(mockLutId, 0.7)
+    local id1 = HDR.CreateInstance()
+    HDR.SetActiveInstance(id1)
+    HDR.SetGradingLUT(mockLutId, 0.5)
+    local id2 = HDR.CreateInstance()
+    HDR.SetActiveInstance(id2)
+    HDR.SetGradingLUT(mockLutId, 0.3)
+
+    -- 前置: 3 instance 都引用 mockLutId
+    HDR.SetActiveInstance(0)
+    if HDR.GetGradingLUTId() ~= mockLutId then
+        fail("25.1 pre: instance 0 expect " .. mockLutId .. ", got " .. tostring(HDR.GetGradingLUTId()))
+    end
+    HDR.SetActiveInstance(id1)
+    if HDR.GetGradingLUTId() ~= mockLutId then
+        fail("25.1 pre: instance " .. id1 .. " expect " .. mockLutId)
+    end
+    HDR.SetActiveInstance(id2)
+    if HDR.GetGradingLUTId() ~= mockLutId then
+        fail("25.1 pre: instance " .. id2 .. " expect " .. mockLutId)
+    end
+
+    -- 触发 DeleteLUT3D — 老实现仅清 active 槽 (id2), id1/0 悬挂
+    -- 新实现 RemapLUTIdAcrossInstances 遍历所有 instance 清同 id
+    HDR.DeleteLUT3D(mockLutId)   -- 返 false 也 ok (mock id 不是真 GL tex, backend Delete 失败), Remap 仍跑
+
+    -- 后置: 3 instance 的 lutTexId 都应清 0, strength 也清 0
+    HDR.SetActiveInstance(0)
+    if HDR.GetGradingLUTId() ~= 0 or HDR.GetGradingLUTStrength() > 0 then
+        fail("25.1 post: instance 0 expect 0/0, got " ..
+             HDR.GetGradingLUTId() .. "/" .. HDR.GetGradingLUTStrength() .. " (悬挂!)")
+    end
+    HDR.SetActiveInstance(id1)
+    if HDR.GetGradingLUTId() ~= 0 or HDR.GetGradingLUTStrength() > 0 then
+        fail("25.1 post: instance " .. id1 .. " expect 0/0, got " ..
+             HDR.GetGradingLUTId() .. "/" .. HDR.GetGradingLUTStrength() .. " (悬挂!)")
+    end
+    HDR.SetActiveInstance(id2)
+    if HDR.GetGradingLUTId() ~= 0 or HDR.GetGradingLUTStrength() > 0 then
+        fail("25.1 post: instance " .. id2 .. " expect 0/0, got " ..
+             HDR.GetGradingLUTId() .. "/" .. HDR.GetGradingLUTStrength() .. " (悬挂!)")
+    end
+
+    HDR.SetActiveInstance(0)
+    HDR.DestroyInstance(id1)
+    HDR.DestroyInstance(id2)
+    pass("25.1 DeleteLUT3D 跨 instance 同步清 lutTexId/strength ok (3 instance × 1 mock id)")
+end
+
+-- 25.2 RemapLUTIdAcrossInstances(0) 短路 — 防御性测试 (oldId=0 时 no-op, 不污染)
+do
+    HDR.SetGradingLUT(11111, 0.4)   -- 设个真值占位
+    HDR.DeleteLUT3D(0)              -- 触发 Remap(0, 0): 应短路, 不清当前 instance 11111
+    if HDR.GetGradingLUTId() ~= 11111 then
+        fail("25.2 DeleteLUT3D(0) 应 no-op, 不清 lutTexId (got " ..
+             HDR.GetGradingLUTId() .. ")")
+    end
+    HDR.SetGradingLUT(0, 0.0)   -- restore
+    pass("25.2 DeleteLUT3D(0) 短路防御 ok (oldId=0 不污染 lutTexId)")
+end
+
+-- ============================================================
 -- Done
 -- ============================================================
 
-print("[Phase E.3 + E.14 + E.18.1 + E.18.2 + F.0.10.2 + F.0.10.3 + F.0.10.6 + F.0.10.8 + F.0.10.8.1 + F.0.10.8.2 + F.0.10.8.3 + F.0.10.8.4 + F.0.10.8.5 + F.0.10.8.6 + F.0.10.9 + F.0.10.9.1] Light.Graphics.HDR smoke PASS (" .. #fn_names .. " functions)")
+print("[Phase E.3 + E.14 + E.18.1 + E.18.2 + F.0.10.2 + F.0.10.3 + F.0.10.6 + F.0.10.8 + F.0.10.8.1 + F.0.10.8.2 + F.0.10.8.3 + F.0.10.8.4 + F.0.10.8.5 + F.0.10.8.6 + F.0.10.9 + F.0.10.9.1 + F.0.10.9.x.1] Light.Graphics.HDR smoke PASS (" .. #fn_names .. " functions)")

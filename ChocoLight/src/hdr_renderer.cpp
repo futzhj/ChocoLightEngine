@@ -298,6 +298,26 @@ bool CreateRT(int w, int h) {
     return true;
 }
 
+// Phase F.0.10.9.x.1 — 跨 instance LUT id 引用同步 (防悬挂)
+//   多 HDR instance 各自 SetGradingLUT(id) 可能引用同一 lut id;
+//   id 释放 (DeleteLUT3D / UnwatchLUT 全量删除路径) 时必须遍历所有 instance
+//   清相同引用, 防止其他 instance 的 lutTexId 指向已 free 的 GL tex (悬挂);
+//   id 替换 (PollLUTReloads hot reload 路径) 时把所有 oldId 引用 remap 到 newId,
+//   让所有 instance 自动看到新 LUT.
+//
+// 参数语义:
+//   oldId  待清 / 替换的旧 GL tex id (0 时直接返, 无意义)
+//   newId  0 = 释放路径 (同时清 lutStrength=0); 非 0 = remap (strength 保留)
+static void RemapLUTIdAcrossInstances(uint32_t oldId, uint32_t newId) {
+    if (oldId == 0u) return;
+    for (int i = 0; i < MAX_INSTANCES; ++i) {
+        if (g_states[i].lutTexId == oldId) {
+            g_states[i].lutTexId = newId;
+            if (newId == 0u) g_states[i].lutStrength = 0.0f;
+        }
+    }
+}
+
 } // anonymous namespace
 
 // ==================== 生命周期 ====================
@@ -817,12 +837,12 @@ uint32_t CreateLUT3D(int size, const uint8_t* data, size_t dataLen) {
 }
 
 bool DeleteLUT3D(uint32_t lutTex) {
-    if (!g.backend || !lutTex) return false;
-    // 如果删的是当前全局 LUT, 同步清状态防悬挂
-    if (g.lutTexId == lutTex) {
-        g.lutTexId   = 0;
-        g.lutStrength = 0.0f;
-    }
+    if (!lutTex) return false;   // 0 id 防御
+    // Phase F.0.10.9.x.1: state 清理 (跨 instance lutTexId 引用) 与 backend 无关, 必须先跑
+    //   - 老实现 backend 检查在前导致 headless / 未 Init 时 Remap 不执行
+    //   - 新顺序: 先 state cleanup (零依赖), 再 GL Delete (依赖 backend)
+    RemapLUTIdAcrossInstances(lutTex, 0u);
+    if (!g.backend) return false;
     return g.backend->DeleteLUT3D(lutTex);
 }
 
@@ -1288,11 +1308,12 @@ uint32_t WatchLUT(const char* path, char* outErr, size_t errCap) {
     SDL_GetPathInfo(path, &info);   // 失败时 info 全 0
 
     // 3. 同 path 重复注册: 清旧 entry + 旧 GL tex (避免泄漏)
+    // Phase F.0.10.9.x.1: 旧 lutId 在 GL 删除前必须跨 instance 清引用 (防悬挂)
     for (auto it = g_global.lutWatchList.begin(); it != g_global.lutWatchList.end(); ++it) {
         if (it->path == path) {
             if (it->lutId && it->lutId != id && g.backend) {
+                RemapLUTIdAcrossInstances(it->lutId, 0u);
                 g.backend->DeleteLUT3D(it->lutId);
-                if (g.lutTexId == it->lutId) g.lutTexId = 0u;
             }
             g_global.lutWatchList.erase(it);
             break;
@@ -1313,12 +1334,9 @@ bool UnwatchLUT(uint32_t lutTex) {
     if (lutTex == 0u) return false;
     for (auto it = g_global.lutWatchList.begin(); it != g_global.lutWatchList.end(); ++it) {
         if (it->lutId == lutTex) {
+            // Phase F.0.10.9.x.1: 跨 instance 清引用必须在 GL 删除前 (顺序敏感)
+            RemapLUTIdAcrossInstances(lutTex, 0u);
             if (g.backend) g.backend->DeleteLUT3D(lutTex);
-            // 同步清: 如果是当前 grading 用的 LUT, lutTexId 重置防悬挂
-            if (g.lutTexId == lutTex) {
-                g.lutTexId    = 0u;
-                g.lutStrength = 0.0f;
-            }
             g_global.lutWatchList.erase(it);
             return true;
         }
@@ -1366,11 +1384,12 @@ int PollLUTReloads() {
         e.lutId     = newId;
         e.lastMtime = info.modify_time;
 
-        // 4. 若 oldId 是当前 grading 用的 LUT, 自动同步到 newId
-        //    (用户视角: SetGradingLUT(id, ...) 设过之后, 美术改文件 → 自动看到新调色)
-        if (g.lutTexId == oldId) g.lutTexId = newId;
+        // 4. 若 oldId 在任何 instance 当前 grading 用, 自动 remap 到 newId
+        //    (用户视角: SetGradingLUT(id, ...) 设过之后, 美术改文件 → 所有 instance 自动看到新调色)
+        // Phase F.0.10.9.x.1: 遍历所有 instance remap (老实现仅同步 active, 其他 instance 悬挂)
+        RemapLUTIdAcrossInstances(oldId, newId);
 
-        // 5. 删旧 GL tex
+        // 5. 删旧 GL tex (remap 之后, 所有 instance 的 lutTexId 已切到 newId)
         if (oldId && g.backend) g.backend->DeleteLUT3D(oldId);
 
         // 6. Phase F.0.10.8.4 — 触发 reload 回调 (在 oldId 释放后, 用户拿到的 newId 可立即使用)
