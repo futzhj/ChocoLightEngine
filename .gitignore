@@ -2,7 +2,9 @@
 .agent/
 .agents/
 .antigravity/
+.claude/
 .cursor/
+.kiro/
 .vs/
 .vscode/
 
@@ -43,6 +45,22 @@ cmake_install.cmake
 # Contains Light.dll, light*.exe, lua51.dll, FFmpeg libs, sample mp4/ttf — pack outputs.
 Light/
 test_embedded/
+
+# Sample / example 运行时副本: 由 sync 步骤从 Light/runtime 复制到各 sample 目录
+# 仅源码 (*.lua, *.md, *.gitignore, README) 入 repo, dll/exe 不入 repo
+samples/*/Light.dll
+samples/*/light.exe
+samples/*/lightw.exe
+samples/*/lua51.dll
+samples/*/lib/
+examples/*/Light.dll
+examples/*/light.exe
+examples/*/lightw.exe
+examples/*/lua51.dll
+examples/*/lib/
+
+# 本地临时测试 / 编译脚本 (用户特定, 不入 repo)
+test.bat
 
 # Build / packaging logs
 build_log.txt
