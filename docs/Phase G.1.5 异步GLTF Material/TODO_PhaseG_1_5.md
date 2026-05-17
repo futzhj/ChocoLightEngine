@@ -1,12 +1,13 @@
 # Phase G.1.5 — 待办事项 (TODO)
 
 > **创建日期**：2026-05-18
-> **状态**：Phase G.1.5 主体已交付。本文记录未来可继续优化的方向。
+> **状态**：Phase G.1.5 收尾完成 (D1+T2+D2)。本文记录后续可继续优化方向。
 
 ---
 
-## 一. 已完成 (本期)
+## 一. 已完成 (本期 + 收尾)
 
+### 主体 (Phase G.1.5)
 - ✅ Mesh.LoadGLTFAsync 加 `withMaterial` 第三参数, 与同步 `LoadGLTF` 完全对齐
 - ✅ 5 类 PBR texture 异步加载 (baseColor / metallicRoughness / normal / emissive / occlusion)
 - ✅ 3 image 来源支持 (GLB embedded buffer_view / data: URI base64 / 相对文件路径)
@@ -18,6 +19,11 @@
 - ✅ 6 种 Lua 调用形式 (1-4 参数任意组合: path / primIdx / withMaterial / cb)
 - ✅ 真实 .glb fixture (1192 bytes) + Python generator
 - ✅ 8 用例 smoke (12 PASS)
+
+### 收尾 (D1 + T2 + D2)
+- ✅ **D1**: `docs/api/Light_Graphics.md` 加入 `Light.Graphics.Mesh.LoadGLTF` + `Light.Graphics.Mesh.LoadGLTFAsync` 完整 API 描述 (灵活签名 / 性能特征 / 路径分发 / 错误处理 / 示例)
+- ✅ **T2**: PBR material texture 启用 mipmap (worker 路径 `glGenerateMipmap` + `LINEAR_MIPMAP_LINEAR`; fallback 路径 `RenderBackend::GenerateMipmap2D` 公共虚接口); 同步 `LoadGLTF` 路径同步对齐
+- ✅ **D2**: `samples/demo_gltf_async/main.lua` 演示异步加载 fixture + Future poll / Callback 双风格切换 (R / M / F 键控制)
 
 ---
 
@@ -33,16 +39,6 @@
 - **位置**: `@e:/jinyiNew/Light/ChocoLight/src/asset_loader.cpp:DecodeGLTF_` 内 5 次 DecodeMaterialImage_ 改并发
 - **优先级**: 中 (主线程已不卡顿, 仅减少 worker 总用时)
 - **预估**: 4-6h
-
-#### T2. Mipmap 自动生成
-
-- **现状**: worker glTexImage2D 后不调 glGenerateMipmap; 与同步 LoadGLTFImage 行为一致
-- **场景**: PBR rendering 需要 mipmap 抗锯齿
-- **方案**: WorkerUploadMesh_ 内串入 glGenerateMipmap; fallback 路径在 g_render->CreateTexture 后调
-- **位置**: `@e:/jinyiNew/Light/ChocoLight/src/asset_loader.cpp:WorkerUploadMesh_`
-- **风险**: glGenerateMipmap 可能在某些 GLES 驱动下慢; 需 backend 选项控制
-- **优先级**: 高 (PBR 视觉质量)
-- **预估**: 2-4h
 
 #### T3. cgltf Texture Sampler 支持
 
@@ -97,19 +93,14 @@
 
 ## 三. 文档 / 工具
 
-### D1. API_REFERENCE.md 更新 Mesh.LoadGLTFAsync
+> D1 + D2 已完成 (见上一. 收尾区段). 本节保留供未来扩展.
 
-- **现状**: API_REFERENCE.md 可能未涵盖 G.1.5 新 with_material 参数
-- **位置**: `@e:/jinyiNew/Light/docs/API_REFERENCE.md` 的 `Light.Graphics.Mesh` 章节
-- **优先级**: 高
-- **预估**: 30 分钟
+### D3. Khronos sample model 集成 (后续)
 
-### D2. Sample 演示
-
-- **现状**: smoke 验证功能, 但用户层无完整 demo 参考
-- **方案**: `samples/demo_gltf_async/` 加载真实带贴图模型 (Khronos sample) + 显示 mesh + material (PBR) + HUD 实时帧时间
-- **优先级**: 中
-- **预估**: 4-6h
+- **现状**: demo_gltf_async 用 1×1 fixture, 视觉效果有限
+- **方案**: 引入 Khronos GLTF Sample Model (DamagedHelmet / FlightHelmet) — 需 license check + 资源路径管理
+- **优先级**: 低
+- **预估**: 2-4h
 
 ---
 
@@ -124,16 +115,14 @@
 
 ---
 
-## 五. 推荐处理顺序
+## 五. 推荐处理顺序 (剩余)
 
 | 优先级 | 任务 | 收益 |
 |----|----|----|
-| P0 | D1 API_REFERENCE 更新 | 必做, 用户文档同步 |
-| P1 | T2 Mipmap 自动生成 | PBR 视觉质量直接提升 |
-| P2 | D2 Sample 演示 | 接入参考, 提升采用率 |
-| P3 | T3 Texture Sampler 支持 | 完整性 |
-| P4 | T6 真机性能测试 | 验证设计性能模型 |
-| P5 | T1 Worker Thread Pool | 进一步优化 worker 总用时 |
-| P6 | T5 Image Cache | 内存优化 |
-| P7 | T7 失败注入测试 | 代码已防御, 验证补充 |
+| P0 | T3 Texture Sampler 支持 | 完整性 |
+| P1 | T6 真机性能测试 | 验证设计性能模型 |
+| P2 | T1 Worker Thread Pool | 进一步优化 worker 总用时 |
+| P3 | T5 Image Cache | 内存优化 |
+| P4 | T7 失败注入测试 | 代码已防御, 验证补充 |
+| P5 | D3 Khronos sample model | demo 视觉提升 |
 | 待定 | T4 KTX/DDS | 移动端优化, 暂不紧急 |

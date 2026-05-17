@@ -284,6 +284,13 @@ public:
     // 整体更新纹理内容 (用于字体图集扩展)
     virtual void ReplaceTexture(uint32_t texId, int w, int h, int channels, const void* pixels) = 0;
 
+    // Phase G.1.5 收尾 T2 — 生成 2D 纹理 mipmap 链 (PBR material 视觉质量提升).
+    // GLTF material textures 需要 mipmap 抗锯齿, 字体/Sprite 不需要 (会模糊).
+    // 该 API 由 AssetLoader::UploadGLTF_ fallback 路径调用 (worker 路径直接 raw glGenerateMipmap).
+    // 默认 no-op (Legacy / 不支持 mipmap 的 backend), 子类按需 override.
+    // 调用方约定: texId 必须由 CreateTexture 返回, 调用后 MIN_FILTER 自动切换到 LINEAR_MIPMAP_LINEAR.
+    virtual void GenerateMipmap2D(uint32_t /*texId*/) {}
+
     // ---- FBO (Canvas) ----
     virtual uint32_t CreateFBO(int w, int h, uint32_t* outTexture, uint32_t* outDepthRB) = 0;
     virtual void DeleteFBO(uint32_t fbo, uint32_t texture, uint32_t depthRB) = 0;

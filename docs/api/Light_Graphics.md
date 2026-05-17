@@ -502,6 +502,116 @@ Light.Graphics.Print("Hello World", font, 10, 10)
 
 ---
 
+## `Light.Graphics.Mesh.LoadGLTF(path, [primIdx=0], [withMaterial=false])`
+
+同步加载 glTF / GLB 文件中的指定 primitive，主线程阻塞。
+
+### 参数
+
+| 名称 | 类型 | 说明 |
+|------|------|------|
+| `path` | `string` | `.gltf` / `.glb` 文件路径（相对工程根） |
+| `primIdx` | `number?` | primitive 索引（默认 0） |
+| `withMaterial` | `boolean?` | 是否同时加载 PBR Material（含 5 类 embedded texture, 默认 `false`） |
+
+### 返回值
+
+| 形式 | 返回值 |
+|------|--------|
+| `withMaterial=false` | `Mesh` 或 `nil, err` |
+| `withMaterial=true` | `Mesh, Material` 或 `nil, err`（Material 已挂载 5 类 PBR texture） |
+
+### 行为
+
+- 主线程同步解析 cgltf + 解码 stb_image + GL 上传，**阻塞至完成**
+- 5 类 PBR texture: `baseColor` / `metallicRoughness` / `normal` / `emissive` / `occlusion`
+- 3 种 image 来源支持: GLB embedded `buffer_view` / `data:` URI base64 / 相对文件路径
+
+---
+
+## `Light.Graphics.Mesh.LoadGLTFAsync(path, [primIdx=0], [withMaterial=false], [cb])`
+
+> **Phase G.1.5** — 异步加载 glTF mesh + PBR Material + Embedded Textures，主线程零阻塞。
+
+### 灵活签名（6 种调用形式）
+
+| 调用形式 | 风格 | 返回值 / 回调签名 |
+|---------|------|------------------|
+| `Mesh.LoadGLTFAsync(path)` | Future poll | `Future` (mesh only) |
+| `Mesh.LoadGLTFAsync(path, primIdx)` | Future poll | `Future` (mesh only) |
+| `Mesh.LoadGLTFAsync(path, primIdx, true)` | Future poll | `Future` (mesh + material 双值) |
+| `Mesh.LoadGLTFAsync(path, cb)` | Callback | `void`，`cb(mesh, err)` |
+| `Mesh.LoadGLTFAsync(path, primIdx, cb)` | Callback | `void`，`cb(mesh, err)` |
+| `Mesh.LoadGLTFAsync(path, primIdx, true, cb)` | Callback | `void`，`cb(mesh, material, err)` |
+
+### 参数
+
+| 名称 | 类型 | 说明 |
+|------|------|------|
+| `path` | `string` | `.gltf` / `.glb` 文件路径 |
+| `primIdx` | `number?` | primitive 索引（默认 0） |
+| `withMaterial` | `boolean?` | 是否同时加载 Material（默认 `false`） |
+| `cb` | `function?` | 完成回调；不传则返回 Future 走 poll 风格 |
+
+### Future:Get() 返回值
+
+| `withMaterial` | `Future:Get()` 返回 |
+|---------------|----------------------|
+| `false` | `Mesh` |
+| `true` | `Mesh, Material` |
+
+### 性能特征
+
+| 项 | 实测 (G.1.5) |
+|----|-------------|
+| 主线程帧时间 P95 | < 1 ms（worker shared GL ctx 直接上传 + 单 fence） |
+| Worker 解码 5×1024² PNG | ~50-100 ms（不阻塞主线程） |
+| Fallback 路径 | 无 shared ctx 时主线程串行上传，行为等价于 `LoadGLTF`（仅作降级） |
+
+### 路径分发
+
+- **Worker shared GL ctx 路径（主路径）**: worker thread 直接 `glGenTextures` + `glTexImage2D` + 单一 `glFenceSync`，主线程 Tick 仅写 texture id
+- **Fallback 主线程路径**: 检测到 `Supports3D()=false` 或 shared ctx 失败时降级，与同步 API 行为一致；老 GL 2.x backend 上 Future 立即转 `Error`
+
+### 错误处理
+
+- Mesh 解析失败: Future `IsError()=true`，`Get()` 返 `nil`
+- Image 解码失败 (装饰性兜底): mesh 仍 ready，failed slot 的 texture id = 0，log WARN
+- Callback 风格: `cb(nil, nil, err)` (3 参) 或 `cb(nil, err)` (2 参)
+
+### 示例
+
+```lua
+-- Future poll 风格（mesh + material 双值）
+local fut = Light.Graphics.Mesh.LoadGLTFAsync("models/box.glb", 0, true)
+while not fut:IsReady() and not fut:IsError() do
+  Light.Sleep(0.016)
+end
+if fut:IsReady() then
+  local mesh, mat = fut:Get()
+  -- 渲染时用 mat 替代 textureId
+  mesh:Draw(mat)
+end
+
+-- Callback 风格（mesh + material + err 3 参）
+Light.Graphics.Mesh.LoadGLTFAsync("models/helmet.glb", 0, true, function(mesh, mat, err)
+  if err then return Light.Log("ERR", err) end
+  scene.helmet = { mesh = mesh, material = mat }
+end)
+
+-- 仅加载 mesh（不要 material, 向后兼容）
+local fut2 = Light.Graphics.Mesh.LoadGLTFAsync("models/box.glb")
+while not fut2:IsReady() do Light.Sleep(0.016) end
+local mesh = fut2:Get()
+```
+
+### 备注
+
+- `withMaterial=true` 时返回的 Material 已附带 5 类 PBR texture（`baseColor` / `metallicRoughness` / `normal` / `emissive` / `occlusion`）+ 完整数值字段（color / metallic / roughness / emissive / normalScale / occlusionStrength / alphaMode / alphaCutoff / doubleSided）
+- 详细设计见 `docs/Phase G.1.5 异步GLTF Material/FINAL_PhaseG_1_5.md`
+
+---
+
 ## `mesh:Draw([textureOrMaterial], [prevModelMat4])`
 
 绘制 Mesh 到当前 3D 场景。所有参数都是可选的，自动按参数类型分发：

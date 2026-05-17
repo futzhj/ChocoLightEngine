@@ -439,6 +439,9 @@ static uint32_t LoadGLTFImage(const cgltf_image* img, const std::string& gltfDir
 
     uint32_t texId = g_render->CreateTexture(w, h, 4, pixels);
     stbi_image_free(pixels);
+    // Phase G.1.5 收尾 T2 — PBR material texture 启用 mipmap (与异步 LoadGLTFAsync 行为对齐).
+    // backend 内部已做 GL 3.3+ check, Legacy 自动 no-op.
+    if (texId) g_render->GenerateMipmap2D(texId);
     return texId;
 }
 

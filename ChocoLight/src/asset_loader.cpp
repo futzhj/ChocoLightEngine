@@ -811,15 +811,17 @@ static void WorkerUploadMesh_(Task& task) {
                 continue;
             }
             glBindTexture(GL_TEXTURE_2D, tex);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            // Phase G.1.5 收尾 T2 — PBR material texture 启用 mipmap (LINEAR_MIPMAP_LINEAR 三线性过滤).
+            // 对比直接 LINEAR: 远距离/低分辨率采样抗锯齿明显, 是 PBR 渲染标配.
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
             glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8,
                          job.w, job.h, 0, GL_RGBA, GL_UNSIGNED_BYTE, job.pixels);
             GLenum texErr = glGetError();
-            glBindTexture(GL_TEXTURE_2D, 0);
             if (texErr != GL_NO_ERROR) {
+                glBindTexture(GL_TEXTURE_2D, 0);
                 glDeleteTextures(1, &tex);
                 CC::Log(CC::LOG_WARN,
                         "WorkerUploadMesh: material slot %d glTexImage2D err=0x%x (skipped)",
@@ -827,6 +829,17 @@ static void WorkerUploadMesh_(Task& task) {
                 stbi_image_free(job.pixels); job.pixels = nullptr;
                 continue;
             }
+            // Phase G.1.5 收尾 T2 — 生成 mipmap 链 (失败仅 log warn, 不破坏 mesh; 退化为 base level 采样).
+            glGenerateMipmap(GL_TEXTURE_2D);
+            GLenum mipErr = glGetError();
+            if (mipErr != GL_NO_ERROR) {
+                // mipmap 失败时 fallback 到 LINEAR (避免采样到未初始化的 mip level)
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+                CC::Log(CC::LOG_WARN,
+                        "WorkerUploadMesh: material slot %d glGenerateMipmap err=0x%x (fallback to LINEAR)",
+                        job.slotIdx, (unsigned)mipErr);
+            }
+            glBindTexture(GL_TEXTURE_2D, 0);
             stbi_image_free(job.pixels); job.pixels = nullptr;
             job.glTexId = (uint32_t)tex;
         }
@@ -1212,6 +1225,9 @@ static void UploadGLTF_(FutureState& st, const std::string& path) {
             if (!job.pixels || job.w <= 0 || job.h <= 0) continue;
             uint32_t texId = g_render->CreateTexture(job.w, job.h, 4, job.pixels);
             if (texId) {
+                // Phase G.1.5 收尾 T2 — 启用 mipmap (LINEAR_MIPMAP_LINEAR 三线性过滤).
+                // 与 worker 路径一致, 失败时 backend 内部已 no-op (Legacy) 或 fallback (GL33).
+                g_render->GenerateMipmap2D(texId);
                 job.glTexId = texId;
             } else {
                 CC::Log(CC::LOG_WARN,

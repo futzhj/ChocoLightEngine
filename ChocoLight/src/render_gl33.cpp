@@ -7854,6 +7854,16 @@ public:
         GLuint t = texId;
         glDeleteTextures(1, &t);
     }
+    // Phase G.1.5 收尾 T2 — 为已上传的 2D 纹理生成 mipmap 链.
+    // 调 glGenerateMipmap 后, MIN_FILTER 切到 LINEAR_MIPMAP_LINEAR (三线性过滤);
+    // MAG_FILTER 保持 LINEAR (mipmap 不影响放大采样).
+    void GenerateMipmap2D(uint32_t texId) override {
+        if (!texId) return;
+        glBindTexture(GL_TEXTURE_2D, (GLuint)texId);
+        glGenerateMipmap(GL_TEXTURE_2D);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+        glBindTexture(GL_TEXTURE_2D, 0);
+    }
     void BindTexture(uint32_t texId) override {
         boundTex = texId;
         glActiveTexture(GL_TEXTURE0);
