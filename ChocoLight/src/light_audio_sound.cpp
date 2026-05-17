@@ -99,12 +99,13 @@ static int l_Sound_Load(lua_State* L) {
     return 1;
 }
 
-static void SoundPushResult_(void* L_, AssetLoader::FutureState* state) {
+// Phase G.1.5 — 改为 int 返 push 数量 (Sound: 默认 1)
+static int SoundPushResult_(void* L_, AssetLoader::FutureState* state) {
     lua_State* L = (lua_State*)L_;
-    if (!L) return;
+    if (!L) return 0;
     if (!state || state->status.load() != (int)AssetLoader::FutureStatus::Ready || !state->resSoundHandle) {
         lua_pushnil(L);
-        return;
+        return 1;
     }
     SoundUserdata* ud = (SoundUserdata*)lua_newuserdata(L, sizeof(SoundUserdata));
     ud->h = (AudioHandle*)state->resSoundHandle;
@@ -113,6 +114,7 @@ static void SoundPushResult_(void* L_, AssetLoader::FutureState* state) {
     state->resSoundHandle = nullptr;
     luaL_getmetatable(L, SOUND_MT);
     lua_setmetatable(L, -2);
+    return 1;
 }
 
 static void SoundAsyncDispatcher_(void* L_, AssetLoader::FutureState* state, int cbLuaRef) {

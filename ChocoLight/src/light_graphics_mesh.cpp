@@ -614,22 +614,42 @@ static int l_Mesh_GetGLTFMeshCount(lua_State* L) {
     return 1;
 }
 
-static void MeshPushResult_(void* L_, AssetLoader::FutureState* state) {
+// Phase G.1.5 — Mesh result pusher: with_material=true 时 push (mesh, material), 返 2;
+// 否则 push mesh 单值返 1. 错误路径 push nil 返 1.
+//
+// MaterialDesc 通过 char[128] POD 序列化在 worker thread 完成 (asset_loader.cpp),
+// 此处反序列化创建 Material userdata.
+static int MeshPushResult_(void* L_, AssetLoader::FutureState* state) {
     lua_State* L = (lua_State*)L_;
-    if (!L) return;
+    if (!L) return 0;
     if (!state || state->status.load() != (int)AssetLoader::FutureStatus::Ready || !state->resMeshId) {
         lua_pushnil(L);
-        return;
+        return 1;
     }
+    // 1) push Mesh userdata
     MeshUserdata* ud = (MeshUserdata*)lua_newuserdata(L, sizeof(MeshUserdata));
-    ud->meshId = state->resMeshId;
+    ud->meshId      = state->resMeshId;
     ud->vertexCount = state->gltfVertCount;
-    ud->indexCount = state->gltfIdxCount;
+    ud->indexCount  = state->gltfIdxCount;
     state->resMeshId = 0;
     luaL_getmetatable(L, MESH_MT);
     lua_setmetatable(L, -2);
+
+    // 2) Phase G.1.5: with_material=true 时 push Material userdata (反序列化 MaterialDesc 字节)
+    if (state->gltfWithMaterial) {
+        static_assert(sizeof(MaterialDesc) <= sizeof(state->gltfMaterialDesc),
+                      "MaterialDesc exceeds gltfMaterialDesc[128] buffer; bump capacity in asset_loader.h");
+        MaterialDesc* matUd = (MaterialDesc*)lua_newuserdata(L, sizeof(MaterialDesc));
+        memcpy(matUd, state->gltfMaterialDesc, sizeof(MaterialDesc));
+        luaL_getmetatable(L, MATERIAL_MT_NAME);
+        lua_setmetatable(L, -2);
+        return 2;   // (Mesh, Material)
+    }
+    return 1;   // (Mesh) 仅 mesh, 与 G.1.0 行为一致
 }
 
+// Phase G.1.5 — Mesh callback dispatcher: with_material 时 cb 收 (mesh, material, err) 3 参;
+// 否则 cb 收 (mesh, err) 2 参 (与 G.1.0 行为一致, 现有脚本零回归).
 static void MeshAsyncDispatcher_(void* L_, AssetLoader::FutureState* state, int cbLuaRef) {
     lua_State* L = (lua_State*)L_;
     if (!L || !state || cbLuaRef < 0) return;
@@ -638,31 +658,72 @@ static void MeshAsyncDispatcher_(void* L_, AssetLoader::FutureState* state, int 
         lua_pop(L, 1);
         return;
     }
+    const bool withMat = state->gltfWithMaterial;
+    int        nArgs   = 0;
     if (state->status.load() == (int)AssetLoader::FutureStatus::Ready) {
-        MeshPushResult_(L, state);
-        lua_pushnil(L);
+        // MeshPushResult_ push 1 或 2 个 (mesh, optionally material)
+        int pushed = MeshPushResult_(L, state);
+        // 补齐: with_material 时 push 失败兜底 push nil 作为 material
+        if (withMat && pushed < 2) {
+            lua_pushnil(L);
+            ++pushed;
+        }
+        lua_pushnil(L);   // err = nil
+        nArgs = pushed + 1;
     } else {
+        // 错误路径: with_material 时 (nil, nil, err); 否则 (nil, err)
         lua_pushnil(L);
+        if (withMat) lua_pushnil(L);
         lua_pushstring(L, state->errorMsg.empty() ? "unknown error" : state->errorMsg.c_str());
+        nArgs = withMat ? 3 : 2;
     }
-    if (lua_pcall(L, 2, 0, 0) != 0) {
+    if (lua_pcall(L, nArgs, 0, 0) != 0) {
         const char* err = lua_tostring(L, -1);
         CC::Log(CC::LOG_WARN, "Mesh LoadGLTFAsync cb error: %s", err ? err : "(none)");
         lua_pop(L, 1);
     }
 }
 
+// Phase G.1.5 — l_Mesh_LoadGLTFAsync 灵活参数解析:
+//   Mesh.LoadGLTFAsync(path)                              -- Future, mesh only
+//   Mesh.LoadGLTFAsync(path, primIdx)                     -- Future, mesh only
+//   Mesh.LoadGLTFAsync(path, primIdx, true)               -- Future, with material
+//   Mesh.LoadGLTFAsync(path, cb)                          -- cb(mesh, err), mesh only
+//   Mesh.LoadGLTFAsync(path, primIdx, cb)                 -- cb(mesh, err), mesh only
+//   Mesh.LoadGLTFAsync(path, primIdx, true, cb)           -- cb(mesh, material, err)
+//   Mesh.LoadGLTFAsync(path, primIdx, false, cb)          -- cb(mesh, err) 显式 false
 static int l_Mesh_LoadGLTFAsync(lua_State* L) {
     const char* path = luaL_checkstring(L, 1);
-    int cbIndex = lua_isfunction(L, 2) ? 2 : 3;
-    int primIdx = (cbIndex == 2) ? 0 : (int)luaL_optinteger(L, 2, 0);
+
+    // 灵活参数解析: 依次扫 args[2..4], 按类型识别 primIdx (number) / withMaterial (bool) / cb (function)
+    int  primIdx      = 0;
+    bool withMaterial = false;
+    int  cbStackIdx   = 0;   // 0 = 无 cb, 否则 Lua 栈索引
+
+    int top = lua_gettop(L);
+    int seen = 0;   // 已识别参数槽位: 1=primIdx, 2=withMaterial, 4=cb
+    for (int i = 2; i <= top; ++i) {
+        int t = lua_type(L, i);
+        if (t == LUA_TNUMBER && !(seen & 1)) {
+            primIdx = (int)lua_tointeger(L, i);
+            seen |= 1;
+        } else if (t == LUA_TBOOLEAN && !(seen & 2)) {
+            withMaterial = lua_toboolean(L, i) != 0;
+            seen |= 2;
+        } else if (t == LUA_TFUNCTION && !(seen & 4)) {
+            cbStackIdx = i;
+            seen |= 4;
+        }
+        // 未知/重复 类型静默忽略 (保持向后兼容)
+    }
+
     int cbRef = -1;
-    if (lua_gettop(L) >= cbIndex && lua_isfunction(L, cbIndex)) {
-        lua_pushvalue(L, cbIndex);
+    if (cbStackIdx > 0) {
+        lua_pushvalue(L, cbStackIdx);
         cbRef = luaL_ref(L, LUA_REGISTRYINDEX);
     }
 
-    auto state = AssetLoader::LoadGLTFAsync(path, primIdx);
+    auto state = AssetLoader::LoadGLTFAsync(path, primIdx, withMaterial);
     AssetLoader::RegisterResultPusher(state, MeshPushResult_);
     if (cbRef >= 0) {
         AssetLoader::RegisterCallback(state, MeshAsyncDispatcher_, L, cbRef);

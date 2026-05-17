@@ -581,17 +581,20 @@ static FutureUD* GetFutureUD(lua_State* L, int idx) {
 }
 
 // Image result pusher: push raw info table 到栈顶 (供 Future:Get + dispatcher 共用)
-static void ImagePushResult_(void* L_, AssetLoader::FutureState* state) {
+// Phase G.1.5 — 改为 int 返 push 数量 (Image: 默认 1)
+static int ImagePushResult_(void* L_, AssetLoader::FutureState* state) {
     lua_State* L = (lua_State*)L_;
-    if (!L || !state || state->status.load() != (int)AssetLoader::FutureStatus::Ready) {
-        if (L) lua_pushnil(L);
-        return;
+    if (!L) return 0;
+    if (!state || state->status.load() != (int)AssetLoader::FutureStatus::Ready) {
+        lua_pushnil(L);
+        return 1;
     }
     lua_newtable(L);
     lua_pushinteger(L, (lua_Integer)state->resTexId);   lua_setfield(L, -2, "tex_id");
     lua_pushinteger(L, (lua_Integer)state->imgW);       lua_setfield(L, -2, "width");
     lua_pushinteger(L, (lua_Integer)state->imgH);       lua_setfield(L, -2, "height");
     lua_pushinteger(L, (lua_Integer)state->imgChannels); lua_setfield(L, -2, "channels");
+    return 1;
 }
 
 // callback dispatcher: 主线程内调, 由 AssetLoader::Tick 唤起.
@@ -653,13 +656,14 @@ static int l_Image_LoadAsync(lua_State* L) {
     return AssetLoader::PushAsyncFuture(L, state);
 }
 
-static void FontPushResult_(void* L_, AssetLoader::FutureState* state) {
+// Phase G.1.5 — 改为 int 返 push 数量 (Font: 默认 1)
+static int FontPushResult_(void* L_, AssetLoader::FutureState* state) {
     lua_State* L = (lua_State*)L_;
-    if (!L) return;
+    if (!L) return 0;
     if (!state || state->status.load() != (int)AssetLoader::FutureStatus::Ready ||
         !state->fontTTFBuffer || state->fontTTFSize <= 0 || !g_render) {
         lua_pushnil(L);
-        return;
+        return 1;
     }
 
     lua_newtable(L);
@@ -677,7 +681,7 @@ static void FontPushResult_(void* L_, AssetLoader::FutureState* state) {
         state->fontTTFBuffer = nullptr;
         lua_pop(L, 2);
         lua_pushnil(L);
-        return;
+        return 1;
     }
 
     fc->scale = stbtt_ScaleForPixelHeight(&fc->fontInfo, fc->fontSize);
@@ -691,7 +695,7 @@ static void FontPushResult_(void* L_, AssetLoader::FutureState* state) {
         state->fontTTFBuffer = nullptr;
         lua_pop(L, 2);
         lua_pushnil(L);
-        return;
+        return 1;
     }
 
     fc->texId = g_render->CreateTexture(fc->atlasW, fc->atlasH, 1, fc->atlasBitmap);
@@ -703,7 +707,7 @@ static void FontPushResult_(void* L_, AssetLoader::FutureState* state) {
         state->fontTTFBuffer = nullptr;
         lua_pop(L, 2);
         lua_pushnil(L);
-        return;
+        return 1;
     }
 
     lua_createtable(L, 0, 1);
@@ -713,6 +717,7 @@ static void FontPushResult_(void* L_, AssetLoader::FutureState* state) {
     state->fontTTFBuffer = nullptr;
     for (int cp = 32; cp < 128; ++cp) fc->BakeGlyph(cp);
     lua_setfield(L, tableIdx, "__instance");
+    return 1;
 }
 
 static void FontAsyncDispatcher_(void* L_, AssetLoader::FutureState* state, int cbLuaRef) {
@@ -814,15 +819,18 @@ static int l_Future_Get(lua_State* L) {
         lua_pushstring(L, ud->state->errorMsg.empty() ? "unknown" : ud->state->errorMsg.c_str());
         return 2;
     }
-    // Ready: 调 result pusher (LoadXxxAsync 时设置). Pusher push 1 个 stack slot.
+    // Ready: 调 result pusher (LoadXxxAsync 时设置). Phase G.1.5: pusher 返 push 数量.
+    int n = 1;
     if (ud->state->resultPusher) {
-        ud->state->resultPusher(L, ud->state.get());
+        n = ud->state->resultPusher(L, ud->state.get());
+        if (n < 1) n = 1;
     } else {
         // 兜底: 没注册 pusher, 当老 Image 路径处理 (向后兼容)
-        ImagePushResult_(L, ud->state.get());
+        n = ImagePushResult_(L, ud->state.get());
+        if (n < 1) n = 1;
     }
     lua_pushnil(L);   // err = nil
-    return 2;
+    return n + 1;
 }
 
 static int l_Future_Gc(lua_State* L) {

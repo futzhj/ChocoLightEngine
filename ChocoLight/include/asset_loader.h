@@ -51,6 +51,21 @@ enum class FutureStatus : int {
     Error   = 2,
 };
 
+// ==================== Phase G.1.5 — GLTF Material Image Job ====================
+// withMaterial=true 时, worker 解码 5 类 PBR texture (任一 cgltf material 实际指定的)
+// 到 RGBA8 pixels, shared_ctx 路径 worker 自己 glTexImage2D + glFenceSync;
+// fallback 路径 pixels 留到主线程 Tick 调 g_render->CreateTexture 上传.
+//
+// slotIdx 枚举对应 MaterialDesc 5 个 texture slot (与 light_graphics_material.cpp::TexSlotPtr 一致):
+//   0 = baseColor / 1 = metallicRoughness / 2 = normal / 3 = emissive / 4 = occlusion
+struct MaterialImageJob {
+    int      slotIdx = -1;
+    int      w       = 0;
+    int      h       = 0;
+    uint8_t* pixels  = nullptr;   // worker stbi_load_from_memory; 上传完释放; 析构兜底
+    uint32_t glTexId = 0;         // 上传完成后的 GL texture id (0=失败 / 未上传)
+};
+
 /**
  * Future 共享状态: worker 写 (decode 完), 主线程读 + 完成上传后翻 status.
  *
@@ -114,6 +129,14 @@ struct FutureState {
     uint32_t glMeshEbo      = 0;
     int      glMeshIdxCount = 0;
 
+    // ---- Phase G.1.5 — GLTF Material + Embedded Texture ----
+    // withMaterial=true 时由 worker 填充. char[128] POD 序列化 MaterialDesc
+    // (避免 asset_loader.h 依赖 light_graphics_material.h 引入循环依赖).
+    // binding 层 (light_graphics_mesh.cpp) 反序列化为 MaterialDesc + 创建 Material userdata.
+    bool                          gltfWithMaterial = false;
+    char                          gltfMaterialDesc[128] = {0};   // POD MaterialDesc (sizeof ~80, 留余量)
+    std::vector<MaterialImageJob> gltfMaterialImages;            // 0..5 个, 按 cgltf material 实际指定
+
     // ---- Callback (Lua, 用于 LoadAsync(path, cb) 风格) ----
     // dispatcher: 由 Lua binding 在 LoadXxxAsync 时设置. Tick 完成上传后 (status=Ready/Error)
     // 调用它. dispatcher 负责: push 资源 userdata + lua_rawgeti(cbRef) + lua_pcall(...).
@@ -125,14 +148,15 @@ struct FutureState {
 
     // ---- Result pusher (Lua, 用于 Future:Get() poll 风格) ----
     // 由 Lua binding 在 LoadXxxAsync 时设置. Future:Get() Ready 状态下调用,
-    // 它负责 push 一个 type-specific 资源 userdata 到栈顶 (1 个 stack slot).
+    // 它负责 push 一个或多个 type-specific 资源 userdata 到栈顶, 并返回 push 数量.
     //
-    // 签名: void pusher(lua_State* L, FutureState* state)
+    // 签名: int pusher(lua_State* L, FutureState* state) — Phase G.1.5: 返 push 数量
     // 约定:
     //   - 只在 status==Ready 时被调
-    //   - 必须 push 恰好 1 个值到栈顶 (失败时 push nil)
+    //   - 必须 push 至少 1 个值到栈顶 (失败时 push nil 返 1)
+    //   - GLTF withMaterial 路径返 2 (mesh + material); 其他资源返 1
     //   - 不应抛 Lua error (用户 poll 路径需要稳定语义)
-    using ResultPusher = void(*)(void* L, FutureState* state);
+    using ResultPusher = int(*)(void* L, FutureState* state);
     ResultPusher resultPusher = nullptr;
 
     virtual ~FutureState();
@@ -224,17 +248,16 @@ std::shared_ptr<FutureState> LoadFontAsync(const char* path, float size);
 std::shared_ptr<FutureState> LoadSoundAsync(const char* path);
 
 /**
- * 异步加载 glTF Mesh 单 primitive (基础版本, 不含 material).
- * worker 阶段: cgltf_parse + cgltf_load_buffers + 提取顶点/索引到 malloc array.
- * 主线程阶段: backend->CreateMesh → resMeshId.
+ * 异步加载 glTF Mesh 单 primitive (Phase G.1.5: 可选 with material).
+ * worker 阶段: cgltf_parse + cgltf_load_buffers + 提取顶点/索引到 malloc array;
+ *              withMaterial=true 时额外提取 MaterialDesc + 解码 5 类 PBR texture (stbi_load_from_memory).
+ * 主线程阶段: backend->CreateMesh → resMeshId; withMaterial=true 时 5 textures 上传 + 写 MaterialDesc slots.
  *
- * @note with_material 不支持: material 涉及多张内嵌纹理 (Phase G.1.1 候选).
- *       想要 material 用同步 Mesh.LoadGLTF(path, idx, true).
- *
- * @param path     UTF-8 .gltf 或 .glb 路径
- * @param primIdx  primitive index (跨所有 mesh 0-indexed)
+ * @param path          UTF-8 .gltf 或 .glb 路径
+ * @param primIdx       primitive index (跨所有 mesh 0-indexed)
+ * @param withMaterial  Phase G.1.5: true 时同步 LoadGLTF 完整功能对齐 (返 mesh + material)
  */
-std::shared_ptr<FutureState> LoadGLTFAsync(const char* path, int primIdx);
+std::shared_ptr<FutureState> LoadGLTFAsync(const char* path, int primIdx, bool withMaterial = false);
 
 // ==================== Callback dispatch (Lua) ====================
 

@@ -2142,14 +2142,16 @@ static int l_HDR_LoadHaldLUT(lua_State* L) {
     return 1;
 }
 
-static void LUTPushResult_(void* L_, AssetLoader::FutureState* state) {
+// Phase G.1.5 — 改为 int 返 push 数量 (LUT: 默认 1)
+static int LUTPushResult_(void* L_, AssetLoader::FutureState* state) {
     lua_State* L = (lua_State*)L_;
-    if (!L) return;
+    if (!L) return 0;
     if (!state || state->status.load() != (int)AssetLoader::FutureStatus::Ready || !state->resLUTId) {
         lua_pushnil(L);
-        return;
+        return 1;
     }
     lua_pushinteger(L, (lua_Integer)state->resLUTId);
+    return 1;
 }
 
 static void LUTAsyncDispatcher_(void* L_, AssetLoader::FutureState* state, int cbLuaRef) {

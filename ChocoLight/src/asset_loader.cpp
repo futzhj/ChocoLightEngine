@@ -67,7 +67,16 @@ FutureState::~FutureState() {
     if (glMeshVao) { GLuint v = glMeshVao; glDeleteVertexArrays(1, &v); glMeshVao = 0; }
     if (glMeshVbo) { GLuint v = glMeshVbo; glDeleteBuffers(1, &v);      glMeshVbo = 0; }
     if (glMeshEbo) { GLuint v = glMeshEbo; glDeleteBuffers(1, &v);      glMeshEbo = 0; }
+    // Phase G.1.5 — 兜底清理 material textures: worker 上传成功但未写入 MaterialDesc slot
+    // (例如 fence 失败 / WriteSlots 前异常退出)
+    for (auto& job : gltfMaterialImages) {
+        if (job.glTexId) { GLuint t = job.glTexId; glDeleteTextures(1, &t); job.glTexId = 0; }
+    }
 #endif
+    // Phase G.1.5 — 兜底清理 material image pixels (fallback 路径未走到主线程上传时)
+    for (auto& job : gltfMaterialImages) {
+        if (job.pixels) { stbi_image_free(job.pixels); job.pixels = nullptr; }
+    }
     // Image
     if (imgPixels) {
         stbi_image_free(imgPixels);
@@ -303,8 +312,168 @@ static void DecodeSound_(Task& task) {
     task.state->resSoundHandle = h;
 }
 
+// ==================== Phase G.1.5 — GLTF Material + Embedded Image (Worker) ====================
+
+// 取 .gltf 文件所在目录 (含尾部分隔符), 用于解析相对纹理 URI.
+// 与 light_graphics_mesh.cpp::GetGLTFDirectory 同语义, 简化版 (worker 内独立, 避免链 binding)
+static std::string GetGLTFDirectory_(const char* gltfPath) {
+    if (!gltfPath) return "";
+    std::string p = gltfPath;
+    size_t pos = p.find_last_of("/\\");
+    if (pos == std::string::npos) return "";
+    return p.substr(0, pos + 1);
+}
+
+// 从 cgltf_image 提取 raw 图像 bytes (3 来源, 与同步 LoadGLTFImage 等价).
+// outBytes 保存解码到 stbi 之前的原始 PNG/JPG 字节流.
+// 失败返 false, 不写 errBuf (worker 仅 log warn).
+static bool ReadImageBytes_(const cgltf_image* img,
+                              const std::string& gltfDir,
+                              std::vector<uint8_t>& outBytes) {
+    if (!img) return false;
+
+    // case 1: GLB embedded buffer_view
+    if (img->buffer_view) {
+        const uint8_t* bvData = (const uint8_t*)cgltf_buffer_view_data(img->buffer_view);
+        if (!bvData) return false;
+        size_t sz = img->buffer_view->size;
+        if (sz == 0) return false;
+        outBytes.assign(bvData, bvData + sz);
+        return true;
+    }
+    if (!img->uri) return false;
+
+    // case 2: data URI (data:image/png;base64,XXX)
+    if (strncmp(img->uri, "data:", 5) == 0) {
+        const char* commaPos = strchr(img->uri, ',');
+        if (!commaPos) return false;
+        const char* b64    = commaPos + 1;
+        size_t      b64Len = strlen(b64);
+        // 估算解码后大小 (与同步路径完全一致)
+        size_t decodedSize = (b64Len / 4) * 3;
+        if (b64Len >= 2 && b64[b64Len - 1] == '=') {
+            decodedSize--;
+            if (b64[b64Len - 2] == '=') decodedSize--;
+        }
+        if (decodedSize == 0) return false;
+        cgltf_options opts = {};
+        void*         dec  = nullptr;
+        cgltf_result  cr   = cgltf_load_buffer_base64(&opts, decodedSize, b64, &dec);
+        if (cr != cgltf_result_success || !dec) return false;
+        outBytes.assign((uint8_t*)dec, (uint8_t*)dec + decodedSize);
+        free(dec);  // cgltf 默认 malloc
+        return true;
+    }
+
+    // case 3: 相对文件路径 (worker 直接 fopen 读取)
+    std::string fullPath = gltfDir + img->uri;
+    FILE* fp = fopen(fullPath.c_str(), "rb");
+    if (!fp) return false;
+    fseek(fp, 0, SEEK_END);
+    long sz = ftell(fp);
+    fseek(fp, 0, SEEK_SET);
+    if (sz <= 0) { fclose(fp); return false; }
+    outBytes.resize((size_t)sz);
+    size_t rd = fread(outBytes.data(), 1, (size_t)sz, fp);
+    fclose(fp);
+    return rd == (size_t)sz;
+}
+
+// 解码 cgltf_texture_view 引用的 image 到 RGBA8 pixels, 写入 FutureState.gltfMaterialImages.
+// 任一步失败仅 log warn 跳过, 不破坏 mesh 主流程.
+static void DecodeMaterialImage_(const cgltf_texture_view* view, int slotIdx,
+                                  FutureState& st, const std::string& gltfDir) {
+    if (!view || !view->texture || !view->texture->image) return;
+    const cgltf_image* img = view->texture->image;
+
+    std::vector<uint8_t> imgBytes;
+    if (!ReadImageBytes_(img, gltfDir, imgBytes)) {
+        CC::Log(CC::LOG_WARN,
+                "AssetLoader: GLTF material slot %d image source unreachable (skipped)",
+                slotIdx);
+        return;
+    }
+
+    int w = 0, h = 0, ch = 0;
+    unsigned char* pixels = stbi_load_from_memory(imgBytes.data(), (int)imgBytes.size(),
+                                                    &w, &h, &ch, 4);
+    if (!pixels || w <= 0 || h <= 0) {
+        CC::Log(CC::LOG_WARN,
+                "AssetLoader: GLTF material slot %d stbi decode failed: %s",
+                slotIdx,
+                stbi_failure_reason() ? stbi_failure_reason() : "unknown");
+        if (pixels) stbi_image_free(pixels);
+        return;
+    }
+
+    MaterialImageJob job;
+    job.slotIdx = slotIdx;
+    job.w       = w;
+    job.h       = h;
+    job.pixels  = pixels;
+    job.glTexId = 0;
+    st.gltfMaterialImages.push_back(std::move(job));
+}
+
+// 提取 MaterialDesc 全数值字段 (texture id slot 留 0).
+// 与 light_graphics_mesh.cpp::ExtractMaterial 数值部分等价, 但不调 LoadGLTFImage
+// (worker thread 不持锁 backend, GL 调用走 WorkerUploadMesh_).
+static void ExtractMaterial_NoTexture_(MaterialDesc& d, const cgltf_material* mat) {
+    // 默认 PBR + 白底 (与同步路径一致)
+    memset(&d, 0, sizeof(d));
+    d.mode              = 1;            // PBR
+    d.color[0]          = 1.0f;
+    d.color[1]          = 1.0f;
+    d.color[2]          = 1.0f;
+    d.color[3]          = 1.0f;
+    d.metallic          = 0.0f;
+    d.roughness         = 1.0f;
+    d.normalScale       = 1.0f;
+    d.occlusionStrength = 1.0f;
+    d.alphaMode         = 0;
+    d.alphaCutoff       = 0.5f;
+    d.doubleSided       = 0;
+
+    if (!mat) return;
+
+    d.mode = mat->unlit ? 0 : 1;
+
+    if (mat->has_pbr_metallic_roughness) {
+        const cgltf_pbr_metallic_roughness& pbr = mat->pbr_metallic_roughness;
+        d.color[0]  = pbr.base_color_factor[0];
+        d.color[1]  = pbr.base_color_factor[1];
+        d.color[2]  = pbr.base_color_factor[2];
+        d.color[3]  = pbr.base_color_factor[3];
+        d.metallic  = pbr.metallic_factor;
+        d.roughness = pbr.roughness_factor;
+    }
+
+    // normal_texture.scale (与同步路径一致, 是 normalScale)
+    if (mat->normal_texture.texture) {
+        d.normalScale = mat->normal_texture.scale;
+    }
+
+    // occlusion_texture.scale (cgltf 共用 cgltf_texture_view, scale 实为 strength)
+    if (mat->occlusion_texture.texture) {
+        d.occlusionStrength = mat->occlusion_texture.scale;
+    }
+
+    d.emissive[0] = mat->emissive_factor[0];
+    d.emissive[1] = mat->emissive_factor[1];
+    d.emissive[2] = mat->emissive_factor[2];
+
+    switch (mat->alpha_mode) {
+        case cgltf_alpha_mode_mask:  d.alphaMode = 2; break;
+        case cgltf_alpha_mode_blend: d.alphaMode = 1; break;
+        case cgltf_alpha_mode_opaque:
+        default:                     d.alphaMode = 0; break;
+    }
+    d.alphaCutoff = mat->alpha_cutoff;
+    d.doubleSided = mat->double_sided ? 1 : 0;
+}
+
 // GLTF: cgltf_parse + cgltf_load_buffers + 提取 primitive 顶点/索引到 malloc 数组
-// 注: 与同步 GLTF_ExtractPrimitive 共享语义, 不引材质 (Phase G.1.1)
+// Phase G.1.5: withMaterial=true 时额外提取 MaterialDesc + 5 类 PBR texture
 static void DecodeGLTF_(Task& task) {
     cgltf_options opts = {};
     cgltf_data*   data = nullptr;
@@ -471,6 +640,33 @@ static void DecodeGLTF_(Task& task) {
     task.state->gltfVertCount = (int)vCount;
     task.state->gltfIndices   = indices;
     task.state->gltfIdxCount  = idxCount;
+
+    // Phase G.1.5 — withMaterial: 提取 MaterialDesc 数值字段 + 解码 5 类 PBR texture
+    // cgltf_data 还活着 (主线程 Tick 时 free), prim 指针有效, image data 引用 buffer_view 可读
+    if (task.state->gltfWithMaterial) {
+        static_assert(sizeof(MaterialDesc) <= 128,
+                      "MaterialDesc exceeds gltfMaterialDesc[128] buffer; bump capacity in asset_loader.h");
+
+        MaterialDesc md{};
+        ExtractMaterial_NoTexture_(md, prim->material);
+        memcpy(task.state->gltfMaterialDesc, &md, sizeof(MaterialDesc));
+
+        if (prim->material) {
+            std::string gltfDir = GetGLTFDirectory_(task.path.c_str());
+            const cgltf_material* mat = prim->material;
+            // 5 个 PBR texture slot (与 MaterialDesc::tex* 字段顺序一致):
+            //   0=baseColor / 1=metallicRoughness / 2=normal / 3=emissive / 4=occlusion
+            if (mat->has_pbr_metallic_roughness) {
+                DecodeMaterialImage_(&mat->pbr_metallic_roughness.base_color_texture,
+                                      0, *task.state, gltfDir);
+                DecodeMaterialImage_(&mat->pbr_metallic_roughness.metallic_roughness_texture,
+                                      1, *task.state, gltfDir);
+            }
+            DecodeMaterialImage_(&mat->normal_texture,    2, *task.state, gltfDir);
+            DecodeMaterialImage_(&mat->emissive_texture,  3, *task.state, gltfDir);
+            DecodeMaterialImage_(&mat->occlusion_texture, 4, *task.state, gltfDir);
+        }
+    }
 }
 
 // ==================== Phase G.1.1 — Worker 直接 GL 上传 ====================
@@ -598,7 +794,45 @@ static void WorkerUploadMesh_(Task& task) {
     st.glMeshVbo      = (uint32_t)vbo;
     st.glMeshEbo      = (uint32_t)ebo;
     st.glMeshIdxCount = st.gltfIdxCount;
-    glFlush();
+
+    // Phase G.1.5 — withMaterial: 串行上传 5 类 PBR texture (与 CreateTexture(channels=4) 等价).
+    // 任一 texture 失败仅 log warn, 不破坏 mesh; 释放本 job pixels 后继续下一个.
+    // single fence 在最后 glFlush 共用 — GL 命令队列保证顺序完成, 主线程 ClientWaitSync 能感知.
+    if (st.gltfWithMaterial) {
+        for (auto& job : st.gltfMaterialImages) {
+            if (!job.pixels || job.w <= 0 || job.h <= 0) continue;
+            GLuint tex = 0;
+            glGenTextures(1, &tex);
+            if (!tex) {
+                CC::Log(CC::LOG_WARN,
+                        "WorkerUploadMesh: glGenTextures failed for material slot %d (skipped)",
+                        job.slotIdx);
+                stbi_image_free(job.pixels); job.pixels = nullptr;
+                continue;
+            }
+            glBindTexture(GL_TEXTURE_2D, tex);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8,
+                         job.w, job.h, 0, GL_RGBA, GL_UNSIGNED_BYTE, job.pixels);
+            GLenum texErr = glGetError();
+            glBindTexture(GL_TEXTURE_2D, 0);
+            if (texErr != GL_NO_ERROR) {
+                glDeleteTextures(1, &tex);
+                CC::Log(CC::LOG_WARN,
+                        "WorkerUploadMesh: material slot %d glTexImage2D err=0x%x (skipped)",
+                        job.slotIdx, (unsigned)texErr);
+                stbi_image_free(job.pixels); job.pixels = nullptr;
+                continue;
+            }
+            stbi_image_free(job.pixels); job.pixels = nullptr;
+            job.glTexId = (uint32_t)tex;
+        }
+    }
+
+    glFlush();   // 让 mesh + 5 textures 命令进入 GPU 队列
     GLsync fence = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
     st.glFence    = (void*)fence;
 }
@@ -906,7 +1140,34 @@ static void UploadSound_(FutureState& st, const std::string& path) {
     st.status.store((int)FutureStatus::Ready);
 }
 
+// Phase G.1.5 — 主线程 helper: 把 5 类 PBR texture id 写入 MaterialDesc 5 slots.
+// 反序列化 MaterialDesc 字节 → 按 slotIdx 写 texXxx → 重新序列化回 char[128].
+// 等价于 light_graphics_material.cpp::TexSlotPtr 的指针映射 (worker 内独立 helper).
+static void WriteMaterialTextureSlots_(FutureState& st) {
+    if (!st.gltfWithMaterial) return;
+    MaterialDesc d{};
+    memcpy(&d, st.gltfMaterialDesc, sizeof(MaterialDesc));
+    int written = 0;
+    for (auto& job : st.gltfMaterialImages) {
+        if (job.glTexId == 0) continue;
+        switch (job.slotIdx) {
+            case 0: d.texBaseColor         = job.glTexId; ++written; break;
+            case 1: d.texMetallicRoughness = job.glTexId; ++written; break;
+            case 2: d.texNormal            = job.glTexId; ++written; break;
+            case 3: d.texEmissive          = job.glTexId; ++written; break;
+            case 4: d.texOcclusion         = job.glTexId; ++written; break;
+            default: break;   // 未知 slot 跳过
+        }
+    }
+    memcpy(st.gltfMaterialDesc, &d, sizeof(MaterialDesc));
+    if (written > 0) {
+        CC::Log(CC::LOG_INFO,
+                "AssetLoader: GLTF material textures upload ok (slots=%d)", written);
+    }
+}
+
 // GLTF: 主线程 backend->CreateMesh (vertex/index 数组已在 worker malloc)
+// Phase G.1.5: withMaterial=true 时额外串行 5 textures CreateTexture + WriteSlots
 static void UploadGLTF_(FutureState& st, const std::string& path) {
     if (!st.gltfVerts || !st.gltfIndices || st.gltfVertCount <= 0 || st.gltfIdxCount <= 0) {
         st.errorMsg = "internal: GLTF arrays missing in result";
@@ -937,6 +1198,25 @@ static void UploadGLTF_(FutureState& st, const std::string& path) {
     CC::Log(CC::LOG_INFO,
             "AssetLoader: GLTF async upload ok (verts=%d, idx=%d, meshId=%u, path=%s)",
             st.gltfVertCount, st.gltfIdxCount, meshId, path.c_str());
+
+    // Phase G.1.5 — withMaterial fallback 路径: 串行 CreateTexture × N + WriteSlots
+    if (st.gltfWithMaterial) {
+        for (auto& job : st.gltfMaterialImages) {
+            if (!job.pixels || job.w <= 0 || job.h <= 0) continue;
+            uint32_t texId = g_render->CreateTexture(job.w, job.h, 4, job.pixels);
+            if (texId) {
+                job.glTexId = texId;
+            } else {
+                CC::Log(CC::LOG_WARN,
+                        "UploadGLTF: material slot %d CreateTexture failed (slot 0)",
+                        job.slotIdx);
+            }
+            stbi_image_free(job.pixels);
+            job.pixels = nullptr;
+        }
+        WriteMaterialTextureSlots_(st);
+    }
+
     st.status.store((int)FutureStatus::Ready);
 }
 
@@ -1014,6 +1294,10 @@ void Tick() {
                 if (st->glMeshVao) { GLuint v = st->glMeshVao; glDeleteVertexArrays(1, &v); st->glMeshVao = 0; }
                 if (st->glMeshVbo) { GLuint v = st->glMeshVbo; glDeleteBuffers(1, &v);      st->glMeshVbo = 0; }
                 if (st->glMeshEbo) { GLuint v = st->glMeshEbo; glDeleteBuffers(1, &v);      st->glMeshEbo = 0; }
+                // Phase G.1.5 — fence 失败兜底: worker 已上传的 material textures 释放
+                for (auto& job : st->gltfMaterialImages) {
+                    if (job.glTexId) { GLuint t = job.glTexId; glDeleteTextures(1, &t); job.glTexId = 0; }
+                }
                 st->status.store((int)FutureStatus::Error);
             } else {
                 // r==0: fence Ready
@@ -1030,12 +1314,23 @@ void Tick() {
                         if (st->glMeshVao) { GLuint v = st->glMeshVao; glDeleteVertexArrays(1, &v); }
                         if (st->glMeshVbo) { GLuint v = st->glMeshVbo; glDeleteBuffers(1, &v); }
                         if (st->glMeshEbo) { GLuint v = st->glMeshEbo; glDeleteBuffers(1, &v); }
+                        // Phase G.1.5 — backend 注册失败也兜底 textures
+                        for (auto& job : st->gltfMaterialImages) {
+                            if (job.glTexId) { GLuint t = job.glTexId; glDeleteTextures(1, &t); job.glTexId = 0; }
+                        }
                         st->errorMsg = "RegisterUploadedMesh failed (backend Supports3D=false?)";
                         st->status.store((int)FutureStatus::Error);
                     } else {
                         // backend 接管了 handles, 清空 state 以避免 dtor 兜底派发 glDelete
                         st->glMeshVao = 0; st->glMeshVbo = 0; st->glMeshEbo = 0;
                         st->resMeshId = meshId;
+                        // Phase G.1.5 — withMaterial: 把 worker 已上传的 5 GL texId 写入 MaterialDesc
+                        // 写完后 textures 由 g_render 全局生命周期管理, dtor 不再 glDelete
+                        WriteMaterialTextureSlots_(*st);
+                        for (auto& job : st->gltfMaterialImages) {
+                            // 表明 textures 已交接 (写入 MaterialDesc), dtor 不再 glDelete
+                            job.glTexId = 0;
+                        }
                         st->status.store((int)FutureStatus::Ready);
                         CC::Log(CC::LOG_INFO,
                                 "AssetLoader: worker mesh upload ok (verts=%d, idx=%d, meshId=%u, path=%s)",
@@ -1148,13 +1443,16 @@ static int l_Future_Get_(lua_State* L) {
         return 2;
     }
 
+    // Phase G.1.5 — pusher 返 push 数量 (默认 1, GLTF withMaterial=2)
+    int n = 1;
     if (ud->state->resultPusher) {
-        ud->state->resultPusher(L, ud->state.get());
+        n = ud->state->resultPusher(L, ud->state.get());
+        if (n < 1) n = 1;   // 防御
     } else {
         lua_pushnil(L);
     }
-    lua_pushnil(L);
-    return 2;
+    lua_pushnil(L);   // err = nil
+    return n + 1;
 }
 
 static int l_Future_Gc_(lua_State* L) {
@@ -1414,10 +1712,11 @@ std::shared_ptr<FutureState> LoadSoundAsync(const char* path) {
 
 // ==================== LoadGLTFAsync ====================
 
-std::shared_ptr<FutureState> LoadGLTFAsync(const char* path, int primIdx) {
+std::shared_ptr<FutureState> LoadGLTFAsync(const char* path, int primIdx, bool withMaterial) {
     auto state = std::make_shared<FutureState>();
-    state->type        = (int)TaskType::GLTF;
-    state->gltfPrimIdx = primIdx >= 0 ? primIdx : 0;
+    state->type             = (int)TaskType::GLTF;
+    state->gltfPrimIdx      = primIdx >= 0 ? primIdx : 0;
+    state->gltfWithMaterial = withMaterial;   // Phase G.1.5 — 决定 worker 是否提取 material + image
 
     if (!path || !*path) {
         state->errorMsg = "LoadGLTFAsync: path is null/empty";
