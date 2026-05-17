@@ -937,7 +937,14 @@ static void WorkerMain() {
                 case TaskType::Image:    WorkerUploadImage_(task); break;
                 case TaskType::LUT_Cube:
                 case TaskType::LUT_Hald: WorkerUploadLUT_(task);   break;
-                case TaskType::GLTF:     WorkerUploadMesh_(task);  break;   // Phase G.1.2
+                case TaskType::GLTF:
+                    // Phase G.1.5 fix: WorkerUploadMesh_ 需 GL 3.0+ (glGenVertexArrays/glVertexAttribPointer).
+                    // Legacy GL 2.x backend (CI software runner / 老硬件) 上这些函数指针为 NULL → crash.
+                    // 跳过 worker 上传 → 主线程 Tick UploadGLTF_ fallback (内部已有 Supports3D check 转 Error).
+                    if (g_render && g_render->Supports3D()) {
+                        WorkerUploadMesh_(task);
+                    }
+                    break;
                 default: break;   // Font / Sound 走主线程 Tick (无 GL 操作)
             }
         }
