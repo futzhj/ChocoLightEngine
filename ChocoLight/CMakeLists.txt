@@ -221,6 +221,8 @@ set(LIGHT_SOURCES
     ${CHOCO_SRC}/light_graphics_image.cpp
     ${CHOCO_SRC}/light_graphics_font.cpp
     ${CHOCO_SRC}/light_av.cpp
+    ${CHOCO_SRC}/record_mp4.cpp        # Phase F.0.11.6 — H.264 MP4 录屏 (FFmpeg encoder)
+    ${CHOCO_SRC}/asset_loader.cpp      # Phase G.1 — 异步资源加载 (worker thread + shared GL ctx)
     ${CHOCO_SRC}/light_db.cpp
     ${CHOCO_SRC}/light_network.cpp
     ${CHOCO_SRC}/light_network_packet.cpp
@@ -311,6 +313,7 @@ set(LIGHT_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/tiny_aes.c
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/tiny_hash.c
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/cgltf_impl.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/tinyexr_impl.cpp   # Phase F.0.11.5 — EXR HDR screenshot
 )
 
 # 平台条件源文件

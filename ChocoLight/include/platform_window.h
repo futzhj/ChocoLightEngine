@@ -137,6 +137,14 @@ void SetShouldClose(void* win, bool close);
 /// @return 不透明 GL 上下文句柄, nullptr=失败
 void* CreateGLContext(void* win);
 
+/// @brief 创建一个与当前 current GL 上下文共享对象的额外上下文 (Phase G.1.1)
+/// @details 用于异步资源加载 worker 线程: worker 拥有自己的 GL ctx, 可直接 glTexImage2D
+///          + glFenceSync, 主线程仅做 glClientWaitSync 翻状态.
+///          调用前提: 主线程已 MakeCurrent 主 ctx (内部依赖 SDL_GL_SHARE_WITH_CURRENT_CONTEXT).
+///          移动 / Web 平台 share context 行为不可靠, 该函数始终返 nullptr.
+/// @return 共享 GL 上下文句柄; nullptr 表示不支持 (调用方走主线程上传 fallback)
+void* CreateSharedGLContext(void* win);
+
 /// @brief 销毁 GL 上下文
 void DestroyGLContext(void* ctx);
 

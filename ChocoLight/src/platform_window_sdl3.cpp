@@ -268,6 +268,32 @@ void* CreateGLContext(void* win) {
     return (void*)ctx;
 }
 
+// Phase G.1.1 — 创建与当前 current 主 ctx 共享对象的额外 GL 上下文.
+// 桌面: 设 SDL_GL_SHARE_WITH_CURRENT_CONTEXT=1 后 SDL_GL_CreateContext.
+// 移动/Web: 直接返 nullptr (各平台共享语义差异大, 暂不支持).
+// 失败仅 LOG_INFO (调用方为 probe, 失败属预期分支), 不打 ERROR 避免误导.
+void* CreateSharedGLContext(void* win) {
+    if (!win) return nullptr;
+#if defined(__EMSCRIPTEN__) || defined(__ANDROID__) || defined(CHOCO_PLATFORM_IOS)
+    // 移动 / Web: share context 不稳定, 走 fallback (主线程上传)
+    (void)win;
+    return nullptr;
+#else
+    // 桌面: 让 SDL3 把新 ctx 与当前 current ctx 标记为共享对象空间
+    SDL_GL_SetAttribute(SDL_GL_SHARE_WITH_CURRENT_CONTEXT, 1);
+    SDL_GLContext ctx = SDL_GL_CreateContext((SDL_Window*)win);
+    if (!ctx) {
+        CC::Log(CC::LOG_INFO,
+                "PlatformWindow: shared GL context unavailable: %s",
+                SDL_GetError());
+        return nullptr;
+    }
+    // SDL_GL_CreateContext 后新 ctx 已成为 current. 调用方需立即 MakeCurrent 主 ctx
+    // 把主 ctx 拉回当前线程, 然后由 worker 线程自行 MakeCurrent 这个共享 ctx.
+    return (void*)ctx;
+#endif
+}
+
 void DestroyGLContext(void* ctx) {
     if (ctx) SDL_GL_DestroyContext((SDL_GLContext)ctx);
 }

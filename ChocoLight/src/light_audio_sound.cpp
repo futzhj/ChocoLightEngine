@@ -36,9 +36,11 @@
 
 #include "light.h"
 #include "light_audio_backend.h"
+#include "asset_loader.h"
 
 #include <cstdint>
 #include <cstring>
+#include <utility>
 
 extern "C" {
 #include "lua.h"
@@ -95,6 +97,67 @@ static int l_Sound_Load(lua_State* L) {
     luaL_getmetatable(L, SOUND_MT);
     lua_setmetatable(L, -2);
     return 1;
+}
+
+static void SoundPushResult_(void* L_, AssetLoader::FutureState* state) {
+    lua_State* L = (lua_State*)L_;
+    if (!L) return;
+    if (!state || state->status.load() != (int)AssetLoader::FutureStatus::Ready || !state->resSoundHandle) {
+        lua_pushnil(L);
+        return;
+    }
+    SoundUserdata* ud = (SoundUserdata*)lua_newuserdata(L, sizeof(SoundUserdata));
+    ud->h = (AudioHandle*)state->resSoundHandle;
+    ud->groupRef = LUA_NOREF;
+    ud->effectRef = LUA_NOREF;
+    state->resSoundHandle = nullptr;
+    luaL_getmetatable(L, SOUND_MT);
+    lua_setmetatable(L, -2);
+}
+
+static void SoundAsyncDispatcher_(void* L_, AssetLoader::FutureState* state, int cbLuaRef) {
+    lua_State* L = (lua_State*)L_;
+    if (!L || !state || cbLuaRef < 0) return;
+    lua_rawgeti(L, LUA_REGISTRYINDEX, cbLuaRef);
+    if (!lua_isfunction(L, -1)) {
+        lua_pop(L, 1);
+        return;
+    }
+    if (state->status.load() == (int)AssetLoader::FutureStatus::Ready) {
+        SoundPushResult_(L, state);
+        lua_pushnil(L);
+    } else {
+        lua_pushnil(L);
+        lua_pushstring(L, state->errorMsg.empty() ? "unknown error" : state->errorMsg.c_str());
+    }
+    if (lua_pcall(L, 2, 0, 0) != 0) {
+        const char* err = lua_tostring(L, -1);
+        CC::Log(CC::LOG_WARN, "Sound LoadAsync cb error: %s", err ? err : "(none)");
+        lua_pop(L, 1);
+    }
+}
+
+static int l_Sound_LoadAsync(lua_State* L) {
+    const char* path = luaL_checkstring(L, 1);
+    int cbRef = -1;
+    if (lua_gettop(L) >= 2 && lua_isfunction(L, 2)) {
+        lua_pushvalue(L, 2);
+        cbRef = luaL_ref(L, LUA_REGISTRYINDEX);
+    }
+
+    auto state = AssetLoader::LoadSoundAsync(path);
+    AssetLoader::RegisterResultPusher(state, SoundPushResult_);
+    if (cbRef >= 0) {
+        AssetLoader::RegisterCallback(state, SoundAsyncDispatcher_, L, cbRef);
+        if (state->status.load() != (int)AssetLoader::FutureStatus::Pending) {
+            SoundAsyncDispatcher_(L, state.get(), cbRef);
+            luaL_unref(L, LUA_REGISTRYINDEX, cbRef);
+            state->dispatcher = nullptr;
+            state->cbLuaRef = -1;
+            state->cbLuaState = nullptr;
+        }
+    }
+    return AssetLoader::PushAsyncFuture(L, std::move(state));
 }
 
 // ==================== Sound.LoadPCM(data, fmt, ch, rate) ====================
@@ -411,6 +474,7 @@ static const luaL_Reg kSoundMethods[] = {
 
 static const luaL_Reg kSoundFns[] = {
     { "Load",     l_Sound_Load },
+    { "LoadAsync", l_Sound_LoadAsync },
     { "LoadPCM",  l_Sound_LoadPCM },
     { nullptr, nullptr }
 };

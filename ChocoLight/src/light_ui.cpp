@@ -36,6 +36,7 @@
 #include "ssao_renderer.h"              // Phase E.8.2 — SSAO (屏幕空间环境光遮蔽)
 #include "ssr_renderer.h"               // Phase E.9 — SSR (屏幕空间反射)
 #include "motion_blur_renderer.h"       // Phase E.15 — Velocity-driven Motion Blur
+#include "asset_loader.h"               // Phase G.1 — 异步资源加载
 #include "light_audio_backend.h"
 #include "light_platform_net.h"
 #include "platform_window.h"
@@ -44,6 +45,7 @@
 // Input 模块事件处理 (定义在 light_input.cpp)
 extern void InputProcessEvent(const PlatformWindow::Event& ev);
 #include <cstdlib>
+#include <cstdio>      // Phase G.1.3 — atexit 审计钩子用 fputs/fprintf 直写 stderr
 
 #ifdef __ANDROID__
 #include <SDL3/SDL.h>
@@ -76,7 +78,8 @@ extern "C" void Light_Graphics_RecordTickHook(int win_w, int win_h);
 static bool       g_platformInited = false;
 static void*      g_mainWindow     = nullptr;   // PlatformWindow 不透明句柄
 static void*      g_glContext      = nullptr;
-static lua_State* g_callbackL      = nullptr;   // 持续保存的 Lua state (用于回调)
+// Phase G.1: 去 static, 供 asset_loader.cpp 等模块在主线程 dispatch Lua callback
+lua_State*        g_callbackL      = nullptr;   // 持续保存的 Lua state (用于回调)
 static int        g_windowRef      = LUA_NOREF; // Window Lua 实例的注册表索引
 
 // 鼠标位置缓存 (SDL3 鼠标按钮事件已自带坐标, 但单独 Move 事件也保持此缓存供其他地方查询)
@@ -525,6 +528,13 @@ static int l_Window_Open(lua_State* L) {
     // Phase F.0: 初始化 TAA 主管线 (默认 autoEnable=false, 用户主动 Enable)
     TAARenderer::Init(g_render);
 
+    // Phase G.1: 启动异步资源加载 worker (失败不致命, 内部 fallback 同步加载)
+    // Phase G.1.1: 传入主窗口/主 GL ctx, 内部 probe Shared GL Context;
+    //              probe 失败仍正常启动 worker, 走主线程上传路径
+    if (!AssetLoader::Init(g_mainWindow, g_glContext)) {
+        CC::Log(CC::LOG_WARN, "AssetLoader init failed, async loads fall back to sync path");
+    }
+
     // 初始化音频后端
     if (!AudioBackend::Init()) {
         CC::Log(CC::LOG_WARN, "AudioBackend: init failed, audio will be unavailable");
@@ -581,6 +591,18 @@ static int l_Window_ID(lua_State* L) {
 }
 
 // ==================== Window:GetWidth / GetHeight / GetDimensions ====================
+
+// Phase F.0.11.6 — 给 light_graphics.cpp::l_Graphics_RecordMP4 用的窗口尺寸 extern
+extern "C" int Light_GetWindowWidth() {
+    int w = 0, h = 0;
+    if (g_mainWindow) PlatformWindow::GetWindowSize(g_mainWindow, &w, &h);
+    return w;
+}
+extern "C" int Light_GetWindowHeight() {
+    int w = 0, h = 0;
+    if (g_mainWindow) PlatformWindow::GetWindowSize(g_mainWindow, &w, &h);
+    return h;
+}
 
 static int l_Window_GetWidth(lua_State* L) {
     int w = 0, h = 0;
@@ -667,6 +689,8 @@ static int l_Window_Call(lua_State* L) {
     if (g_render) {
         g_render->BeginFrame(0, 0, 0, 1);
     }
+    // Phase G.1: 主线程 drain async-asset 结果, 上传 GL + 标 Future ready
+    AssetLoader::Tick();
     if (BatchRenderer::IsInited())    BatchRenderer::BeginFrame();
     if (LitBatchRenderer::IsInited()) LitBatchRenderer::BeginFrame();
     // Phase E.3.2: HDR 启用时切到 HDR RT (所有 Draw 绘到 RGBA16F 离屏)
@@ -735,9 +759,114 @@ static int l_Window_Tostring(lua_State* L) {
     return 1;
 }
 
+// ==================== 退出审计 (Phase G.1.3 加固) ====================
+// 在进程 atexit 阶段自检 window / render / AssetLoader / platform 状态。
+// 正常路径 (PerformWindowShutdown_ 已被走过): 全部 nullptr/false → 静默。
+// 绕过清理路径: 输出 stderr 警告, 帮助开发者发现自己的 sample 退出路径错误。
+//
+// 注意: 此 hook 在 main() 返回后、静态析构前运行 (C atexit 语义).
+//   - 不能用 CC::Log (依赖未知)
+//   - 不能调 GL / Lua (上下文已失效)
+//   - 仅安全的 fputs/fprintf 到 stderr
+namespace {
+
+static void WindowLifecycleAudit_() {
+    int n = 0;
+    const char* warns[8] = {nullptr};
+    if (g_mainWindow)               warns[n++] = "g_mainWindow not destroyed";
+    if (g_glContext)                warns[n++] = "g_glContext not destroyed";
+    if (g_render)                   warns[n++] = "g_render not deleted (renderer may leak)";
+    if (g_platformInited)           warns[n++] = "PlatformWindow::Shutdown not called (SDL3 still inited)";
+    if (g_windowRef != LUA_NOREF)   warns[n++] = "g_windowRef still held in Lua registry";
+    if (AssetLoader::IsRunning())   warns[n++] = "AssetLoader worker thread still running (joinable thread will std::terminate at static dtor)";
+
+    if (n == 0) return;   // 正常路径: 静默
+
+    // 用 fputs/fprintf 直写 stderr, 避免依赖任何可能已析构的子系统
+    fputs("\n[ChocoLight] WARNING: window lifecycle audit failed at process exit:\n", stderr);
+    for (int i = 0; i < n; ++i) {
+        fprintf(stderr, "  - %s\n", warns[i]);
+    }
+    fputs("[ChocoLight] Likely cause: main loop exited without going through UI.Loop / UI.Resume\n", stderr);
+    fputs("              cleanup path (e.g. early `break`, exception, or os.exit before window close).\n", stderr);
+    fputs("[ChocoLight] Hint: ensure user calls self:Close() inside Update/Draw, and use the\n", stderr);
+    fputs("              standard pattern `while UI.Loop() do UI.Resume() end` without breaking out early.\n", stderr);
+    fputs("[ChocoLight] See docs/API_REFERENCE.md (Light.UI section) for the correct lifecycle.\n", stderr);
+    fflush(stderr);
+}
+
+// 用静态 ctor 注册 atexit 钩子; 仅依赖 <cstdlib> 已 include.
+struct WindowLifecycleAuditor {
+    WindowLifecycleAuditor() { atexit(&WindowLifecycleAudit_); }
+};
+static WindowLifecycleAuditor g_lifecycleAuditor;
+
+} // namespace
+
+// ==================== 窗口关闭统一清理路径 (Phase G.1.x fix) ====================
+// 历史问题: 此前清理逻辑只在 l_UI_Resume 的 ShouldClose 分支内执行。
+// 但 sample 通用模板 `while UI.Loop() do UI.Resume() end` 在 UI.Loop=false 时
+// 直接退出 while, 此后不会再调 UI.Resume → 清理永远不跑 → worker thread / GL ctx
+// 等资源未释放 → 进程退出时 std::thread::~thread() joinable 触发 std::terminate
+// (Windows 上表现为 STATUS_STACK_BUFFER_OVERRUN, 0xC0000409)。
+//
+// 修复: 抽为独立 helper, l_UI_Loop 与 l_UI_Resume 在任一路径首次检测到 ShouldClose
+// 都调用此函数; 内部用 g_mainWindow != nullptr 作为幂等 guard, 避免重复执行。
+static void PerformWindowShutdown_(lua_State* L) {
+    if (!g_mainWindow) return;   // 幂等: 已清理过则直接返回
+
+    if (g_windowRef != LUA_NOREF) {
+        luaL_unref(L, LUA_REGISTRYINDEX, g_windowRef);
+        g_windowRef = LUA_NOREF;
+    }
+    // Phase G.1: 关 AssetLoader (worker join + 清队列). 必须在 g_render 销毁前
+    // 完成最后一次 Tick (Tick 仍可调 backend->CreateTexture). 但出于稳健考虑,
+    // 这里不再 Tick — Shutdown 直接把 pending future 标 Error.
+    AssetLoader::Shutdown();
+    PlatformNet::Shutdown();
+    AudioBackend::Shutdown();
+    // Phase F.0: TAA 依赖 HDR sceneTex + velocity + dilation; 管线最末端 → 最先关闭
+    TAARenderer::Shutdown();
+    // Phase E.15: Motion Blur 依赖 HDR sceneTex + velocityTex; 最先关闭 (管线末端)
+    MotionBlurRenderer::Shutdown();
+    // Phase E.9: SSR 依赖 HDR RT + G-buffer normal; 最先关闭 (管线末端, 在 SSAO 之前)
+    SSRRenderer::Shutdown();
+    // Phase E.8.2: SSAO 依赖 HDR RT depth; 最先关闭 (管线末端)
+    SSAORenderer::Shutdown();
+    // Phase E.7.2: LensFlare 依赖 Bloom + HDR; 最先关闭 (管线末端)
+    LensFlareRenderer::Shutdown();
+    // Phase E.6.2: LensFx 依赖 backend + Bloom; 最先关闭 (反初始化顺序)
+    StreakRenderer::Shutdown();
+    LensDirtRenderer::Shutdown();
+    // Phase E.5.2: AutoExposureRenderer 依赖 backend、先于 Bloom/HDR 关闭 (luminance RT 独立)
+    AutoExposureRenderer::Shutdown();
+    // Phase E.4.2: BloomRenderer 依赖 backend、先于 HDR 关闭 (pyramid 拍拭不注册 depth RBO map)
+    BloomRenderer::Shutdown();
+    HDRRenderer::Shutdown();
+    LitBatchRenderer::Shutdown();
+    BatchRenderer::Shutdown();
+    if (g_render) {
+        g_render->Shutdown();
+        delete g_render;
+        g_render = nullptr;
+    }
+    PlatformWindow::DestroyGLContext(g_glContext);
+    PlatformWindow::DestroyWindow(g_mainWindow);
+    g_glContext      = nullptr;
+    g_mainWindow     = nullptr;
+    PlatformWindow::Shutdown();
+    g_platformInited = false;
+}
+
 // ==================== UI.Loop ====================
 
 static int l_UI_Loop(lua_State* L) {
+    // 检测 ShouldClose: 若窗口已经标记关闭, 立刻执行一次清理 (幂等)
+    // 这样兼容 sample 写法 `while UI.Loop() do UI.Resume() end` — 即使后续 UI.Resume
+    // 不再被调用, 清理路径也必然执行一次, 避免 worker thread 未 join 的崩溃。
+    if (g_mainWindow && PlatformWindow::ShouldClose(g_mainWindow)) {
+        PerformWindowShutdown_(L);
+    }
     lua_pushboolean(L, g_mainWindow && !PlatformWindow::ShouldClose(g_mainWindow));
     return 1;
 }
@@ -756,44 +885,8 @@ static int l_UI_Resume(lua_State* L) {
 
     if (g_mainWindow) {
         if (PlatformWindow::ShouldClose(g_mainWindow)) {
-            // 窗口关闭 → 清理
-            if (g_windowRef != LUA_NOREF) {
-                luaL_unref(L, LUA_REGISTRYINDEX, g_windowRef);
-                g_windowRef = LUA_NOREF;
-            }
-            PlatformNet::Shutdown();
-            AudioBackend::Shutdown();
-            // Phase F.0: TAA 依赖 HDR sceneTex + velocity + dilation; 管线最末端 → 最先关闭
-            TAARenderer::Shutdown();
-            // Phase E.15: Motion Blur 依赖 HDR sceneTex + velocityTex; 最先关闭 (管线末端)
-            MotionBlurRenderer::Shutdown();
-            // Phase E.9: SSR 依赖 HDR RT + G-buffer normal; 最先关闭 (管线末端, 在 SSAO 之前)
-            SSRRenderer::Shutdown();
-            // Phase E.8.2: SSAO 依赖 HDR RT depth; 最先关闭 (管线末端)
-            SSAORenderer::Shutdown();
-            // Phase E.7.2: LensFlare 依赖 Bloom + HDR; 最先关闭 (管线末端)
-            LensFlareRenderer::Shutdown();
-            // Phase E.6.2: LensFx 依赖 backend + Bloom; 最先关闭 (反初始化顺序)
-            StreakRenderer::Shutdown();
-            LensDirtRenderer::Shutdown();
-            // Phase E.5.2: AutoExposureRenderer 依赖 backend、先于 Bloom/HDR 关闭 (luminance RT 独立)
-            AutoExposureRenderer::Shutdown();
-            // Phase E.4.2: BloomRenderer 依赖 backend、先于 HDR 关闭 (pyramid 拍拭不注册 depth RBO map)
-            BloomRenderer::Shutdown();
-            HDRRenderer::Shutdown();
-            LitBatchRenderer::Shutdown();
-            BatchRenderer::Shutdown();
-            if (g_render) {
-                g_render->Shutdown();
-                delete g_render;
-                g_render = nullptr;
-            }
-            PlatformWindow::DestroyGLContext(g_glContext);
-            PlatformWindow::DestroyWindow(g_mainWindow);
-            g_glContext      = nullptr;
-            g_mainWindow     = nullptr;
-            PlatformWindow::Shutdown();
-            g_platformInited = false;
+            // 窗口关闭 → 走统一清理路径 (与 l_UI_Loop 共用, 幂等)
+            PerformWindowShutdown_(L);
             lua_pushboolean(L, 0);
             return 1;
         }

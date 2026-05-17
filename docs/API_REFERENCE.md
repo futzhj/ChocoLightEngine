@@ -26,6 +26,7 @@
 - [Light.Network.HttpServer](#lightnetworkhttpserver) (3 个 API)
 - [Light.Plugins.NEMData](#lightpluginsnemdata) (8 个 API)
 - [Light.Plugins.WDFData](#lightpluginswdfdata) (6 个 API)
+- [**Light.UI**](#lightui) — **Window 回调约定 + 主循环模式** (重要, 见此节避坑)
 - [Phase E 高级特性入口](#phase-e-高级特性入口) (7 子模块, ~100 API)
 
 ---
@@ -1947,5 +1948,117 @@ local img = Light(Light.Graphics.Image):New("hero.png")
 - `void`
 
 <sub>📄 `light_plugins.cpp:393`</sub>
+
+---
+
+## Light.UI
+
+> 窗口与主事件循环。本节由人工维护（非 `///@lua_api` 自动生成）。
+
+### 概览
+
+`Light.UI` 提供唯一的应用程序入口：创建窗口、运行主循环、分发输入事件到用户 Lua 代码。一个进程**只支持单窗口**（`g_mainWindow` 全局单例, 见 `@e:/jinyiNew/Light/ChocoLight/src/light_ui.cpp`）。
+
+### 主循环模式
+
+```lua
+local UI   = require("Light.UI")
+local Demo = Light(UI.Window):New()
+
+function Demo:OnOpen()      end    -- 窗口创建后立即触发 (一次性)
+function Demo:Update(dt)    end    -- 每帧逻辑, dt 单位 = 秒 (浮点)
+function Demo:Draw()        end    -- 每帧绘制 (不传 dt)
+function Demo:OnKey(k,s,a,m)end    -- 可选: 键盘
+-- ... 其他可选 On* 回调见下表
+
+Demo:Open(640, 480, "标题")          -- 创建窗口
+while UI.Loop() do UI.Resume() end   -- 主事件泵, 用户调 self:Close() 后自动退出
+print("demo ok")                     -- 清理路径已自动执行 (Phase G.1.3 修复)
+```
+
+**主循环执行顺序**（每次 `UI.Resume()`）：
+
+```
+DispatchEvents (拉 SDL 事件 → 分发 On* 回调)
+├─ OnKey / OnMouseButton / OnMousePosition / OnPen* / OnTextInput / OnTextEditing
+└─ Resize → 内部更新 viewport / 投影 (不触发 Lua 回调)
+
+if ShouldClose: 走清理路径 → return false       ← Phase G.1.3: l_UI_Loop 和 l_UI_Resume 任一首次触发
+else: Window:__call
+      ├─ BeginFrame + AssetLoader::Tick (drain 异步资源)
+      ├─ BatchRenderer::BeginFrame + HDR.BeginScene + TAA.ApplyJitter
+      ├─ Lua: self:Draw()                       ← 用户绘制
+      ├─ Lua: self:Update(dt)                   ← 用户逻辑, dt 单位秒
+      ├─ EndFrame (Lit/Batch/HDR/Render)
+      └─ SwapBuffers
+```
+
+### Window 回调约定 (重要 — 命名错误会导致回调静默失效)
+
+> ⚠️ **回调名严格大小写敏感**。误用 `OnFrame` / `onUpdate` / `OnDraw` 等不在下表的名称, 引擎不会报错也不会触发, sample 表现为窗口 hang 或卡在 `self:Close()` 永不退出。
+> 历史教训详见 `docs/Phase G.1 异步资源加载/FINAL_PhaseG_1_3.md`。
+
+| 回调名 | 签名 | 触发时机 | 触发位置 |
+|----|----|----|----|
+| `OnOpen` | `(self)` | `Demo:Open()` 成功后一次性触发 | `light_ui.cpp:561` |
+| **`Draw`** | `(self)` | 每帧, 顺序在 `Update` **之前** | `light_ui.cpp:703` |
+| **`Update`** | `(self, dt)` | 每帧, `dt` 单位 = 秒 | `light_ui.cpp:715` |
+| `OnKey` | `(self, key, scancode, action, mods)` | 键盘按下/抬起, `action`: 1=down, 0=up | `light_ui.cpp:124` |
+| `OnMouseButton` | `(self, x, y, button, action, mods)` | 鼠标点击, `action`: 1=down, 0=up | `light_ui.cpp:146` |
+| `OnMousePosition` | `(self, x, y)` | 鼠标移动 | `light_ui.cpp:169` |
+| `OnTextInput` | `(self, text)` | IME 已提交的 UTF-8 文本 | `light_ui.cpp:189` |
+| `OnTextEditing` | `(self, text, start, length)` | IME 组合态实时反馈 | `light_ui.cpp:208` |
+| `OnPenProximity` | `(self, penId, action)` | 触控笔接近/离开, `action`: 1=in, 0=out | `light_ui.cpp:231` |
+| `OnPenDown` | `(self, penId, x, y, eraser)` | 触控笔下笔 | `light_ui.cpp:251` |
+| `OnPenUp` | `(self, penId, x, y, eraser)` | 触控笔抬笔 | `light_ui.cpp:273` |
+| `OnPenButton` | `(self, penId, button, action, x, y)` | 触控笔上的按钮, `action`: 1=down, 0=up | `light_ui.cpp:295` |
+| `OnPenMotion` | `(self, penId, x, y)` | 触控笔移动 | `light_ui.cpp:318` |
+| `OnPenAxis` | `(self, penId, axis, value)` | 触控笔压力 / 倾角 | `light_ui.cpp:339` |
+
+**不存在的回调**（误用会静默失败）：
+
+- ❌ `OnFrame` — 应使用 `Update(dt)` 或 `Draw()`
+- ❌ `OnClose` — Window 关闭由 `self:Close()` 主动触发, 引擎不回调 Lua (历史 sample 的 `OnClose` 是 Lua 端自定义方法, 非引擎触发)
+- ❌ `OnResize` — Resize 事件由引擎内部消费, 重置视口 + 投影 (不暴露给 Lua)
+- ❌ `OnFocus` / `OnMove` / `OnScroll` — 暂未实现
+- ❌ `onUpdate` / `onDraw` / `onkey` — 严格大小写, 必须首字母大写
+
+### Window 方法 (实例 API)
+
+| 方法 | 签名 | 说明 | 源码位置 |
+|----|----|----|----|
+| `Open` | `(self, w?, h?, title?)` | 创建窗口 + 初始化全部子系统 (render / Batch / HDR / Audio / AssetLoader 等) | `light_ui.cpp:450` |
+| `Close` | `(self)` | 标记关闭, 主循环会在下次 `UI.Loop` / `UI.Resume` 触发清理 | `light_ui.cpp:578` |
+| `ID` | `(self) → integer` | 返回平台窗口句柄 (intptr_t 转 integer) | `light_ui.cpp:587` |
+| `GetWidth` / `GetHeight` / `GetDimensions` | `(self) → integer[, integer]` | 窗口逻辑尺寸 | `light_ui.cpp` |
+| `StartTextInput` / `StopTextInput` / `IsTextInputActive` | IME 控制 (Phase AQ) | `light_ui.cpp:889+` |
+
+### 静态 API
+
+| API | 说明 |
+|----|----|
+| `Light.UI.Loop()` | 主循环条件, 返回 false 表示应退出 |
+| `Light.UI.Resume()` | 单步事件泵 + 渲染一帧, 返回 false 表示窗口已关闭 |
+| `Light.UI.Window` | Window 类元表, 用 `Light(Light.UI.Window):New()` 创建实例 |
+
+### 退出与清理 (Phase G.1.3 收紧)
+
+`UI.Loop` 与 `UI.Resume` 在任一首次检测到 `ShouldClose=true` 时会自动调用统一清理路径 `PerformWindowShutdown_(L)`（`light_ui.cpp:770`），按依赖逆序关闭：
+
+1. AssetLoader (worker thread join + GL ctx 销毁)
+2. PlatformNet / AudioBackend
+3. TAA / MotionBlur / SSR / SSAO / LensFlare / Streak / LensDirt / AutoExposure / Bloom / HDR / LitBatch / Batch (13 个 renderer)
+4. RenderBackend (`g_render->Shutdown()` + delete)
+5. GL ctx + SDL3 window + PlatformWindow::Shutdown
+
+**幂等保证**：内部用 `g_mainWindow != nullptr` 作 guard, 重复调用安全。这意味着以下两种主循环写法等价：
+
+```lua
+-- 模式 A (推荐, 简洁)
+while UI.Loop() do UI.Resume() end
+
+-- 模式 B (历史写法, 也支持)
+repeat UI.Resume() until not UI.Loop()
+```
 
 ---

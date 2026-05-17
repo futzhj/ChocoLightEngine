@@ -300,15 +300,17 @@ uniform int uHasVelocityHistory;
 // Phase E.14 — velocity 编码双格式支持
 uniform int   uVelocityFormat;     // 0 = RG16F (raw); 1 = RG8 (encoded with uVelocityScale)
 uniform float uVelocityScale;      // RG8 模式下的编码尺度; 默认 0.25
+// Phase F.1.1 — Mipmap LOD bias (TAAU 启用时偏负 ~ -1 让纹理更锐); 0.0 = 默认零回归
+uniform float uMipBias;
 layout(location=0) out vec4 FragColor;
 layout(location=1) out vec2 FragNormal;   // Phase E.8.x: view-space normal MRT
 layout(location=2) out vec2 FragVelocity;
 layout(location=3) out vec2 FragCameraVelocity;   // Phase E.16: camera-only velocity (slot 3)
 void main() {
     vec4 base = uColor * vColor;
-    if (uHasBaseColorTex == 1) base *= texture(uTexBaseColor, vTexCoord);
+    if (uHasBaseColorTex == 1) base *= texture(uTexBaseColor, vTexCoord, uMipBias);
     vec3 emissive = uEmissive;
-    if (uHasEmissiveTex == 1) emissive *= texture(uTexEmissive, vTexCoord).rgb;
+    if (uHasEmissiveTex == 1) emissive *= texture(uTexEmissive, vTexCoord, uMipBias).rgb;
     if (uAlphaMode == 2 && base.a < uAlphaCutoff) discard;
     float outAlpha = (uAlphaMode == 1) ? base.a : 1.0;
     FragColor = vec4(base.rgb + emissive, outAlpha);
@@ -381,6 +383,8 @@ uniform int   uHasVelocityHistory;
 // Phase E.14 — velocity 编码双格式支持
 uniform int   uVelocityFormat;     // 0 = RG16F (raw); 1 = RG8 (encoded with uVelocityScale)
 uniform float uVelocityScale;      // RG8 模式下的编码尺度; 默认 0.25
+// Phase F.1.1 — Mipmap LOD bias (TAAU 启用时偏负 ~ -1 让纹理更锐); 0.0 = 默认零回归
+uniform float uMipBias;
 layout(location=0) out vec4 FragColor;
 layout(location=1) out vec2 FragNormal;   // Phase E.8.x: view-space normal MRT (encode xy [0,1])
 layout(location=2) out vec2 FragVelocity;
@@ -410,13 +414,13 @@ vec3 BRDF(vec3 N, vec3 V, vec3 L, vec3 baseColor, float metallic, float roughnes
 
 void main() {
     vec4 base = uColor * vColor;
-    if (uHasBaseColorTex == 1) base *= texture(uTexBaseColor, vTexCoord);
+    if (uHasBaseColorTex == 1) base *= texture(uTexBaseColor, vTexCoord, uMipBias);
     if (uAlphaMode == 2 && base.a < uAlphaCutoff) discard;
 
     float metallic = uMetallic;
     float roughness = uRoughness;
     if (uHasMetallicRoughnessTex == 1) {
-        vec3 mr = texture(uTexMetallicRoughness, vTexCoord).rgb;
+        vec3 mr = texture(uTexMetallicRoughness, vTexCoord, uMipBias).rgb;
         metallic *= mr.b;
         roughness *= mr.g;
     }
@@ -424,7 +428,7 @@ void main() {
 
     vec3 N = normalize(vNormalW);
     if (uHasNormalTex == 1) {
-        vec3 mappedN = texture(uTexNormal, vTexCoord).rgb * 2.0 - 1.0;
+        vec3 mappedN = texture(uTexNormal, vTexCoord, uMipBias).rgb * 2.0 - 1.0;
         mappedN.xy *= uNormalScale;
         // derivatives 计算 TBN
         vec3 dp1 = dFdx(vWorldPos);
@@ -461,10 +465,10 @@ void main() {
     }
 
     float ao = 1.0;
-    if (uHasOcclusionTex == 1) ao = mix(1.0, texture(uTexOcclusion, vTexCoord).r, uOcclusionStrength);
+    if (uHasOcclusionTex == 1) ao = mix(1.0, texture(uTexOcclusion, vTexCoord, uMipBias).r, uOcclusionStrength);
     vec3 ambient = uAmbient * base.rgb * ao;
     vec3 emissive = uEmissive;
-    if (uHasEmissiveTex == 1) emissive *= texture(uTexEmissive, vTexCoord).rgb;
+    if (uHasEmissiveTex == 1) emissive *= texture(uTexEmissive, vTexCoord, uMipBias).rgb;
     float outAlpha = (uAlphaMode == 1) ? base.a : 1.0;
     FragColor = vec4(ambient + lightSum + emissive, outAlpha);
     // Phase E.8.x: 世界法线 -> view-space 法线, encode 到 RG16F (xy [-1,1] -> [0,1])
@@ -676,15 +680,17 @@ uniform int uHasVelocityHistory;
 // Phase E.14 — velocity 编码双格式支持
 uniform int   uVelocityFormat;     // 0 = RG16F (raw); 1 = RG8 (encoded with uVelocityScale)
 uniform float uVelocityScale;      // RG8 模式下的编码尺度; 默认 0.25
+// Phase F.1.1 — Mipmap LOD bias (TAAU 启用时偏负 ~ -1 让纹理更锐); 0.0 = 默认零回归
+uniform float uMipBias;
 layout(location=0) out vec4 FragColor;
 layout(location=1) out vec2 FragNormal;   // Phase E.8.x: view-space normal MRT
 layout(location=2) out vec2 FragVelocity;
 layout(location=3) out vec2 FragCameraVelocity;   // Phase E.16: camera-only velocity (slot 3)
 void main() {
     vec4 base = uColor * vColor;
-    if (uHasBaseColorTex == 1) base *= texture(uTexBaseColor, vTexCoord);
+    if (uHasBaseColorTex == 1) base *= texture(uTexBaseColor, vTexCoord, uMipBias);
     vec3 emissive = uEmissive;
-    if (uHasEmissiveTex == 1) emissive *= texture(uTexEmissive, vTexCoord).rgb;
+    if (uHasEmissiveTex == 1) emissive *= texture(uTexEmissive, vTexCoord, uMipBias).rgb;
     if (uAlphaMode == 2 && base.a < uAlphaCutoff) discard;
     float outAlpha = (uAlphaMode == 1) ? base.a : 1.0;
     FragColor = vec4(base.rgb + emissive, outAlpha);
@@ -756,6 +762,8 @@ uniform int   uHasVelocityHistory;
 // Phase E.14 — velocity 编码双格式支持
 uniform int   uVelocityFormat;     // 0 = RG16F (raw); 1 = RG8 (encoded with uVelocityScale)
 uniform float uVelocityScale;      // RG8 模式下的编码尺度; 默认 0.25
+// Phase F.1.1 — Mipmap LOD bias (TAAU 启用时偏负 ~ -1 让纹理更锐); 0.0 = 默认零回归
+uniform float uMipBias;
 layout(location=0) out vec4 FragColor;
 layout(location=1) out vec2 FragNormal;   // Phase E.8.x: view-space normal MRT
 layout(location=2) out vec2 FragVelocity;
@@ -785,13 +793,13 @@ vec3 BRDF(vec3 N, vec3 V, vec3 L, vec3 baseColor, float metallic, float roughnes
 
 void main() {
     vec4 base = uColor * vColor;
-    if (uHasBaseColorTex == 1) base *= texture(uTexBaseColor, vTexCoord);
+    if (uHasBaseColorTex == 1) base *= texture(uTexBaseColor, vTexCoord, uMipBias);
     if (uAlphaMode == 2 && base.a < uAlphaCutoff) discard;
 
     float metallic = uMetallic;
     float roughness = uRoughness;
     if (uHasMetallicRoughnessTex == 1) {
-        vec3 mr = texture(uTexMetallicRoughness, vTexCoord).rgb;
+        vec3 mr = texture(uTexMetallicRoughness, vTexCoord, uMipBias).rgb;
         metallic *= mr.b;
         roughness *= mr.g;
     }
@@ -799,7 +807,7 @@ void main() {
 
     vec3 N = normalize(vNormalW);
     if (uHasNormalTex == 1) {
-        vec3 mappedN = texture(uTexNormal, vTexCoord).rgb * 2.0 - 1.0;
+        vec3 mappedN = texture(uTexNormal, vTexCoord, uMipBias).rgb * 2.0 - 1.0;
         mappedN.xy *= uNormalScale;
         vec3 dp1 = dFdx(vWorldPos);
         vec3 dp2 = dFdy(vWorldPos);
@@ -835,10 +843,10 @@ void main() {
     }
 
     float ao = 1.0;
-    if (uHasOcclusionTex == 1) ao = mix(1.0, texture(uTexOcclusion, vTexCoord).r, uOcclusionStrength);
+    if (uHasOcclusionTex == 1) ao = mix(1.0, texture(uTexOcclusion, vTexCoord, uMipBias).r, uOcclusionStrength);
     vec3 ambient = uAmbient * base.rgb * ao;
     vec3 emissive = uEmissive;
-    if (uHasEmissiveTex == 1) emissive *= texture(uTexEmissive, vTexCoord).rgb;
+    if (uHasEmissiveTex == 1) emissive *= texture(uTexEmissive, vTexCoord, uMipBias).rgb;
     float outAlpha = (uAlphaMode == 1) ? base.a : 1.0;
     FragColor = vec4(ambient + lightSum + emissive, outAlpha);
     // Phase E.8.x: 世界法线 -> view-space 法线, encode 到 RG16F
@@ -2043,23 +2051,6 @@ vec2 SampleVelocityDilated(vec2 uv) {
     return bestV;
 }
 
-// Phase E.16: 与 SampleVelocityDilated 同算法，切换采 cameraVelocityTex
-// GLES3 不支持 sampler 作函数参数，故复制一份
-//   mode=1: 单独采此量，mode=2: combined - camera = object_only
-vec2 SampleCameraVelocityDilated(vec2 uv) {
-    if (uVelocityDilation == 0) return DecodeVelocity(texture(uCameraVelocityTex, uv).rg);
-    vec2 bestV = vec2(0.0);
-    float bestLen = -1.0;
-    for (int dy = -1; dy <= 1; ++dy) {
-        for (int dx = -1; dx <= 1; ++dx) {
-            vec2 v = DecodeVelocity(texture(uCameraVelocityTex, uv + vec2(float(dx), float(dy)) * uTexel).rg);
-            float l = dot(v, v);
-            if (l > bestLen) { bestLen = l; bestV = v; }
-        }
-    }
-    return bestV;
-}
-
 void main() {
     vec4 cur = texture(uCurReflectTex, vUV);
 
@@ -2982,23 +2973,6 @@ vec2 SampleVelocityDilated(vec2 uv) {
     return bestV;
 }
 
-// Phase E.16: 与 SampleVelocityDilated 同算法，切换采 cameraVelocityTex
-// GLES3 不支持 sampler 作函数参数，故复制一份
-//   mode=1: 单独采此量，mode=2: combined - camera = object_only
-vec2 SampleCameraVelocityDilated(vec2 uv) {
-    if (uVelocityDilation == 0) return DecodeVelocity(texture(uCameraVelocityTex, uv).rg);
-    vec2 bestV = vec2(0.0);
-    float bestLen = -1.0;
-    for (int dy = -1; dy <= 1; ++dy) {
-        for (int dx = -1; dx <= 1; ++dx) {
-            vec2 v = DecodeVelocity(texture(uCameraVelocityTex, uv + vec2(float(dx), float(dy)) * uTexel).rg);
-            float l = dot(v, v);
-            if (l > bestLen) { bestLen = l; bestV = v; }
-        }
-    }
-    return bestV;
-}
-
 void main() {
     vec4 cur = texture(uCurReflectTex, vUV);
 
@@ -3673,6 +3647,11 @@ class GL33Backend : public RenderBackend {
     std::unordered_map<uint32_t, VelocityFormat> hdrFboVelocityFormat;
     // Phase E.14 — velocity dilation 全局开关 (默认 ON)。
     bool                                    velocityDilation_ = true;
+
+    // Phase F.1.1 — Mipmap LOD bias (3D mesh shader texture(..) 第 3 个参数).
+    //   默认 0.0 (零回归); TAARenderer 在 TAAU 启用时自动调成 log2(scale)-0.7.
+    //   shader 内 `texture(s, uv, uMipBias)` 当 uMipBias=0 等同 `texture(s, uv)`.
+    float                                   mipBias_ = 0.0f;
     // Phase E.14 — RG8 模式下 shader 编/解码 velocity 用的尺度因子。
     // 本 phase 定为常量 0.25，后续 phase 可推动态调节。
     static constexpr float kVelocityScaleDefault = 0.25f;
@@ -3877,6 +3856,10 @@ class GL33Backend : public RenderBackend {
     GLint  locTAA_MotionGamma               = -1;   // Phase F.0.8: motion-adaptive 高速区域 γ (仅 motionAdaptive==1 生效)
     GLint  locTAA_MotionAdaptiveGamma       = -1;   // Phase F.0.8: 0=仅用 varianceGamma (F.0.3 行为), 1=按 vel 长度 lerp 两 γ
     GLint  locTAA_UvBounds                  = -1;   // Phase F.0.10.5: vec4 邻域采样 UV clamp (默认 0,0,1,1 = 无 clamp)
+    // Phase F.1 TAAU 不新增 shader uniform: uTexel 始终上传为 1/(renderW, renderH).
+    //   F.0 模式 renderW/H == w/h, 行为等价; TAAU 模式 uTexel = 1/render-res 让 cur 邻域 + velocity dilation
+    //   的 9-tap step 在 render 像素空间, 与 curHdrTex/velocityTex (render-res) 像素对齐 (UE4/Unity 标准做法).
+    //   glViewport 改用 outputW/H (而非 w/h) 让 raster 覆盖 output FBO.
 
     // Phase F.0.1 — TAA Sharpening (4-tap unsharp mask, 复用 SupportsTAA 能力位)
     //   shader: FS_SHARPEN_SOURCE (uInputTex + uTexelSize + uSharpness)
@@ -4030,6 +4013,10 @@ class GL33Backend : public RenderBackend {
         GLint locVelScale = glGetUniformLocation(program3D, "uVelocityScale");
         if (locVelFmt   >= 0) glUniform1i(locVelFmt,   (activeVelocityFormat_ == VelocityFormat::RG8) ? 1 : 0);
         if (locVelScale >= 0) glUniform1f(locVelScale, kVelocityScaleDefault);
+        // Phase F.1.1 — Mipmap LOD bias (FS_UNLIT / FS_PBR shader 内 texture(s, uv, uMipBias))
+        //   旧 program (Phase E~F.1.0 编译) 拿不到 location 会返 -1, 静默跳过 (零回归)
+        GLint locMipBias = glGetUniformLocation(program3D, "uMipBias");
+        if (locMipBias >= 0) glUniform1f(locMipBias, mipBias_);
     }
 
     // 确保 VBO 容量足够
@@ -8139,6 +8126,16 @@ public:
     float GetVelocityScale() const override { return kVelocityScaleDefault; }
     VelocityFormat GetActiveVelocityFormat() const override { return activeVelocityFormat_; }
 
+    // ---- Phase F.1.1 — Mipmap LOD bias ----
+    //   clamp [-4, +4] (业界经验; 默认正常工作范围 [-1.7, 0])
+    //   3D mesh shader (FS_SOURCE / FS_UNLIT / FS_PBR / FS_LIT2D) 内 `texture(s, uv, uMipBias)` 用此值
+    void SetMipBias(float bias) override {
+        if (bias < -4.0f) bias = -4.0f;
+        else if (bias > 4.0f) bias = 4.0f;
+        mipBias_ = bias;
+    }
+    float GetMipBias() const override { return mipBias_; }
+
     // ==================== Phase E.15 — Motion Blur 虚接口实现 ====================
 
     bool SupportsMotionBlur() const override { return motionBlurSupported; }
@@ -8482,6 +8479,47 @@ public:
         }
     }
 
+    // Phase F.1 TAAU — output-res sceneTex (RGBA16F, linear filter, clamp-to-edge)
+    //   用途: TAAU 启用时 sharpen/tonemap 的输入 (sceneTex 在 render-res 不可直接用)
+    //   linear filter 是因 sharpen 4-tap unsharp 与 tonemap 都按 sub-pixel UV 采样
+    bool CreateOutputSceneTex(int w, int h, uint32_t* outFbo, uint32_t* outTex) override {
+        if (outFbo) *outFbo = 0;
+        if (outTex) *outTex = 0;
+        if (!taaSupported || w <= 0 || h <= 0 || !outFbo || !outTex) return false;
+
+        GLuint tex = 0;
+        glGenTextures(1, &tex);
+        if (!tex) return false;
+        glBindTexture(GL_TEXTURE_2D, tex);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, w, h, 0, GL_RGBA, GL_HALF_FLOAT, nullptr);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S,     GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T,     GL_CLAMP_TO_EDGE);
+        glBindTexture(GL_TEXTURE_2D, 0);
+
+        GLuint fbo = 0;
+        glGenFramebuffers(1, &fbo);
+        if (!fbo) { glDeleteTextures(1, &tex); return false; }
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
+        GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        if (status != GL_FRAMEBUFFER_COMPLETE) {
+            glDeleteFramebuffers(1, &fbo);
+            glDeleteTextures(1, &tex);
+            return false;
+        }
+        *outFbo = fbo;
+        *outTex = tex;
+        return true;
+    }
+
+    void DeleteOutputSceneTex(uint32_t fbo, uint32_t tex) override {
+        if (fbo) { GLuint id = fbo; glDeleteFramebuffers(1, &id); }
+        if (tex) { GLuint id = tex; glDeleteTextures(1, &id); }
+    }
+
     /// 执行 TAA pass: reproject + neighborhood AABB clip + alpha blend
     /// Phase E.18 联动: dilationPassActive=true 时 shader 单点采 dilatedTex (绑给 velocityTex);
     ///                  否则 consumer 走 inline 9-tap (velocityTex=raw RG16F/RG8 encoded)
@@ -8497,13 +8535,22 @@ public:
                      int   motionAdaptiveGamma,           // Phase F.0.8
                      int rgnX, int rgnY,                  // Phase F.0.10.2: split-screen region
                      int rgnW, int rgnH,                  // Phase F.0.10.2: rgnW<=0 时全屏 (零回归)
-                     const float* uvBounds) override      // Phase F.0.10.5: vec4 邻域采样 clamp; nullptr = 全屏 no-op
+                     const float* uvBounds,               // Phase F.0.10.5: vec4 邻域采样 clamp; nullptr = 全屏 no-op
+                     int renderW, int renderH,            // Phase F.1 TAAU: render-res 尺寸 (0 = 同 w/h, F.0 行为)
+                     int outputW, int outputH,            // Phase F.1 TAAU: output-res 尺寸 (0 = 同 w/h, F.0 行为)
+                     int taauEnabled) override            // Phase F.1 TAAU: 0=F.0 路径, 1=TAAU 路径
     {
         if (!taaSupported || !programTAA) return;
         if (!curHdrTex || !dstFbo || w <= 0 || h <= 0) return;
 
+        // Phase F.1 TAAU — 解析双尺寸 (默认 0 退化为 w/h, 与 F.0 行为完全一致)
+        const int rW = (taauEnabled && renderW > 0) ? renderW : w;
+        const int rH = (taauEnabled && renderH > 0) ? renderH : h;
+        const int oW = (taauEnabled && outputW > 0) ? outputW : w;
+        const int oH = (taauEnabled && outputH > 0) ? outputH : h;
+
         glBindFramebuffer(GL_FRAMEBUFFER, dstFbo);
-        glViewport(0, 0, w, h);
+        glViewport(0, 0, oW, oH);   // Phase F.1: viewport 用 output-res (F.0 模式 oW==w)
         glDisable(GL_DEPTH_TEST);
         glDisable(GL_BLEND);
         // Phase F.0.10.2: region 启用时 scissor 限制写入到子矩形, 让该 instance 只更新它的 region
@@ -8517,7 +8564,9 @@ public:
         }
 
         glUseProgram(programTAA);
-        if (locTAA_Texel            >= 0) glUniform2f(locTAA_Texel, 1.0f / (float)w, 1.0f / (float)h);
+        // Phase F.1 TAAU: uTexel 始终上传 1/(render-res), 让 cur 邻域 + velocity dilation 9-tap step
+        //   在 render 像素空间 (与 curHdrTex/velocityTex 像素对齐). F.0 模式 rW/rH == w/h, 行为不变.
+        if (locTAA_Texel            >= 0) glUniform2f(locTAA_Texel, 1.0f / (float)rW, 1.0f / (float)rH);
         if (locTAA_BlendAlpha       >= 0) glUniform1f(locTAA_BlendAlpha,       blendAlpha);
         if (locTAA_NeighborhoodClip >= 0) glUniform1i(locTAA_NeighborhoodClip, neighborhoodClip);
         if (locTAA_HasHistory       >= 0) glUniform1i(locTAA_HasHistory,       hasHistory);
@@ -8883,6 +8932,23 @@ public:
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
 
         m.indexCount = iCount;
+        uint32_t id = nextMeshId++;
+        meshes[id] = m;
+        return id;
+    }
+
+    /// Phase G.1.2 — 注册 worker 已上传完毕的 mesh GL handles
+    /// 输入: 已经 glBufferData 完成的 vao/vbo/ebo + index count;
+    /// 行为: 仅 C++ 共享状态写入 (O(1)), 不发任何 GL 命令;
+    /// 失败: 不接管 handles, 返 0; 调用方负责清理.
+    uint32_t RegisterUploadedMesh(uint32_t vao, uint32_t vbo, uint32_t ebo, int idxCount) override {
+        if (!vao || !vbo || !ebo || idxCount <= 0) return 0;
+        if (!programPBR && !programUnlit) return 0;  // 与 CreateMesh 等价的 3D 支持检查
+        MeshGPU m;
+        m.vao = (GLuint)vao;
+        m.vbo = (GLuint)vbo;
+        m.ebo = (GLuint)ebo;
+        m.indexCount = idxCount;
         uint32_t id = nextMeshId++;
         meshes[id] = m;
         return id;

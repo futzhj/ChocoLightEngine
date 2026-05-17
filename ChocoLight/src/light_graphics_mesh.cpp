@@ -21,12 +21,14 @@
 
 #include "light.h"
 #include "render_backend.h"
+#include "asset_loader.h"
 
 #include <vector>
 #include <cstring>
 #include <cstdio>
 #include <cstdlib>
 #include <string>
+#include <utility>
 
 extern "C" {
 #include "lua.h"
@@ -612,6 +614,69 @@ static int l_Mesh_GetGLTFMeshCount(lua_State* L) {
     return 1;
 }
 
+static void MeshPushResult_(void* L_, AssetLoader::FutureState* state) {
+    lua_State* L = (lua_State*)L_;
+    if (!L) return;
+    if (!state || state->status.load() != (int)AssetLoader::FutureStatus::Ready || !state->resMeshId) {
+        lua_pushnil(L);
+        return;
+    }
+    MeshUserdata* ud = (MeshUserdata*)lua_newuserdata(L, sizeof(MeshUserdata));
+    ud->meshId = state->resMeshId;
+    ud->vertexCount = state->gltfVertCount;
+    ud->indexCount = state->gltfIdxCount;
+    state->resMeshId = 0;
+    luaL_getmetatable(L, MESH_MT);
+    lua_setmetatable(L, -2);
+}
+
+static void MeshAsyncDispatcher_(void* L_, AssetLoader::FutureState* state, int cbLuaRef) {
+    lua_State* L = (lua_State*)L_;
+    if (!L || !state || cbLuaRef < 0) return;
+    lua_rawgeti(L, LUA_REGISTRYINDEX, cbLuaRef);
+    if (!lua_isfunction(L, -1)) {
+        lua_pop(L, 1);
+        return;
+    }
+    if (state->status.load() == (int)AssetLoader::FutureStatus::Ready) {
+        MeshPushResult_(L, state);
+        lua_pushnil(L);
+    } else {
+        lua_pushnil(L);
+        lua_pushstring(L, state->errorMsg.empty() ? "unknown error" : state->errorMsg.c_str());
+    }
+    if (lua_pcall(L, 2, 0, 0) != 0) {
+        const char* err = lua_tostring(L, -1);
+        CC::Log(CC::LOG_WARN, "Mesh LoadGLTFAsync cb error: %s", err ? err : "(none)");
+        lua_pop(L, 1);
+    }
+}
+
+static int l_Mesh_LoadGLTFAsync(lua_State* L) {
+    const char* path = luaL_checkstring(L, 1);
+    int cbIndex = lua_isfunction(L, 2) ? 2 : 3;
+    int primIdx = (cbIndex == 2) ? 0 : (int)luaL_optinteger(L, 2, 0);
+    int cbRef = -1;
+    if (lua_gettop(L) >= cbIndex && lua_isfunction(L, cbIndex)) {
+        lua_pushvalue(L, cbIndex);
+        cbRef = luaL_ref(L, LUA_REGISTRYINDEX);
+    }
+
+    auto state = AssetLoader::LoadGLTFAsync(path, primIdx);
+    AssetLoader::RegisterResultPusher(state, MeshPushResult_);
+    if (cbRef >= 0) {
+        AssetLoader::RegisterCallback(state, MeshAsyncDispatcher_, L, cbRef);
+        if (state->status.load() != (int)AssetLoader::FutureStatus::Pending) {
+            MeshAsyncDispatcher_(L, state.get(), cbRef);
+            luaL_unref(L, LUA_REGISTRYINDEX, cbRef);
+            state->dispatcher = nullptr;
+            state->cbLuaRef = -1;
+            state->cbLuaState = nullptr;
+        }
+    }
+    return AssetLoader::PushAsyncFuture(L, std::move(state));
+}
+
 // ==================== mesh:Draw([textureId | material]) ====================
 // Phase AS.4: 自动判断参数类型
 //   - integer / nil 缺省 -> 老路径 (DrawMesh + textureId)
@@ -729,6 +794,7 @@ extern "C" LIGHT_API int luaopen_Light_Graphics_Mesh(lua_State* L) {
             { "New",                l_Mesh_New },
             { "GetVertexFormat",    l_Mesh_GetVertexFormat },
             { "LoadGLTF",           l_Mesh_LoadGLTF },          // Phase AS.3
+            { "LoadGLTFAsync",      l_Mesh_LoadGLTFAsync },
             { "GetGLTFMeshCount",   l_Mesh_GetGLTFMeshCount },  // Phase AS.3
             { nullptr, nullptr },
         };

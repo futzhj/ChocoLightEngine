@@ -31,7 +31,9 @@
 
 #include "light.h"
 #include "render_backend.h"
+#include "asset_loader.h"
 #include <cstring>
+#include <utility>
 #include "stb_image.h"      // 图像解码
 #include "stb_truetype.h"   // 字体解码
 
@@ -554,11 +556,313 @@ static void EnsureGraphicsTable(lua_State* L) {
     }
 }
 
+// ==================== Phase G.1 — Image.LoadAsync ====================
+//
+// 异步图像加载. Lua API:
+//   local h = Light.Graphics.Image.LoadAsync(path)            -- Future 风格
+//   if h:IsReady() then local img, err = h:Get() end
+//
+//   Light.Graphics.Image.LoadAsync(path, function(img, err)   -- Callback 风格
+//       if img then ... end
+//   end)
+//
+// 注意: 本期 G.1.0 callback / Future:Get() 的第一参数是 raw table:
+//   { tex_id=N, width=N, height=N, channels=N, path="..." }
+// 若需要 Light.Graphics.Image userdata, Lua 端可手动包装:
+//   local raw = h:Get()
+//   local img = setmetatable({...}, ImageMeta)  -- 或自定义工厂
+// G.1.x 后期会提供 helper Image.FromTexId(tex_id, w, h) 一行包装.
+
+static const char* kFutureMetaName = AssetLoader::kFutureMetaName;
+using FutureUD = AssetLoader::FutureUserdata;
+
+static FutureUD* GetFutureUD(lua_State* L, int idx) {
+    return (FutureUD*)luaL_checkudata(L, idx, kFutureMetaName);
+}
+
+// Image result pusher: push raw info table 到栈顶 (供 Future:Get + dispatcher 共用)
+static void ImagePushResult_(void* L_, AssetLoader::FutureState* state) {
+    lua_State* L = (lua_State*)L_;
+    if (!L || !state || state->status.load() != (int)AssetLoader::FutureStatus::Ready) {
+        if (L) lua_pushnil(L);
+        return;
+    }
+    lua_newtable(L);
+    lua_pushinteger(L, (lua_Integer)state->resTexId);   lua_setfield(L, -2, "tex_id");
+    lua_pushinteger(L, (lua_Integer)state->imgW);       lua_setfield(L, -2, "width");
+    lua_pushinteger(L, (lua_Integer)state->imgH);       lua_setfield(L, -2, "height");
+    lua_pushinteger(L, (lua_Integer)state->imgChannels); lua_setfield(L, -2, "channels");
+}
+
+// callback dispatcher: 主线程内调, 由 AssetLoader::Tick 唤起.
+// 栈协议: 调用前栈空; 调用 lua_pcall(2, 0); 错误打 log 不上抛.
+static void ImageAsyncDispatcher(void* L_, AssetLoader::FutureState* state, int cbLuaRef) {
+    lua_State* L = (lua_State*)L_;
+    if (!L || !state || cbLuaRef < 0) return;
+
+    // push cb function
+    lua_rawgeti(L, LUA_REGISTRYINDEX, cbLuaRef);
+    if (!lua_isfunction(L, -1)) {
+        lua_pop(L, 1);
+        CC::Log(CC::LOG_WARN, "Image LoadAsync: cb ref invalid (gc'd?)");
+        return;
+    }
+
+    // arg1: img-info table or nil; arg2: err string or nil
+    if (state->status.load() == (int)AssetLoader::FutureStatus::Ready) {
+        ImagePushResult_(L, state);    // arg1
+        lua_pushnil(L);                 // arg2
+    } else {
+        lua_pushnil(L);
+        lua_pushstring(L, state->errorMsg.empty() ? "unknown error" : state->errorMsg.c_str());
+    }
+
+    if (lua_pcall(L, 2, 0, 0) != 0) {
+        const char* err = lua_tostring(L, -1);
+        CC::Log(CC::LOG_WARN, "Image LoadAsync cb error: %s", err ? err : "(none)");
+        lua_pop(L, 1);
+    }
+}
+
+/// Light.Graphics.Image.LoadAsync(path[, cb]) -> Future
+static int l_Image_LoadAsync(lua_State* L) {
+    const char* path = luaL_checkstring(L, 1);
+    int cbRef = -1;
+    if (lua_gettop(L) >= 2 && lua_isfunction(L, 2)) {
+        lua_pushvalue(L, 2);
+        cbRef = luaL_ref(L, LUA_REGISTRYINDEX);
+    }
+
+    auto state = AssetLoader::LoadImageAsync(path);
+    AssetLoader::RegisterResultPusher(state, ImagePushResult_);   // Future:Get() 用
+
+    if (cbRef >= 0) {
+        AssetLoader::RegisterCallback(state, ImageAsyncDispatcher, L, cbRef);
+        // 边界: 若 LoadImageAsync 立即返 Error (path empty/sync fallback failed),
+        //       Tick 不会再 dispatch (state 未入 result_queue). 此处在主线程立即调一次.
+        if (state->status.load() != (int)AssetLoader::FutureStatus::Pending) {
+            ImageAsyncDispatcher(L, state.get(), cbRef);
+            luaL_unref(L, LUA_REGISTRYINDEX, cbRef);
+            // 标记已 dispatch, 避免 Tick 重复触发
+            state->dispatcher = nullptr;
+            state->cbLuaRef   = -1;
+            state->cbLuaState = nullptr;
+        }
+    }
+
+    return AssetLoader::PushAsyncFuture(L, state);
+}
+
+static void FontPushResult_(void* L_, AssetLoader::FutureState* state) {
+    lua_State* L = (lua_State*)L_;
+    if (!L) return;
+    if (!state || state->status.load() != (int)AssetLoader::FutureStatus::Ready ||
+        !state->fontTTFBuffer || state->fontTTFSize <= 0 || !g_render) {
+        lua_pushnil(L);
+        return;
+    }
+
+    lua_newtable(L);
+    int tableIdx = lua_gettop(L);
+    FontContext* fc = (FontContext*)lua_newuserdata(L, sizeof(FontContext));
+    memset(fc, 0, sizeof(FontContext));
+    fc->fontSize = state->fontSize > 0.0f ? state->fontSize : 16.0f;
+    fc->atlasW = state->fontAtlasW > 0 ? state->fontAtlasW : 1024;
+    fc->atlasH = state->fontAtlasH > 0 ? state->fontAtlasH : 1024;
+    fc->ttfBuffer = (unsigned char*)state->fontTTFBuffer;
+
+    if (!stbtt_InitFont(&fc->fontInfo, fc->ttfBuffer, 0)) {
+        free(fc->ttfBuffer);
+        fc->ttfBuffer = nullptr;
+        state->fontTTFBuffer = nullptr;
+        lua_pop(L, 2);
+        lua_pushnil(L);
+        return;
+    }
+
+    fc->scale = stbtt_ScaleForPixelHeight(&fc->fontInfo, fc->fontSize);
+    int iascent, idescent, ilineGap;
+    stbtt_GetFontVMetrics(&fc->fontInfo, &iascent, &idescent, &ilineGap);
+    fc->ascent = iascent * fc->scale;
+    fc->atlasBitmap = (unsigned char*)calloc(fc->atlasW * fc->atlasH, 1);
+    if (!fc->atlasBitmap) {
+        free(fc->ttfBuffer);
+        fc->ttfBuffer = nullptr;
+        state->fontTTFBuffer = nullptr;
+        lua_pop(L, 2);
+        lua_pushnil(L);
+        return;
+    }
+
+    fc->texId = g_render->CreateTexture(fc->atlasW, fc->atlasH, 1, fc->atlasBitmap);
+    if (!fc->texId) {
+        free(fc->atlasBitmap);
+        free(fc->ttfBuffer);
+        fc->atlasBitmap = nullptr;
+        fc->ttfBuffer = nullptr;
+        state->fontTTFBuffer = nullptr;
+        lua_pop(L, 2);
+        lua_pushnil(L);
+        return;
+    }
+
+    lua_createtable(L, 0, 1);
+    lua_pushcfunction(L, l_Font_GC);
+    lua_setfield(L, -2, "__gc");
+    lua_setmetatable(L, -2);
+    state->fontTTFBuffer = nullptr;
+    for (int cp = 32; cp < 128; ++cp) fc->BakeGlyph(cp);
+    lua_setfield(L, tableIdx, "__instance");
+}
+
+static void FontAsyncDispatcher_(void* L_, AssetLoader::FutureState* state, int cbLuaRef) {
+    lua_State* L = (lua_State*)L_;
+    if (!L || !state || cbLuaRef < 0) return;
+    lua_rawgeti(L, LUA_REGISTRYINDEX, cbLuaRef);
+    if (!lua_isfunction(L, -1)) {
+        lua_pop(L, 1);
+        return;
+    }
+    if (state->status.load() == (int)AssetLoader::FutureStatus::Ready) {
+        FontPushResult_(L, state);
+        lua_pushnil(L);
+    } else {
+        lua_pushnil(L);
+        lua_pushstring(L, state->errorMsg.empty() ? "unknown error" : state->errorMsg.c_str());
+    }
+    if (lua_pcall(L, 2, 0, 0) != 0) {
+        const char* err = lua_tostring(L, -1);
+        CC::Log(CC::LOG_WARN, "Font LoadAsync cb error: %s", err ? err : "(none)");
+        lua_pop(L, 1);
+    }
+}
+
+static int l_Font_LoadAsync(lua_State* L) {
+    const char* path = luaL_checkstring(L, 1);
+    float size = 16.0f;
+    int cbIndex = 2;
+    if (lua_gettop(L) >= 2 && lua_isnumber(L, 2)) {
+        size = (float)lua_tonumber(L, 2);
+        cbIndex = 3;
+    }
+    int cbRef = -1;
+    if (lua_gettop(L) >= cbIndex && lua_isfunction(L, cbIndex)) {
+        lua_pushvalue(L, cbIndex);
+        cbRef = luaL_ref(L, LUA_REGISTRYINDEX);
+    }
+
+    auto state = AssetLoader::LoadFontAsync(path, size);
+    AssetLoader::RegisterResultPusher(state, FontPushResult_);
+    if (cbRef >= 0) {
+        AssetLoader::RegisterCallback(state, FontAsyncDispatcher_, L, cbRef);
+        if (state->status.load() != (int)AssetLoader::FutureStatus::Pending) {
+            FontAsyncDispatcher_(L, state.get(), cbRef);
+            luaL_unref(L, LUA_REGISTRYINDEX, cbRef);
+            state->dispatcher = nullptr;
+            state->cbLuaRef = -1;
+            state->cbLuaState = nullptr;
+        }
+    }
+    return AssetLoader::PushAsyncFuture(L, std::move(state));
+}
+
+// ==================== Future userdata 方法 ====================
+
+static int l_Future_IsReady(lua_State* L) {
+    FutureUD* ud = GetFutureUD(L, 1);
+    lua_pushboolean(L, ud && ud->state &&
+                       ud->state->status.load() == (int)AssetLoader::FutureStatus::Ready ? 1 : 0);
+    return 1;
+}
+
+static int l_Future_IsError(lua_State* L) {
+    FutureUD* ud = GetFutureUD(L, 1);
+    lua_pushboolean(L, ud && ud->state &&
+                       ud->state->status.load() == (int)AssetLoader::FutureStatus::Error ? 1 : 0);
+    return 1;
+}
+
+static int l_Future_GetError(lua_State* L) {
+    FutureUD* ud = GetFutureUD(L, 1);
+    if (ud && ud->state) lua_pushstring(L, ud->state->errorMsg.c_str());
+    else                 lua_pushstring(L, "");
+    return 1;
+}
+
+/// Future:Get() -> resource_or_nil, err_or_nil
+/// status==Ready:   返 type-specific userdata (调 state->resultPusher) + nil
+/// status==Error:   返 nil + err msg
+/// status==Pending: 返 nil + "pending"
+///
+/// 5 种资源 (Image/LUT/Font/Sound/GLTF) 各自在 LoadXxxAsync 时通过
+/// RegisterResultPusher 设置 push 函数, Future:Get() 是 type-agnostic 的.
+static int l_Future_Get(lua_State* L) {
+    FutureUD* ud = GetFutureUD(L, 1);
+    if (!ud || !ud->state) {
+        lua_pushnil(L);
+        lua_pushstring(L, "invalid future");
+        return 2;
+    }
+    int s = ud->state->status.load();
+    if (s == (int)AssetLoader::FutureStatus::Pending) {
+        lua_pushnil(L);
+        lua_pushstring(L, "pending");
+        return 2;
+    }
+    if (s == (int)AssetLoader::FutureStatus::Error) {
+        lua_pushnil(L);
+        lua_pushstring(L, ud->state->errorMsg.empty() ? "unknown" : ud->state->errorMsg.c_str());
+        return 2;
+    }
+    // Ready: 调 result pusher (LoadXxxAsync 时设置). Pusher push 1 个 stack slot.
+    if (ud->state->resultPusher) {
+        ud->state->resultPusher(L, ud->state.get());
+    } else {
+        // 兜底: 没注册 pusher, 当老 Image 路径处理 (向后兼容)
+        ImagePushResult_(L, ud->state.get());
+    }
+    lua_pushnil(L);   // err = nil
+    return 2;
+}
+
+static int l_Future_Gc(lua_State* L) {
+    FutureUD* ud = (FutureUD*)lua_touserdata(L, 1);
+    if (ud) {
+        ud->~FutureUD();   // shared_ptr destructor; 释放 lua callback ref via FutureState dtor
+    }
+    return 0;
+}
+
+static int l_Future_Tostring(lua_State* L) {
+    lua_pushstring(L, "Light.Graphics._AsyncFuture");
+    return 1;
+}
+
+static const luaL_Reg future_methods[] = {
+    {"IsReady",   l_Future_IsReady},
+    {"IsError",   l_Future_IsError},
+    {"Get",       l_Future_Get},
+    {"GetError",  l_Future_GetError},
+    {"__gc",      l_Future_Gc},
+    {"__tostring", l_Future_Tostring},
+    {NULL, NULL}
+};
+
+static void EnsureFutureMetatable(lua_State* L) {
+    if (luaL_newmetatable(L, kFutureMetaName)) {
+        lua_pushvalue(L, -1);
+        lua_setfield(L, -2, "__index");
+        luaL_setfuncs(L, future_methods, 0);
+    }
+    lua_pop(L, 1);
+}
+
 // ==================== luaopen 注册 ====================
 
 // Image — 6 函数 + Drawable 继承
 int luaopen_Light_Graphics_Image(lua_State* L) {
     EnsureGraphicsTable(L);
+    EnsureFutureMetatable(L);   // Phase G.1 — Future userdata metatable
 
     lua_pushstring(L, "Image");
     lua_rawget(L, -2);
@@ -584,6 +888,8 @@ int luaopen_Light_Graphics_Image(lua_State* L) {
             {"GetTextureId",  l_Image_GetTextureId},
             {"__call",        l_Image_Call},
             {"__tostring",    l_Image_Tostring},
+            // Phase G.1 — 异步加载 (return Future userdata)
+            {"LoadAsync",     l_Image_LoadAsync},
             {NULL, NULL}
         };
         luaL_setfuncs(L, img_funcs, 0);
@@ -639,6 +945,7 @@ int luaopen_Light_Graphics_Font(lua_State* L) {
         lua_createtable(L, 0, 0);
 
         const luaL_Reg font_funcs[] = {
+            {"LoadAsync",   l_Font_LoadAsync},
             {"__call",     l_Font_Call},
             {"__tostring", l_Font_Tostring},
             {NULL, NULL}

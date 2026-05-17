@@ -343,12 +343,41 @@ public:
     /// HDRRenderer 同时只会有 1 张 HDR FBO，由最近一次 CreateHDRFBO 设定。
     virtual VelocityFormat GetActiveVelocityFormat() const { return VelocityFormat::RG16F; }
 
+    // ---- Phase F.1.1 — Mipmap LOD bias (TAAU 启用时调节纹理细节锐度) ----
+    /// 设置 3D mesh shader 纹理采样的 LOD bias.
+    /// 默认 0.0 (零回归); TAAU 启用 + autoMipBias=true 时由 TAARenderer 自动调.
+    /// shader 内: texture(s, uv, bias). 负值 = 偏向更小 mip level (更高频纹理, 更锐).
+    /// FSR2 / DLSS 推荐 bias = log2(renderScale) - 1.0; ChocoLight 选 -0.7 折衷.
+    /// @param  bias  clamp [-4.0, +4.0]
+    virtual void  SetMipBias(float /*bias*/) {}
+    virtual float GetMipBias() const { return 0.0f; }
+
     // ---- Phase AS.2 新增 3D mesh 接口 (GL33 真实现, Legacy 默认 no-op) ----
     /// 是否支持 3D mesh + 深度测试 + perspective 投影
     virtual bool Supports3D() const { return false; }
     /// 创建 mesh (上传顶点+索引到 GPU), 返回 mesh id (0=失败)
     virtual uint32_t CreateMesh(const RenderVertex3D* verts, int vCount,
                                 const uint32_t* indices, int iCount) { return 0; }
+    /**
+     * Phase G.1.2 — 注册 worker 已上传完毕的 mesh GL handles 到 backend mesh 池.
+     *
+     * 用途: AssetLoader 异步路径 (worker 直接 glBufferData + glVertexAttribPointer + fence),
+     *       主线程 Tick fence Ready 后调此函数完成 backend 内部状态注册 (O(1) 操作).
+     *
+     * 输入约定:
+     *   - vao/vbo/ebo 必须是 worker GL ctx 上 glGen* 创建并完成 glBufferData / 顶点属性配置;
+     *   - 调用方负责保证 fence 已 signaled (即 GL 命令对主 ctx 可见);
+     *   - idxCount > 0 (与 CreateMesh iCount 等价);
+     *   - backend 接管 vao/vbo/ebo 所有权, 后续由 DeleteMesh 释放.
+     *
+     * @return mesh id (0=失败, 例: backend 不支持 3D / 参数无效)
+     *
+     * 失败时调用方应自行 glDelete 这些 handles 兜底 (避免泄漏).
+     */
+    virtual uint32_t RegisterUploadedMesh(uint32_t vao, uint32_t vbo, uint32_t ebo, int idxCount) {
+        (void)vao; (void)vbo; (void)ebo; (void)idxCount;
+        return 0;
+    }
     /// 释放 mesh GPU 资源
     virtual void DeleteMesh(uint32_t meshId) {}
     /// 绘制 mesh (使用当前 shader/projection/view, textureId=0 时无纹理)
@@ -1537,6 +1566,17 @@ public:
     /// Phase F.0.10.5 — uvBounds (vec4: uMin.x, uMin.y, uMax.x, uMax.y) shader 内对邻域采样
     /// (8-tap clip + 9-tap velocity dilation + history reproject) 做 clamp, 彻底消跨 region 边界泄漏。
     /// nullptr (默认) 时 backend 自动上传 (0,0,1,1) 即全屏 no-op clamp (零回归)。
+    /// Phase F.1 TAAU — 渲染分辨率与输出分辨率解耦扩展:
+    /// @param renderW, renderH    本帧 raster 实际渲染尺寸 (curHdrTex / velocityTex 尺寸)
+    ///                             默认 0 = 退化到 w/h (F.0 同分辨率行为, 零回归)
+    /// @param outputW, outputH    history / dstFbo 输出尺寸 (history RT 尺寸)
+    ///                             默认 0 = 退化到 w/h (F.0 同分辨率行为, 零回归)
+    /// @param taauEnabled         0 = F.0 行为 (cur 邻域采样按 1/w 步长), 1 = TAAU (cur 邻域按 1/renderRes)
+    ///                             默认 0; shader 内 uTaauEnabled=0 时 neighborStep == uTexel
+    /// 当 taauEnabled=1 时 backend 内部:
+    ///   - glViewport 用 outputW/H (不是 w/h)
+    ///   - uRenderTexel = 1/(renderW, renderH); uOutputTexel = 1/(outputW, outputH)
+    ///   - uTexel 仍按 w/h 上传 (兼容 F.0 路径下不存在 uRenderTexel/uOutputTexel uniform 时的回退)
     virtual void DrawTAAPass(uint32_t /*curHdrTex*/, uint32_t /*historyTex*/,
                              uint32_t /*velocityTex*/, uint32_t /*dstFbo*/,
                              int /*w*/, int /*h*/,
@@ -1554,8 +1594,32 @@ public:
                              int   /*rgnY*/               = 0,      // Phase F.0.10.2: 区域 Y
                              int   /*rgnW*/               = 0,      // Phase F.0.10.2: 区域 W (<=0 = 全屏)
                              int   /*rgnH*/               = 0,      // Phase F.0.10.2: 区域 H
-                             const float* /*uvBounds*/    = nullptr) // Phase F.0.10.5: vec4 UV clamp (nullptr=0,0,1,1)
+                             const float* /*uvBounds*/    = nullptr,// Phase F.0.10.5: vec4 UV clamp (nullptr=0,0,1,1)
+                             int /*renderW*/              = 0,      // Phase F.1 TAAU: render-res 宽 (0 = 同 w)
+                             int /*renderH*/              = 0,      // Phase F.1 TAAU: render-res 高 (0 = 同 h)
+                             int /*outputW*/              = 0,      // Phase F.1 TAAU: output-res 宽 (0 = 同 w)
+                             int /*outputH*/              = 0,      // Phase F.1 TAAU: output-res 高 (0 = 同 h)
+                             int /*taauEnabled*/          = 0)      // Phase F.1 TAAU: 0=F.0 行为, 1=TAAU
                              {}
+
+    // ==================== Phase F.1 TAAU — Output sceneTex 管理 ====================
+    //
+    // TAAU 启用时, sceneTex 在 render-res 而 sharpen/tonemap 需要 output-res 输入,
+    // 故新增独立 outputSceneTex (RGBA16F output-res) 由 HDRRenderer 在 OnTAAURenderScaleChanged 时分配.
+    // Legacy backend 默认 no-op, HDRRenderer 检测分配失败时自动回退 F.0 路径.
+
+    /// 创建 output-res sceneTex (RGBA16F, linear filter, clamp-to-edge)
+    /// @param  w, h     output-res 尺寸
+    /// @param  outFbo   out: FBO id (失败时 0)
+    /// @param  outTex   out: tex id (失败时 0)
+    /// @return true on success
+    virtual bool CreateOutputSceneTex(int /*w*/, int /*h*/,
+                                      uint32_t* /*outFbo*/, uint32_t* /*outTex*/) {
+        return false;   // legacy no-op
+    }
+
+    /// 释放 output sceneTex (与 CreateOutputSceneTex 配对)
+    virtual void DeleteOutputSceneTex(uint32_t /*fbo*/, uint32_t /*tex*/) {}
 
     /// 把 TAA 输出 blit 回 HDR sceneTex (覆盖, 让后续 Tonemap 用 TAA 后内容)
     /// @param srcTex    TAA 输出 tex (= history 新 slot tex)
