@@ -36,15 +36,32 @@
 #include "ssr_renderer.h"             // Phase E.9 — SSR (屏幕空间反射)
 #include "motion_blur_renderer.h"    // Phase E.15 — Velocity-driven Motion Blur
 #include "taa_renderer.h"             // Phase F.0 — TAA 主管线
+#include "asset_loader.h"
 #include <cmath>
 #include <cstring>
 #include <vector>     // Phase F.0.10.8 — CreateLUT3D Lua table → byte buffer
 #include <string>     // Phase F.0.11   — RecordPNGSequence dir prefix
 #include <cstdio>     // Phase F.0.11   — snprintf path
+#include <utility>
 
 extern "C" {
 #include "stb_image_write.h"   // Phase F.0.11 — PNG 编码 (实现在 third_party/stb_impl.c)
 }
+
+// Phase F.0.11.5 — EXR HDR screenshot (tinyexr v1.0.7, 实现在 third_party/tinyexr_impl.cpp).
+//   编译选项必须与 tinyexr_impl.cpp 一致, 否则 inline 函数与 impl 分歧导致 ODR 违规.
+#define TINYEXR_USE_MINIZ     0
+#define TINYEXR_USE_STB_ZLIB  1
+#define TINYEXR_USE_THREAD    0
+#define TINYEXR_USE_OPENMP    0
+#include "tinyexr.h"
+
+// Phase F.0.11.6 — MP4 H.264 录屏 (FFmpeg encoder/muxer 动态加载, 实现在 src/record_mp4.cpp).
+#include "record_mp4.h"
+
+// Phase F.0.11.6 — 窗口尺寸 extern (impl 在 light_ui.cpp)
+extern "C" int Light_GetWindowWidth();
+extern "C" int Light_GetWindowHeight();
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -2125,6 +2142,73 @@ static int l_HDR_LoadHaldLUT(lua_State* L) {
     return 1;
 }
 
+static void LUTPushResult_(void* L_, AssetLoader::FutureState* state) {
+    lua_State* L = (lua_State*)L_;
+    if (!L) return;
+    if (!state || state->status.load() != (int)AssetLoader::FutureStatus::Ready || !state->resLUTId) {
+        lua_pushnil(L);
+        return;
+    }
+    lua_pushinteger(L, (lua_Integer)state->resLUTId);
+}
+
+static void LUTAsyncDispatcher_(void* L_, AssetLoader::FutureState* state, int cbLuaRef) {
+    lua_State* L = (lua_State*)L_;
+    if (!L || !state || cbLuaRef < 0) return;
+    lua_rawgeti(L, LUA_REGISTRYINDEX, cbLuaRef);
+    if (!lua_isfunction(L, -1)) {
+        lua_pop(L, 1);
+        return;
+    }
+    if (state->status.load() == (int)AssetLoader::FutureStatus::Ready) {
+        LUTPushResult_(L, state);
+        lua_pushnil(L);
+    } else {
+        lua_pushnil(L);
+        lua_pushstring(L, state->errorMsg.empty() ? "unknown error" : state->errorMsg.c_str());
+    }
+    if (lua_pcall(L, 2, 0, 0) != 0) {
+        const char* err = lua_tostring(L, -1);
+        CC::Log(CC::LOG_WARN, "LUT LoadAsync cb error: %s", err ? err : "(none)");
+        lua_pop(L, 1);
+    }
+}
+
+static int PushLUTAsyncFuture_(lua_State* L, std::shared_ptr<AssetLoader::FutureState> state, int cbRef) {
+    AssetLoader::RegisterResultPusher(state, LUTPushResult_);
+    if (cbRef >= 0) {
+        AssetLoader::RegisterCallback(state, LUTAsyncDispatcher_, L, cbRef);
+        if (state->status.load() != (int)AssetLoader::FutureStatus::Pending) {
+            LUTAsyncDispatcher_(L, state.get(), cbRef);
+            luaL_unref(L, LUA_REGISTRYINDEX, cbRef);
+            state->dispatcher = nullptr;
+            state->cbLuaRef = -1;
+            state->cbLuaState = nullptr;
+        }
+    }
+    return AssetLoader::PushAsyncFuture(L, std::move(state));
+}
+
+static int l_HDR_LoadCubeLUTAsync(lua_State* L) {
+    const char* path = luaL_checkstring(L, 1);
+    int cbRef = -1;
+    if (lua_gettop(L) >= 2 && lua_isfunction(L, 2)) {
+        lua_pushvalue(L, 2);
+        cbRef = luaL_ref(L, LUA_REGISTRYINDEX);
+    }
+    return PushLUTAsyncFuture_(L, AssetLoader::LoadCubeLUTAsync(path), cbRef);
+}
+
+static int l_HDR_LoadHaldLUTAsync(lua_State* L) {
+    const char* path = luaL_checkstring(L, 1);
+    int cbRef = -1;
+    if (lua_gettop(L) >= 2 && lua_isfunction(L, 2)) {
+        lua_pushvalue(L, 2);
+        cbRef = luaL_ref(L, LUA_REGISTRYINDEX);
+    }
+    return PushLUTAsyncFuture_(L, AssetLoader::LoadHaldLUTAsync(path), cbRef);
+}
+
 // ==================== Phase F.0.10.8.3 — LUT 热重载 ====================
 
 /// @lua_api Light.Graphics.HDR.WatchLUT
@@ -2485,8 +2569,10 @@ static const luaL_Reg hdr_funcs[] = {
     {"GetGradingLUTStrength",       l_HDR_GetGradingLUTStrength},
     // Phase F.0.10.8.1 — .cube LUT 文件解析 (Adobe Cube LUT 1.0)
     {"LoadCubeLUT",                 l_HDR_LoadCubeLUT},
+    {"LoadCubeLUTAsync",            l_HDR_LoadCubeLUTAsync},
     // Phase F.0.10.8.2 — HALD CLUT 图像 LUT 加载 (PNG/JPG/BMP/TGA)
     {"LoadHaldLUT",                 l_HDR_LoadHaldLUT},
+    {"LoadHaldLUTAsync",            l_HDR_LoadHaldLUTAsync},
     // Phase F.0.10.8.3 — LUT 热重载 (mtime polling)
     {"WatchLUT",                    l_HDR_WatchLUT},
     {"UnwatchLUT",                  l_HDR_UnwatchLUT},
@@ -2935,6 +3021,35 @@ static int l_AE_GetMeasuredLuminance(lua_State* L) {
     return 1;
 }
 
+// ==================== Phase F.2.5 — AutoExposure Multi-Instance ====================
+static int l_AE_CreateInstance(lua_State* L) {
+    lua_pushinteger(L, AutoExposureRenderer::CreateInstance());
+    return 1;
+}
+static int l_AE_DestroyInstance(lua_State* L) {
+    int id = (int)luaL_checkinteger(L, 1);
+    lua_pushboolean(L, AutoExposureRenderer::DestroyInstance(id) ? 1 : 0);
+    return 1;
+}
+static int l_AE_SetActiveInstance(lua_State* L) {
+    int id = (int)luaL_checkinteger(L, 1);
+    lua_pushboolean(L, AutoExposureRenderer::SetActiveInstance(id) ? 1 : 0);
+    return 1;
+}
+static int l_AE_GetActiveInstance(lua_State* L) {
+    lua_pushinteger(L, AutoExposureRenderer::GetActiveInstance());
+    return 1;
+}
+static int l_AE_GetInstanceCount(lua_State* L) {
+    lua_pushinteger(L, AutoExposureRenderer::GetInstanceCount());
+    return 1;
+}
+static int l_AE_CloneInstance(lua_State* L) {
+    int srcId = (int)luaL_checkinteger(L, 1);
+    lua_pushinteger(L, AutoExposureRenderer::CloneInstance(srcId));
+    return 1;
+}
+
 static const luaL_Reg ae_funcs[] = {
     {"Enable",                l_AE_Enable},
     {"Disable",               l_AE_Disable},
@@ -2956,6 +3071,13 @@ static const luaL_Reg ae_funcs[] = {
     {"GetCurrentEV",          l_AE_GetCurrentEV},
     {"GetCurrentExposure",    l_AE_GetCurrentExposure},
     {"GetMeasuredLuminance",  l_AE_GetMeasuredLuminance},
+    // Phase F.2.5 — Multi-Instance (4 instance, default + 3 user)
+    {"CreateInstance",        l_AE_CreateInstance},
+    {"DestroyInstance",       l_AE_DestroyInstance},
+    {"SetActiveInstance",     l_AE_SetActiveInstance},
+    {"GetActiveInstance",     l_AE_GetActiveInstance},
+    {"GetInstanceCount",      l_AE_GetInstanceCount},
+    {"CloneInstance",         l_AE_CloneInstance},
     {NULL, NULL}
 };
 
@@ -3048,6 +3170,26 @@ static int l_LD_GetIntensity(lua_State* L) {
     return 1;
 }
 
+// ==================== Phase F.2.3 — LensDirt Multi-Instance ====================
+static int l_LD_CreateInstance(lua_State* L) {
+    lua_pushinteger(L, LensDirtRenderer::CreateInstance()); return 1;
+}
+static int l_LD_DestroyInstance(lua_State* L) {
+    lua_pushboolean(L, LensDirtRenderer::DestroyInstance((int)luaL_checkinteger(L, 1)) ? 1 : 0); return 1;
+}
+static int l_LD_SetActiveInstance(lua_State* L) {
+    lua_pushboolean(L, LensDirtRenderer::SetActiveInstance((int)luaL_checkinteger(L, 1)) ? 1 : 0); return 1;
+}
+static int l_LD_GetActiveInstance(lua_State* L) {
+    lua_pushinteger(L, LensDirtRenderer::GetActiveInstance()); return 1;
+}
+static int l_LD_GetInstanceCount(lua_State* L) {
+    lua_pushinteger(L, LensDirtRenderer::GetInstanceCount()); return 1;
+}
+static int l_LD_CloneInstance(lua_State* L) {
+    lua_pushinteger(L, LensDirtRenderer::CloneInstance((int)luaL_checkinteger(L, 1))); return 1;
+}
+
 static const luaL_Reg lens_dirt_funcs[] = {
     {"Enable",            l_LD_Enable},
     {"Disable",           l_LD_Disable},
@@ -3059,6 +3201,13 @@ static const luaL_Reg lens_dirt_funcs[] = {
     {"GetDirtTextureId",  l_LD_GetDirtTextureId},
     {"SetIntensity",      l_LD_SetIntensity},
     {"GetIntensity",      l_LD_GetIntensity},
+    // Phase F.2.3 — Multi-Instance
+    {"CreateInstance",    l_LD_CreateInstance},
+    {"DestroyInstance",   l_LD_DestroyInstance},
+    {"SetActiveInstance", l_LD_SetActiveInstance},
+    {"GetActiveInstance", l_LD_GetActiveInstance},
+    {"GetInstanceCount",  l_LD_GetInstanceCount},
+    {"CloneInstance",     l_LD_CloneInstance},
     {NULL, NULL}
 };
 
@@ -3167,6 +3316,26 @@ static int l_ST_GetIterations(lua_State* L) {
     return 1;
 }
 
+// ==================== Phase F.2.4 — Streak Multi-Instance ====================
+static int l_ST_CreateInstance(lua_State* L) {
+    lua_pushinteger(L, StreakRenderer::CreateInstance()); return 1;
+}
+static int l_ST_DestroyInstance(lua_State* L) {
+    lua_pushboolean(L, StreakRenderer::DestroyInstance((int)luaL_checkinteger(L, 1)) ? 1 : 0); return 1;
+}
+static int l_ST_SetActiveInstance(lua_State* L) {
+    lua_pushboolean(L, StreakRenderer::SetActiveInstance((int)luaL_checkinteger(L, 1)) ? 1 : 0); return 1;
+}
+static int l_ST_GetActiveInstance(lua_State* L) {
+    lua_pushinteger(L, StreakRenderer::GetActiveInstance()); return 1;
+}
+static int l_ST_GetInstanceCount(lua_State* L) {
+    lua_pushinteger(L, StreakRenderer::GetInstanceCount()); return 1;
+}
+static int l_ST_CloneInstance(lua_State* L) {
+    lua_pushinteger(L, StreakRenderer::CloneInstance((int)luaL_checkinteger(L, 1))); return 1;
+}
+
 static const luaL_Reg streak_funcs[] = {
     {"Enable",          l_ST_Enable},
     {"Disable",         l_ST_Disable},
@@ -3185,6 +3354,13 @@ static const luaL_Reg streak_funcs[] = {
     {"GetDirection",    l_ST_GetDirection},
     {"SetIterations",   l_ST_SetIterations},
     {"GetIterations",   l_ST_GetIterations},
+    // Phase F.2.4 — Multi-Instance
+    {"CreateInstance",    l_ST_CreateInstance},
+    {"DestroyInstance",   l_ST_DestroyInstance},
+    {"SetActiveInstance", l_ST_SetActiveInstance},
+    {"GetActiveInstance", l_ST_GetActiveInstance},
+    {"GetInstanceCount",  l_ST_GetInstanceCount},
+    {"CloneInstance",     l_ST_CloneInstance},
     {NULL, NULL}
 };
 
@@ -3329,6 +3505,26 @@ static int l_LF_GetFlareTextureId(lua_State* L) {
     return 1;
 }
 
+// ==================== Phase F.2.2 — LensFlare Multi-Instance ====================
+static int l_LF_CreateInstance(lua_State* L) {
+    lua_pushinteger(L, LensFlareRenderer::CreateInstance()); return 1;
+}
+static int l_LF_DestroyInstance(lua_State* L) {
+    lua_pushboolean(L, LensFlareRenderer::DestroyInstance((int)luaL_checkinteger(L, 1)) ? 1 : 0); return 1;
+}
+static int l_LF_SetActiveInstance(lua_State* L) {
+    lua_pushboolean(L, LensFlareRenderer::SetActiveInstance((int)luaL_checkinteger(L, 1)) ? 1 : 0); return 1;
+}
+static int l_LF_GetActiveInstance(lua_State* L) {
+    lua_pushinteger(L, LensFlareRenderer::GetActiveInstance()); return 1;
+}
+static int l_LF_GetInstanceCount(lua_State* L) {
+    lua_pushinteger(L, LensFlareRenderer::GetInstanceCount()); return 1;
+}
+static int l_LF_CloneInstance(lua_State* L) {
+    lua_pushinteger(L, LensFlareRenderer::CloneInstance((int)luaL_checkinteger(L, 1))); return 1;
+}
+
 static const luaL_Reg lens_flare_funcs[] = {
     {"Enable",                  l_LF_Enable},
     {"Disable",                 l_LF_Disable},
@@ -3353,6 +3549,13 @@ static const luaL_Reg lens_flare_funcs[] = {
     {"GetDistortionEnabled",    l_LF_GetDistortionEnabled},
     {"SetFlareTexture",         l_LF_SetFlareTexture},        // Phase E.7.4
     {"GetFlareTextureId",       l_LF_GetFlareTextureId},      // Phase E.7.4
+    // Phase F.2.2 — Multi-Instance
+    {"CreateInstance",          l_LF_CreateInstance},
+    {"DestroyInstance",         l_LF_DestroyInstance},
+    {"SetActiveInstance",       l_LF_SetActiveInstance},
+    {"GetActiveInstance",       l_LF_GetActiveInstance},
+    {"GetInstanceCount",        l_LF_GetInstanceCount},
+    {"CloneInstance",           l_LF_CloneInstance},
     {NULL, NULL}
 };
 
@@ -3472,6 +3675,26 @@ static int l_SSAO_GetNormalTexId(lua_State* L) {
     return 1;
 }
 
+// ==================== Phase F.2.1 — SSAO Multi-Instance ====================
+static int l_SSAO_CreateInstance(lua_State* L) {
+    lua_pushinteger(L, SSAORenderer::CreateInstance()); return 1;
+}
+static int l_SSAO_DestroyInstance(lua_State* L) {
+    lua_pushboolean(L, SSAORenderer::DestroyInstance((int)luaL_checkinteger(L, 1)) ? 1 : 0); return 1;
+}
+static int l_SSAO_SetActiveInstance(lua_State* L) {
+    lua_pushboolean(L, SSAORenderer::SetActiveInstance((int)luaL_checkinteger(L, 1)) ? 1 : 0); return 1;
+}
+static int l_SSAO_GetActiveInstance(lua_State* L) {
+    lua_pushinteger(L, SSAORenderer::GetActiveInstance()); return 1;
+}
+static int l_SSAO_GetInstanceCount(lua_State* L) {
+    lua_pushinteger(L, SSAORenderer::GetInstanceCount()); return 1;
+}
+static int l_SSAO_CloneInstance(lua_State* L) {
+    lua_pushinteger(L, SSAORenderer::CloneInstance((int)luaL_checkinteger(L, 1))); return 1;
+}
+
 static const luaL_Reg ssao_funcs[] = {
     {"Enable",          l_SSAO_Enable},
     {"Disable",         l_SSAO_Disable},
@@ -3493,6 +3716,13 @@ static const luaL_Reg ssao_funcs[] = {
     {"SetBlurEnabled",  l_SSAO_SetBlurEnabled},
     {"GetBlurEnabled",  l_SSAO_GetBlurEnabled},
     {"GetNormalTexId",  l_SSAO_GetNormalTexId},   // Phase E.8.x 调试
+    // Phase F.2.1 — Multi-Instance
+    {"CreateInstance",    l_SSAO_CreateInstance},
+    {"DestroyInstance",   l_SSAO_DestroyInstance},
+    {"SetActiveInstance", l_SSAO_SetActiveInstance},
+    {"GetActiveInstance", l_SSAO_GetActiveInstance},
+    {"GetInstanceCount",  l_SSAO_GetInstanceCount},
+    {"CloneInstance",     l_SSAO_CloneInstance},
     {NULL, NULL}
 };
 
@@ -4585,6 +4815,119 @@ static int l_TAA_GetFrameCounter(lua_State* L) {
     return 1;
 }
 
+// ==================== Phase F.1 TAAU — 渲染分辨率与输出分辨率解耦 (8 fn) ====================
+
+/// @lua_api Light.Graphics.TAA.SetTAAUEnabled
+/// @param flag boolean TAAU 总开关 (默认 false)
+/// @return boolean 切换成功 (失败 = HDR 未启用 / 非 default instance / OOM)
+static int l_TAA_SetTAAUEnabled(lua_State* L) {
+    luaL_checkany(L, 1);
+    const bool flag = (lua_toboolean(L, 1) != 0);
+    lua_pushboolean(L, TAARenderer::SetTAAUEnabled(flag) ? 1 : 0);
+    return 1;
+}
+
+/// @lua_api Light.Graphics.TAA.GetTAAUEnabled
+/// @return boolean
+static int l_TAA_GetTAAUEnabled(lua_State* L) {
+    lua_pushboolean(L, TAARenderer::GetTAAUEnabled() ? 1 : 0);
+    return 1;
+}
+
+/// @lua_api Light.Graphics.TAA.SetRenderScale
+/// @param scale number [0.5, 1.0] 渲染分辨率比例 (默认 1.0)
+///                     0.5  = performance  /  0.667 = balanced
+///                     0.75 = quality      /  1.0   = native
+static int l_TAA_SetRenderScale(lua_State* L) {
+    const lua_Number s = luaL_checknumber(L, 1);
+    TAARenderer::SetRenderScale((float)s);
+    return 0;
+}
+
+/// @lua_api Light.Graphics.TAA.GetRenderScale
+/// @return number 当前 renderScale (0.5..1.0)
+static int l_TAA_GetRenderScale(lua_State* L) {
+    lua_pushnumber(L, (lua_Number)TAARenderer::GetRenderScale());
+    return 1;
+}
+
+/// @lua_api Light.Graphics.TAA.SetUpscalePreset
+/// @param preset string  "performance" / "balanced" / "quality" / "native"
+/// @return boolean  接受 = true, 未知字符串 = false (+ warning)
+/// 与 SetRenderScale 双向同步 (preset 改 scale, scale 改近似 preset)
+static int l_TAA_SetUpscalePreset(lua_State* L) {
+    luaL_checkany(L, 1);
+    if (lua_type(L, 1) != LUA_TSTRING) {
+        lua_pushnil(L);
+        lua_pushliteral(L, "TAA.SetUpscalePreset: 期望 string 参数 ('performance' / 'balanced' / 'quality' / 'native')");
+        return 2;
+    }
+    TAARenderer::SetUpscalePreset(lua_tostring(L, 1));
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+/// @lua_api Light.Graphics.TAA.GetUpscalePreset
+/// @return string  当前预设名 (找最近档, 容差 0.01)
+static int l_TAA_GetUpscalePreset(lua_State* L) {
+    lua_pushstring(L, TAARenderer::GetUpscalePreset());
+    return 1;
+}
+
+/// @lua_api Light.Graphics.TAA.GetRenderResolution
+/// @return integer, integer  渲染分辨率 (taauEnabled=false 时 == output-res)
+static int l_TAA_GetRenderResolution(lua_State* L) {
+    int w = 0, h = 0;
+    TAARenderer::GetRenderResolution(&w, &h);
+    lua_pushinteger(L, (lua_Integer)w);
+    lua_pushinteger(L, (lua_Integer)h);
+    return 2;
+}
+
+/// @lua_api Light.Graphics.TAA.GetOutputResolution
+/// @return integer, integer  输出分辨率 (== 用户 Enable 入参 / 当前 sceneTex output 尺寸)
+static int l_TAA_GetOutputResolution(lua_State* L) {
+    int w = 0, h = 0;
+    TAARenderer::GetOutputResolution(&w, &h);
+    lua_pushinteger(L, (lua_Integer)w);
+    lua_pushinteger(L, (lua_Integer)h);
+    return 2;
+}
+
+// ==================== Phase F.1.1 — Mipmap LOD Bias (4 fn) ====================
+
+/// @lua_api Light.Graphics.TAA.SetAutoMipBias
+/// @param flag boolean  默认 true (TAAU 启用时自动调 bias)
+/// 关闭后 backend 永远收到 bias=0, 用户可用 SetMipBias 手动覆盖.
+static int l_TAA_SetAutoMipBias(lua_State* L) {
+    luaL_checkany(L, 1);
+    TAARenderer::SetAutoMipBias(lua_toboolean(L, 1) != 0);
+    return 0;
+}
+
+/// @lua_api Light.Graphics.TAA.GetAutoMipBias
+/// @return boolean
+static int l_TAA_GetAutoMipBias(lua_State* L) {
+    lua_pushboolean(L, TAARenderer::GetAutoMipBias() ? 1 : 0);
+    return 1;
+}
+
+/// @lua_api Light.Graphics.TAA.SetMipBias
+/// @param bias number  clamp [-4.0, +4.0]; 推荐 [-2, 0] 范围
+/// 仅在 autoMipBias=false 时持久生效 (auto 模式下被自动 hook 覆盖)
+static int l_TAA_SetMipBias(lua_State* L) {
+    const lua_Number b = luaL_checknumber(L, 1);
+    TAARenderer::SetMipBias((float)b);
+    return 0;
+}
+
+/// @lua_api Light.Graphics.TAA.GetMipBias
+/// @return number  当前 backend 应用的 bias (autoMipBias=true 时反映自动计算结果)
+static int l_TAA_GetMipBias(lua_State* L) {
+    lua_pushnumber(L, (lua_Number)TAARenderer::GetMipBias());
+    return 1;
+}
+
 // ==================== Phase F.0.10 — Multi-Instance API (5 fn) ====================
 
 /// @lua_api Light.Graphics.TAA.CreateInstance
@@ -4836,6 +5179,20 @@ static const luaL_Reg taa_funcs[] = {
     // status (2): debug HUD 用
     {"GetFrameCounter",       l_TAA_GetFrameCounter},
     {"GetCurrentJitter",      l_TAA_GetCurrentJitter},
+    // Phase F.1 TAAU — 渲染分辨率与输出分辨率解耦 (8 fn: 3 setter + 3 getter + 2 resolution query)
+    {"SetTAAUEnabled",        l_TAA_SetTAAUEnabled},
+    {"GetTAAUEnabled",        l_TAA_GetTAAUEnabled},
+    {"SetRenderScale",        l_TAA_SetRenderScale},
+    {"GetRenderScale",        l_TAA_GetRenderScale},
+    {"SetUpscalePreset",      l_TAA_SetUpscalePreset},
+    {"GetUpscalePreset",      l_TAA_GetUpscalePreset},
+    {"GetRenderResolution",   l_TAA_GetRenderResolution},
+    {"GetOutputResolution",   l_TAA_GetOutputResolution},
+    // Phase F.1.1 TAAU — Mipmap LOD bias (4 fn: 2 setter + 2 getter)
+    {"SetAutoMipBias",        l_TAA_SetAutoMipBias},
+    {"GetAutoMipBias",        l_TAA_GetAutoMipBias},
+    {"SetMipBias",            l_TAA_SetMipBias},
+    {"GetMipBias",            l_TAA_GetMipBias},
     {NULL, NULL}
 };
 
@@ -4872,6 +5229,9 @@ struct RecordState {
     //   StopRecord 时 last_w/last_h > 0 且 use_async 且 backend 支持 → 调 FlushLast 取数据写 PNG
     int         last_w        = 0;
     int         last_h        = 0;
+    // Phase F.0.11.6 — 录屏模式: 0=PNG sequence (F.0.11 默认) / 1=MP4 H.264 (FFmpeg encoder)
+    //   mode=1 时 dir_prefix 当作 mp4 path 用 (用户传 "out.mp4" 而非目录前缀)
+    int         mode          = 0;
 };
 static RecordState g_record;
 
@@ -4895,6 +5255,27 @@ extern "C" void Light_Graphics_RecordTickHook(int win_w, int win_h) {
     // tick_count 从 1 起递增, 仅当 (tick_count % frame_skip == 0) 写盘
     ++g_record.tick_count;
     if (g_record.frame_skip > 1 && (g_record.tick_count % g_record.frame_skip) != 0) return;
+
+    // Phase F.0.11.6: MP4 模式分支 (mode=1) — 走 RecordMP4 encoder, 不写 PNG
+    //   注: mp4 路径目前不走 PBO async (encoder 内部已 buffering, async 收益有限),
+    //   未来可优化为先 PBO 拿数据再丢给 worker thread 编码
+    if (g_record.mode == 1) {
+        if (!RecordMP4::IsActive()) return;   // Open 失败时被动 deactivate
+        std::vector<unsigned char> buf((size_t)win_w * win_h * 4);
+        if (!g_render->ReadbackDefaultFB(0, 0, win_w, win_h, buf.data())) return;
+        if (!RecordMP4::WriteRGBA(buf.data(), g_record.frame_count)) {
+            CC::Log(CC::LOG_WARN, "RecordMP4 WriteRGBA failed at frame %d, auto-stopping", g_record.frame_count);
+            RecordMP4::Close();
+            g_record.active = false;
+            return;
+        }
+        ++g_record.frame_count;
+        if (g_record.max_frames > 0 && g_record.frame_count >= g_record.max_frames) {
+            RecordMP4::Close();
+            g_record.active = false;
+        }
+        return;
+    }
 
     // Phase F.0.11.2: 异步路径 — PBO ping-pong, glReadPixels 不 stall GPU
     //   首次调用启动 PBO[0], 取不到数据 → 不写 PNG (frame_count 不递增, 用户感知"延 1 帧")
@@ -5017,12 +5398,119 @@ static int l_Graphics_RecordPNGSequence(lua_State* L) {
     return 1;
 }
 
+/// @lua_api Light.Graphics.RecordMP4
+/// @brief Phase F.0.11.6 — 开始录制 H.264 MP4 (FFmpeg libavcodec/libavformat 动态加载)
+/// @param path string  输出 mp4 文件路径
+/// @param opts table?  { fps=30, bitrate=5000000, max_frames=0, frame_skip=1 }
+///                     fps: 输出帧率 (默认 30)
+///                     bitrate: 目标码率 bit/s (0 = CRF 模式, libx264 默认 crf=23)
+///                     max_frames: 自动 stop 帧数 (0 = 无限直到 StopRecord)
+///                     frame_skip: 渲染帧采样间隔 (1=每帧, 2=隔帧, 默认 1)
+/// @return boolean true=成功; nil, string=FFmpeg DLL 缺失 / encoder 不可用 / 文件创建失败
+/// @note 不支持与 RecordPNGSequence 并发, 调用前需 StopRecord (若有正在录制).
+///       Windows: 需要 lib/ 目录内有 avcodec-59.dll / avformat-59.dll / avutil-57.dll / swscale-9.dll
+///       w/h 必须偶数 (libx264 要求); 当前帧来自当前窗口 (Light.UI.Window 大小)
+static int l_Graphics_RecordMP4(lua_State* L) {
+    const char* path = luaL_checkstring(L, 1);
+
+    int fps         = 30;
+    int64_t bitrate = 5000000;   // 5 Mbps default
+    int max_frames  = 0;
+    int frame_skip  = 1;
+    if (lua_gettop(L) >= 2 && lua_type(L, 2) == LUA_TTABLE) {
+        lua_getfield(L, 2, "fps");
+        if (lua_isnumber(L, -1)) fps = (int)lua_tointeger(L, -1);
+        lua_pop(L, 1);
+        lua_getfield(L, 2, "bitrate");
+        if (lua_isnumber(L, -1)) bitrate = (int64_t)lua_tonumber(L, -1);
+        lua_pop(L, 1);
+        lua_getfield(L, 2, "max_frames");
+        if (lua_isnumber(L, -1)) max_frames = (int)lua_tointeger(L, -1);
+        lua_pop(L, 1);
+        lua_getfield(L, 2, "frame_skip");
+        if (lua_isnumber(L, -1)) frame_skip = (int)lua_tointeger(L, -1);
+        lua_pop(L, 1);
+    }
+
+    if (fps <= 0 || fps > 240) {
+        lua_pushnil(L);
+        lua_pushfstring(L, "RecordMP4: fps must be in [1, 240], got %d", fps);
+        return 2;
+    }
+    if (max_frames < 0) {
+        lua_pushnil(L);
+        lua_pushstring(L, "RecordMP4: max_frames must be >= 0 (0=unlimited)");
+        return 2;
+    }
+    if (frame_skip < 1) {
+        lua_pushnil(L);
+        lua_pushfstring(L, "RecordMP4: frame_skip must be >= 1 (got %d)", frame_skip);
+        return 2;
+    }
+    if (g_record.active) {
+        lua_pushnil(L);
+        lua_pushstring(L, "RecordMP4: another recording is active, call StopRecord first");
+        return 2;
+    }
+
+    // 获取窗口尺寸 (与 PNG 录屏一致 — 录 default fb 当前窗口大小)
+    if (!g_render) {
+        lua_pushnil(L); lua_pushstring(L, "RecordMP4: render backend not ready");
+        return 2;
+    }
+    // 用 backend 当前 viewport 推断 (light_ui RecordTickHook 每帧透传 win_w/win_h, 但 Open 时
+    // 还没第一次 tick. 从 PlatformWindow 取尺寸)
+    const int w = Light_GetWindowWidth();
+    const int h = Light_GetWindowHeight();
+    if (w <= 0 || h <= 0) {
+        lua_pushnil(L);
+        lua_pushfstring(L, "RecordMP4: invalid window size (%dx%d), open window first", w, h);
+        return 2;
+    }
+
+    if (!RecordMP4::Open(path, w, h, fps, bitrate)) {
+        lua_pushnil(L);
+        lua_pushstring(L, "RecordMP4: encoder open failed (FFmpeg DLL missing / libx264 unavailable / file write error)");
+        return 2;
+    }
+
+    g_record.active      = true;
+    g_record.mode        = 1;
+    g_record.dir_prefix  = path;
+    g_record.frame_count = 0;
+    g_record.max_frames  = max_frames;
+    g_record.frame_skip  = frame_skip;
+    g_record.tick_count  = 0;
+    g_record.last_w      = 0;
+    g_record.last_h      = 0;
+
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+/// @lua_api Light.Graphics.GetRecordMode
+/// @return integer 0=PNG sequence (默认), 1=MP4 (Phase F.0.11.6)
+static int l_Graphics_GetRecordMode(lua_State* L) {
+    lua_pushinteger(L, (lua_Integer)(g_record.active ? g_record.mode : 0));
+    return 1;
+}
+
 /// @lua_api Light.Graphics.StopRecord
 /// @brief Phase F.0.11 — 主动停止录屏; F.0.11.3 async 模式下 flush 最后 1 帧 PBO 防丢
 /// @return integer 实际写入帧数 (含 flush 的最后一帧)
 /// @note async 模式下, 上次 ReadbackDefaultFBAsync 启动的 readback 数据未取就 stop 会丢 1 帧.
 ///       F.0.11.3 加 backend->ReadbackAsyncFlushLast() 同步取出 (会 sync block 1 次, ~3-8ms).
 static int l_Graphics_StopRecord(lua_State* L) {
+    // Phase F.0.11.6: MP4 模式 — flush encoder + 写 trailer + 关闭文件
+    if (g_record.mode == 1) {
+        RecordMP4::Close();
+        int n = g_record.frame_count;
+        g_record.active = false;
+        g_record.mode = 0;
+        lua_pushinteger(L, n);
+        return 1;
+    }
+
     // F.0.11.3: async 模式下 flush 最后 1 帧 pending PBO
     //   触发条件: 有 g_render, 用 async, 缓存尺寸有效, max_frames 未达上限 (避免写超额 PNG)
     if (g_record.use_async && g_render &&
@@ -5095,12 +5583,18 @@ static int l_Graphics_IsRecordAsync(lua_State* L) {
 /// @lua_api Light.Graphics.ScreenshotHDR
 /// @brief Phase F.0.11.4 — 截取当前 active HDR instance 的 sceneTex (RGBA16F) → 写 .hdr
 /// @param path string  输出文件路径 (推荐扩展名 .hdr); 编码为 Radiance RGBE 32-bit
+/// @param instance_id integer? Phase F.0.11.7 — 可选, 临时切到指定 HDR instance (PIP/split-screen).
+///                              缺省 / nil / -1 = 用当前 active instance (F.0 行为, 零回归).
 /// @return boolean true=成功; nil, string=HDR 未启用 / readback 失败 / 写盘失败
 /// @note 用于美术 HDR 工作流 / 调试 HDR 数据 (Photoshop / Krita 可读 .hdr)
 /// @note 读 HDR sceneTex (tonemap 之前的浮点数据), 与 Screenshot 不同 (后者读 LDR default fb)
 /// @note 写 3-channel RGB (丢 alpha); stbi_write_hdr 不支持 4-channel
 static int l_Graphics_ScreenshotHDR(lua_State* L) {
     const char* path = luaL_checkstring(L, 1);
+    // Phase F.0.11.7 — 可选 instance_id
+    const int instanceId = (lua_gettop(L) >= 2 && !lua_isnil(L, 2))
+        ? (int)luaL_checkinteger(L, 2) : -1;
+
     if (!g_render) {
         lua_pushnil(L); lua_pushstring(L, "ScreenshotHDR: render backend not ready");
         return 2;
@@ -5110,17 +5604,32 @@ static int l_Graphics_ScreenshotHDR(lua_State* L) {
         lua_pushstring(L, "ScreenshotHDR: HDR not enabled (call HDR.Enable first)");
         return 2;
     }
+
+    // Phase F.0.11.7 — 临时切 active instance (若指定); 函数末尾复位
+    const int savedActive = HDRRenderer::GetActiveInstance();
+    if (instanceId >= 0 && instanceId != savedActive) {
+        if (!HDRRenderer::SetActiveInstance(instanceId)) {
+            lua_pushnil(L);
+            lua_pushfstring(L, "ScreenshotHDR: invalid instance_id=%d (not allocated or out of range)",
+                            instanceId);
+            return 2;
+        }
+    }
+
     const uint32_t tex = HDRRenderer::GetSceneTexture();
     const int w = HDRRenderer::GetWidth();
     const int h = HDRRenderer::GetHeight();
     if (!tex || w <= 0 || h <= 0) {
+        if (instanceId >= 0 && instanceId != savedActive) HDRRenderer::SetActiveInstance(savedActive);
         lua_pushnil(L);
-        lua_pushfstring(L, "ScreenshotHDR: invalid HDR scene (tex=%u, %dx%d)", tex, w, h);
+        lua_pushfstring(L, "ScreenshotHDR: invalid HDR scene (tex=%u, %dx%d, instance=%d)",
+                        tex, w, h, HDRRenderer::GetActiveInstance());
         return 2;
     }
     // 1) 读 RGBA float 数据 (4 channels)
     std::vector<float> rgba((size_t)w * h * 4);
     if (!g_render->ReadbackTextureRGBAFloat(tex, w, h, rgba.data())) {
+        if (instanceId >= 0 && instanceId != savedActive) HDRRenderer::SetActiveInstance(savedActive);
         lua_pushnil(L);
         lua_pushstring(L, "ScreenshotHDR: ReadbackTextureRGBAFloat failed (backend support?)");
         return 2;
@@ -5134,13 +5643,190 @@ static int l_Graphics_ScreenshotHDR(lua_State* L) {
     }
     // 3) Y 翻转 + 写 Radiance .hdr
     stbi_flip_vertically_on_write(1);
-    if (stbi_write_hdr(path, w, h, 3, rgb.data())) {
+    const bool ok = stbi_write_hdr(path, w, h, 3, rgb.data()) != 0;
+
+    // Phase F.0.11.7 — 复位 active instance
+    if (instanceId >= 0 && instanceId != savedActive) HDRRenderer::SetActiveInstance(savedActive);
+
+    if (ok) {
         lua_pushboolean(L, 1);
         return 1;
     }
     lua_pushnil(L);
     lua_pushfstring(L, "ScreenshotHDR: stbi_write_hdr failed for '%s'", path);
     return 2;
+}
+
+// Phase F.0.11.5 — compression mode 字符串 → tinyexr 枚举
+//   "none" / "rle" / "zips" (line-by-line zip) / "zip" (default, block zip) / "piz" (wavelet, default in EXR spec)
+static int parse_exr_compression_(const char* s) {
+    if (!s) return TINYEXR_COMPRESSIONTYPE_ZIP;
+    if (strcmp(s, "none") == 0) return TINYEXR_COMPRESSIONTYPE_NONE;
+    if (strcmp(s, "rle")  == 0) return TINYEXR_COMPRESSIONTYPE_RLE;
+    if (strcmp(s, "zips") == 0) return TINYEXR_COMPRESSIONTYPE_ZIPS;
+    if (strcmp(s, "zip")  == 0) return TINYEXR_COMPRESSIONTYPE_ZIP;
+    if (strcmp(s, "piz")  == 0) return TINYEXR_COMPRESSIONTYPE_PIZ;
+    return -1;   // 非法
+}
+
+/// @lua_api Light.Graphics.ScreenshotEXR
+/// @brief Phase F.0.11.5 — 截取当前 active HDR instance 的 sceneTex (RGBA16F) → 写 OpenEXR 文件
+/// @param path string  输出路径 (推荐扩展名 .exr)
+/// @param opts table?  可选 { bit_depth=16|32 (default 16),
+///                            compression="zip"|"none"|"rle"|"zips"|"piz" (default "zip"),
+///                            instance_id=integer (Phase F.0.11.7: 临时切到指定 HDR instance) }
+/// @return boolean true=成功; nil, string=错误信息
+/// @note 与 ScreenshotHDR 区别: EXR 保留 4 channels (含 alpha), 16-bit half 比 RGBE 精度更高;
+///        Nuke / DaVinci Resolve / After Effects 等影视后期工具的标准 HDR 输入格式.
+static int l_Graphics_ScreenshotEXR(lua_State* L) {
+    const char* path = luaL_checkstring(L, 1);
+
+    // 解析可选 options
+    int bit_depth = 16;
+    int compression = TINYEXR_COMPRESSIONTYPE_ZIP;
+    int instanceId = -1;   // Phase F.0.11.7: -1 = 不切, 用 active
+    if (lua_gettop(L) >= 2 && lua_type(L, 2) == LUA_TTABLE) {
+        lua_getfield(L, 2, "bit_depth");
+        if (lua_isnumber(L, -1)) bit_depth = (int)lua_tointeger(L, -1);
+        lua_pop(L, 1);
+
+        lua_getfield(L, 2, "compression");
+        if (lua_isstring(L, -1)) {
+            const int parsed = parse_exr_compression_(lua_tostring(L, -1));
+            if (parsed < 0) {
+                const char* badStr = lua_tostring(L, -1);
+                lua_pop(L, 1);
+                lua_pushnil(L);
+                lua_pushfstring(L, "ScreenshotEXR: invalid compression mode '%s' (none/rle/zips/zip/piz)",
+                                badStr);
+                return 2;
+            }
+            compression = parsed;
+        }
+        lua_pop(L, 1);
+
+        // Phase F.0.11.7 — instance_id 字段
+        lua_getfield(L, 2, "instance_id");
+        if (lua_isnumber(L, -1)) instanceId = (int)lua_tointeger(L, -1);
+        lua_pop(L, 1);
+    }
+
+    if (bit_depth != 16 && bit_depth != 32) {
+        lua_pushnil(L);
+        lua_pushfstring(L, "ScreenshotEXR: bit_depth must be 16 (half) or 32 (float), got %d", bit_depth);
+        return 2;
+    }
+
+    if (!g_render) {
+        lua_pushnil(L); lua_pushstring(L, "ScreenshotEXR: render backend not ready");
+        return 2;
+    }
+    if (!HDRRenderer::IsEnabled()) {
+        lua_pushnil(L);
+        lua_pushstring(L, "ScreenshotEXR: HDR not enabled (call HDR.Enable first)");
+        return 2;
+    }
+
+    // Phase F.0.11.7 — 临时切 active instance (若指定); 函数末尾复位
+    const int savedActive = HDRRenderer::GetActiveInstance();
+    if (instanceId >= 0 && instanceId != savedActive) {
+        if (!HDRRenderer::SetActiveInstance(instanceId)) {
+            lua_pushnil(L);
+            lua_pushfstring(L, "ScreenshotEXR: invalid instance_id=%d (not allocated or out of range)",
+                            instanceId);
+            return 2;
+        }
+    }
+    // RAII-风格复位 (任何路径返回前必须复位)
+    auto restoreActive = [&]() {
+        if (instanceId >= 0 && instanceId != savedActive) HDRRenderer::SetActiveInstance(savedActive);
+    };
+
+    const uint32_t tex = HDRRenderer::GetSceneTexture();
+    const int w = HDRRenderer::GetWidth();
+    const int h = HDRRenderer::GetHeight();
+    if (!tex || w <= 0 || h <= 0) {
+        restoreActive();
+        lua_pushnil(L);
+        lua_pushfstring(L, "ScreenshotEXR: invalid HDR scene (tex=%u, %dx%d, instance=%d)",
+                        tex, w, h, HDRRenderer::GetActiveInstance());
+        return 2;
+    }
+
+    // 1) 读 RGBA float (4 channels, OpenGL bottom-left 原点)
+    std::vector<float> rgba((size_t)w * h * 4);
+    if (!g_render->ReadbackTextureRGBAFloat(tex, w, h, rgba.data())) {
+        restoreActive();
+        lua_pushnil(L);
+        lua_pushstring(L, "ScreenshotEXR: ReadbackTextureRGBAFloat failed (backend support?)");
+        return 2;
+    }
+
+    // 2) 拆 channel + Y 翻转 (OpenGL bottom-left -> EXR top-left)
+    //    EXR channels 内部按字母序: A B G R
+    std::vector<float> chR((size_t)w * h);
+    std::vector<float> chG((size_t)w * h);
+    std::vector<float> chB((size_t)w * h);
+    std::vector<float> chA((size_t)w * h);
+    for (int y = 0; y < h; ++y) {
+        const int srcY = h - 1 - y;
+        for (int x = 0; x < w; ++x) {
+            const size_t dst = (size_t)y * w + x;
+            const size_t src = ((size_t)srcY * w + x) * 4;
+            chR[dst] = rgba[src + 0];
+            chG[dst] = rgba[src + 1];
+            chB[dst] = rgba[src + 2];
+            chA[dst] = rgba[src + 3];
+        }
+    }
+
+    // 3) 构造 EXRHeader + EXRImage
+    EXRHeader header; InitEXRHeader(&header);
+    EXRImage  image;  InitEXRImage(&image);
+
+    image.num_channels = 4;
+    image.width  = w;
+    image.height = h;
+    float* image_ptr[4] = { chA.data(), chB.data(), chG.data(), chR.data() };   // A B G R 字母序
+    image.images = (unsigned char**)image_ptr;
+
+    EXRChannelInfo chans[4];
+    memset(chans, 0, sizeof(chans));
+    // strncpy 防止 channel name 溢出 (tinyexr 内部 buf 256 字节)
+    strncpy(chans[0].name, "A", 255);
+    strncpy(chans[1].name, "B", 255);
+    strncpy(chans[2].name, "G", 255);
+    strncpy(chans[3].name, "R", 255);
+    header.num_channels = 4;
+    header.channels = chans;
+
+    int pixel_types[4];
+    int requested_pixel_types[4];
+    const int pt_value = (bit_depth == 16) ? TINYEXR_PIXELTYPE_HALF : TINYEXR_PIXELTYPE_FLOAT;
+    for (int i = 0; i < 4; ++i) {
+        pixel_types[i]           = TINYEXR_PIXELTYPE_FLOAT;   // 源数据是 32-bit float
+        requested_pixel_types[i] = pt_value;                  // 目标存储 (half = 16-bit)
+    }
+    header.pixel_types           = pixel_types;
+    header.requested_pixel_types = requested_pixel_types;
+    header.compression_type      = compression;
+
+    // 4) 写盘
+    const char* err = nullptr;
+    const int ret = SaveEXRImageToFile(&image, &header, path, &err);
+    if (ret != TINYEXR_SUCCESS) {
+        const char* msg = err ? err : "(unknown)";
+        restoreActive();   // Phase F.0.11.7: 失败路径也要复位
+        lua_pushnil(L);
+        lua_pushfstring(L, "ScreenshotEXR: SaveEXRImageToFile failed for '%s': %s (code=%d)",
+                        path, msg, ret);
+        if (err) FreeEXRErrorMessage(err);
+        return 2;
+    }
+
+    restoreActive();   // Phase F.0.11.7: 成功路径复位
+    lua_pushboolean(L, 1);
+    return 1;
 }
 
 static const luaL_Reg graphics_funcs[] = {
@@ -5201,6 +5887,9 @@ static const luaL_Reg graphics_funcs[] = {
     {"Screenshot",                 l_Graphics_Screenshot},
     {"ScreenshotRegion",           l_Graphics_ScreenshotRegion},
     {"RecordPNGSequence",          l_Graphics_RecordPNGSequence},
+    // Phase F.0.11.6 — H.264 MP4 录屏 (FFmpeg encoder 动态加载)
+    {"RecordMP4",                  l_Graphics_RecordMP4},
+    {"GetRecordMode",              l_Graphics_GetRecordMode},
     {"StopRecord",                 l_Graphics_StopRecord},
     {"IsRecording",                l_Graphics_IsRecording},
     // Phase F.0.11.2 — 异步 readback (PBO ping-pong)
@@ -5208,6 +5897,8 @@ static const luaL_Reg graphics_funcs[] = {
     {"IsRecordAsync",              l_Graphics_IsRecordAsync},
     // Phase F.0.11.4 — HDR 截图 (RGBA16F → .hdr Radiance RGBE)
     {"ScreenshotHDR",              l_Graphics_ScreenshotHDR},
+    // Phase F.0.11.5 — EXR 截图 (RGBA16F → .exr OpenEXR half/float, 影视后期工业标准)
+    {"ScreenshotEXR",              l_Graphics_ScreenshotEXR},
     // --- 元方法 ---
     {"__call",            l_Graphics_Call},
     {"__tostring",        l_Graphics_Tostring},

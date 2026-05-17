@@ -180,6 +180,31 @@ bool LoadFFmpeg() {
         LOAD_FUNC(hResample, swr_free);
     }
 
+    // ===== Phase F.0.11.6 — encoder / muxer 符号扩展 =====
+    // 这些符号缺失时不让 LoadFFmpeg 失败 (老 FFmpeg DLL 可能不全), 仅 RecordMP4 时检查
+    LOAD_FUNC(hCodec,  avcodec_find_encoder);
+    LOAD_FUNC(hCodec,  avcodec_find_encoder_by_name);
+    LOAD_FUNC(hCodec,  avcodec_send_frame);
+    LOAD_FUNC(hCodec,  avcodec_receive_packet);
+    LOAD_FUNC(hCodec,  avcodec_parameters_from_context);
+    LOAD_FUNC(hCodec,  av_packet_rescale_ts);
+
+    LOAD_FUNC(hFormat, avformat_alloc_output_context2);
+    LOAD_FUNC(hFormat, avformat_new_stream);
+    LOAD_FUNC(hFormat, avformat_write_header);
+    LOAD_FUNC(hFormat, av_interleaved_write_frame);
+    LOAD_FUNC(hFormat, av_write_trailer);
+    LOAD_FUNC(hFormat, avio_open);
+    LOAD_FUNC(hFormat, avio_closep);
+    LOAD_FUNC(hFormat, avformat_free_context);
+
+    LOAD_FUNC(hUtil,   av_frame_get_buffer);
+    LOAD_FUNC(hUtil,   av_frame_make_writable);
+    LOAD_FUNC(hUtil,   av_dict_set);
+    LOAD_FUNC(hUtil,   av_dict_free);
+    LOAD_FUNC(hUtil,   av_opt_set);
+    LOAD_FUNC(hUtil,   av_opt_set_int);
+
     #undef LOAD_FUNC
 
     // 检查必要的函数���否都解析成功

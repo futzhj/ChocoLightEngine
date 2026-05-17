@@ -14,6 +14,11 @@ p(type(Gfx.SetRecordAsync)=='function',    'SetRecordAsync exists')
 p(type(Gfx.IsRecordAsync)=='function',     'IsRecordAsync exists')
 -- F.0.11.4: HDR .hdr 截图
 p(type(Gfx.ScreenshotHDR)=='function',     'ScreenshotHDR exists')
+-- F.0.11.5: EXR HDR 截图 (OpenEXR half/float)
+p(type(Gfx.ScreenshotEXR)=='function',     'ScreenshotEXR exists')
+-- F.0.11.6: MP4 录屏 (FFmpeg H.264)
+p(type(Gfx.RecordMP4)=='function',         'RecordMP4 exists')
+p(type(Gfx.GetRecordMode)=='function',     'GetRecordMode exists')
 
 -- Screenshot headless (viewport=0 → nil+err)
 local ok,r,e = pcall(Gfx.Screenshot,"out.png"); p(ok,'Screenshot no raise')
@@ -61,6 +66,50 @@ Gfx.StopRecord()
 -- F.0.11.4: ScreenshotHDR 在 HDR 未启用时 → nil+err
 local _,hr1,he1 = pcall(Gfx.ScreenshotHDR,'out.hdr')
 p(hr1==nil and type(he1)=='string','ScreenshotHDR no HDR → nil+err')
+
+-- F.0.11.5: ScreenshotEXR 在 HDR 未启用时 → nil+err
+local _,exr1,exr1e = pcall(Gfx.ScreenshotEXR,'out.exr')
+p(exr1==nil and type(exr1e)=='string','ScreenshotEXR no HDR → nil+err')
+
+-- F.0.11.5: ScreenshotEXR 非法 bit_depth (期望 16 或 32)
+local _,exr2,exr2e = pcall(Gfx.ScreenshotEXR,'out.exr', { bit_depth = 24 })
+p(exr2==nil and type(exr2e)=='string' and exr2e:find('bit_depth'),
+  'ScreenshotEXR bit_depth=24 → nil+err')
+
+-- F.0.11.5: ScreenshotEXR 非法 compression
+local _,exr3,exr3e = pcall(Gfx.ScreenshotEXR,'out.exr', { compression = 'lzma' })
+p(exr3==nil and type(exr3e)=='string' and exr3e:find('compression'),
+  'ScreenshotEXR compression=lzma → nil+err')
+
+-- F.0.11.7: ScreenshotHDR 非法 instance_id (HDR 未启用 + invalid id 都返 nil+err)
+-- 注意: HDR 未启用时 IsEnabled() 检查先失败, 测不到 instance_id 路径 → 跳过 invalid id check
+-- 但可测 instance_id=999 时 luaL_checkinteger 不抛 (大整数合法), 后续 IsEnabled 失败
+local _,h7a,h7ae = pcall(Gfx.ScreenshotHDR,'out.hdr', 999)
+p(h7a==nil and type(h7ae)=='string',
+  'ScreenshotHDR(path, 999) headless → nil+err (HDR not enabled)')
+
+-- F.0.11.7: ScreenshotEXR 含 instance_id 字段
+local _,e7a,e7ae = pcall(Gfx.ScreenshotEXR,'out.exr', { instance_id = 999 })
+p(e7a==nil and type(e7ae)=='string',
+  'ScreenshotEXR(path, {instance_id=999}) headless → nil+err')
+
+-- F.0.11.6: RecordMP4 默认状态
+p(Gfx.GetRecordMode()==0,                  'GetRecordMode default = 0 (PNG / idle)')
+
+-- F.0.11.6: RecordMP4 非法 fps
+local _,mp4a,mp4ae = pcall(Gfx.RecordMP4,'out.mp4', { fps = 0 })
+p(mp4a==nil and type(mp4ae)=='string' and mp4ae:find('fps'),
+  'RecordMP4(fps=0) → nil+err')
+
+-- F.0.11.6: RecordMP4 非法 frame_skip
+local _,mp4b,mp4be = pcall(Gfx.RecordMP4,'out.mp4', { frame_skip = 0 })
+p(mp4b==nil and type(mp4be)=='string' and mp4be:find('frame_skip'),
+  'RecordMP4(frame_skip=0) → nil+err')
+
+-- F.0.11.6: RecordMP4 在 headless (无窗口) 下应失败 (window size 0x0)
+local _,mp4c,mp4ce = pcall(Gfx.RecordMP4,'out.mp4')
+p(mp4c==nil and type(mp4ce)=='string',
+  'RecordMP4 headless → nil+err (no window / FFmpeg DLL)')
 
 -- RecordPNGSequence + stop
 local _,rs = pcall(Gfx.RecordPNGSequence,'f/',3); p(rs==true,'RecordPNGSequence(3) true')
