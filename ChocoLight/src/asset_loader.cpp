@@ -225,6 +225,7 @@ static void DecodeCubeLUT_(Task& task) {
                                               &size, &isHDR,
                                               &task.state->lutBytes,
                                               &task.state->lutFloats,
+                                              nullptr,   // worker 不需要 domainMax (Phase G.1.4)
                                               errBuf, sizeof(errBuf))) {
         task.state->errorMsg = errBuf[0] ? errBuf : "ParseCubeLUTFromString unknown err";
         return;

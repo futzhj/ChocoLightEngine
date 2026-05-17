@@ -1056,6 +1056,7 @@ bool ParseCubeLUTFromString(const char* text, size_t textLen,
                              int* outSize, bool* outIsHDR,
                              std::vector<uint8_t>* outBytes,
                              std::vector<float>* outFloats,
+                             float outDomainMax[3],   // Phase G.1.4 — 可 nullptr
                              char* outErr, size_t errCap) {
     // 边界: 空指针 / 空文本立即报错
     if (!text || textLen == 0) {
@@ -1229,6 +1230,12 @@ bool ParseCubeLUTFromString(const char* text, size_t textLen,
     //    LDR LUT (Photoshop / DaVinci 默认) DOMAIN_MAX = (1, 1, 1) → 走传统 RGB8 路径
     *outSize  = size;
     *outIsHDR = (domainMax[0] > 1.0f || domainMax[1] > 1.0f || domainMax[2] > 1.0f);
+    // Phase G.1.4 — 把 domainMax 透传出去 (供调用方在 backend 未 init 时输出兼容错误消息)
+    if (outDomainMax) {
+        outDomainMax[0] = domainMax[0];
+        outDomainMax[1] = domainMax[1];
+        outDomainMax[2] = domainMax[2];
+    }
     return true;
 }
 
@@ -1276,7 +1283,20 @@ uint32_t LoadCubeLUTFromString(const char* text, size_t textLen,
     bool isHDR = false;
     std::vector<uint8_t> bytes;
     std::vector<float>   floats;
-    if (!ParseCubeLUTFromString(text, textLen, &size, &isHDR, &bytes, &floats, outErr, errCap)) {
+    // Phase G.1.4 — 保留 domainMax 用于 backend 未初始化时输出兼容错误消息 (hdr.lua smoke 依赖)
+    float domainMax[3] = {1.0f, 1.0f, 1.0f};
+    if (!ParseCubeLUTFromString(text, textLen, &size, &isHDR, &bytes, &floats,
+                                 domainMax, outErr, errCap)) {
+        return 0u;
+    }
+    // Phase G.1.4 — backend 未初始化 (headless smoke / 真机 backend init 失败) 时,
+    // 错误消息含完整 parse 信息 (size + isHDR + domainMax), 与 F.1+F.2 重构前格式保持一致.
+    if (!g.backend) {
+        writeErr_(outErr, errCap,
+                  "HDR backend not initialized (parse ok for size=%d, isHDR=%d, "
+                  "domainMax=%.3f/%.3f/%.3f)",
+                  size, isHDR ? 1 : 0,
+                  domainMax[0], domainMax[1], domainMax[2]);
         return 0u;
     }
     return UploadParsedLUT(size, isHDR, bytes, floats, outErr, errCap);

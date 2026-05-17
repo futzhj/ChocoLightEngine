@@ -398,6 +398,10 @@ bool ParseCubeLUTFromString(const char* text, size_t textLen,
                              int* outSize, bool* outIsHDR,
                              std::vector<uint8_t>* outBytes,
                              std::vector<float>* outFloats,
+                             // Phase G.1.4 — 可选 domainMax 输出 (nullptr=不写),
+                             // 用于 LoadCubeLUTFromString 在 backend 未初始化时
+                             // 生成含 domainMax 的兼容错误消息 (与 hdr.lua smoke 契约一致)
+                             float outDomainMax[3],
                              char* outErr, size_t errCap);
 
 // ==================== Phase F.0.10.8.2 — HALD CLUT 图像 LUT 加载 ====================

@@ -15,6 +15,9 @@
  *   - Close() 在 Open 失败后调用是安全的 (内部 nullptr 检查)
  */
 
+// 全平台都需要 stdint (移动端 / Web 的 stub 也用了 int64_t / uint8_t)
+#include <cstdint>
+
 #if !defined(__EMSCRIPTEN__) && !defined(__ANDROID__) && !defined(CHOCO_PLATFORM_IOS)
 
 #include "record_mp4.h"
