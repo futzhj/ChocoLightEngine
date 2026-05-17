@@ -103,4 +103,14 @@ int  GetIterations();
  */
 void Process(uint32_t hdrFbo, uint32_t hdrTex);
 
+// ==================== Phase F.2.4 — Multi-Instance ====================
+// 与 BloomRenderer multi-instance 模型一致 (4 instance: default + 3 user).
+// 每 instance 各自独立 ping-pong RT + 参数 (threshold/intensity/length/direction/iterations).
+int  CreateInstance();
+bool DestroyInstance(int id);
+bool SetActiveInstance(int id);
+int  GetActiveInstance();
+int  GetInstanceCount();
+int  CloneInstance(int srcId);
+
 } // namespace StreakRenderer

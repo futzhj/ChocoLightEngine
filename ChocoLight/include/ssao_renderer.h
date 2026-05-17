@@ -97,4 +97,14 @@ bool GetBlurEnabled();
  */
 void Process(uint32_t hdrFbo, uint32_t hdrTex);
 
+// ==================== Phase F.2.1 — Multi-Instance ====================
+// 4 instance: default + 3 user. 每 instance 独立 depth/AO RT + 6 个参数.
+// 用法: 调用方先 HDR.SetActiveInstance(pipId), 再 SSAO.SetActiveInstance(pipId).
+int  CreateInstance();
+bool DestroyInstance(int id);
+bool SetActiveInstance(int id);
+int  GetActiveInstance();
+int  GetInstanceCount();
+int  CloneInstance(int srcId);
+
 } // namespace SSAORenderer

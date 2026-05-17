@@ -41,7 +41,15 @@ struct State {
     int   iterations  = 5;
 };
 
-static State g;
+// ==================== Phase F.2.4 — Multi-Instance ====================
+// 仿 BloomRenderer F.0.10.9.x.2: g_states[4] + #define g g_states[g_active]
+static constexpr int MAX_INSTANCES = 4;
+static State g_states[MAX_INSTANCES];
+static int   g_active = 0;
+static int   g_count  = 1;
+static bool  g_slot_in_use[MAX_INSTANCES] = { true, false, false, false };
+
+#define g g_states[g_active]
 
 inline float clampf(float v, float lo, float hi) {
     return v < lo ? lo : (v > hi ? hi : v);
@@ -69,6 +77,7 @@ namespace StreakRenderer {
 // ==================== 生命周期 ====================
 
 void Init(RenderBackend* backend) {
+    g_active = 0;
     g.backend   = backend;
     g.inited    = (backend != nullptr);
     g.supported = g.inited && backend->SupportsStreak();
@@ -215,6 +224,80 @@ void Process(uint32_t hdrFbo, uint32_t hdrTex) {
     // 3. 加性合成: streakRT[final] × intensity → hdrFbo
     g.backend->DrawStreakComposite(g.texs[src], hdrFbo,
                                     g.srcW, g.srcH, g.intensity);
+}
+
+// ==================== Phase F.2.4 — Multi-Instance API ====================
+
+int CreateInstance() {
+    for (int i = 1; i < MAX_INSTANCES; ++i) {
+        if (!g_slot_in_use[i]) {
+            g_states[i] = State{};
+            g_states[i].backend   = g_states[0].backend;
+            g_states[i].supported = g_states[0].supported;
+            g_states[i].inited    = g_states[0].inited;
+            g_slot_in_use[i] = true;
+            ++g_count;
+            CC::Log(CC::LOG_INFO,
+                    "StreakRenderer::CreateInstance: id=%d (count=%d)", i, g_count);
+            return i;
+        }
+    }
+    CC::Log(CC::LOG_WARN,
+            "StreakRenderer::CreateInstance: 槽位已满 (MAX=%d)", MAX_INSTANCES);
+    return 0;
+}
+
+bool DestroyInstance(int id) {
+    if (id <= 0 || id >= MAX_INSTANCES) return false;
+    if (!g_slot_in_use[id]) {
+        CC::Log(CC::LOG_WARN, "StreakRenderer::DestroyInstance: id=%d 未分配", id);
+        return false;
+    }
+    const int saved = g_active;
+    g_active = id;
+    ReleaseRT();                  // 切到目标 instance 释放 RT
+    g_states[id] = State{};
+    g_slot_in_use[id] = false;
+    --g_count;
+    g_active = (saved == id) ? 0 : saved;
+    CC::Log(CC::LOG_INFO,
+            "StreakRenderer::DestroyInstance: id=%d (count=%d, active=%d)",
+            id, g_count, g_active);
+    return true;
+}
+
+bool SetActiveInstance(int id) {
+    if (id < 0 || id >= MAX_INSTANCES) return false;
+    if (!g_slot_in_use[id]) return false;
+    g_active = id;
+    return true;
+}
+
+int GetActiveInstance() { return g_active; }
+int GetInstanceCount()  { return g_count; }
+
+int CloneInstance(int srcId) {
+    if (srcId < 0 || srcId >= MAX_INSTANCES) return 0;
+    if (!g_slot_in_use[srcId]) return 0;
+    for (int i = 1; i < MAX_INSTANCES; ++i) {
+        if (!g_slot_in_use[i]) {
+            g_states[i] = g_states[srcId];      // 复制参数 (threshold/intensity/length/dirX/Y/iterations/autoEnable)
+            // 复位 RT (新 instance 待自己 Enable)
+            g_states[i].fbos[0] = g_states[i].fbos[1] = 0;
+            g_states[i].texs[0] = g_states[i].texs[1] = 0;
+            g_states[i].lumW = g_states[i].lumH = 0;
+            g_states[i].srcW = g_states[i].srcH = 0;
+            g_states[i].enabled = false;
+            g_slot_in_use[i] = true;
+            ++g_count;
+            CC::Log(CC::LOG_INFO,
+                    "StreakRenderer::CloneInstance: srcId=%d -> id=%d (count=%d)",
+                    srcId, i, g_count);
+            return i;
+        }
+    }
+    CC::Log(CC::LOG_WARN, "StreakRenderer::CloneInstance: 槽位已满");
+    return 0;
 }
 
 } // namespace StreakRenderer

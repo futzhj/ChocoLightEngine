@@ -30,6 +30,7 @@
 
 #include <cstdint>
 #include <cstddef>  // Phase F.0.10.8 CI fix: size_t (GCC/Clang strict, MSVC 隐式)
+#include <vector>   // Phase G.1 — ParseCubeLUTFromString / ParseHaldLUTFile out 参数
 
 class RenderBackend;
 // Phase E.14 — 前向声明，避免拉 render_backend.h 进 header (依赖面)
@@ -373,6 +374,32 @@ uint32_t LoadCubeLUTFile(const char* path, char* outErr, size_t errCap);
 uint32_t LoadCubeLUTFromString(const char* text, size_t textLen,
                                 char* outErr, size_t errCap);
 
+/**
+ * @brief Phase G.1 — 仅 parse 阶段, 不调 backend (供 worker thread 后台调用)
+ *
+ * 与 LoadCubeLUTFromString 共享 parser. 输出原始字节/浮点数据 + size + isHDR
+ * (是否是 HDR LUT, DOMAIN_MAX > 1.0). 主线程后续根据 isHDR 调
+ * backend->CreateLUT3DFloat 或 CreateLUT3D.
+ *
+ * 设计目的: 让 AssetLoader worker thread 可以无 GL 依赖地完成 cube 解析,
+ * 主线程在 Tick 时只做 GL 上传 (~微秒级).
+ *
+ * @param text       .cube 文件文本
+ * @param textLen    text 字节数
+ * @param outSize    [out] LUT 边长 [4, 64]
+ * @param outIsHDR   [out] true 当 DOMAIN_MAX 任一分量 > 1.0
+ * @param outBytes   [out] LDR 路径数据 size^3 * 3 bytes (即使 isHDR=true 也填, 供 RGB16F fallback)
+ * @param outFloats  [out] HDR 路径数据 size^3 * 3 floats (原始值)
+ * @param outErr     [out] 错误描述
+ * @param errCap     outErr 容量
+ * @return           true 解析成功; false 失败 (查 outErr)
+ */
+bool ParseCubeLUTFromString(const char* text, size_t textLen,
+                             int* outSize, bool* outIsHDR,
+                             std::vector<uint8_t>* outBytes,
+                             std::vector<float>* outFloats,
+                             char* outErr, size_t errCap);
+
 // ==================== Phase F.0.10.8.2 — HALD CLUT 图像 LUT 加载 ====================
 
 /**
@@ -400,6 +427,42 @@ uint32_t LoadCubeLUTFromString(const char* text, size_t textLen,
  * @return        GL texture id (>0); 0 = 失败
  */
 uint32_t LoadHaldLUTFile(const char* path, char* outErr, size_t errCap);
+
+/**
+ * @brief Phase G.1 — 仅 parse 阶段 HALD CLUT 图像 (供 worker thread 后台调用)
+ *
+ * worker 调 stbi_load(_16) + N^3 维度验证 + 归一化到 floats[].
+ * 主线程后续根据 isHDR 调 backend->CreateLUT3DFloat (16-bit) 或 CreateLUT3D (8-bit).
+ *
+ * @param path       PNG/JPG/BMP/TGA 文件路径
+ * @param outSize    [out] LUT 边长 [4, 64]
+ * @param outIsHDR   [out] true 当 16-bit PNG (走 RGB16F)
+ * @param outBytes   [out] LDR 路径数据 size^3 * 3 bytes
+ * @param outFloats  [out] HDR 路径数据 size^3 * 3 floats (16-bit 时填; 8-bit 时空)
+ * @param outErr     [out] 错误描述
+ * @param errCap     outErr 容量
+ * @return           true 解析成功; false 失败
+ */
+bool ParseHaldLUTFile(const char* path,
+                       int* outSize, bool* outIsHDR,
+                       std::vector<uint8_t>* outBytes,
+                       std::vector<float>* outFloats,
+                       char* outErr, size_t errCap);
+
+/**
+ * @brief Phase G.1 — 把已 parse 的 LUT 数据上传到 GL backend (主线程调用)
+ *
+ * 配套 ParseCubeLUTFromString / ParseHaldLUTFile 使用. worker 完成 parse,
+ * AssetLoader::Tick 主线程调此 helper 上传 GL.
+ *
+ * 内部双路径自动 fallback (RGB16F → RGB8 量化).
+ *
+ * @return GL texture id (>0 成功; 0 失败 - backend 未初始化 / 数据空 / GL OOM)
+ */
+uint32_t UploadParsedLUT(int size, bool isHDR,
+                          const std::vector<uint8_t>& bytes,
+                          const std::vector<float>& floats,
+                          char* outErr, size_t errCap);
 
 // ==================== Phase F.0.10.8.3 — LUT 热重载 (mtime polling) ====================
 
@@ -495,6 +558,34 @@ bool HasLUTReloadCallback();
 /// 当前 HDR RT 宽度 / 高度 (未 Enable 时 = 0)
 int GetWidth();
 int GetHeight();
+
+// ==================== Phase F.1 TAAU — 渲染分辨率与输出分辨率解耦 ====================
+//
+// 设计:
+//   - HDR.Enable(w, h) 入参语义不变 (= window/output 尺寸)
+//   - 新增内部 hook: TAARenderer::SetTAAUEnabled(true) 时调 OnTAAURenderScaleChanged,
+//                     重建 sceneTex 为 render-res, 同时分配 outputSceneTex 为 output-res
+//   - sharpen / tonemap 改读 GetSceneTexForOutput() 选择正确的 sceneTex
+//   - taauActive=false 时 outputSceneTex 不分配, GetSceneTexForOutput() 返 sceneTex (零回归)
+
+/// Phase F.1 — 由 TAARenderer 调; 通知 HDR 切换到 TAAU 模式 (sceneTex render-res + outputSceneTex output-res)
+/// 失败 (OOM / backend 不支持 OutputSceneTex) 时自动回退 F.0 路径 + log error.
+/// @param renderW  渲染分辨率宽 (= lround(outputW * renderScale))
+/// @param renderH  渲染分辨率高
+/// @param outputW  输出分辨率宽 (= 当前 g.width)
+/// @param outputH  输出分辨率高 (= 当前 g.height)
+/// @return true 切换成功; false 失败 (HDR 未启用 / OOM)
+bool OnTAAURenderScaleChanged(int renderW, int renderH, int outputW, int outputH);
+
+/// Phase F.1 — 由 TAARenderer 调; 切回 F.0 单尺寸路径 (sceneTex output-res, 销毁 outputSceneTex)
+void OnTAAUDisabled();
+
+/// Phase F.1 — sharpen / tonemap 应用的 sceneTex (TAAU 模式 = outputSceneTex output-res; 否则 = sceneTex)
+uint32_t GetSceneTexForOutput();
+
+/// Phase F.1 — sharpen / TAA 写入的目标 FBO (TAAU 模式 = outputSceneFbo; 否则 = HDR fbo).
+/// 与 GetSceneTexForOutput 配对: GetSceneTexForOutput 返该 FBO 上挂载的 color tex.
+uint32_t GetSceneFboForOutput();
 
 // ==================== SetCanvas 兼容 (由 l_SetCanvas 内部调) ====================
 

@@ -148,4 +148,14 @@ float GetMeasuredLuminance();
  */
 void Process(uint32_t hdrTex, float dt);
 
+// ==================== Phase F.2.5 — Multi-Instance ====================
+// 4 instance: default + 3 user. 每 instance 独立 luminance RT + EV 参数 + currentEV/exposure.
+// split-screen 4 player 各自瞳孔适应, GetCurrentExposure() 返当前 active instance 的值.
+int  CreateInstance();
+bool DestroyInstance(int id);
+bool SetActiveInstance(int id);
+int  GetActiveInstance();
+int  GetInstanceCount();
+int  CloneInstance(int srcId);
+
 } // namespace AutoExposureRenderer

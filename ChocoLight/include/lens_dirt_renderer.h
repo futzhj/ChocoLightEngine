@@ -92,4 +92,18 @@ float GetIntensity();
  */
 void Process(uint32_t hdrFbo, uint32_t bloomTex, int w, int h);
 
+// ==================== Phase F.2.3 — Multi-Instance ====================
+//
+// 与 BloomRenderer multi-instance 模型一致 (4 instance: default + 3 user).
+// 每 instance 各自独立: enabled / autoEnable / dirtTexId / intensity.
+// 无独立 GPU RT, 因此切换 instance 无 GPU 资源开销.
+// 用途: split-screen 4 player 各自 lens dirt 强度 / dirt tex.
+
+int  CreateInstance();
+bool DestroyInstance(int id);
+bool SetActiveInstance(int id);
+int  GetActiveInstance();
+int  GetInstanceCount();
+int  CloneInstance(int srcId);
+
 } // namespace LensDirtRenderer

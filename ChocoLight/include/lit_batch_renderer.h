@@ -92,4 +92,17 @@ void NotifyStateChange();
 const Stats& GetStats();
 void ResetStats();
 
+// ==================== HDR 联动 (Phase F.2.1 接口一致性) ====================
+//
+// LitBatchRenderer 是 stateless w.r.t. HDR FBO 尺寸:
+//   - 内部 vertex/index 缓冲与 sceneTex 尺寸无关
+//   - DrawLit2DBatch 由调用方先 BindFBO(hdrFbo) 再提交, 自身不持有 RT
+//
+// 此三函数为接口一致性 stub (与 BloomRenderer/SSRRenderer/... 同形态),
+// 让 hdr_renderer.cpp 未来若需要统一遍历联动模块时无特殊分支.
+//
+void OnHDREnabled(int w, int h);
+void OnHDRDisabled();
+void OnHDRResized(int w, int h);
+
 } // namespace LitBatchRenderer

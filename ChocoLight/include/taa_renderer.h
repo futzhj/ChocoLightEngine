@@ -249,4 +249,67 @@ int  GetFrameCounter();
 /// 当前帧 sub-pixel jitter (±0.5 pixel 范围), 仅 jitterEnabled+enabled 时非零
 void GetCurrentJitter(float* outX, float* outY);
 
+// ==================== Phase F.1 TAAU — 渲染分辨率与输出分辨率解耦 ====================
+//
+// TAAU = TAA Upsampling (DLSS/FSR2 风格): 在 render-res 渲染, output-res 输出
+//   - History/sharpen/tonemap 全部工作在 output-res (历史富集所有 render sub-pixel 采样)
+//   - SceneTex/velocity/normal 工作在 render-res (raster + post 省算力)
+//   - Jitter 注入按 render-res pixel (NDC offset 自动放大让多帧采样网格更稀疏)
+//
+// 限制 (Phase F.1.0 / F.1.0.1):
+//   - F.0.5 HalfResHistory 与 TAAU 互斥 (Q5 仲裁: SetTAAUEnabled(true) 时自动关 HalfResHistory)
+//   - Phase F.1.0.1+: user instance (1..3) 也支持 TAAU; 调用方需保证 HDR g_active 与 TAA g_active 一致
+//   - 默认 TAAUEnabled=false (零回归)
+
+/// TAAU 总开关。默认 false (Phase F.0 行为完全保留)。
+/// 设为 true 时:
+///   1. Q5 仲裁: 强制关闭 HalfResHistory + log warning
+///   2. 通过 HDRRenderer::OnTAAURenderScaleChanged 触发 HDR FBO 重建 (sceneTex 改为 render-res)
+///   3. history RT 重建 (仍是 output-res, hasHistory=false 首帧从 cur)
+///   4. 失败 (HDR 未启用 / OOM) → log warn + 不生效 + 返 false
+/// Phase F.1.0.1+: 支持任意 instance (default + user 1..3); 调用方需 HDR.SetActiveInstance 同步.
+/// @return true 切换成功; false 失败 (TAAU 未启用)
+bool SetTAAUEnabled(bool flag);
+bool GetTAAUEnabled();
+
+/// 渲染分辨率比例, clamp [0.5, 1.0]。默认 1.0。
+/// renderW = max(1, lround(outputW * scale)); renderH 同。
+/// 仅 taauEnabled=true 时触发 HDR FBO 重建; 否则仅保存值, 下次 SetTAAUEnabled(true) 时生效。
+/// 同步更新 upscalePreset (容差 0.01 匹配 4 档预设字符串)。
+void  SetRenderScale(float scale);
+float GetRenderScale();
+
+/// 预设档位 (字符串语义清晰, 与 FSR2/DLSS UI 命名一致):
+///   "performance" = 0.5    "balanced"   = 0.667
+///   "quality"     = 0.75   "native"     = 1.0
+/// 调用时同步更新 renderScale (触发与 SetRenderScale 等价的重建)。
+/// 未知字符串: log warning + 不生效。
+void        SetUpscalePreset(const char* preset);
+const char* GetUpscalePreset();
+
+/// 查询当前渲染分辨率 (taauEnabled=false 时 == outputW/H)
+void GetRenderResolution(int* outW, int* outH);
+
+/// 查询当前输出分辨率 (== 用户 Enable 入参)
+void GetOutputResolution(int* outW, int* outH);
+
+// ==================== Phase F.1.1 — Mipmap LOD Bias ====================
+//
+// TAAU 启用时纹理细节锐度补偿: shader 内 `texture(s, uv, uMipBias)` 第 3 个 bias 参数.
+// 业界经验: bias = log2(renderScale) - 0.7 介于 UE4 (-0.0) 与 FSR2/DLSS (-1.0) 之间.
+//   - log2(0.667) - 0.7 = -1.285  (balanced 档)
+//   - log2(0.5)   - 0.7 = -1.7    (performance 档)
+// 影响 shader: FS_UNLIT_SOURCE / FS_PBR_SOURCE (3D mesh, 含 skinned + morph 变体)
+// 不影响: FS_SOURCE (2D batch) / FS_LIT2D_SOURCE / 后处理 shader
+
+/// Phase F.1.1 — autoMipBias 总开关. 默认 true (TAAU 启用时自动调 bias).
+/// 关闭后 backend 永远收到 bias=0 (即使 TAAU 启用), 用户可用 SetMipBias 手动覆盖.
+void SetAutoMipBias(bool flag);
+bool GetAutoMipBias();
+
+/// Phase F.1.1 — 手动设 bias, clamp [-4.0, +4.0]. 仅 autoMipBias=false 时生效;
+/// autoMipBias=true 时设值会立刻被下次 hook (SetTAAUEnabled / SetRenderScale / SetActiveInstance) 覆盖.
+void  SetMipBias(float bias);
+float GetMipBias();
+
 } // namespace TAARenderer

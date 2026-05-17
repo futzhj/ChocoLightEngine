@@ -179,4 +179,10 @@ void ResetStats() {
     s_stats.batchesState = 0;
 }
 
+// ==================== HDR 联动 (Phase F.2.1) ====================
+// LitBatch 是 stateless w.r.t. HDR RT 尺寸; 三个 stub 仅为接口对齐.
+void OnHDREnabled(int /*w*/, int /*h*/) {}
+void OnHDRDisabled() {}
+void OnHDRResized(int /*w*/, int /*h*/) {}
+
 } // namespace LitBatchRenderer

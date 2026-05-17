@@ -10,6 +10,7 @@
 #include "hdr_renderer.h"          // 取 dilated velocity tex (E.18 输出)
 #include "light.h"                 // CC::Log
 #include <cstring>                 // memcpy
+#include <cmath>                   // Phase F.1: std::lround for renderW/H 取整
 
 namespace TAARenderer {
 
@@ -78,6 +79,13 @@ struct State {
     int      upscaleMode      = 0;           // Phase F.0.9: 0=bilinear (F.0.5 默认) / 1=bicubic Catmull-Rom
     bool     motionAdaptiveSharpness = false; // Phase F.0.13: 默认 OFF (零回归, sharpness 不随 motion 调整)
     float    motionSharpness  = 0.1f;        // Phase F.0.13: 高速运动时目标 sharpness (clamp [0, 2], 默认 0.1 减 trail)
+
+    // Phase F.1 TAAU — 渲染分辨率与输出分辨率解耦 (默认 false, 等同 F.0 单尺寸路径零回归)
+    bool     taauEnabled    = false;         // ★ TAAU 总开关 (Set 触发 HDR 重建 + history 重建)
+    float    renderScale    = 1.0f;          // [0.5, 1.0]; 仅 taauEnabled 时影响 renderW/H
+    int      upscalePreset  = 3;             // 0=Performance(0.5) / 1=Balanced(0.667) / 2=Quality(0.75) / 3=Native(1.0)
+    int      renderW        = 0;             // = lround(width * renderScale) when taauEnabled, else 0 (== width 隐含)
+    int      renderH        = 0;
 
     // jitter state
     uint64_t frameCounter   = 0;
@@ -274,9 +282,14 @@ void ApplyJitter() {
     g.curJitterX = kHaltonJitter[j][0];
     g.curJitterY = kHaltonJitter[j][1];
 
-    // NDC 偏移 = 像素偏移 × 2 / RT 尺寸 (NDC 范围 [-1, +1] 对应 width/height 像素)
-    const float ndcOffX = g.curJitterX * 2.0f / (float)g.width;
-    const float ndcOffY = g.curJitterY * 2.0f / (float)g.height;
+    // NDC 偏移 = 像素偏移 × 2 / 尺寸
+    // Phase F.1 TAAU: 当 taauEnabled=true 时, raster 在 render-res 进行,
+    //   jitter 必须按 render-res pixel (NDC offset 因此更大: render 1 px = output (output/render) px)
+    //   F.0 模式 renderW/H == 0, 退化到 width/height (零回归)
+    const int jitterW = (g.taauEnabled && g.renderW > 0) ? g.renderW : g.width;
+    const int jitterH = (g.taauEnabled && g.renderH > 0) ? g.renderH : g.height;
+    const float ndcOffX = g.curJitterX * 2.0f / (float)jitterW;
+    const float ndcOffY = g.curJitterY * 2.0f / (float)jitterH;
 
     // 修改 column-major 4x4 projection: m[8] (col 2, row 0) 和 m[9] (col 2, row 1)
     // 这等价于让 clip_pos.x += ndcOff.x * clip_pos.z (sub-pixel NDC 平移)
@@ -337,6 +350,12 @@ void Process(uint32_t hdrFbo, uint32_t hdrTex,
     //              shader 内邻域 sample 用 vUV 归一化 [0,1], sceneTex GL_LINEAR 自动 box-filter 预采样
     // Phase F.0.10.2: rgnX/Y/W/H 透传到 backend, rgnW/rgnH=0 时 backend 内部跳过 scissor (零回归)
     // Phase F.0.10.5: uvBoundsPtr 透传到 shader (nullptr = 全屏 (0,0,1,1) no-op)
+    // Phase F.1 TAAU: 当 taauEnabled=true 时, history RT 是 output-res (renderW/H 通过参数透传给 backend
+    //                 让 shader 的 uTexel 按 render-res 上传, 邻域采样在 render 像素步进)
+    const int taauRenderW = g.taauEnabled ? g.renderW : 0;
+    const int taauRenderH = g.taauEnabled ? g.renderH : 0;
+    const int taauOutputW = g.taauEnabled ? g.width   : 0;   // F.1 时 g.width == outputW (与 historyW 同)
+    const int taauOutputH = g.taauEnabled ? g.height  : 0;
     g.backend->DrawTAAPass(hdrTex,
                             g.historyTexs[readIdx],
                             velocityTex,
@@ -354,7 +373,17 @@ void Process(uint32_t hdrFbo, uint32_t hdrTex,
                             g.motionGamma,              // Phase F.0.8 (motion γ)
                             g.motionAdaptiveGamma ? 1 : 0, // Phase F.0.8 (开关)
                             rgnX, rgnY, rgnW, rgnH,     // Phase F.0.10.2 region
-                            uvBoundsPtr);               // Phase F.0.10.5 uvBounds
+                            uvBoundsPtr,                // Phase F.0.10.5 uvBounds
+                            taauRenderW, taauRenderH,   // Phase F.1 TAAU render-res (0 = F.0 行为)
+                            taauOutputW, taauOutputH,   // Phase F.1 TAAU output-res (0 = F.0 行为)
+                            g.taauEnabled ? 1 : 0);     // Phase F.1 TAAU 开关
+
+    // Phase F.1 TAAU: sharpen/blit 的目标 FBO 在 taauEnabled 时是 outputSceneFbo (output-res),
+    //   否则是 hdrFbo (F.0 行为)。outputSceneFbo 由 HDRRenderer::OnTAAURenderScaleChanged 创建,
+    //   通过 HDRRenderer::GetSceneFboForOutput() 查询。
+    //   sharpen 写入目标 FBO 大小: TAAU 模式 g.width == outputW (因为 SetTAAUEnabled 时 g.width 已被
+    //   设为 outputW; see TAA::Enable & SetTAAUEnabled 注释)。
+    const uint32_t finalDstFbo = g.taauEnabled ? HDRRenderer::GetSceneFboForOutput() : hdrFbo;
 
     // Phase F.0.1/F.0.6/F.0.12: sharpness > 0 走 sharpen pass (in-place 写回 sceneTex);
     //                    否则保持 F.0 纯 blit 路径 (零 ALU 开销)
@@ -375,13 +404,13 @@ void Process(uint32_t hdrFbo, uint32_t hdrTex,
         if (g.sharpenMode == 2) {
             // Phase F.0.12: RCAS sharpness 接受完整 [0, 2] (FSR2 标准); 超出则 saturate 到 2.0
             const float rcasS = (effSharpness > 2.0f) ? 2.0f : effSharpness;
-            g.backend->DrawTAARCASPass(g.historyTexs[writeIdx], hdrFbo,
+            g.backend->DrawTAARCASPass(g.historyTexs[writeIdx], finalDstFbo,
                                         g.width, g.height, rcasS,
                                         rgnX, rgnY, rgnW, rgnH);    // Phase F.0.10.2
         } else if (g.sharpenMode == 1) {
             // Phase F.0.6: CAS sharpness clamp [0, 1] (FSR1 标准); 超出则 saturate 到 1.0
             const float casS = (effSharpness > 1.0f) ? 1.0f : effSharpness;
-            g.backend->DrawTAACASPass(g.historyTexs[writeIdx], hdrFbo,
+            g.backend->DrawTAACASPass(g.historyTexs[writeIdx], finalDstFbo,
                                        g.width, g.height, casS,
                                        rgnX, rgnY, rgnW, rgnH);     // Phase F.0.10.2
         } else {
@@ -398,7 +427,7 @@ void Process(uint32_t hdrFbo, uint32_t hdrTex,
                 sharpenUvBounds[3] = ((float)(rgnY + rgnH) - 0.5f) * invH;
                 sharpenUvBoundsPtr = sharpenUvBounds;
             }
-            g.backend->DrawTAASharpenPass(g.historyTexs[writeIdx], hdrFbo,
+            g.backend->DrawTAASharpenPass(g.historyTexs[writeIdx], finalDstFbo,
                                           g.width, g.height, effSharpness,
                                           rgnX, rgnY, rgnW, rgnH,   // Phase F.0.10.2
                                           sharpenUvBoundsPtr);      // Phase F.0.10.5
@@ -410,17 +439,17 @@ void Process(uint32_t hdrFbo, uint32_t hdrTex,
         //   其他 (==0 / halfRes=false) 走 F.0.5 老 BlitTAAToHDR (bilinear stretch 或 1:1 nearest)
         // 仅 halfRes=true 时需要上采样品质提升 (full-res 时 1:1 blit 零 ALU)
         if (g.halfResHistory && g.upscaleMode == 1) {
-            g.backend->DrawTAAUpscalePass(g.historyTexs[writeIdx], hdrFbo,
+            g.backend->DrawTAAUpscalePass(g.historyTexs[writeIdx], finalDstFbo,
                                            g.historyW, g.historyH,    // src = half-res
                                            g.width,    g.height,      // dst = full-res
                                            rgnX, rgnY, rgnW, rgnH);   // Phase F.0.10.2
         } else if (g.halfResHistory && g.upscaleMode == 2) {
-            g.backend->DrawTAALanczosPass(g.historyTexs[writeIdx], hdrFbo,
+            g.backend->DrawTAALanczosPass(g.historyTexs[writeIdx], finalDstFbo,
                                            g.historyW, g.historyH,
                                            g.width,    g.height,
                                            rgnX, rgnY, rgnW, rgnH);   // Phase F.0.10.2
         } else {
-            g.backend->BlitTAAToHDR(g.historyTexs[writeIdx], hdrFbo,
+            g.backend->BlitTAAToHDR(g.historyTexs[writeIdx], finalDstFbo,
                                      g.historyW, g.historyH,    // Phase F.0.5: src = history RT 实际尺寸
                                      g.width,    g.height,      // Phase F.0.5: dst = sceneTex full-res
                                      rgnX, rgnY, rgnW, rgnH);   // Phase F.0.10.2
@@ -602,6 +631,226 @@ void GetCurrentJitter(float* outX, float* outY) {
     if (outY) *outY = g.curJitterY;
 }
 
+// ==================== Phase F.1 TAAU — 渲染分辨率与输出分辨率解耦 ====================
+
+// 预设字符串 ↔ scale 映射 (单一来源, 避免散落 magic number)
+//   "performance" 0.5   /  "balanced" 0.667  /  "quality" 0.75  /  "native" 1.0
+// 数值与 FSR2 公开档位一致 (idx 0..3)
+static const float kPresetScale[4]   = { 0.5f, 0.6667f, 0.75f, 1.0f };
+static const char* kPresetName [4]   = { "performance", "balanced", "quality", "native" };
+
+static int presetIdxFromScale_(float scale) {
+    // 容差 0.01 匹配预设; 用户自定 scale (如 0.6) 找最近档
+    int best = 0;
+    float bestDelta = 1e30f;
+    for (int i = 0; i < 4; ++i) {
+        const float d = scale > kPresetScale[i] ? (scale - kPresetScale[i])
+                                                : (kPresetScale[i] - scale);
+        if (d < bestDelta) { bestDelta = d; best = i; }
+    }
+    return best;
+}
+
+static float clampRenderScale_(float s) {
+    if (s < 0.5f) return 0.5f;
+    if (s > 1.0f) return 1.0f;
+    return s;
+}
+
+// 内部: 根据 outputW/H + renderScale 重算 renderW/H, 返 (w, h) 整数对
+static void computeRenderRes_(int outputW, int outputH, float scale,
+                               int* outRenderW, int* outRenderH) {
+    int rw = (int)std::lround((double)outputW * (double)scale);
+    int rh = (int)std::lround((double)outputH * (double)scale);
+    if (rw < 1) rw = 1;
+    if (rh < 1) rh = 1;
+    if (outRenderW) *outRenderW = rw;
+    if (outRenderH) *outRenderH = rh;
+}
+
+// 内部: 触发 HDR 重建 (TAAU 模式) + 重置 history. 失败时 taauEnabled 已先被设过, 需清回.
+// 仅在 enabled + active 是 default instance (g_active==0) 时调用 (上层保护).
+static void updateMipBias_();   // Phase F.1.1 forward decl (impl 在 §F.1.1 节)
+static bool applyTAAUChange_() {
+    if (!g.enabled || !g.backend) return false;
+    if (g.width <= 0 || g.height <= 0) return false;
+
+    if (g.taauEnabled) {
+        // 重算 renderW/H + 通知 HDR 切到双尺寸
+        computeRenderRes_(g.width, g.height, g.renderScale, &g.renderW, &g.renderH);
+        if (!HDRRenderer::OnTAAURenderScaleChanged(g.renderW, g.renderH,
+                                                    g.width, g.height)) {
+            CC::Log(CC::LOG_WARN, "TAARenderer: HDR 切 TAAU 失败, 回退 F.0 路径");
+            g.taauEnabled = false;
+            g.renderW = 0;
+            g.renderH = 0;
+            return false;
+        }
+    } else {
+        // 切回 F.0 路径
+        HDRRenderer::OnTAAUDisabled();
+        g.renderW = 0;
+        g.renderH = 0;
+    }
+
+    // 重置 history (新旧路径 history 尺寸/语义不混用)
+    g.hasHistory   = false;
+    g.historyIdx   = 0;
+    g.frameCounter = 0;
+
+    // Phase F.1.1: 任何 taauEnabled / renderScale 变化都会经由本函数, 此处统一 push mipBias
+    updateMipBias_();
+    return true;
+}
+
+bool SetTAAUEnabled(bool flag) {
+    if (g.taauEnabled == flag) return true;   // no-op
+
+    // Phase F.1.0.1: 移除 F.1.0 的 `g_active != 0` 限制, 让 user instance 也能启用 TAAU.
+    //   调用方需保证 HDR g_active 与 TAA g_active 一致 (否则 GetSceneFboForOutput 返错 fbo).
+    //   典型用法: HDR.SetActiveInstance(pipId); TAA.SetActiveInstance(pipId); TAA.SetTAAUEnabled(true)
+
+    if (!g.supported) {
+        CC::Log(CC::LOG_WARN, "TAARenderer::SetTAAUEnabled: backend 不支持 TAA, 忽略");
+        return false;
+    }
+
+    if (flag) {
+        // Q5 仲裁: TAAU + HalfResHistory 互斥, 自动关 HalfResHistory
+        if (g.halfResHistory) {
+            CC::Log(CC::LOG_WARN,
+                    "TAARenderer::SetTAAUEnabled: HalfResHistory 与 TAAU 互斥, 自动关 HalfResHistory");
+            g.halfResHistory = false;
+            // 已 Enable 时同步重建 history (历史尺寸变 full-res)
+            if (g.enabled) {
+                ReleaseRT();
+                if (!AllocateRT(g.width, g.height)) {
+                    CC::Log(CC::LOG_ERROR, "TAARenderer::SetTAAUEnabled: 关 HalfResHistory 后 history 重建失败");
+                    return false;
+                }
+            }
+        }
+    }
+
+    g.taauEnabled = flag;
+    return applyTAAUChange_();
+}
+bool GetTAAUEnabled() { return g.taauEnabled; }
+
+void SetRenderScale(float scale) {
+    const float clamped = clampRenderScale_(scale);
+    if (scale != clamped) {
+        CC::Log(CC::LOG_INFO,
+                "TAARenderer::SetRenderScale: %f clamped to [0.5, 1.0] -> %f",
+                (double)scale, (double)clamped);
+    }
+    if (g.renderScale == clamped) return;   // no-op
+
+    g.renderScale = clamped;
+    g.upscalePreset = presetIdxFromScale_(clamped);
+
+    // 仅 taauEnabled 时触发 HDR 重建 (Phase F.1.0.1: 移除 g_active==0 限制, user instance 也支持)
+    if (g.taauEnabled && g.enabled) {
+        applyTAAUChange_();
+    }
+}
+float GetRenderScale() { return g.renderScale; }
+
+void SetUpscalePreset(const char* preset) {
+    if (!preset) return;
+    for (int i = 0; i < 4; ++i) {
+        // 不区分大小写匹配 (容忍 "Balanced" / "BALANCED")
+        const char* a = preset;
+        const char* b = kPresetName[i];
+        bool match = true;
+        while (*a && *b) {
+            char ca = *a, cb = *b;
+            if (ca >= 'A' && ca <= 'Z') ca = (char)(ca - 'A' + 'a');
+            if (cb >= 'A' && cb <= 'Z') cb = (char)(cb - 'A' + 'a');
+            if (ca != cb) { match = false; break; }
+            ++a; ++b;
+        }
+        if (match && *a == 0 && *b == 0) {
+            SetRenderScale(kPresetScale[i]);
+            // SetRenderScale 已设 upscalePreset, 这里冗余 set 保险 (浮点容差边界)
+            g.upscalePreset = i;
+            return;
+        }
+    }
+    CC::Log(CC::LOG_WARN,
+            "TAARenderer::SetUpscalePreset: 未知预设 \"%s\" (合法: performance/balanced/quality/native), 忽略",
+            preset);
+}
+const char* GetUpscalePreset() {
+    int idx = g.upscalePreset;
+    if (idx < 0 || idx >= 4) idx = 3;   // 默认 native
+    return kPresetName[idx];
+}
+
+void GetRenderResolution(int* outW, int* outH) {
+    // taauEnabled=true: 返 renderW/H; 否则 == outputW/H (g.width/height)
+    const int rw = (g.taauEnabled && g.renderW > 0) ? g.renderW : g.width;
+    const int rh = (g.taauEnabled && g.renderH > 0) ? g.renderH : g.height;
+    if (outW) *outW = rw;
+    if (outH) *outH = rh;
+}
+
+void GetOutputResolution(int* outW, int* outH) {
+    // 总是返 g.width/g.height (用户 Enable 入参; TAAU 模式 history 尺寸 == g.width/g.height)
+    if (outW) *outW = g.width;
+    if (outH) *outH = g.height;
+}
+
+// ==================== Phase F.1.1 — Mipmap LOD Bias ====================
+//
+// 设计:
+//   - autoMipBias_ 是单一全局标志 (不是 per-instance), 与 backend mipBias_ 配对
+//   - 在 active instance 的 taauEnabled / renderScale / 切换 active 时自动 push 新 bias
+//   - 用户 SetMipBias 仅在 autoMipBias=false 时持久生效 (auto 模式下被 hook 覆盖)
+//   - 公式: bias = log2(renderScale) - 0.7 当 TAAU 启用; 否则 bias = 0
+//     0.667 -> -1.285  /  0.5 -> -1.7  /  0.75 -> -1.115  /  1.0 -> 0 (退回, 等同 F.0)
+
+static bool autoMipBias_ = true;   // 全局: 默认 ON, TAAU 启用时自动调
+
+// 内部: 计算并推 mipBias 给 backend.
+//   autoMipBias=false 时不动 backend (用户手动 SetMipBias 决定).
+//   autoMipBias=true  时按当前 active instance 的 taauEnabled + renderScale 算 bias.
+static void updateMipBias_() {
+    if (!g.backend) return;
+    if (!autoMipBias_) return;   // 手动模式: 不覆盖
+
+    float bias = 0.0f;   // TAAU 关闭 / native scale 时 = 0 (零回归)
+    if (g.taauEnabled && g.renderScale > 0.0f && g.renderScale < 1.0f) {
+        // FSR2 / DLSS 风格: bias = log2(scale) - 0.7, 介于 UE4 (-0.0) 与 FSR2 (-1.0) 之间
+        bias = std::log2(g.renderScale) - 0.7f;
+    }
+    g.backend->SetMipBias(bias);
+}
+
+void SetAutoMipBias(bool flag) {
+    if (autoMipBias_ == flag) return;
+    autoMipBias_ = flag;
+    if (flag) {
+        // 切回 auto: 立即 sync 一次, 让 bias 与当前 TAAU 状态对齐
+        updateMipBias_();
+    } else {
+        // 关 auto: 复位 backend bias 为 0 (用户后续可 SetMipBias 手动设值)
+        if (g.backend) g.backend->SetMipBias(0.0f);
+    }
+}
+bool GetAutoMipBias() { return autoMipBias_; }
+
+void SetMipBias(float bias) {
+    if (!g.backend) return;
+    // backend 内部 clamp [-4, +4]; 这里仅透传
+    g.backend->SetMipBias(bias);
+}
+
+float GetMipBias() {
+    if (!g.backend) return 0.0f;
+    return g.backend->GetMipBias();
+}
+
 // ==================== Phase F.0.10 — Multi-Instance API ====================
 //
 // 设计说明:
@@ -667,6 +916,8 @@ bool SetActiveInstance(int id) {
         return false;
     }
     g_active = id;
+    // Phase F.1.1: 新 active instance 可能 taauEnabled/renderScale 不同, 重算 mipBias
+    updateMipBias_();
     return true;
 }
 
@@ -704,6 +955,13 @@ int CloneInstance(int srcId) {
             // 复位 temporal state (新 instance 第一帧 fallback 走 cur 路径)
             g_states[i].historyIdx = 0;
             g_states[i].hasHistory = false;
+            // Phase F.1.0.1: clone 仍清 taauEnabled (新 instance 走自己 Enable + SetTAAUEnabled),
+            //   但保留 renderScale / upscalePreset 让用户调过的设置传过去
+            g_states[i].taauEnabled   = false;
+            g_states[i].renderW       = 0;
+            g_states[i].renderH       = 0;
+            // renderScale / upscalePreset 保留 (源 instance 调过的设置, 复制过来,
+            //   新 instance SetTAAUEnabled(true) 会按此 scale 重算 renderW/H)
             g_slot_in_use[i] = true;
             ++g_count;
             CC::Log(CC::LOG_INFO,

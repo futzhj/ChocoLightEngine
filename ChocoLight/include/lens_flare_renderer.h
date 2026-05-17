@@ -110,4 +110,13 @@ uint32_t GetFlareTextureId();
  */
 void Process(uint32_t hdrFbo, uint32_t hdrTex);
 
+// ==================== Phase F.2.2 — Multi-Instance ====================
+// 4 instance: default + 3 user. 每 instance 独立 ping-pong RT + 8 个 ghost/halo 参数 + flareTexId.
+int  CreateInstance();
+bool DestroyInstance(int id);
+bool SetActiveInstance(int id);
+int  GetActiveInstance();
+int  GetInstanceCount();
+int  CloneInstance(int srcId);
+
 } // namespace LensFlareRenderer

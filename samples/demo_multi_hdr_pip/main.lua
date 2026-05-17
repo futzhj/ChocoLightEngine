@@ -39,6 +39,12 @@ if type(HDR) ~= 'table' then
     return
 end
 
+-- Phase F.1.0.1 — TAA 子表 (可选, 缺失时 PIP TAAU 演示自动跳过)
+local TAA = Gfx.TAA
+local hasTAAU = type(TAA) == 'table'
+                and type(TAA.SetTAAUEnabled) == 'function'
+                and type(TAA.SetUpscalePreset) == 'function'
+
 -- F.0.10.9 multi-instance API 完整性检测
 local function api_missing(t, name) return type(t[name]) ~= 'function' end
 if api_missing(HDR, 'CreateInstance') or api_missing(HDR, 'DestroyInstance')
@@ -203,6 +209,9 @@ local g_mainExpDim   = false
 local g_pipRotate    = true
 local g_initOk       = false   -- HDR 初始化成功标志 (失败则 Draw 跳过)
 local g_logged_setup = false   -- 一次性日志
+-- Phase F.1.0.1: PIP × TAAU 演示状态
+local g_pipTaaId     = 0       -- TAA instance id (与 PIP HDR 对齐)
+local g_pipTaauOn    = false   -- 当前 PIP 是否启用 TAAU
 
 -- ============================================================================
 -- 5. OnOpen: 初始化 mesh + HDR multi-instance + LUT + per-instance state
@@ -274,6 +283,19 @@ function Demo:OnOpen()
     if g_coolLut then HDR.SetGradingLUT(g_coolLut, 0.85) end
 
     HDR.SetActiveInstance(0)
+
+    -- Phase F.1.0.1 — PIP × TAAU 准备 (可选): 给 PIP HDR 配套创建 TAA instance, 默认关闭 TAAU
+    if hasTAAU and TAA.IsSupported() then
+        g_pipTaaId = TAA.CreateInstance() or 0
+        if g_pipTaaId > 0 then
+            -- TAA 必须先 Enable 才能后续 SetTAAUEnabled 触发 HDR 重建
+            TAA.SetActiveInstance(g_pipTaaId)
+            TAA.Enable(PIP_W, PIP_H)
+            TAA.SetActiveInstance(0)
+            print(string.format('[demo_multi_hdr_pip] Phase F.1.0.1 PIP TAA instance ready (id=%d), 按 T 切 PIP TAAU',
+                  g_pipTaaId))
+        end
+    end
 
     -- 5.6 相机 + 光照
     if type(Gfx.SetPerspective) == 'function' then
@@ -390,7 +412,23 @@ function Demo:Draw()
         Gfx.SetColor(1, 1, 1, 1)
         Gfx.Print(string.format('Instances count=%d active=%d',
               HDR.GetInstanceCount(), HDR.GetActiveInstance()), 10, 100, 0)
-        Gfx.Print('Keys: L=toggle LUT  E=toggle main exp  R=toggle PIP rotate  ESC=quit', 10, 125, 0)
+        -- Phase F.1.0.1: PIP × TAAU 状态
+        if g_pipTaaId > 0 then
+            local taauStr
+            if g_pipTaauOn then
+                TAA.SetActiveInstance(g_pipTaaId)
+                local rw, rh = TAA.GetRenderResolution()
+                local preset = TAA.GetUpscalePreset()
+                TAA.SetActiveInstance(0)
+                taauStr = string.format('ON (%s, render %dx%d -> output %dx%d)', preset, rw, rh, PIP_W, PIP_H)
+            else
+                taauStr = 'OFF (native ' .. PIP_W .. 'x' .. PIP_H .. ')'
+            end
+            Gfx.Print('PIP TAAU: ' .. taauStr, 10, 120, 0)
+            Gfx.Print('Keys: L=LUT  E=main exp  R=PIP rotate  T=PIP TAAU  V=PIP screenshot  ESC=quit', 10, 145, 0)
+        else
+            Gfx.Print('Keys: L=toggle LUT  E=toggle main exp  R=toggle PIP rotate  ESC=quit', 10, 125, 0)
+        end
         Gfx.Pop()
     end
 end
@@ -420,6 +458,40 @@ function Demo:OnKey(key, scancode, action, mods)
     elseif key == 82 then             -- R: toggle PIP rotate
         g_pipRotate = not g_pipRotate
         print('[demo_multi_hdr_pip] PIP rotate: ' .. tostring(g_pipRotate))
+    elseif key == 84 then             -- T: toggle PIP × TAAU (Phase F.1.0.1 演示)
+        if g_pipTaaId > 0 and hasTAAU then
+            g_pipTaauOn = not g_pipTaauOn
+            -- 同步切 HDR + TAA active 到 PIP instance, 让 GetSceneFboForOutput 返 PIP outputSceneFbo
+            HDR.SetActiveInstance(g_pipId)
+            TAA.SetActiveInstance(g_pipTaaId)
+            if g_pipTaauOn then
+                TAA.SetUpscalePreset('balanced')      -- PIP @ 480x270 -> render @ 320x180
+            end
+            local ok = TAA.SetTAAUEnabled(g_pipTaauOn)
+            HDR.SetActiveInstance(0)
+            TAA.SetActiveInstance(0)
+            print(string.format('[demo_multi_hdr_pip] PIP TAAU = %s (SetTAAUEnabled -> %s)',
+                  tostring(g_pipTaauOn), tostring(ok)))
+        else
+            print('[demo_multi_hdr_pip] PIP TAA instance 未创建, 无法切 TAAU')
+        end
+    elseif key == 86 then             -- V: Phase F.0.11.7 演示 - 单独截 PIP HDR / EXR
+        if Gfx.ScreenshotHDR then
+            local ok1, err1 = Gfx.ScreenshotHDR('pip_only.hdr', g_pipId)
+            if ok1 then
+                print(string.format('[demo_multi_hdr_pip] ScreenshotHDR(pip_only.hdr, instance=%d) OK', g_pipId))
+            else
+                print('[demo_multi_hdr_pip] ScreenshotHDR PIP failed: ' .. tostring(err1))
+            end
+        end
+        if Gfx.ScreenshotEXR then
+            local ok2, err2 = Gfx.ScreenshotEXR('pip_only.exr', { instance_id = g_pipId })
+            if ok2 then
+                print(string.format('[demo_multi_hdr_pip] ScreenshotEXR(pip_only.exr, instance=%d) OK', g_pipId))
+            else
+                print('[demo_multi_hdr_pip] ScreenshotEXR PIP failed: ' .. tostring(err2))
+            end
+        end
     end
 end
 
@@ -433,6 +505,16 @@ local function cleanup_demo()
     -- 1) Delete LUT (F.0.10.9.x.1 RemapLUTIdAcrossInstances 跨 instance 同步清)
     if g_coolLut then HDR.DeleteLUT3D(g_coolLut); g_coolLut = nil end
     if g_warmLut then HDR.DeleteLUT3D(g_warmLut); g_warmLut = nil end
+
+    -- Phase F.1.0.1: 释放 PIP TAA instance (在 PIP HDR 销毁前, 防 history RT 悬挂)
+    if g_pipTaaId > 0 and hasTAAU then
+        TAA.SetActiveInstance(g_pipTaaId)
+        if g_pipTaauOn then TAA.SetTAAUEnabled(false) end
+        TAA.Disable()
+        TAA.SetActiveInstance(0)
+        TAA.DestroyInstance(g_pipTaaId)
+        g_pipTaaId = 0
+    end
 
     -- 2) Disable PIP 然后 Destroy
     if g_pipId and g_pipId > 0 then

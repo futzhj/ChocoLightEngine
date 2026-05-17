@@ -126,7 +126,15 @@ struct State {
     bool     blurEnabled    = true;
 };
 
-static State g;
+// ==================== Phase F.2.1 — Multi-Instance ====================
+// 仿 BloomRenderer F.0.10.9.x.2: g_states[4] + #define g g_states[g_active]
+static constexpr int MAX_INSTANCES = 4;
+static State g_states[MAX_INSTANCES];
+static int   g_active = 0;
+static int   g_count  = 1;
+static bool  g_slot_in_use[MAX_INSTANCES] = { true, false, false, false };
+
+#define g g_states[g_active]
 
 // ==================== 内部资源管理 ====================
 
@@ -184,9 +192,10 @@ static bool AllocateResources(int w, int h) {
 // ==================== 生命周期 ====================
 
 void Init(RenderBackend* backend) {
+    g_active = 0;
     g.backend   = backend;
     g.supported = (backend && backend->SupportsSSAO());
-    GenerateHemisphereKernel(g.kernel, 16);   // 一次生成 lifetime 不变
+    GenerateHemisphereKernel(g.kernel, 16);   // 一次生成 lifetime 不变 (default instance 用)
     if (g.supported) {
         CC::Log(CC::LOG_INFO, "SSAORenderer: initialized (supported=yes)");
     } else {
@@ -332,6 +341,84 @@ void Process(uint32_t hdrFbo, uint32_t hdrTex) {
     // 3. composite: HDR *= mix(1.0, ao, intensity) (覆盖写 HDR RT)
     //    backend 内部用临时 RT 解 feedback loop (读 HDR + 写 HDR)
     g.backend->DrawSSAOComposite(aoTex, hdrFbo, g.srcW, g.srcH, g.intensity);
+}
+
+// ==================== Phase F.2.1 — Multi-Instance API ====================
+
+int CreateInstance() {
+    for (int i = 1; i < MAX_INSTANCES; ++i) {
+        if (!g_slot_in_use[i]) {
+            g_states[i] = State{};
+            g_states[i].backend   = g_states[0].backend;
+            g_states[i].supported = g_states[0].supported;
+            // kernel 在 default instance 已生成, 新 instance 复用 (per-instance 不必各自不同)
+            std::memcpy(g_states[i].kernel, g_states[0].kernel,
+                        sizeof(g_states[0].kernel));
+            g_slot_in_use[i] = true;
+            ++g_count;
+            CC::Log(CC::LOG_INFO,
+                    "SSAORenderer::CreateInstance: id=%d (count=%d)", i, g_count);
+            return i;
+        }
+    }
+    CC::Log(CC::LOG_WARN,
+            "SSAORenderer::CreateInstance: 槽位已满 (MAX=%d)", MAX_INSTANCES);
+    return 0;
+}
+
+bool DestroyInstance(int id) {
+    if (id <= 0 || id >= MAX_INSTANCES) return false;
+    if (!g_slot_in_use[id]) {
+        CC::Log(CC::LOG_WARN, "SSAORenderer::DestroyInstance: id=%d 未分配", id);
+        return false;
+    }
+    const int saved = g_active;
+    g_active = id;
+    DestroyResources();              // 切到目标 instance 释放 RT
+    g_states[id] = State{};
+    g_slot_in_use[id] = false;
+    --g_count;
+    g_active = (saved == id) ? 0 : saved;
+    CC::Log(CC::LOG_INFO,
+            "SSAORenderer::DestroyInstance: id=%d (count=%d, active=%d)",
+            id, g_count, g_active);
+    return true;
+}
+
+bool SetActiveInstance(int id) {
+    if (id < 0 || id >= MAX_INSTANCES) return false;
+    if (!g_slot_in_use[id]) return false;
+    g_active = id;
+    return true;
+}
+
+int GetActiveInstance() { return g_active; }
+int GetInstanceCount()  { return g_count; }
+
+int CloneInstance(int srcId) {
+    if (srcId < 0 || srcId >= MAX_INSTANCES) return 0;
+    if (!g_slot_in_use[srcId]) return 0;
+    for (int i = 1; i < MAX_INSTANCES; ++i) {
+        if (!g_slot_in_use[i]) {
+            g_states[i] = g_states[srcId];      // 复制全部参数 (radius/bias/intensity/kernelSize/power/blurEnabled/autoEnable)
+            // 复位 RT (新 instance 待自己 Enable)
+            g_states[i].depthFbo = g_states[i].depthTex = 0;
+            g_states[i].fbos[0] = g_states[i].fbos[1] = 0;
+            g_states[i].texs[0] = g_states[i].texs[1] = 0;
+            g_states[i].noiseTex = 0;
+            g_states[i].rtW = g_states[i].rtH = 0;
+            g_states[i].srcW = g_states[i].srcH = 0;
+            g_states[i].enabled = false;
+            g_slot_in_use[i] = true;
+            ++g_count;
+            CC::Log(CC::LOG_INFO,
+                    "SSAORenderer::CloneInstance: srcId=%d -> id=%d (count=%d)",
+                    srcId, i, g_count);
+            return i;
+        }
+    }
+    CC::Log(CC::LOG_WARN, "SSAORenderer::CloneInstance: 槽位已满");
+    return 0;
 }
 
 } // namespace SSAORenderer

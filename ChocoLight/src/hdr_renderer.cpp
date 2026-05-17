@@ -44,8 +44,18 @@ struct State {
     bool           paused    = false;  // 被 SetCanvas 暂停
     uint32_t       fbo       = 0;      // 0 = 未创建
     uint32_t       sceneTex  = 0;      // RGBA16F 颜色纹理
-    int            width     = 0;
-    int            height    = 0;
+    int            width     = 0;      // Phase F.1: 当 taauActive=true 时 == renderW (与 fbo/sceneTex 同尺寸); 否则 == outputW
+    int            height    = 0;      // 同上
+
+    // Phase F.1 TAAU — 渲染分辨率与输出分辨率解耦
+    //   taauActive=false: 沿用 F.0 单尺寸 (renderW/H 等同 width/height = outputW/H)
+    //   taauActive=true:  fbo/sceneTex/velocityTex/normalTex/depth 在 (renderW, renderH);
+    //                     outputSceneTex + history 在 (outputW, outputH); sharpen/tonemap 读 outputSceneTex
+    int            outputW   = 0;      // 用户 Enable 入参 (== window 尺寸)
+    int            outputH   = 0;
+    bool           taauActive = false; // 由 TAARenderer::SetTAAUEnabled 通过 OnTAAURenderScaleChanged 通知
+    uint32_t       outputSceneFbo = 0; // output-res sceneTex FBO (RGBA16F); 仅 taauActive 时分配
+    uint32_t       outputSceneTex = 0; // output-res sceneTex; sharpen/tonemap 输入
 
     // Tonemap 参数 (Phase E.3.1 + E.3.4)
     float          exposure  = 1.0f;
@@ -224,6 +234,10 @@ void ReleaseRT() {
         if (g.fbo || g.sceneTex) {
             g.backend->DeleteHDRFBO(g.fbo, g.sceneTex);
         }
+        // Phase F.1 TAAU: 释放 output sceneTex (与 HDR FBO 同生命周期)
+        if (g.outputSceneFbo || g.outputSceneTex) {
+            g.backend->DeleteOutputSceneTex(g.outputSceneFbo, g.outputSceneTex);
+        }
     }
     g.fbo                     = 0;
     g.sceneTex                = 0;
@@ -233,6 +247,12 @@ void ReleaseRT() {
     g.dilatedCameraVelocityTex = 0;
     g.width  = 0;
     g.height = 0;
+    // Phase F.1 TAAU: 复位双尺寸字段 (Disable 流程下次 Enable 重新走 F.0 单尺寸)
+    g.outputSceneFbo = 0;
+    g.outputSceneTex = 0;
+    g.outputW        = 0;
+    g.outputH        = 0;
+    g.taauActive     = false;
     if (g.backend) g.backend->ResetVelocityHistory();
 }
 
@@ -392,17 +412,23 @@ bool Enable(int w, int h) {
     }
 
     // 如果已启用且尺寸相同, 什么都不做
-    if (g.enabled && g.width == w && g.height == h) {
+    // Phase F.1 TAAU: outputW/H 是用户传入的目标输出尺寸 (与 width/height 同步当 taauActive=false)
+    if (g.enabled && g.outputW == w && g.outputH == h && !g.taauActive) {
         return true;
     }
 
     // 释放旧 RT (如果有), 创建新尺寸
     ReleaseRT();
+    // Phase F.1 TAAU: Enable 始终走 F.0 单尺寸路径; TAAU 由 TAARenderer 后续 SetTAAUEnabled
+    //   触发 OnTAAURenderScaleChanged 切换到双尺寸模式 (重建 fbo 为 render-res)
     if (!CreateRT(w, h)) {
         CC::Log(CC::LOG_ERROR, "HDRRenderer::Enable: CreateHDRFBO failed (%dx%d)", w, h);
         g.enabled = false;
         return false;
     }
+    g.outputW    = w;        // Phase F.1: 用户期望的输出尺寸
+    g.outputH    = h;
+    g.taauActive = false;    // Phase F.1: F.0 路径 (TAAU 由 SetTAAUEnabled 切换)
 
     g.enabled = true;
     g.paused  = false;
@@ -468,7 +494,8 @@ bool Resize(int w, int h) {
         // 未 Enable 时 Resize 等价于 Enable
         return Enable(w, h);
     }
-    if (g.width == w && g.height == h) {
+    // Phase F.1 TAAU: 比较应基于 outputW/H (用户的目标尺寸), 不是 width/height (TAAU 模式下是 render-res)
+    if (g.outputW == w && g.outputH == h) {
         return true;  // 尺寸相同, no-op
     }
     bool ok = Enable(w, h);  // Enable 内部会 ReleaseRT + CreateRT + OnHDREnabled
@@ -634,8 +661,10 @@ void EndScene() {
     // Tonemap + sRGB encode → default fb (E.3.4 多 operator; 输入已含 bloom + lensDirt + streak + lensFlare 的 HDR RT)
     // Phase F.0.10.6: autoTonemap=false 时跳过自动 tonemap, 让用户手动 HDR.Tonemap(rgn) 控 split-screen
     // Phase F.0.10.8: 透传全局 LUT (lutTexId=0 或 strength=0 → shader 短路, 零回归)
+    // Phase F.1 TAAU: GetSceneTexForOutput() 在 taauActive 时返 outputSceneTex (output-res), 否则返 sceneTex
     if (g.autoTonemap) {
-        g.backend->DrawTonemapFullscreen(g.sceneTex, exposure, g.gamma, g.tonemap,
+        const uint32_t srcTex = GetSceneTexForOutput();
+        g.backend->DrawTonemapFullscreen(srcTex, exposure, g.gamma, g.tonemap,
                                           g.lutTexId, g.lutStrength);
     }
     g.backend->CommitVelocityHistory();
@@ -691,6 +720,124 @@ uint32_t GetDilatedCameraVelocityTexture() {
 
 int      GetWidth()        { return g.width; }
 int      GetHeight()       { return g.height; }
+
+// ==================== Phase F.1 TAAU — 渲染分辨率与输出分辨率解耦 ====================
+
+uint32_t GetSceneTexForOutput() {
+    // taauActive 时 sharpen/tonemap 必须读 outputSceneTex (output-res, TAAU 输出已 blit 到此);
+    // 否则 (F.0 路径) 读 sceneTex (output-res, F.0 行为零回归)
+    return (g.taauActive && g.outputSceneTex) ? g.outputSceneTex : g.sceneTex;
+}
+
+uint32_t GetSceneFboForOutput() {
+    // 与 GetSceneTexForOutput 配对: TAAU 模式返 outputSceneFbo (sharpen/TAA 写入此 FBO),
+    // F.0 模式返 fbo (HDR FBO, sceneTex 是其 color attachment 0)
+    return (g.taauActive && g.outputSceneFbo) ? g.outputSceneFbo : g.fbo;
+}
+
+bool OnTAAURenderScaleChanged(int renderW, int renderH, int outputW, int outputH) {
+    if (!g.enabled || !g.backend) {
+        CC::Log(CC::LOG_WARN,
+                "HDRRenderer::OnTAAURenderScaleChanged: HDR 未启用, 忽略 (renderW=%d outputW=%d)",
+                renderW, outputW);
+        return false;
+    }
+    if (renderW <= 0 || renderH <= 0 || outputW <= 0 || outputH <= 0) {
+        CC::Log(CC::LOG_WARN,
+                "HDRRenderer::OnTAAURenderScaleChanged: 非法尺寸 (render=%dx%d, output=%dx%d)",
+                renderW, renderH, outputW, outputH);
+        return false;
+    }
+
+    // 已是同尺寸 + 同 active 状态 → no-op
+    if (g.taauActive && g.width == renderW && g.height == renderH
+                     && g.outputW == outputW && g.outputH == outputH) {
+        return true;
+    }
+
+    // 释放旧 RT (含 outputSceneTex), 重建为 render-res
+    ReleaseRT();
+    if (!CreateRT(renderW, renderH)) {
+        CC::Log(CC::LOG_ERROR,
+                "HDRRenderer::OnTAAURenderScaleChanged: CreateHDRFBO(render=%dx%d) 失败",
+                renderW, renderH);
+        // 自动回退 F.0 路径: 重建为 output-res
+        CreateRT(outputW, outputH);
+        g.outputW = outputW;
+        g.outputH = outputH;
+        g.taauActive = false;
+        return false;
+    }
+
+    // 分配 outputSceneTex (output-res)
+    if (!g.backend->CreateOutputSceneTex(outputW, outputH,
+                                          &g.outputSceneFbo, &g.outputSceneTex)) {
+        CC::Log(CC::LOG_ERROR,
+                "HDRRenderer::OnTAAURenderScaleChanged: CreateOutputSceneTex(%dx%d) 失败, 回退 F.0",
+                outputW, outputH);
+        ReleaseRT();
+        CreateRT(outputW, outputH);
+        g.outputW = outputW;
+        g.outputH = outputH;
+        g.taauActive = false;
+        return false;
+    }
+
+    g.outputW    = outputW;
+    g.outputH    = outputH;
+    g.taauActive = true;
+
+    // Phase F.2.0 — TAAU 切换通知下游后处理重建到 render-res
+    // DESIGN F.1 §2.1: "Bloom/SSAO/SSR/MotionBlur 全部 @ render-res"
+    // 缺此通知, 下游 RT 仍是 outputRes, 与 sceneTex(renderRes) 比例错位 + 性能浪费.
+    // TAA 不在此处通知: history RT 必须保持 outputRes; applyTAAUChange_ 已清 hasHistory.
+    BloomRenderer::OnHDRResized(renderW, renderH);
+    AutoExposureRenderer::OnHDRResized(renderW, renderH);
+    LensDirtRenderer::OnHDRResized(renderW, renderH);   // no-op (无 RT) 仍调以保接口一致
+    StreakRenderer::OnHDRResized(renderW, renderH);
+    LensFlareRenderer::OnHDRResized(renderW, renderH);
+    SSAORenderer::OnHDRResized(renderW, renderH);
+    SSRRenderer::OnHDRResized(renderW, renderH);
+    MotionBlurRenderer::OnHDRResized(renderW, renderH);
+
+    CC::Log(CC::LOG_INFO,
+            "HDRRenderer::OnTAAURenderScaleChanged: TAAU 启用 render=%dx%d output=%dx%d (sceneTex=%u outputSceneTex=%u)",
+            renderW, renderH, outputW, outputH, g.sceneTex, g.outputSceneTex);
+    return true;
+}
+
+void OnTAAUDisabled() {
+    if (!g.enabled || !g.backend) return;
+    if (!g.taauActive) return;   // 已是 F.0 路径, no-op
+
+    const int outputW = g.outputW;
+    const int outputH = g.outputH;
+    ReleaseRT();
+    if (!CreateRT(outputW, outputH)) {
+        CC::Log(CC::LOG_ERROR,
+                "HDRRenderer::OnTAAUDisabled: CreateHDRFBO(output=%dx%d) 失败",
+                outputW, outputH);
+        g.enabled = false;
+        return;
+    }
+    g.outputW    = outputW;
+    g.outputH    = outputH;
+    g.taauActive = false;
+
+    // Phase F.2.0 — 切回 F.0 时同步下游 RT 回到 output-res
+    BloomRenderer::OnHDRResized(outputW, outputH);
+    AutoExposureRenderer::OnHDRResized(outputW, outputH);
+    LensDirtRenderer::OnHDRResized(outputW, outputH);
+    StreakRenderer::OnHDRResized(outputW, outputH);
+    LensFlareRenderer::OnHDRResized(outputW, outputH);
+    SSAORenderer::OnHDRResized(outputW, outputH);
+    SSRRenderer::OnHDRResized(outputW, outputH);
+    MotionBlurRenderer::OnHDRResized(outputW, outputH);
+
+    CC::Log(CC::LOG_INFO,
+            "HDRRenderer::OnTAAUDisabled: 切回 F.0 单尺寸 (%dx%d, sceneTex=%u)",
+            outputW, outputH, g.sceneTex);
+}
 
 // ==================== Phase E.14 — Velocity dilation / format 切换 ====================
 
@@ -787,7 +934,9 @@ void Tonemap(int rgnX, int rgnY, int rgnW, int rgnH) {
     float exposure = AutoExposureRenderer::IsEnabled()
                         ? AutoExposureRenderer::GetCurrentExposure()
                         : g.exposure;
-    g.backend->DrawTonemapRegion(g.sceneTex, exposure, g.gamma, g.tonemap,
+    // Phase F.1 TAAU: taauActive 时读 outputSceneTex (output-res); 否则读 sceneTex (F.0 行为)
+    const uint32_t srcTex = GetSceneTexForOutput();
+    g.backend->DrawTonemapRegion(srcTex, exposure, g.gamma, g.tonemap,
                                   rgnX, rgnY, rgnW, rgnH,
                                   g.lutTexId, g.lutStrength);
 }
@@ -802,7 +951,9 @@ void Tonemap(int rgnX, int rgnY, int rgnW, int rgnH,
     g.backend->UnbindFBO();   // F.0.10.7 fix: 切到 default fb
     // 防御性 clamp gamma (与 SetGamma 一致, 防 0/负数 崩溃)
     if (gamma < 0.0001f) gamma = 0.0001f;
-    g.backend->DrawTonemapRegion(g.sceneTex, exposure, gamma, tonemapMode,
+    // Phase F.1 TAAU: 同上, taauActive 时读 outputSceneTex
+    const uint32_t srcTex = GetSceneTexForOutput();
+    g.backend->DrawTonemapRegion(srcTex, exposure, gamma, tonemapMode,
                                   rgnX, rgnY, rgnW, rgnH,
                                   g.lutTexId, g.lutStrength);
 }
@@ -819,7 +970,9 @@ void Tonemap(int rgnX, int rgnY, int rgnW, int rgnH,
     // strength clamp [0, 1] (防数值漂移)
     if (lutStrength < 0.0f) lutStrength = 0.0f;
     else if (lutStrength > 1.0f) lutStrength = 1.0f;
-    g.backend->DrawTonemapRegion(g.sceneTex, exposure, gamma, tonemapMode,
+    // Phase F.1 TAAU: 同上, taauActive 时读 outputSceneTex
+    const uint32_t srcTex = GetSceneTexForOutput();
+    g.backend->DrawTonemapRegion(srcTex, exposure, gamma, tonemapMode,
                                   rgnX, rgnY, rgnW, rgnH,
                                   lutTex, lutStrength);
 }
@@ -897,22 +1050,31 @@ inline uint8_t quantize_(float f) {
 
 }  // anonymous namespace
 
-uint32_t LoadCubeLUTFromString(const char* text, size_t textLen,
-                                char* outErr, size_t errCap) {
-    // 边界: 空指针 / 空文本立即报错 (避免 parser 内复杂检查)
+// Phase G.1 — Parser-only (无 GL 依赖), 供 worker thread 后台调用
+// 与 LoadCubeLUTFromString 共享 parser 内核, 输出 size/isHDR/bytes/floats
+bool ParseCubeLUTFromString(const char* text, size_t textLen,
+                             int* outSize, bool* outIsHDR,
+                             std::vector<uint8_t>* outBytes,
+                             std::vector<float>* outFloats,
+                             char* outErr, size_t errCap) {
+    // 边界: 空指针 / 空文本立即报错
     if (!text || textLen == 0) {
-        writeErr_(outErr, errCap, "LoadCubeLUTFromString: empty input");
-        return 0u;
+        writeErr_(outErr, errCap, "ParseCubeLUTFromString: empty input");
+        return false;
     }
-    // 注: backend null 检查延后到 step 9 (CreateLUT3D 调用前), 让 parser err 优先报告
-    // 这样 LUT_1D_SIZE / 缺 SIZE / size 越界 等用户文件错误能精确反馈
+    if (!outSize || !outIsHDR || !outBytes || !outFloats) {
+        writeErr_(outErr, errCap, "ParseCubeLUTFromString: out params null");
+        return false;
+    }
 
     int  size       = 0;
     bool seenSize3D = false;
     int  lineNo     = 0;
     int  dataRow    = 0;
-    std::vector<uint8_t> bytes;     // LDR 路径: clamp[0,1] 量化字节
-    std::vector<float>   floats;    // Phase F.0.10.8.5 — HDR 路径: 原始 float 值
+    std::vector<uint8_t>& bytes  = *outBytes;     // 写到 caller 缓冲
+    std::vector<float>&   floats = *outFloats;
+    bytes.clear();
+    floats.clear();
     int  expectedRows = 0;          // size^3, 见到 LUT_3D_SIZE 后填
 
     // Phase F.0.10.8.5 — DOMAIN_MIN / DOMAIN_MAX (默认 [0,1] LDR)
@@ -949,7 +1111,7 @@ uint32_t LoadCubeLUTFromString(const char* text, size_t textLen,
                 writeErr_(outErr, errCap,
                           "line %d: LUT_3D_SIZE %ld out of range [4, 64]",
                           lineNo, sz);
-                return 0u;
+                return false;
             }
             size          = (int)sz;
             seenSize3D    = true;
@@ -962,7 +1124,7 @@ uint32_t LoadCubeLUTFromString(const char* text, size_t textLen,
         if (matchKeyword_(tok, lineEnd, "LUT_1D_SIZE")) {
             writeErr_(outErr, errCap,
                       "line %d: 1D LUT not supported (use LUT_3D_SIZE)", lineNo);
-            return 0u;
+            return false;
         }
         if (matchKeyword_(tok, lineEnd, "TITLE")) {
             goto next_line;   // TITLE 不存
@@ -982,7 +1144,7 @@ uint32_t LoadCubeLUTFromString(const char* text, size_t textLen,
                         writeErr_(outErr, errCap,
                                   "line %d: %s expected 3 floats, parse failed at component %d",
                                   lineNo, isMin ? "DOMAIN_MIN" : "DOMAIN_MAX", i);
-                        return 0u;
+                        return false;
                     }
                     v[i] = f;
                     tok = ep;
@@ -1000,7 +1162,7 @@ uint32_t LoadCubeLUTFromString(const char* text, size_t textLen,
         if (!seenSize3D) {
             writeErr_(outErr, errCap,
                       "line %d: data row before LUT_3D_SIZE directive", lineNo);
-            return 0u;
+            return false;
         }
 
         // 6. 解析 3 个 float (R G B)
@@ -1010,27 +1172,27 @@ uint32_t LoadCubeLUTFromString(const char* text, size_t textLen,
             if (ep == tok || ep > lineEnd) {
                 writeErr_(outErr, errCap,
                           "line %d: expected 3 floats for data row, parse R failed", lineNo);
-                return 0u;
+                return false;
             }
             tok = ep;
             float g_ = std::strtof(tok, &ep);
             if (ep == tok || ep > lineEnd) {
                 writeErr_(outErr, errCap,
                           "line %d: expected 3 floats for data row, parse G failed", lineNo);
-                return 0u;
+                return false;
             }
             tok = ep;
             float b = std::strtof(tok, &ep);
             if (ep == tok || ep > lineEnd) {
                 writeErr_(outErr, errCap,
                           "line %d: expected 3 floats for data row, parse B failed", lineNo);
-                return 0u;
+                return false;
             }
             // 防御: 数据行超过预期数量 (避免 vector OOM)
             if (dataRow >= expectedRows) {
                 writeErr_(outErr, errCap,
                           "line %d: data row count exceeds size^3=%d", lineNo, expectedRows);
-                return 0u;
+                return false;
             }
             bytes.push_back(quantize_(r));    // LDR 路径
             bytes.push_back(quantize_(g_));
@@ -1051,7 +1213,7 @@ uint32_t LoadCubeLUTFromString(const char* text, size_t textLen,
     // 7. 必须见过 LUT_3D_SIZE
     if (!seenSize3D) {
         writeErr_(outErr, errCap, "missing LUT_3D_SIZE directive");
-        return 0u;
+        return false;
     }
 
     // 8. 数据行数必须匹配
@@ -1059,45 +1221,65 @@ uint32_t LoadCubeLUTFromString(const char* text, size_t textLen,
         writeErr_(outErr, errCap,
                   "data row count %d mismatch (expected %d for size %d)",
                   dataRow, expectedRows, size);
-        return 0u;
+        return false;
     }
 
     // 9. Phase F.0.10.8.5 — 检测 HDR LUT (DOMAIN_MAX 任一分量 > 1.0)
     //    Resolve / ACES workflow 输出的 LUT 通常 DOMAIN_MAX = (4, 4, 4) 或 (10, 10, 10)
     //    LDR LUT (Photoshop / DaVinci 默认) DOMAIN_MAX = (1, 1, 1) → 走传统 RGB8 路径
-    const bool isHDR = (domainMax[0] > 1.0f || domainMax[1] > 1.0f || domainMax[2] > 1.0f);
+    *outSize  = size;
+    *outIsHDR = (domainMax[0] > 1.0f || domainMax[1] > 1.0f || domainMax[2] > 1.0f);
+    return true;
+}
 
-    // 10. 调 backend 创建 GL texture (此处才检 backend, 让 parser err 优先)
+// Phase G.1 — 主线程上传 helper: 把 parse 结果上传 backend.
+// 调用者: LoadCubeLUTFromString / LoadHaldLUTFile / AssetLoader::Tick
+//
+// 返 GL texture id (>0) 或 0 (失败, outErr 写入)
+uint32_t UploadParsedLUT(int size, bool isHDR,
+                          const std::vector<uint8_t>& bytes,
+                          const std::vector<float>& floats,
+                          char* outErr, size_t errCap) {
     if (!g.backend) {
         writeErr_(outErr, errCap,
-                  "HDR backend not initialized (parse ok for size=%d, isHDR=%d, "
-                  "domainMax=%.3f/%.3f/%.3f)",
-                  size, isHDR ? 1 : 0, domainMax[0], domainMax[1], domainMax[2]);
+                  "HDR backend not initialized (parse ok size=%d, isHDR=%d)",
+                  size, isHDR ? 1 : 0);
         return 0u;
     }
-
-    // 11. 双路径: HDR 走 RGB16F, LDR 走 RGB8
     uint32_t id = 0u;
     if (isHDR) {
-        id = g.backend->CreateLUT3DFloat(size, floats.data());
+        if (!floats.empty()) {
+            id = g.backend->CreateLUT3DFloat(size, floats.data());
+        }
         if (id == 0u) {
-            // backend 不支持 RGB16F → 自动 fallback 到 LDR 路径 (clamp/quantize), 报 warn
+            // backend 不支持 RGB16F / floats 空 → fallback 到 LDR 路径
             CC::Log(CC::LOG_WARN,
-                    "HDRRenderer: HDR LUT (size=%d, domainMax=%.2f/%.2f/%.2f) "
-                    "CreateLUT3DFloat failed, fallback to RGB8 (high values clamped)",
-                    size, domainMax[0], domainMax[1], domainMax[2]);
-            id = g.backend->CreateLUT3D(size, bytes.data());
+                    "HDRRenderer: HDR LUT (size=%d) CreateLUT3DFloat failed/floats empty, "
+                    "fallback to RGB8 (high values clamped)", size);
+            if (!bytes.empty()) id = g.backend->CreateLUT3D(size, bytes.data());
         }
     } else {
-        id = g.backend->CreateLUT3D(size, bytes.data());
+        if (!bytes.empty()) id = g.backend->CreateLUT3D(size, bytes.data());
     }
     if (id == 0u) {
         writeErr_(outErr, errCap,
                   "backend CreateLUT3D%s failed (size=%d, GL not ready or OOM)",
                   isHDR ? "Float" : "", size);
-        return 0u;
     }
     return id;
+}
+
+// Phase F.0.10.8.1 — 从内存字符串加载 .cube LUT (parse + GL 上传)
+uint32_t LoadCubeLUTFromString(const char* text, size_t textLen,
+                                char* outErr, size_t errCap) {
+    int  size  = 0;
+    bool isHDR = false;
+    std::vector<uint8_t> bytes;
+    std::vector<float>   floats;
+    if (!ParseCubeLUTFromString(text, textLen, &size, &isHDR, &bytes, &floats, outErr, errCap)) {
+        return 0u;
+    }
+    return UploadParsedLUT(size, isHDR, bytes, floats, outErr, errCap);
 }
 
 uint32_t LoadCubeLUTFile(const char* path, char* outErr, size_t errCap) {
@@ -1121,15 +1303,26 @@ uint32_t LoadCubeLUTFile(const char* path, char* outErr, size_t errCap) {
 
 // ==================== Phase F.0.10.8.2 — HALD CLUT 图像 LUT 加载 ====================
 
-uint32_t LoadHaldLUTFile(const char* path, char* outErr, size_t errCap) {
+// Phase G.1 — Parser-only (无 GL 依赖) HALD CLUT 图像 解析
+// 16-bit 路径: outFloats 填归一化 [0,1] (size^3 * 3); outBytes 填 quantize 备用 (RGB16F fallback)
+// 8-bit  路径: outBytes  填 RGB byte (size^3 * 3); outFloats 留空; outIsHDR=false
+bool ParseHaldLUTFile(const char* path,
+                       int* outSize, bool* outIsHDR,
+                       std::vector<uint8_t>* outBytes,
+                       std::vector<float>* outFloats,
+                       char* outErr, size_t errCap) {
     if (!path || !*path) {
-        writeErr_(outErr, errCap, "LoadHaldLUTFile: empty path");
-        return 0u;
+        writeErr_(outErr, errCap, "ParseHaldLUTFile: empty path");
+        return false;
     }
+    if (!outSize || !outIsHDR || !outBytes || !outFloats) {
+        writeErr_(outErr, errCap, "ParseHaldLUTFile: out params null");
+        return false;
+    }
+    outBytes->clear();
+    outFloats->clear();
 
     // Phase F.0.10.8.5 — 探测位深 (PNG 16-bit / 8-bit; 其他格式 stbi_is_16_bit 返 0)
-    //   16-bit PNG 走 stbi_load_16 + RGB16F backend (保留更高精度, ACES workflow 关键)
-    //   8-bit 路径 (PNG/JPG/BMP/TGA) 走原 stbi_load + RGB8 backend
     stbi_set_flip_vertically_on_load(0);
     const bool is16bit = (stbi_is_16_bit(path) != 0);
 
@@ -1143,14 +1336,13 @@ uint32_t LoadHaldLUTFile(const char* path, char* outErr, size_t errCap) {
             writeErr_(outErr, errCap,
                       "stbi_load_16 failed: %s (path: %s)",
                       (sr && *sr) ? sr : "unknown", path);
-            return 0u;
+            return false;
         }
-        // 验证方阵 + HALD 维度
         if (w != h) {
             stbi_image_free(px16);
             writeErr_(outErr, errCap,
                       "HALD image not square: %dx%d (path: %s)", w, h, path);
-            return 0u;
+            return false;
         }
         int N = 0;
         for (int n = 2; n <= 8; ++n) if (n * n * n == w) { N = n; break; }
@@ -1159,72 +1351,51 @@ uint32_t LoadHaldLUTFile(const char* path, char* outErr, size_t errCap) {
             writeErr_(outErr, errCap,
                       "HALD width %d is not N^3 for any N in [2,8] "
                       "(expected: 8/27/64/125/216/343/512)", w);
-            return 0u;
+            return false;
         }
         const int size = N * N;
         if (size < 4 || size > 64) {
             stbi_image_free(px16);
             writeErr_(outErr, errCap,
                       "HALD level %d -> LUT size %d out of range [4, 64]", N, size);
-            return 0u;
+            return false;
         }
-        // RGBA(uint16) → RGB float 流 (归一化到 [0, 1])
+        // RGBA(uint16) → RGB float 流 (归一化到 [0, 1]) + RGB byte fallback
         const size_t totalPx = (size_t)w * (size_t)h;
-        std::vector<float> floats;
-        floats.resize(totalPx * 3u);
+        outFloats->resize(totalPx * 3u);
+        outBytes->resize(totalPx * 3u);
         const float inv = 1.0f / 65535.0f;
         for (size_t i = 0; i < totalPx; ++i) {
-            floats[i * 3u + 0u] = (float)px16[i * 4u + 0u] * inv;
-            floats[i * 3u + 1u] = (float)px16[i * 4u + 1u] * inv;
-            floats[i * 3u + 2u] = (float)px16[i * 4u + 2u] * inv;
+            const float r = (float)px16[i * 4u + 0u] * inv;
+            const float gC = (float)px16[i * 4u + 1u] * inv;
+            const float b = (float)px16[i * 4u + 2u] * inv;
+            (*outFloats)[i * 3u + 0u] = r;
+            (*outFloats)[i * 3u + 1u] = gC;
+            (*outFloats)[i * 3u + 2u] = b;
+            (*outBytes)[i * 3u + 0u] = quantize_(r);
+            (*outBytes)[i * 3u + 1u] = quantize_(gC);
+            (*outBytes)[i * 3u + 2u] = quantize_(b);
         }
         stbi_image_free(px16);
-
-        if (!g.backend) {
-            writeErr_(outErr, errCap,
-                      "HDR backend not initialized (HALD16 parse ok: level=%d, size=%d)",
-                      N, size);
-            return 0u;
-        }
-        // 16-bit HALD → RGB16F (高精度, 即使范围在 [0,1] 也能保留 16-bit 精度)
-        uint32_t id = g.backend->CreateLUT3DFloat(size, floats.data());
-        if (id == 0u) {
-            // RGB16F 不支持 → fallback 到 RGB8 (转 byte)
-            CC::Log(CC::LOG_WARN,
-                    "HDRRenderer: 16-bit HALD (level=%d, size=%d) CreateLUT3DFloat failed, "
-                    "fallback to RGB8 (精度损失到 8-bit)", N, size);
-            std::vector<uint8_t> bytes;
-            bytes.resize(totalPx * 3u);
-            for (size_t i = 0; i < totalPx; ++i) {
-                bytes[i * 3u + 0u] = quantize_(floats[i * 3u + 0u]);
-                bytes[i * 3u + 1u] = quantize_(floats[i * 3u + 1u]);
-                bytes[i * 3u + 2u] = quantize_(floats[i * 3u + 2u]);
-            }
-            id = g.backend->CreateLUT3D(size, bytes.data());
-        }
-        if (id == 0u) {
-            writeErr_(outErr, errCap,
-                      "backend CreateLUT3D{,Float} failed (HALD16 level=%d, size=%d)",
-                      N, size);
-            return 0u;
-        }
-        return id;
+        *outSize  = size;
+        *outIsHDR = true;
+        return true;
     }
 
-    // ===== 8-bit 路径 (原 F.0.10.8.2 逻辑, 零回归) =====
+    // ===== 8-bit 路径 =====
     unsigned char* px = stbi_load(path, &w, &h, &ch, /*force RGBA*/ 4);
     if (!px) {
         const char* sr = stbi_failure_reason();
         writeErr_(outErr, errCap,
                   "stbi_load failed: %s (path: %s)",
                   (sr && *sr) ? sr : "unknown", path);
-        return 0u;
+        return false;
     }
     if (w != h) {
         stbi_image_free(px);
         writeErr_(outErr, errCap,
                   "HALD image not square: %dx%d (path: %s)", w, h, path);
-        return 0u;
+        return false;
     }
     int N = 0;
     for (int n = 2; n <= 8; ++n) if (n * n * n == w) { N = n; break; }
@@ -1233,37 +1404,38 @@ uint32_t LoadHaldLUTFile(const char* path, char* outErr, size_t errCap) {
         writeErr_(outErr, errCap,
                   "HALD width %d is not N^3 for any N in [2,8] "
                   "(expected: 8/27/64/125/216/343/512)", w);
-        return 0u;
+        return false;
     }
     const int size = N * N;
     if (size < 4 || size > 64) {
         stbi_image_free(px);
         writeErr_(outErr, errCap,
                   "HALD level %d -> LUT size %d out of range [4, 64]", N, size);
-        return 0u;
+        return false;
     }
     const size_t totalPx = (size_t)w * (size_t)h;
-    std::vector<uint8_t> bytes;
-    bytes.resize(totalPx * 3u);
+    outBytes->resize(totalPx * 3u);
     for (size_t i = 0; i < totalPx; ++i) {
-        bytes[i * 3u + 0u] = px[i * 4u + 0u];
-        bytes[i * 3u + 1u] = px[i * 4u + 1u];
-        bytes[i * 3u + 2u] = px[i * 4u + 2u];
+        (*outBytes)[i * 3u + 0u] = px[i * 4u + 0u];
+        (*outBytes)[i * 3u + 1u] = px[i * 4u + 1u];
+        (*outBytes)[i * 3u + 2u] = px[i * 4u + 2u];
     }
     stbi_image_free(px);
+    *outSize  = size;
+    *outIsHDR = false;
+    return true;
+}
 
-    if (!g.backend) {
-        writeErr_(outErr, errCap,
-                  "HDR backend not initialized (HALD parse ok: level=%d, size=%d)", N, size);
+// Phase F.0.10.8.2 — HALD LUT 文件加载 (parse + GL 上传, 现 G.1 wrapper)
+uint32_t LoadHaldLUTFile(const char* path, char* outErr, size_t errCap) {
+    int  size  = 0;
+    bool isHDR = false;
+    std::vector<uint8_t> bytes;
+    std::vector<float>   floats;
+    if (!ParseHaldLUTFile(path, &size, &isHDR, &bytes, &floats, outErr, errCap)) {
         return 0u;
     }
-    const uint32_t id = g.backend->CreateLUT3D(size, bytes.data());
-    if (id == 0u) {
-        writeErr_(outErr, errCap,
-                  "backend CreateLUT3D failed (HALD level=%d, size=%d)", N, size);
-        return 0u;
-    }
-    return id;
+    return UploadParsedLUT(size, isHDR, bytes, floats, outErr, errCap);
 }
 
 // ==================== Phase F.0.10.8.3 — LUT 热重载 (mtime polling) ====================
@@ -1520,6 +1692,12 @@ int CloneInstance(int srcId) {
             g_states[i].dilatedCameraVelocityTex  = 0;
             g_states[i].width                     = 0;
             g_states[i].height                    = 0;
+            // Phase F.1 TAAU: 复位双尺寸字段 (clone 不继承 active 状态; 新 instance 待自己 Enable + SetTAAUEnabled)
+            g_states[i].outputW                   = 0;
+            g_states[i].outputH                   = 0;
+            g_states[i].taauActive                = false;
+            g_states[i].outputSceneFbo            = 0;
+            g_states[i].outputSceneTex            = 0;
             g_states[i].enabled                   = false;
             g_states[i].paused                    = false;
             g_slot_in_use[i] = true;
@@ -1540,13 +1718,42 @@ bool SetVelocityFormat(VelocityFormat fmt) {
     if (fmt == g.velocityFormat) return true;   // no-op
     g.velocityFormat = fmt;
     if (!g.enabled) return true;                 // 未 Enable，仅更新 state，下次 Enable 生效
+    // Phase F.1 TAAU: 保存双尺寸状态以便重建后恢复 (ReleaseRT 会清 taauActive/outputW/H)
+    const bool wasTaauActive = g.taauActive;
+    const int  savedRenderW  = g.width;
+    const int  savedRenderH  = g.height;
+    const int  savedOutputW  = g.outputW;
+    const int  savedOutputH  = g.outputH;
     // 重建 RT：ReleaseRT + CreateRT (与 Enable 同模式)
-    int w = g.width, h = g.height;
     ReleaseRT();
-    if (!CreateRT(w, h)) {
-        CC::Log(CC::LOG_ERROR, "HDRRenderer::SetVelocityFormat: CreateRT failed after format switch");
-        g.enabled = false;
-        return false;
+    if (wasTaauActive) {
+        // Phase F.1 TAAU: 恢复双尺寸路径
+        if (!CreateRT(savedRenderW, savedRenderH)) {
+            CC::Log(CC::LOG_ERROR, "HDRRenderer::SetVelocityFormat: CreateRT(render) failed after format switch");
+            g.enabled = false;
+            return false;
+        }
+        if (!g.backend->CreateOutputSceneTex(savedOutputW, savedOutputH,
+                                             &g.outputSceneFbo, &g.outputSceneTex)) {
+            CC::Log(CC::LOG_ERROR, "HDRRenderer::SetVelocityFormat: CreateOutputSceneTex failed, 回退 F.0");
+            ReleaseRT();
+            CreateRT(savedOutputW, savedOutputH);
+            g.outputW = savedOutputW;
+            g.outputH = savedOutputH;
+            g.taauActive = false;
+            return false;
+        }
+        g.outputW    = savedOutputW;
+        g.outputH    = savedOutputH;
+        g.taauActive = true;
+    } else {
+        if (!CreateRT(savedOutputW, savedOutputH)) {
+            CC::Log(CC::LOG_ERROR, "HDRRenderer::SetVelocityFormat: CreateRT failed after format switch");
+            g.enabled = false;
+            return false;
+        }
+        g.outputW = savedOutputW;
+        g.outputH = savedOutputH;
     }
     // Velocity history 在 ReleaseRT 里已重置；这里不再重复
     return true;

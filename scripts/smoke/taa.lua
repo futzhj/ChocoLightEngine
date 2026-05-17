@@ -87,6 +87,12 @@ local fn_names = {
     "SetState",                                      -- Phase F.0.10.9.x.4 (反向 GetState)
     "Process",                                       -- Phase F.0.10.2 (manual TAA region process)
     "GetFrameCounter", "GetCurrentJitter",
+    "SetTAAUEnabled", "GetTAAUEnabled",             -- Phase F.1 TAAU
+    "SetRenderScale", "GetRenderScale",             -- Phase F.1 TAAU
+    "SetUpscalePreset", "GetUpscalePreset",         -- Phase F.1 TAAU
+    "GetRenderResolution", "GetOutputResolution",   -- Phase F.1 TAAU
+    "SetAutoMipBias", "GetAutoMipBias",             -- Phase F.1.1 Mipmap LOD bias
+    "SetMipBias", "GetMipBias",                     -- Phase F.1.1 Mipmap LOD bias
 }
 for _, k in ipairs(fn_names) do
     if type(TAA[k]) ~= "function" then
@@ -1541,9 +1547,274 @@ do
     pass("Process(0,0,0,0) = full-screen path, headless OK (HDR err)")
 end
 
+-- ============================================================
+-- 11) Phase F.1 TAAU — 渲染分辨率与输出分辨率解耦
+-- ============================================================
+
+-- 11.1) 默认值: TAAU=false, renderScale=1.0, upscalePreset="native"
+do
+    if TAA.GetTAAUEnabled() ~= false then fail("Default TAAUEnabled should be false (got " .. tostring(TAA.GetTAAUEnabled()) .. ")") end
+    pass("Default TAAUEnabled = false (零回归)")
+
+    local s = TAA.GetRenderScale()
+    if math.abs(s - 1.0) > 0.001 then fail("Default RenderScale should be 1.0 (got " .. tostring(s) .. ")") end
+    pass("Default RenderScale = 1.0")
+
+    local p = TAA.GetUpscalePreset()
+    if p ~= "native" then fail("Default UpscalePreset should be 'native' (got " .. tostring(p) .. ")") end
+    pass("Default UpscalePreset = 'native'")
+end
+
+-- 11.2) RenderScale clamp [0.5, 1.0]
+do
+    TAA.SetRenderScale(0.3)   -- 低于下界
+    local s = TAA.GetRenderScale()
+    if s < 0.5 - 0.001 then fail("RenderScale lower clamp 失败 (got " .. tostring(s) .. ")") end
+    pass("SetRenderScale(0.3) clamp 到 0.5")
+
+    TAA.SetRenderScale(2.0)   -- 高于上界
+    s = TAA.GetRenderScale()
+    if s > 1.0 + 0.001 then fail("RenderScale upper clamp 失败 (got " .. tostring(s) .. ")") end
+    pass("SetRenderScale(2.0) clamp 到 1.0")
+
+    -- 复位
+    TAA.SetRenderScale(1.0)
+end
+
+-- 11.3) UpscalePreset ↔ RenderScale 双向同步
+do
+    TAA.SetUpscalePreset("performance")
+    if math.abs(TAA.GetRenderScale() - 0.5) > 0.01 then fail("preset 'performance' 应同步 RenderScale=0.5") end
+    if TAA.GetUpscalePreset() ~= "performance" then fail("GetUpscalePreset 应返 'performance'") end
+    pass("Preset 'performance' = renderScale 0.5 (双向同步)")
+
+    TAA.SetUpscalePreset("balanced")
+    if math.abs(TAA.GetRenderScale() - 0.6667) > 0.01 then fail("preset 'balanced' 应同步 RenderScale≈0.667") end
+    pass("Preset 'balanced' = renderScale ≈ 0.667")
+
+    TAA.SetUpscalePreset("quality")
+    if math.abs(TAA.GetRenderScale() - 0.75) > 0.01 then fail("preset 'quality' 应同步 RenderScale=0.75") end
+    pass("Preset 'quality' = renderScale 0.75")
+
+    TAA.SetUpscalePreset("native")
+    if math.abs(TAA.GetRenderScale() - 1.0) > 0.01 then fail("preset 'native' 应同步 RenderScale=1.0") end
+    pass("Preset 'native' = renderScale 1.0")
+
+    -- 反向: SetRenderScale 改 preset
+    TAA.SetRenderScale(0.5)
+    if TAA.GetUpscalePreset() ~= "performance" then fail("SetRenderScale(0.5) 应同步 preset='performance'") end
+    pass("SetRenderScale(0.5) -> preset='performance' (反向同步)")
+
+    -- 复位
+    TAA.SetRenderScale(1.0)
+end
+
+-- 11.4) UpscalePreset 大小写不敏感
+do
+    TAA.SetUpscalePreset("BALANCED")
+    if TAA.GetUpscalePreset() ~= "balanced" then fail("UpscalePreset 应大小写不敏感 (BALANCED -> balanced)") end
+    pass("SetUpscalePreset 大小写不敏感")
+    TAA.SetUpscalePreset("native")
+end
+
+-- 11.5) UpscalePreset 未知字符串拒绝 + 不改变现状
+do
+    TAA.SetUpscalePreset("native")
+    local before = TAA.GetRenderScale()
+    TAA.SetUpscalePreset("ultra_dummy")
+    -- 未知字符串: warning + scale 不变
+    local after = TAA.GetRenderScale()
+    if math.abs(before - after) > 0.001 then fail("未知 preset 不应改变 renderScale (before=" .. before .. " after=" .. after .. ")") end
+    pass("SetUpscalePreset('ultra_dummy') 不改 renderScale (容错)")
+end
+
+-- 11.6) SetUpscalePreset 类型错: 非 string 返 nil + err
+do
+    local ok, err = TAA.SetUpscalePreset(0.5)
+    if ok ~= nil then fail("SetUpscalePreset(number) 应返 nil") end
+    if type(err) ~= "string" then fail("SetUpscalePreset(number) 应返 err string") end
+    pass("SetUpscalePreset(non-string) raises nil + err")
+end
+
+-- 11.7) SetTAAUEnabled headless 行为: HDR 未启用 → 返 false (不 crash)
+do
+    -- 注意: TAA 此时 IsEnabled=false (与 HDR 一同 disable, headless 无窗口)
+    -- supported 字段: backend 决定 (legacy=false, GL3.3=true)
+    local result = TAA.SetTAAUEnabled(true)
+    -- 期望: supported 即使=true 但 HDR 未启用 → applyTAAUChange_ 返 false → result=false
+    -- 或 supported=false 直接 return false
+    -- 总之: 不 crash, GetTAAUEnabled 应当与 result 一致或 false
+    if type(result) ~= "boolean" then fail("SetTAAUEnabled 应返 boolean") end
+    pass("SetTAAUEnabled(true) headless 不 crash (result=" .. tostring(result) .. ")")
+
+    -- 复位
+    TAA.SetTAAUEnabled(false)
+    if TAA.GetTAAUEnabled() ~= false then fail("SetTAAUEnabled(false) 后 GetTAAUEnabled 应=false") end
+    pass("SetTAAUEnabled(false) 复位 OK")
+end
+
+-- 11.8) GetRenderResolution / GetOutputResolution 返 2 值
+do
+    local rw, rh = TAA.GetRenderResolution()
+    local ow, oh = TAA.GetOutputResolution()
+    if type(rw) ~= "number" or type(rh) ~= "number" then fail("GetRenderResolution 应返 2 个 integer") end
+    if type(ow) ~= "number" or type(oh) ~= "number" then fail("GetOutputResolution 应返 2 个 integer") end
+    -- TAA 未启用 (headless) 时尺寸 = 0
+    pass(string.format("GetRenderResolution() = %d, %d (headless)", rw, rh))
+    pass(string.format("GetOutputResolution() = %d, %d (headless)", ow, oh))
+end
+
+-- ============================================================
+-- 12) Phase F.1.0.1 — Multi-Instance × TAAU
+-- ============================================================
+
+-- 12.1) user instance (id != 0) 现可设置 renderScale / upscalePreset (state 隔离)
+do
+    local instA = TAA.CreateInstance()
+    if not instA or instA == 0 then fail("CreateInstance 失败") end
+
+    -- default instance: balanced
+    TAA.SetActiveInstance(0)
+    TAA.SetUpscalePreset('balanced')
+    if math.abs(TAA.GetRenderScale() - 0.6667) > 0.01 then fail("默认 instance balanced 设置失败") end
+
+    -- user instance instA: performance
+    TAA.SetActiveInstance(instA)
+    TAA.SetUpscalePreset('performance')
+    if math.abs(TAA.GetRenderScale() - 0.5) > 0.01 then fail("user instance performance 设置失败") end
+
+    -- 切回 default 验证状态隔离
+    TAA.SetActiveInstance(0)
+    if math.abs(TAA.GetRenderScale() - 0.6667) > 0.01 then
+        fail("default instance state 被 user instance 污染 (得 " .. tostring(TAA.GetRenderScale()) .. ")")
+    end
+    if TAA.GetUpscalePreset() ~= 'balanced' then fail("default instance preset 被污染") end
+    pass("Phase F.1.0.1: user instance × TAAU state 隔离 OK")
+
+    TAA.DestroyInstance(instA)
+    -- 复位
+    TAA.SetUpscalePreset('native')
+end
+
+-- 12.2) user instance SetTAAUEnabled 不再被拒绝 (F.1.0 限制移除)
+do
+    local instB = TAA.CreateInstance()
+    if not instB or instB == 0 then fail("CreateInstance 失败") end
+
+    TAA.SetActiveInstance(instB)
+    -- headless 下无 GL, SetTAAUEnabled(true) 仍返 false (因 backend 不支持), 但行为应与 default 一致
+    -- 关键: 不再因 g_active != 0 直接拒绝 + 写专门 warning
+    local ok = TAA.SetTAAUEnabled(true)
+    if type(ok) ~= "boolean" then fail("SetTAAUEnabled 应返 boolean (user instance)") end
+    pass("Phase F.1.0.1: user instance SetTAAUEnabled 不再被拒绝 (result=" .. tostring(ok) .. ")")
+
+    TAA.SetActiveInstance(0)
+    TAA.DestroyInstance(instB)
+end
+
+-- 12.3) CloneInstance 保留 src renderScale / upscalePreset (F.1.0.1 行为)
+do
+    TAA.SetActiveInstance(0)
+    TAA.SetUpscalePreset('quality')
+    local srcScale  = TAA.GetRenderScale()
+    local srcPreset = TAA.GetUpscalePreset()
+
+    local clonedId = TAA.CloneInstance(0)
+    if not clonedId or clonedId == 0 then fail("CloneInstance 失败") end
+
+    TAA.SetActiveInstance(clonedId)
+    if math.abs(TAA.GetRenderScale() - srcScale) > 0.01 then
+        fail(string.format("Clone 应继承 renderScale=%f, 得 %f", srcScale, TAA.GetRenderScale()))
+    end
+    if TAA.GetUpscalePreset() ~= srcPreset then
+        fail(string.format("Clone 应继承 preset='%s', 得 '%s'", srcPreset, TAA.GetUpscalePreset()))
+    end
+    -- 但 taauEnabled 应 false (clone 不继承活跃状态)
+    if TAA.GetTAAUEnabled() ~= false then fail("Clone 应清 taauEnabled (新 instance 走自己 Enable)") end
+    pass("Phase F.1.0.1: Clone 保留 renderScale/preset, 清 taauEnabled")
+
+    TAA.SetActiveInstance(0)
+    TAA.DestroyInstance(clonedId)
+    TAA.SetUpscalePreset('native')
+end
+
+-- ============================================================
+-- 13) Phase F.1.1 — Mipmap LOD Bias
+-- ============================================================
+
+-- 13.1) 默认值: autoMipBias=true, mipBias=0.0 (零回归)
+do
+    if TAA.GetAutoMipBias() ~= true then fail("Default AutoMipBias 应 true") end
+    if math.abs(TAA.GetMipBias()) > 0.001 then fail("Default MipBias 应 0.0 (TAAU 默认关闭)") end
+    pass("Phase F.1.1: Default AutoMipBias=true, MipBias=0.0")
+end
+
+-- 13.2) SetAutoMipBias 切换状态
+do
+    TAA.SetAutoMipBias(false)
+    if TAA.GetAutoMipBias() ~= false then fail("SetAutoMipBias(false) round-trip 失败") end
+    -- 关 auto 后 backend bias 复位为 0
+    if math.abs(TAA.GetMipBias()) > 0.001 then fail("关 auto 后 bias 应被复位为 0") end
+    TAA.SetAutoMipBias(true)
+    if TAA.GetAutoMipBias() ~= true then fail("SetAutoMipBias(true) round-trip 失败") end
+    pass("Phase F.1.1: SetAutoMipBias / GetAutoMipBias round-trip OK")
+end
+
+-- 13.3) SetMipBias 手动模式: autoMipBias=false 时持久 (仅 backend 支持 TAA 时验证持久性)
+do
+    TAA.SetAutoMipBias(false)
+    TAA.SetMipBias(-1.5)
+    -- headless legacy backend SetMipBias 是 no-op virtual, GetMipBias 永返 0
+    -- 仅在 backend 支持 TAA 时 (真 GL3.3 ctx) 验证 round-trip
+    if TAA.IsSupported() then
+        if math.abs(TAA.GetMipBias() - (-1.5)) > 0.001 then
+            fail("手动 SetMipBias(-1.5) 失败, 得 " .. tostring(TAA.GetMipBias()))
+        end
+        pass("Phase F.1.1: 手动 SetMipBias(-1.5) 持久 (autoMipBias=false, TAA backend supported)")
+    else
+        pass("Phase F.1.1: SetMipBias headless backend no-op (legacy SetMipBias virtual default)")
+    end
+
+    -- 复位
+    TAA.SetMipBias(0.0)
+    TAA.SetAutoMipBias(true)
+end
+
+-- 13.4) backend clamp [-4, +4] (仅 backend 支持时验证)
+do
+    TAA.SetAutoMipBias(false)
+    TAA.SetMipBias(-10.0)
+    if TAA.IsSupported() then
+        if TAA.GetMipBias() < -4.0 - 0.001 then fail("Lower clamp -4 失败 (得 " .. TAA.GetMipBias() .. ")") end
+        TAA.SetMipBias(10.0)
+        if TAA.GetMipBias() > 4.0 + 0.001 then fail("Upper clamp +4 失败 (得 " .. TAA.GetMipBias() .. ")") end
+        pass("Phase F.1.1: backend clamp [-4, +4] OK")
+    else
+        pass("Phase F.1.1: backend clamp test 跳过 (headless, legacy backend)")
+    end
+
+    -- 复位
+    TAA.SetMipBias(0.0)
+    TAA.SetAutoMipBias(true)
+end
+
+-- 13.5) auto 模式下 SetRenderScale 不应让 bias 持久 (因为 TAAU 关闭, bias 应一直 0)
+do
+    TAA.SetAutoMipBias(true)
+    if TAA.GetTAAUEnabled() then TAA.SetTAAUEnabled(false) end   -- 确保 TAAU 关闭
+    TAA.SetRenderScale(0.5)
+    if math.abs(TAA.GetMipBias()) > 0.001 then
+        fail("TAAU 关闭时 SetRenderScale 不应改 bias (得 " .. TAA.GetMipBias() .. ")")
+    end
+    pass("Phase F.1.1: TAAU 关闭时 auto-bias 保持 0 (与 RenderScale 无关)")
+
+    -- 复位
+    TAA.SetRenderScale(1.0)
+end
+
 print("")
-print("=== Phase F.0 + F.0.1 + F.0.2 + F.0.3 + F.0.4 + F.0.5 + F.0.6 + F.0.8 + F.0.9 + F.0.10 + F.0.10.2 + F.0.12 + F.0.13 + F.0.14 TAA smoke: ALL TESTS PASSED ===")
-print("Functions covered: " .. #fn_names .. " / 41 (F.0.10 +5 fn: multi-instance API; F.0.10.2 +1 fn: TAA.Process)")
+print("=== Phase F.0 + F.0.1 + F.0.2 + F.0.3 + F.0.4 + F.0.5 + F.0.6 + F.0.8 + F.0.9 + F.0.10 + F.0.10.2 + F.0.12 + F.0.13 + F.0.14 + F.1 + F.1.0.1 + F.1.1 TAA smoke: ALL TESTS PASSED ===")
+print("Functions covered: " .. #fn_names .. " / 53 (F.0.10 +5 fn: multi-instance API; F.0.10.2 +1 fn: TAA.Process; F.1 +8 fn: TAAU; F.1.1 +4 fn: MipBias)")
 print("Highlights:")
 print("  - default OFF, alpha=0.92, neighborhoodClip=true, jitterEnabled=true, sharpness=0.5, antiFlicker=true, clipMode='ycocg', varianceGamma=1.0, halfResHistory=false, sharpenMode='unsharp', motionGamma=1.5, motionAdaptive=false")
 print("  - clamp: BlendAlpha [0, 1], Sharpness [0, 2], VarianceGamma [0, 4], MotionGamma [0, 4]")

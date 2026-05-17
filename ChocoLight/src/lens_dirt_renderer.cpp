@@ -26,7 +26,15 @@ struct State {
     float    intensity        = 0.4f;   // 默认值 (ALIGNMENT §3.6)
 };
 
-static State g;
+// ==================== Phase F.2.3 — Multi-Instance ====================
+// 仿 BloomRenderer F.0.10.9.x.2 模式: g_states[4] + #define g g_states[g_active]
+static constexpr int MAX_INSTANCES = 4;
+static State g_states[MAX_INSTANCES];
+static int   g_active = 0;
+static int   g_count  = 1;
+static bool  g_slot_in_use[MAX_INSTANCES] = { true, false, false, false };
+
+#define g g_states[g_active]
 
 inline float clampf(float v, float lo, float hi) {
     return v < lo ? lo : (v > hi ? hi : v);
@@ -39,6 +47,7 @@ namespace LensDirtRenderer {
 // ==================== 生命周期 ====================
 
 void Init(RenderBackend* backend) {
+    g_active = 0;
     g.backend   = backend;
     g.inited    = (backend != nullptr);
     g.supported = g.inited && backend->SupportsLensDirt();
@@ -115,6 +124,80 @@ void Process(uint32_t hdrFbo, uint32_t bloomTex, int w, int h) {
     // 后端 DrawLensDirtComposite 内部对 dirtTex=0 会 fallback 到 whiteTex1x1
     g.backend->DrawLensDirtComposite(bloomTex, g.dirtTexId,
                                       hdrFbo, w, h, g.intensity);
+}
+
+// ==================== Phase F.2.3 — Multi-Instance API ====================
+
+int CreateInstance() {
+    for (int i = 1; i < MAX_INSTANCES; ++i) {
+        if (!g_slot_in_use[i]) {
+            g_states[i] = State{};
+            g_states[i].backend   = g_states[0].backend;
+            g_states[i].supported = g_states[0].supported;
+            g_states[i].inited    = g_states[0].inited;
+            g_slot_in_use[i] = true;
+            ++g_count;
+            CC::Log(CC::LOG_INFO,
+                    "LensDirtRenderer::CreateInstance: id=%d (count=%d)", i, g_count);
+            return i;
+        }
+    }
+    CC::Log(CC::LOG_WARN,
+            "LensDirtRenderer::CreateInstance: 槽位已满 (MAX=%d)", MAX_INSTANCES);
+    return 0;
+}
+
+bool DestroyInstance(int id) {
+    if (id <= 0 || id >= MAX_INSTANCES) {
+        CC::Log(CC::LOG_WARN,
+                "LensDirtRenderer::DestroyInstance: 非法 id=%d", id);
+        return false;
+    }
+    if (!g_slot_in_use[id]) {
+        CC::Log(CC::LOG_WARN, "LensDirtRenderer::DestroyInstance: id=%d 未分配", id);
+        return false;
+    }
+    const int saved = g_active;
+    g_active = id;
+    // LensDirt 无 RT, 直接清 State
+    g_states[id] = State{};
+    g_slot_in_use[id] = false;
+    --g_count;
+    g_active = (saved == id) ? 0 : saved;
+    CC::Log(CC::LOG_INFO,
+            "LensDirtRenderer::DestroyInstance: id=%d (count=%d, active=%d)",
+            id, g_count, g_active);
+    return true;
+}
+
+bool SetActiveInstance(int id) {
+    if (id < 0 || id >= MAX_INSTANCES) return false;
+    if (!g_slot_in_use[id]) return false;
+    g_active = id;
+    return true;
+}
+
+int GetActiveInstance() { return g_active; }
+int GetInstanceCount()  { return g_count; }
+
+int CloneInstance(int srcId) {
+    if (srcId < 0 || srcId >= MAX_INSTANCES) return 0;
+    if (!g_slot_in_use[srcId]) return 0;
+    for (int i = 1; i < MAX_INSTANCES; ++i) {
+        if (!g_slot_in_use[i]) {
+            g_states[i] = g_states[srcId];   // 复制全部 (含 dirtTexId, intensity, enabled, autoEnable)
+            // 新 instance 默认未启用 (与 Bloom 一致, 待自己 Enable)
+            g_states[i].enabled = false;
+            g_slot_in_use[i] = true;
+            ++g_count;
+            CC::Log(CC::LOG_INFO,
+                    "LensDirtRenderer::CloneInstance: srcId=%d -> id=%d (count=%d)",
+                    srcId, i, g_count);
+            return i;
+        }
+    }
+    CC::Log(CC::LOG_WARN, "LensDirtRenderer::CloneInstance: 槽位已满");
+    return 0;
 }
 
 } // namespace LensDirtRenderer

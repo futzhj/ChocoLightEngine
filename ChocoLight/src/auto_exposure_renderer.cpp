@@ -50,7 +50,17 @@ struct State {
     bool  hasFirstSample  = false;  // 第一帧标记: targetEV = measured (无 history 跳变)
 };
 
-static State g;
+// ==================== Phase F.2.5 — Multi-Instance ====================
+// 仿 BloomRenderer F.0.10.9.x.2: g_states[4] + #define g g_states[g_active]
+// 用法: 调用方先 HDR.SetActiveInstance(pipId), 再 AE.SetActiveInstance(pipId).
+// HDRRenderer::EndScene 内部 AE.Process / GetCurrentExposure 自然作用于当前 active.
+static constexpr int MAX_INSTANCES = 4;
+static State g_states[MAX_INSTANCES];
+static int   g_active = 0;
+static int   g_count  = 1;
+static bool  g_slot_in_use[MAX_INSTANCES] = { true, false, false, false };
+
+#define g g_states[g_active]
 
 /// 释放 luminance RT 资源 + 重置状态字段 (不改参数)
 void ReleaseLuminanceRT() {
@@ -79,6 +89,7 @@ namespace AutoExposureRenderer {
 // ==================== 生命周期 ====================
 
 void Init(RenderBackend* backend) {
+    g_active = 0;
     g.backend   = backend;
     g.inited    = (backend != nullptr);
     g.supported = g.inited && backend->SupportsAutoExposure();
@@ -260,6 +271,82 @@ void Process(uint32_t hdrTex, float dt) {
 
     // 6) 缓存 exposure (= 2^currentEV)
     g.currentExposure = std::exp2(g.currentEV);
+}
+
+// ==================== Phase F.2.5 — Multi-Instance API ====================
+
+int CreateInstance() {
+    for (int i = 1; i < MAX_INSTANCES; ++i) {
+        if (!g_slot_in_use[i]) {
+            g_states[i] = State{};
+            g_states[i].backend   = g_states[0].backend;
+            g_states[i].supported = g_states[0].supported;
+            g_states[i].inited    = g_states[0].inited;
+            g_slot_in_use[i] = true;
+            ++g_count;
+            CC::Log(CC::LOG_INFO,
+                    "AutoExposureRenderer::CreateInstance: id=%d (count=%d)", i, g_count);
+            return i;
+        }
+    }
+    CC::Log(CC::LOG_WARN,
+            "AutoExposureRenderer::CreateInstance: 槽位已满 (MAX=%d)", MAX_INSTANCES);
+    return 0;
+}
+
+bool DestroyInstance(int id) {
+    if (id <= 0 || id >= MAX_INSTANCES) return false;
+    if (!g_slot_in_use[id]) {
+        CC::Log(CC::LOG_WARN,
+                "AutoExposureRenderer::DestroyInstance: id=%d 未分配", id);
+        return false;
+    }
+    const int saved = g_active;
+    g_active = id;
+    ReleaseLuminanceRT();
+    g_states[id] = State{};
+    g_slot_in_use[id] = false;
+    --g_count;
+    g_active = (saved == id) ? 0 : saved;
+    CC::Log(CC::LOG_INFO,
+            "AutoExposureRenderer::DestroyInstance: id=%d (count=%d, active=%d)",
+            id, g_count, g_active);
+    return true;
+}
+
+bool SetActiveInstance(int id) {
+    if (id < 0 || id >= MAX_INSTANCES) return false;
+    if (!g_slot_in_use[id]) return false;
+    g_active = id;
+    return true;
+}
+
+int GetActiveInstance() { return g_active; }
+int GetInstanceCount()  { return g_count; }
+
+int CloneInstance(int srcId) {
+    if (srcId < 0 || srcId >= MAX_INSTANCES) return 0;
+    if (!g_slot_in_use[srcId]) return 0;
+    for (int i = 1; i < MAX_INSTANCES; ++i) {
+        if (!g_slot_in_use[i]) {
+            g_states[i] = g_states[srcId];      // 复制全部参数 + 当前 EV
+            // 复位 RT (新 instance 待自己 Enable)
+            g_states[i].lumFbo = g_states[i].lumTex = 0;
+            g_states[i].lumW = g_states[i].lumH = 0;
+            g_states[i].lastMip = 0;
+            g_states[i].width = g_states[i].height = 0;
+            g_states[i].enabled = false;
+            g_states[i].hasFirstSample = false;     // 新 instance 重新建立 baseline
+            g_slot_in_use[i] = true;
+            ++g_count;
+            CC::Log(CC::LOG_INFO,
+                    "AutoExposureRenderer::CloneInstance: srcId=%d -> id=%d (count=%d)",
+                    srcId, i, g_count);
+            return i;
+        }
+    }
+    CC::Log(CC::LOG_WARN, "AutoExposureRenderer::CloneInstance: 槽位已满");
+    return 0;
 }
 
 } // namespace AutoExposureRenderer
