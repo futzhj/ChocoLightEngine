@@ -117,6 +117,11 @@ static int historySize_(int sceneSize, bool halfRes) {
 /// 释放 history RT (与 backend 配对)
 static void ReleaseRT() {
     if (!g.backend) return;
+    // Phase G.1 — VRAM Tracking: history RT 是 ping-pong, 一次 Create 注册 2 个
+    if ((g.historyTexs[0] || g.historyTexs[1]) && g.historyW > 0 && g.historyH > 0) {
+        LT::GpuMem::Untrack("TAA history", "RGBA16F", g.historyW, g.historyH);
+        LT::GpuMem::Untrack("TAA history", "RGBA16F", g.historyW, g.historyH);
+    }
     if (g.historyFbos[0] || g.historyFbos[1] || g.historyTexs[0] || g.historyTexs[1]) {
         g.backend->DeleteTAAHistoryRT(g.historyFbos, g.historyTexs);
     }
@@ -141,6 +146,9 @@ static bool AllocateRT(int sceneW, int sceneH) {
                 hw, hh, sceneW, sceneH, g.halfResHistory ? 1 : 0);
         return false;
     }
+    // Phase G.1 — VRAM Tracking: history ping-pong 2 张 RGBA16F
+    LT::GpuMem::Track("TAA history", "RGBA16F", hw, hh);
+    LT::GpuMem::Track("TAA history", "RGBA16F", hw, hh);
     g.historyIdx   = 0;
     g.hasHistory   = false;
     g.frameCounter = 0;

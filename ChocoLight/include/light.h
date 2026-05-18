@@ -98,6 +98,25 @@ void EnsureLightTable(lua_State* L);
 /// @param funcs 函数注册表
 void RegisterModule(lua_State* L, const char* name, const luaL_Reg* funcs);
 
+/// @brief Phase G.1 — VRAM Tracking (引擎自计 GPU 显存占用)
+///   高层 wrapper (HDR/TAA/SSR/Dilate/Skin) 在 Create/Delete RT 处 hook,
+///   暴露 Light.Graphics.GetMemoryStats() Lua 查询.
+namespace GpuMem {
+    /// 跟踪一个 RT/texture 实例 (count++)
+    /// @param name   类别名 (e.g. "HDR sceneTex")
+    /// @param format 格式 (RGBA8/RGBA16F/RG8/RG16F/R16F/R32F/DEPTH24/DEPTH32F/RGB32F)
+    void Track(const char* name, const char* format, int w, int h);
+    /// 取消跟踪 (count--)
+    void Untrack(const char* name, const char* format, int w, int h);
+    /// 跟踪非 wxh 资源 (UBO 等), 直接传 bytes
+    void TrackBytes(const char* name, int64_t bytes);
+    void UntrackBytes(const char* name, int64_t bytes);
+    /// 清空 (smoke 用)
+    void Reset();
+    /// 推 stats table 到 Lua 栈 (供 light_graphics.cpp 调)
+    int  PushStats(lua_State* L);
+}
+
 /// @brief 网络空通知
 namespace Network {
     LIGHT_API void NotifyEmpty();

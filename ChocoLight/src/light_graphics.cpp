@@ -5863,6 +5863,32 @@ static int l_Graphics_SetRecordMaxSize(lua_State* L) {
     return 1;
 }
 
+// ==================== Phase G.1 — VRAM Tracking Lua API ====================
+//
+// Light.Graphics.GetMemoryStats() -> table
+//   返回结构:
+//     {
+//       total_bytes    = N,
+//       render_targets = {count=N, bytes=N},
+//       ubos           = {count=N, bytes=N},
+//       items          = { {name, format, count, bytes, w, h}, ... }
+//     }
+//
+// 跟踪范围 (v1): 仅高层 wrapper (HDR/TAA/SSR/Dilate/UBO Skin)
+//   不含: 用户 Image/ImageData/Mesh/Font 等动态资源
+//   未来 v2 扩展时 items 数组自然增加, API 形状不变.
+static int l_Graphics_GetMemoryStats(lua_State* L) {
+    return LT::GpuMem::PushStats(L);
+}
+
+// Light.Graphics.ResetMemoryStats() — 清空跟踪 (smoke / 调试用)
+//   注意: 仅清 tracker 数据, 不动实际 GPU 资源
+static int l_Graphics_ResetMemoryStats(lua_State* L) {
+    (void)L;
+    LT::GpuMem::Reset();
+    return 0;
+}
+
 /// @lua_api Light.Graphics.GetRecordStats
 /// @brief Phase F.0.11.6.2.A12 — 查询录屏统计 (帧数 / 字节数 / encoder / paused)
 /// @return table { frames=N, bytes=N, max_bytes=N, encoder='...', paused=bool, mode=0|1, active=bool }
@@ -6240,6 +6266,9 @@ static const luaL_Reg graphics_funcs[] = {
     {"IsRecordPaused",             l_Graphics_IsRecordPaused},
     {"SetRecordMaxSize",           l_Graphics_SetRecordMaxSize},
     {"GetRecordStats",             l_Graphics_GetRecordStats},
+    // Phase G.1 — VRAM Tracking
+    {"GetMemoryStats",             l_Graphics_GetMemoryStats},
+    {"ResetMemoryStats",           l_Graphics_ResetMemoryStats},
     // Phase F.0.11.4 — HDR 截图 (RGBA16F → .hdr Radiance RGBE)
     {"ScreenshotHDR",              l_Graphics_ScreenshotHDR},
     // Phase F.0.11.5 — EXR 截图 (RGBA16F → .exr OpenEXR half/float, 影视后期工业标准)

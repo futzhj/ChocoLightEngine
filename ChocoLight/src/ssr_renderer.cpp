@@ -160,6 +160,22 @@ static bool  g_slot_in_use[MAX_INSTANCES] = { true, false, false, false };
 /// 释放所有动态资源 (depth RT + reflect RT + Phase E.10 blur RT × 2), 不动 backend / 参数
 static void DestroyResources() {
     if (!g.backend) return;
+    // Phase G.1 — VRAM Tracking: Untrack 各 RT (在 backend Delete 之前, 此时 srcW/H + blurW/H 仍有效)
+    if (g.depthTex && g.srcW > 0 && g.srcH > 0) {
+        LT::GpuMem::Untrack("SSR depthTex",   "DEPTH32F", g.srcW, g.srcH);
+    }
+    if (g.reflectTex && g.srcW > 0 && g.srcH > 0) {
+        LT::GpuMem::Untrack("SSR reflectTex", "RGBA16F",  g.srcW, g.srcH);
+    }
+    if ((g.blurTexs[0] || g.blurTexs[1]) && g.blurW > 0 && g.blurH > 0) {
+        LT::GpuMem::Untrack("SSR blur",       "RGBA16F",  g.blurW, g.blurH);
+        LT::GpuMem::Untrack("SSR blur",       "RGBA16F",  g.blurW, g.blurH);
+    }
+    if ((g.historyTexs[0] || g.historyTexs[1]) && g.srcW > 0 && g.srcH > 0) {
+        LT::GpuMem::Untrack("SSR history",    "RGBA16F",  g.srcW, g.srcH);
+        LT::GpuMem::Untrack("SSR history",    "RGBA16F",  g.srcW, g.srcH);
+    }
+
     if (g.depthFbo || g.depthTex) {
         g.backend->DeleteSSRDepthRT(g.depthFbo, g.depthTex);
         g.depthFbo = g.depthTex = 0;
@@ -220,6 +236,18 @@ static bool AllocateResources(int w, int h) {
     g.frameCounter     = 0;
     g.srcW = w;
     g.srcH = h;
+
+    // Phase G.1 — VRAM Tracking (在所有 backend Create 之后, 仅 Track 实际成功创建的部分)
+    LT::GpuMem::Track("SSR depthTex",   "DEPTH32F", w, h);
+    LT::GpuMem::Track("SSR reflectTex", "RGBA16F",  w, h);
+    if (g.blurTexs[0] && g.blurTexs[1] && g.blurW > 0 && g.blurH > 0) {
+        LT::GpuMem::Track("SSR blur", "RGBA16F", g.blurW, g.blurH);
+        LT::GpuMem::Track("SSR blur", "RGBA16F", g.blurW, g.blurH);
+    }
+    if (g.historyTexs[0] && g.historyTexs[1]) {
+        LT::GpuMem::Track("SSR history", "RGBA16F", w, h);
+        LT::GpuMem::Track("SSR history", "RGBA16F", w, h);
+    }
     return true;
 }
 

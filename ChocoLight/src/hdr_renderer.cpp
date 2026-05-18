@@ -170,6 +170,15 @@ static inline void ComputeDilationStorageSize(int w, int h, int& sw, int& sh) {
 // 供 SetVelocityDilationHalfRes 切换时避免重建整个 HDR FBO
 void ReleaseDilationRT() {
     if (!g.backend) return;
+    // Phase G.1 — VRAM Tracking: ReleaseDilationRT 仅在 SetVelocityDilationHalfRes 切换时调,
+    //   此时 g.width/height 仍有效, 用 ComputeDilationStorageSize 重算 dsw/dsh 并 Untrack
+    if ((g.dilatedVelocityTex || g.dilatedCameraVelocityTex) && g.width > 0 && g.height > 0) {
+        int dsw = 0, dsh = 0;
+        ComputeDilationStorageSize(g.width, g.height, dsw, dsh);
+        const char* velFmt = (g.velocityFormat == VelocityFormat::RG8) ? "RG8" : "RG16F";
+        if (g.dilatedVelocityTex)       LT::GpuMem::Untrack("Velocity Dilate (combined)", velFmt, dsw, dsh);
+        if (g.dilatedCameraVelocityTex) LT::GpuMem::Untrack("Velocity Dilate (camera)",   velFmt, dsw, dsh);
+    }
     if (g.dilatedVelocityFbo || g.dilatedVelocityTex) {
         g.backend->DeleteVelocityDilateRT(g.dilatedVelocityFbo, g.dilatedVelocityTex);
         g.dilatedVelocityFbo = 0;
@@ -200,6 +209,11 @@ void RebuildDilationRT(int w, int h) {
     if (dilatedFbo && dilatedTex) {
         g.dilatedVelocityFbo = dilatedFbo;
         g.dilatedVelocityTex = dilatedTex;
+        // Phase G.1 — VRAM Tracking: 与 ReleaseDilationRT 对称
+        {
+            const char* velFmt = (g.velocityFormat == VelocityFormat::RG8) ? "RG8" : "RG16F";
+            LT::GpuMem::Track("Velocity Dilate (combined)", velFmt, dsw, dsh);
+        }
         CC::Log(CC::LOG_INFO,
                 "HDRRenderer: Phase E.18.1 rebuilt dilated combined velocity RT (storage=%dx%d, halfRes=%s)",
                 dsw, dsh, g.dilationHalfRes ? "ON" : "OFF");
@@ -211,6 +225,11 @@ void RebuildDilationRT(int w, int h) {
         if (dilatedCamFbo && dilatedCamTex) {
             g.dilatedCameraVelocityFbo = dilatedCamFbo;
             g.dilatedCameraVelocityTex = dilatedCamTex;
+            // Phase G.1 — VRAM Tracking
+            {
+                const char* velFmt = (g.velocityFormat == VelocityFormat::RG8) ? "RG8" : "RG16F";
+                LT::GpuMem::Track("Velocity Dilate (camera)", velFmt, dsw, dsh);
+            }
             CC::Log(CC::LOG_INFO,
                     "HDRRenderer: Phase E.18.1 rebuilt dilated camera velocity RT (storage=%dx%d, halfRes=%s)",
                     dsw, dsh, g.dilationHalfRes ? "ON" : "OFF");
@@ -220,6 +239,32 @@ void RebuildDilationRT(int w, int h) {
 
 // 内部辅助: 释放 RT 资源 (不改 exposure/gamma)
 void ReleaseRT() {
+    // Phase G.1 — VRAM Tracking: 在实际释放前 Untrack (g.width/height 此时还未清零)
+    //   与 CreateRT 内 Track 严格对称: 5 组件 HDR FBO + 2 组件 dilation
+    if (g.fbo && g.width > 0 && g.height > 0) {
+        const char* velFmt = (g.velocityFormat == VelocityFormat::RG8) ? "RG8" : "RG16F";
+        LT::GpuMem::Untrack("HDR sceneTex",         "RGBA16F", g.width, g.height);
+        LT::GpuMem::Untrack("HDR normalTex",        "RG16F",   g.width, g.height);
+        LT::GpuMem::Untrack("HDR velocityTex",      velFmt,    g.width, g.height);
+        LT::GpuMem::Untrack("HDR cameraVelocityTex",velFmt,    g.width, g.height);
+        LT::GpuMem::Untrack("HDR depthRBO",         "DEPTH24", g.width, g.height);
+    }
+    if (g.dilatedVelocityTex && g.width > 0 && g.height > 0) {
+        int dsw = 0, dsh = 0;
+        ComputeDilationStorageSize(g.width, g.height, dsw, dsh);
+        const char* velFmt = (g.velocityFormat == VelocityFormat::RG8) ? "RG8" : "RG16F";
+        LT::GpuMem::Untrack("Velocity Dilate (combined)", velFmt, dsw, dsh);
+    }
+    if (g.dilatedCameraVelocityTex && g.width > 0 && g.height > 0) {
+        int dsw = 0, dsh = 0;
+        ComputeDilationStorageSize(g.width, g.height, dsw, dsh);
+        const char* velFmt = (g.velocityFormat == VelocityFormat::RG8) ? "RG8" : "RG16F";
+        LT::GpuMem::Untrack("Velocity Dilate (camera)", velFmt, dsw, dsh);
+    }
+    if (g.outputSceneTex && g.outputW > 0 && g.outputH > 0) {
+        LT::GpuMem::Untrack("HDR outputSceneTex (TAAU)", "RGBA16F", g.outputW, g.outputH);
+    }
+
     if (g.backend) {
         // Phase E.18: 先释放 dilation RT (与 HDR FBO 同生命周期, 在 raw velocityTex 释放前清)
         if (g.dilatedVelocityFbo || g.dilatedVelocityTex) {
@@ -285,6 +330,18 @@ bool CreateRT(int w, int h) {
     // Phase E.14: 同步 dilation 状态到 backend (Init 之后可能被用户 Set 过)
     g.backend->SetVelocityDilation(g.velocityDilation);
 
+    // Phase G.1 — VRAM Tracking: 5 组件 HDR FBO 总分配 (与 ReleaseRT 严格对称)
+    //   sceneTex(RGBA16F) + normalTex(RG16F) + velocityTex(velFmt) + cameraVelocityTex(velFmt) + depthRBO(DEPTH24)
+    //   silent fallback 时 backend 可能未真正创建某 tex, 但 tracker 是 reporting tool, 差异 < 1MB 可接受
+    {
+        const char* velFmt = (g.velocityFormat == VelocityFormat::RG8) ? "RG8" : "RG16F";
+        LT::GpuMem::Track("HDR sceneTex",          "RGBA16F", w, h);
+        LT::GpuMem::Track("HDR normalTex",         "RG16F",   w, h);
+        LT::GpuMem::Track("HDR velocityTex",       velFmt,    w, h);
+        LT::GpuMem::Track("HDR cameraVelocityTex", velFmt,    w, h);
+        LT::GpuMem::Track("HDR depthRBO",          "DEPTH24", w, h);
+    }
+
     // Phase E.18: 若 backend 支持 dilation pass 且 raw velocityTex 已创建,
     //             同时创建 dilatedVelocityFbo/Tex (combined 始终; camera-only 与 cameraVelocityTex 同条件).
     //             创建失败 silent fallback — EndScene 内 dilation pass 自动 skip,
@@ -299,6 +356,11 @@ bool CreateRT(int w, int h) {
         if (dilatedFbo && dilatedTex) {
             g.dilatedVelocityFbo = dilatedFbo;
             g.dilatedVelocityTex = dilatedTex;
+            // Phase G.1 — VRAM Tracking: dilation combined RT
+            {
+                const char* velFmt = (g.velocityFormat == VelocityFormat::RG8) ? "RG8" : "RG16F";
+                LT::GpuMem::Track("Velocity Dilate (combined)", velFmt, dsw, dsh);
+            }
             CC::Log(CC::LOG_INFO,
                     "HDRRenderer: Phase E.18 dilated combined velocity RT created (storage=%dx%d, logical=%dx%d, halfRes=%s, fbo=%u, tex=%u)",
                     dsw, dsh, w, h, g.dilationHalfRes ? "ON" : "OFF", dilatedFbo, dilatedTex);
@@ -309,6 +371,11 @@ bool CreateRT(int w, int h) {
             if (dilatedCamFbo && dilatedCamTex) {
                 g.dilatedCameraVelocityFbo = dilatedCamFbo;
                 g.dilatedCameraVelocityTex = dilatedCamTex;
+                // Phase G.1 — VRAM Tracking: dilation camera RT
+                {
+                    const char* velFmt = (g.velocityFormat == VelocityFormat::RG8) ? "RG8" : "RG16F";
+                    LT::GpuMem::Track("Velocity Dilate (camera)", velFmt, dsw, dsh);
+                }
                 CC::Log(CC::LOG_INFO,
                         "HDRRenderer: Phase E.18 dilated camera velocity RT created (storage=%dx%d, logical=%dx%d, halfRes=%s, fbo=%u, tex=%u)",
                         dsw, dsh, w, h, g.dilationHalfRes ? "ON" : "OFF", dilatedCamFbo, dilatedCamTex);

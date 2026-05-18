@@ -4177,6 +4177,10 @@ public:
         glBindBufferBase(GL_UNIFORM_BUFFER, UBO_BINDING_POINT, uboJointMatrices);
         glBindBufferBase(GL_UNIFORM_BUFFER, PREV_UBO_BINDING_POINT, uboPrevJointMatrices);
 
+        // Phase G.1 — VRAM Tracking: 2 个 UBO 各 kRequiredUboBytes (默认 4096)
+        LT::GpuMem::TrackBytes("UBO Skin joints",      (int64_t)kRequiredUboBytes);
+        LT::GpuMem::TrackBytes("UBO Skin prev joints", (int64_t)kRequiredUboBytes);
+
         // 4. 把 program 中的 "JointBlock" uniform block 关联到 binding point 0
         auto bindBlock = [&](GLuint prog) {
             if (!prog) return;
