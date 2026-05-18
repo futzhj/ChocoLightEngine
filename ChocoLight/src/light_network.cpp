@@ -35,6 +35,7 @@
  */
 
 #include "light.h"
+#include "light_lua_helpers.h"  // Phase G.1.7 — 类型安全 helpers + magic
 
 #if defined(__EMSCRIPTEN__)
 // Web: 由 light_network_web.cpp 提供 (emscripten_fetch + JS WebSocket)
@@ -59,7 +60,9 @@ static uint64_t uv_hrtime() {
 
 // ==================== Network 内部状态 ====================
 
+/// Phase G.1.7: 首字段 magic 防止 type-confusion
 struct HttpContext {
+    uint32_t    magic;        // 必须 = LT_MAGIC_HTTPCTX
     uv_tcp_s*   handle;       // libuv TCP 句柄
     char        host[256];
     uint16_t    port;
@@ -71,12 +74,9 @@ struct HttpContext {
 };
 
 // 辅助: 从 __instance 取上下文
+// Phase G.1.7: magic 校验防 type-confusion
 static HttpContext* GetHttpCtx(lua_State* L, int idx) {
-    lua_getfield(L, idx, "__instance");
-    if (!lua_isuserdata(L, -1)) { lua_pop(L, 1); return nullptr; }
-    HttpContext* ctx = (HttpContext*)lua_touserdata(L, -1);
-    lua_pop(L, 1);
-    return ctx;
+    return LT::TryCheckInstance<HttpContext>(L, idx, LT::LT_MAGIC_HTTPCTX);
 }
 
 // ==================== Network 函数 ====================
@@ -500,6 +500,7 @@ static int l_Http_Call(lua_State* L) {
 
     HttpContext* ctx = (HttpContext*)lua_newuserdata(L, sizeof(HttpContext));
     memset(ctx, 0, sizeof(HttpContext));
+    ctx->magic = LT::LT_MAGIC_HTTPCTX;  // Phase G.1.7 — type tag
     strncpy(ctx->host, ip, sizeof(ctx->host) - 1);
     ctx->port = (uint16_t)port;
     ctx->handle = nullptr;

@@ -23,6 +23,7 @@
  */
 
 #include "light.h"
+#include "light_lua_helpers.h"  // Phase G.1.7 — 类型安全 helpers + magic
 #include "render_backend.h"
 #include "batch_renderer.h"
 #include "lit_batch_renderer.h"   // Phase E.2.3 — Lit2D 批渲染
@@ -284,9 +285,10 @@ static int l_SetCanvas(lua_State* L) {
         // TODO: 当前简化处理, 后续可扩展 RenderBackend::GetViewport
         lua_getfield(L, 1, "__instance");
         if (lua_isuserdata(L, -1)) {
-            struct CanvasCtx { unsigned int fbo, texture, depthRB; int w, h; };
+            // Phase G.1.7: 镜像 CanvasContext 首字段布局 (与 light_graphics_canvas.cpp 严格同步)
+            struct CanvasCtx { uint32_t magic; unsigned int fbo, texture, depthRB; int w, h; };
             CanvasCtx* cc = (CanvasCtx*)lua_touserdata(L, -1);
-            if (cc && cc->fbo) {
+            if (cc && cc->magic == LT::LT_MAGIC_CANVAS && cc->fbo) {
                 // Phase E.3.2: HDR 启用时标记 Pause (切到 user RT, HDR 暂停累积)
                 if (HDRRenderer::IsEnabled() && !HDRRenderer::IsPaused()) {
                     HDRRenderer::Pause();
@@ -532,7 +534,9 @@ static int              g_canvasStackTop = 0;
 
 // CanvasContext 内存布局必须与 light_graphics_canvas.cpp 中的定义一致 (内部结构,
 // 此处镜像声明仅用于读取 fbo/texture/width/height,避免跨编译单元 include 一份头)
+// Phase G.1.7: 首字段 magic 与 light_graphics_canvas.cpp::CanvasContext 严格同步
 struct CanvasCtxMirror {
+    uint32_t     magic;     // 镜像 LT_MAGIC_CANVAS 首字段
     unsigned int fbo;
     unsigned int texture;
     unsigned int depthRB;
@@ -570,7 +574,8 @@ static int l_PushCanvas(lua_State* L) {
     lua_getfield(L, 1, "__instance");
     if (lua_isuserdata(L, -1)) {
         CanvasCtxMirror* cc = (CanvasCtxMirror*)lua_touserdata(L, -1);
-        if (cc && cc->fbo && g_render) {
+        // Phase G.1.7: magic 校验拒绝 type confusion
+        if (cc && cc->magic == LT::LT_MAGIC_CANVAS && cc->fbo && g_render) {
             g_render->BindFBO(cc->fbo);
             g_render->SetViewport(0, 0, cc->width, cc->height);
             g_ctx.currentCanvas = cc;
@@ -602,7 +607,8 @@ static int l_PopCanvas(lua_State* L) {
         g_ctx.currentCanvas = nullptr;
     } else {
         CanvasCtxMirror* cc = (CanvasCtxMirror*)slot.canvasCtx;
-        if (cc && cc->fbo && g_render) {
+        // Phase G.1.7: magic 校验 (slot.canvasCtx 是当初 push 入栈的 raw ptr, 同样需验证)
+        if (cc && cc->magic == LT::LT_MAGIC_CANVAS && cc->fbo && g_render) {
             g_render->BindFBO(cc->fbo);
             g_render->SetViewport(0, 0, cc->width, cc->height);
             g_ctx.currentCanvas = cc;
@@ -1052,8 +1058,9 @@ static int l_Print(lua_State* L) {
     float rx, ry, rz, sx, sy, sz, ox, oy, oz;
     ReadTransform(L, 6, &rx, &ry, &rz, &sx, &sy, &sz, &ox, &oy, &oz);
 
-    // 获取 FontContext: texId 在 offset 0, fontSize 在 offset 12
-    struct FontCtxHeader { unsigned int texId; int atlasW, atlasH; float fontSize; };
+    // 获取 FontContext: 首字段 magic, 后接 texId / atlasW / atlasH / fontSize
+    // Phase G.1.7: 镜像 light_graphics_image.cpp::FontContext 首字段布局
+    struct FontCtxHeader { uint32_t magic; unsigned int texId; int atlasW, atlasH; float fontSize; };
     FontCtxHeader* fch = nullptr;
     void* rawFontCtx = nullptr;
     if (lua_istable(L, 2)) {
@@ -1061,6 +1068,11 @@ static int l_Print(lua_State* L) {
         if (lua_isuserdata(L, -1)) {
             rawFontCtx = lua_touserdata(L, -1);
             fch = (FontCtxHeader*)rawFontCtx;
+            // Phase G.1.7: magic 校验拒绝 type confusion (如 Image userdata 伪装为 Font)
+            if (fch && fch->magic != LT::LT_MAGIC_FONT) {
+                fch = nullptr;
+                rawFontCtx = nullptr;
+            }
         }
         lua_pop(L, 1);
     }

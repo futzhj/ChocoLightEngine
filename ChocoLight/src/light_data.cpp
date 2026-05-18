@@ -16,11 +16,14 @@
  */
 
 #include "light.h"
+#include "light_lua_helpers.h"  // Phase G.1.7 — 类型安全 helpers + magic
 
 // ==================== 内部数据结构 ====================
 
 /// @brief 缓冲区用户数据 — 对应 CC::Safe<CC::Safe<unsigned char[]>>
+/// Phase G.1.7: 首字段 magic 防止 type-confusion
 struct DataBuffer {
+    uint32_t magic;          // 必须 = LT_MAGIC_DATABUF
     std::vector<uint8_t> data;
 };
 
@@ -240,6 +243,7 @@ static int l_Data_Call(lua_State* L) {
     lua_pushstring(L, "__instance");
     DataBuffer* buf = (DataBuffer*)lua_newuserdata(L, sizeof(DataBuffer));
     new (buf) DataBuffer();  // placement new
+    buf->magic = LT::LT_MAGIC_DATABUF;  // Phase G.1.7 — type tag (placement-new 后设)
     
     // 设置 __gc 元表
     lua_createtable(L, 0, 0);

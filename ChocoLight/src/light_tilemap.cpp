@@ -18,6 +18,7 @@
  */
 
 #include "light.h"
+#include "light_lua_helpers.h"  // Phase G.1.7 — 类型安全 helpers + magic
 #include "render_backend.h"
 #include "batch_renderer.h"
 #include <cstring>
@@ -35,7 +36,9 @@ struct TileLayer {
     std::string name;
 };
 
+/// Phase G.1.7: 首字段 magic 防止 type-confusion
 struct TilemapData {
+    uint32_t magic;          // 必须 = LT_MAGIC_TILEMAP
     std::vector<TileLayer> layers;
     int mapW, mapH;          // tile 数
     int tileW, tileH;        // 像素
@@ -44,12 +47,9 @@ struct TilemapData {
     int columns;             // 图集列数
 };
 
+/// Phase G.1.7: magic 校验防 type-confusion
 static TilemapData* CheckTilemap(lua_State* L, int idx) {
-    lua_getfield(L, idx, "__instance");
-    if (!lua_isuserdata(L, -1)) { lua_pop(L, 1); return nullptr; }
-    auto* tm = (TilemapData*)lua_touserdata(L, -1);
-    lua_pop(L, 1);
-    return tm;
+    return LT::TryCheckInstance<TilemapData>(L, idx, LT::LT_MAGIC_TILEMAP);
 }
 
 // ==================== 绘制 ====================
@@ -111,6 +111,7 @@ static int l_Tilemap_Call(lua_State* L) {
     luaL_checktype(L, 1, LUA_TTABLE);
     auto* tm = (TilemapData*)lua_newuserdata(L, sizeof(TilemapData));
     new (tm) TilemapData();
+    tm->magic = LT::LT_MAGIC_TILEMAP;  // Phase G.1.7 — type tag (placement-new 后设)
     lua_setfield(L, 1, "__instance");
     return 0;
 }

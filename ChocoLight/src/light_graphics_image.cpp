@@ -30,6 +30,7 @@
  */
 
 #include "light.h"
+#include "light_lua_helpers.h"  // Phase G.1.7 — 类型安全 helpers + magic
 #include "render_backend.h"
 #include "asset_loader.h"
 #include <cstring>
@@ -39,7 +40,10 @@
 
 // ==================== 共享上下文结构 ====================
 
+/// Image / ImageData 共用 ctx (联合设计)
+/// Phase G.1.7: 首字段 magic 防止 type-confusion (与其他 ctx 类型混淆)
 struct ImageContext {
+    uint32_t     magic;     // 必须 = LT_MAGIC_IMAGE
     unsigned int texId;     // OpenGL 纹理 ID
     int          width;
     int          height;
@@ -48,12 +52,14 @@ struct ImageContext {
     int          pixelCount;
 };
 
+/// Phase G.1.7: 严格 magic 校验 (错参报错, 不会崩)
+static ImageContext* CheckImageCtx(lua_State* L, int idx) {
+    return LT::CheckInstance<ImageContext>(L, idx, LT::LT_MAGIC_IMAGE, "Light.Graphics.Image");
+}
+
+/// 完全兼容老调用者: 返 nullptr 不抛错, 但带 magic 校验
 static ImageContext* GetImageCtx(lua_State* L, int idx) {
-    lua_getfield(L, idx, "__instance");
-    if (!lua_isuserdata(L, -1)) { lua_pop(L, 1); return nullptr; }
-    ImageContext* ctx = (ImageContext*)lua_touserdata(L, -1);
-    lua_pop(L, 1);
-    return ctx;
+    return LT::TryCheckInstance<ImageContext>(L, idx, LT::LT_MAGIC_IMAGE);
 }
 
 // ==================== Image 函数 ====================
@@ -128,6 +134,7 @@ static int l_Image_Call(lua_State* L) {
 
     ImageContext* ctx = (ImageContext*)lua_newuserdata(L, sizeof(ImageContext));
     memset(ctx, 0, sizeof(ImageContext));
+    ctx->magic = LT::LT_MAGIC_IMAGE;  // Phase G.1.7 — type tag
 
     // 分支 1: argc==2 + string => 从文件加载 (现有行为)
     if (argc == 2 && lua_isstring(L, 2)) {
@@ -242,11 +249,16 @@ static int l_ImageData_Count(lua_State* L) {
 
 /// ImageData.__gc — 析构函数, 释放像素数据
 /// 还原自 sub_1800AF020
+/// Phase G.1.7: 析构后设 magic = DEAD 防 use-after-free
 static int l_ImageData_GC(lua_State* L) {
     ImageContext* ctx = (ImageContext*)lua_touserdata(L, 1);
-    if (ctx && ctx->pixels) {
-        free(ctx->pixels);
-        ctx->pixels = nullptr;
+    // __gc 入参是原始 userdata, 不是 OOP table; 仅 magic 校验防乱调
+    if (ctx && ctx->magic == LT::LT_MAGIC_IMAGE) {
+        if (ctx->pixels) {
+            free(ctx->pixels);
+            ctx->pixels = nullptr;
+        }
+        ctx->magic = LT::LT_MAGIC_DEAD;  // 标记已析构
     }
     return 0;
 }
@@ -293,6 +305,7 @@ static int l_ImageData_Call(lua_State* L) {
     // 创建 64 字节 userdata (匹配 IDA: lua_newuserdata(L, 64))
     ImageContext* ctx = (ImageContext*)lua_newuserdata(L, 64);
     memset(ctx, 0, 64);
+    ctx->magic = LT::LT_MAGIC_IMAGE;  // Phase G.1.7 — type tag (Image/ImageData 共用)
 
     // 设置 __gc 元表 (IDA: lua_createtable → pushcclosure(__gc) → setmetatable)
     lua_createtable(L, 0, 1);
@@ -343,7 +356,10 @@ struct GlyphInfo {
 };
 
 // Font 上下文结构 — Unicode 动态字形缓存
+// Phase G.1.7: 首字段 magic 防止 type-confusion;
+//              light_graphics.cpp 内 FontCtxHeader 需同步调整首字段布局
 struct FontContext {
+    uint32_t        magic;              // 必须 = LT_MAGIC_FONT
     unsigned int    texId;              // 字形图集 GL 纹理 ID
     int             atlasW, atlasH;     // 图集尺寸
     float           fontSize;           // 像素大小
@@ -436,12 +452,14 @@ struct FontContext {
 };
 
 /// Font.__gc — 释放 TTF 缓冲区和图集
+/// Phase G.1.7: magic 校验防乱调 + DEAD 标记防 use-after-free
 static int l_Font_GC(lua_State* L) {
     FontContext* fc = (FontContext*)lua_touserdata(L, 1);
-    if (fc) {
+    if (fc && fc->magic == LT::LT_MAGIC_FONT) {
         if (fc->ttfBuffer) { free(fc->ttfBuffer); fc->ttfBuffer = nullptr; }
         if (fc->atlasBitmap) { free(fc->atlasBitmap); fc->atlasBitmap = nullptr; }
         if (fc->texId && g_render) { g_render->DeleteTexture(fc->texId); fc->texId = 0; }
+        fc->magic = LT::LT_MAGIC_DEAD;
     }
     return 0;
 }
@@ -474,6 +492,7 @@ static int l_Font_Call(lua_State* L) {
     // 创建 FontContext userdata
     FontContext* fc = (FontContext*)lua_newuserdata(L, sizeof(FontContext));
     memset(fc, 0, sizeof(FontContext));
+    fc->magic = LT::LT_MAGIC_FONT;  // Phase G.1.7 — type tag
     fc->fontSize = size;
     fc->atlasW = 1024;
     fc->atlasH = 1024;
@@ -524,11 +543,13 @@ static int l_Font_Tostring(lua_State* L) {
 
 /// FontGetGlyph — 跨编译单元字形查询桥接函数
 /// 从 FontContext userdata 查找或烘焙字形, 结果写入 FontGlyphResult
+/// Phase G.1.7: 验证 magic 防止 type-confusion (调用者可能传 fake ctx)
 void FontGetGlyph(void* fontCtx, int codepoint, FontGlyphResult* out) {
     if (!fontCtx || !out) return;
     out->found = 0;
 
     FontContext* fc = (FontContext*)fontCtx;
+    if (fc->magic != LT::LT_MAGIC_FONT) return;  // 错类型 ctx (e.g. Image伪装为 Font) — 拒绝
     GlyphInfo* gi = fc->GetGlyph(codepoint);
     if (gi) {
         out->u0 = gi->u0; out->v0 = gi->v0;
@@ -670,6 +691,7 @@ static int FontPushResult_(void* L_, AssetLoader::FutureState* state) {
     int tableIdx = lua_gettop(L);
     FontContext* fc = (FontContext*)lua_newuserdata(L, sizeof(FontContext));
     memset(fc, 0, sizeof(FontContext));
+    fc->magic = LT::LT_MAGIC_FONT;  // Phase G.1.7 — type tag
     fc->fontSize = state->fontSize > 0.0f ? state->fontSize : 16.0f;
     fc->atlasW = state->fontAtlasW > 0 ? state->fontAtlasW : 1024;
     fc->atlasH = state->fontAtlasH > 0 ? state->fontAtlasH : 1024;

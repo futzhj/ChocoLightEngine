@@ -28,6 +28,7 @@
  */
 
 #include "light.h"
+#include "light_lua_helpers.h"  // Phase G.1.7 — 类型安全 helpers + magic
 #include "render_backend.h"
 #include "light_audio_backend.h"
 #include "ffmpeg_common.h"
@@ -222,7 +223,9 @@ bool LoadFFmpeg() {
 
 // ==================== AV 内部上下文 ====================
 
+/// Phase G.1.7: 首字段 magic 防止 type-confusion (Audio + AudioData 共用)
 struct AVContext {
+    uint32_t magic;     // 必须 = LT_MAGIC_AV
     void* formatCtx;    // AVFormatContext*
     void* codecCtx;     // AVCodecContext*
     int   streamIdx;    // 音频流索引
@@ -237,12 +240,9 @@ struct AVContext {
     AudioHandle* audioHandle; // miniaudio 音频句柄
 };
 
+/// Phase G.1.7: magic 校验防 type-confusion
 static AVContext* GetAVCtx(lua_State* L, int idx) {
-    lua_getfield(L, idx, "__instance");
-    if (!lua_isuserdata(L, -1)) { lua_pop(L, 1); return nullptr; }
-    AVContext* ctx = (AVContext*)lua_touserdata(L, -1);
-    lua_pop(L, 1);
-    return ctx;
+    return LT::TryCheckInstance<AVContext>(L, idx, LT::LT_MAGIC_AV);
 }
 
 // ==================== Playable 基类函数 ====================
@@ -291,9 +291,10 @@ static int l_AV_Stop(lua_State* L) {
 // ==================== Audio 函数 ====================
 
 /// Audio.__gc — 释放音频资源
+/// Phase G.1.7: magic 校验 + DEAD 标记
 static int l_Audio_GC(lua_State* L) {
     AVContext* ctx = (AVContext*)lua_touserdata(L, 1);
-    if (!ctx) return 0;
+    if (!ctx || ctx->magic != LT::LT_MAGIC_AV) return 0;
     // 释放 AudioBackend 句柄
     if (ctx->audioHandle) { AudioBackend::Free(ctx->audioHandle); ctx->audioHandle = nullptr; }
     // 释放 FFmpeg 资源
@@ -317,6 +318,7 @@ static int l_Audio_Call(lua_State* L) {
 
     AVContext* ctx = (AVContext*)lua_newuserdata(L, sizeof(AVContext));
     memset(ctx, 0, sizeof(AVContext));
+    ctx->magic = LT::LT_MAGIC_AV;  // Phase G.1.7 — type tag
 
     // __gc 元表
     lua_createtable(L, 0, 1);
@@ -454,8 +456,10 @@ static int l_AudioData_Count(lua_State* L) {
 
 /// AudioData.__gc — 释放 PCM 数据
 /// 还原自 sub_1800AF020
+/// Phase G.1.7: magic 校验 + DEAD 标记
 static int l_AudioData_GC(lua_State* L) {
     AVContext* ctx = (AVContext*)lua_touserdata(L, 1);
+    if (ctx && ctx->magic != LT::LT_MAGIC_AV) return 0;
     if (!ctx) return 0;
     if (ctx->pcmData) {
         if (g_ff.loaded && g_ff.av_free)
@@ -485,6 +489,7 @@ static int l_AudioData_Call(lua_State* L) {
     // 64 字节 userdata (匹配 IDA)
     AVContext* ctx = (AVContext*)lua_newuserdata(L, 64);
     memset(ctx, 0, 64);
+    ctx->magic = LT::LT_MAGIC_AV;  // Phase G.1.7 — type tag (Audio + AudioData 共用)
 
     // __gc 元表
     lua_createtable(L, 0, 1);
@@ -552,22 +557,22 @@ static int l_AudioData_Tostring(lua_State* L) {
 // 此处仅保留 Lua 绑定层, 通过 VideoBackend 抽象接口委托
 
 /// 视频包装器 — 持有 VideoBackend 实例
+/// Phase G.1.7: 首字段 magic 防止 type-confusion
 struct VideoWrapper {
+    uint32_t magic;     // 必须 = LT_MAGIC_VIDEO
     VideoBackend* backend;
 };
 
+/// Phase G.1.7: magic 校验防 type-confusion
 static VideoWrapper* GetVideoWrapper(lua_State* L, int idx) {
-    lua_getfield(L, idx, "__instance");
-    if (!lua_isuserdata(L, -1)) { lua_pop(L, 1); return nullptr; }
-    VideoWrapper* w = (VideoWrapper*)lua_touserdata(L, -1);
-    lua_pop(L, 1);
-    return w;
+    return LT::TryCheckInstance<VideoWrapper>(L, idx, LT::LT_MAGIC_VIDEO);
 }
 
 /// Video.__gc — 释放 VideoBackend
+/// Phase G.1.7: magic 校验 + DEAD 标记
 static int l_Video_GC(lua_State* L) {
     VideoWrapper* w = (VideoWrapper*)lua_touserdata(L, 1);
-    if (w && w->backend) {
+    if (w && w->magic == LT::LT_MAGIC_VIDEO && w->backend) {
         w->backend->Close();
         delete w->backend;
         w->backend = nullptr;
@@ -584,6 +589,7 @@ static int l_Video_Call(lua_State* L) {
     const char* path = luaL_checkstring(L, 2);
 
     VideoWrapper* w = (VideoWrapper*)lua_newuserdata(L, sizeof(VideoWrapper));
+    w->magic = LT::LT_MAGIC_VIDEO;  // Phase G.1.7 — type tag
     w->backend = nullptr;
 
     // __gc 元表

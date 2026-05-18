@@ -1,0 +1,98 @@
+Phase G.1.7 — Lua API 容错 audit 进度
+======================================
+
+总体: 6 个子阶段, 30-40h+, 跨多会话推进.
+
+============================================================
+G.1.7.0 — 基础设施 + 第一批高风险文件 [完成 2026-05-19]
+============================================================
+
+✅ helpers 头实现:
+   - ChocoLight/src/light_lua_helpers.h (~250 行)
+   - LT::Magic4 + LT::CheckInstance<T> + LT::TryCheckInstance<T>
+     + LT::CheckStringStrict + LT::OptStringStrict
+     + LT::PushNilError + LT::PushBooleanError
+   - 39 个 LT_MAGIC_* 常量声明 (覆盖 G.1.7.0~7.4 全部计划文件)
+
+✅ 第一批 9 个文件 ctx struct 加 magic:
+   - light_graphics_image.cpp:  ImageContext + FontContext (P0)
+   - light_graphics_canvas.cpp: CanvasContext (P0)
+   - light_graphics.cpp:        FontCtxHeader inline + 2 处 anon CanvasCtx 镜像 (P0)
+   - light_db.cpp:              SQLiteContext (P1)
+   - light_av.cpp:              AVContext + VideoWrapper (P1)
+   - light_data.cpp:            DataBuffer (P1)
+   - light_network.cpp:         HttpContext (P1)
+   - light_particles.cpp:       ParticleEmitter (P2)
+   - light_tilemap.cpp:         TilemapData (P2)
+
+✅ smoke 测试: scripts/smoke/lua_api_robustness.lua (~200 行)
+   - A: nil 参数 (5 用例)
+   - B: 错类型基本类型 (5 用例)
+   - C: type confusion via fake __instance (3 用例)
+   - D: 错 userdata 外壳 (2 用例)
+   - E: nil __instance 字段 (2 用例)
+   - F: magic mismatch 跨 ctx (3 用例)
+   - G: __gc + use-after-free 路径 (1 用例)
+
+✅ CI 接入: Windows runtime smoke
+
+✅ 文档:
+   - ALIGNMENT_PhaseG_1_7.md (~290 行, 含决策结果 = 方案 C)
+   - DESIGN_PhaseG_1_7.md (~350 行, helpers + magic 表 + 子阶段计划)
+   - TASK_PhaseG_1_7.md (~280 行, T0.1~T5.5 全任务清单)
+
+引入的 magic constants (10 个):
+   LT_MAGIC_IMAGE     = 'IMGE'
+   LT_MAGIC_CANVAS    = 'CNVS'
+   LT_MAGIC_FONT      = 'FONT'
+   LT_MAGIC_DB        = 'SQLI'
+   LT_MAGIC_AV        = 'AVCT'
+   LT_MAGIC_VIDEO     = 'VIDO'
+   LT_MAGIC_DATABUF   = 'DBUF'
+   LT_MAGIC_HTTPCTX   = 'HTTP'
+   LT_MAGIC_EMITTER   = 'EMIT'
+   LT_MAGIC_TILEMAP   = 'TLMP'
+   LT_MAGIC_DEAD      = 'DEAD' (use-after-free 标记)
+
+实绩 vs 计划:
+   - 计划: 6.7h
+   - 实际: ~7h (含调研/调整)
+
+============================================================
+G.1.7.1 — Graphics 子系统 [待启动]
+============================================================
+范围: ~15 文件 (Mesh / Shader / Material / SpriteAnim / Lighting2D / Camera / etc)
+预估: 7.8h
+
+============================================================
+G.1.7.2 — Audio + Network 子系统 [待启动]
+============================================================
+范围: ~15 文件 (audio_* / network_* / io / messaging)
+预估: 8h
+
+============================================================
+G.1.7.3 — Physics + Animation + ECS [待启动]
+============================================================
+范围: ~15 文件 (physics / physics3d / animation / ecs)
+预估: 9h
+
+============================================================
+G.1.7.4 — 系统类剩余 [待启动]
+============================================================
+范围: ~20 文件 (input / 设备 / 时间 / 进程 / 插件)
+预估: 8.4h
+
+============================================================
+G.1.7.5 — 完结 + 全 fuzz smoke + benchmark [待启动]
+============================================================
+范围: 100+ fuzz 用例汇总, 性能 benchmark, 完结文档
+预估: 4h
+
+============================================================
+进度统计
+============================================================
+
+完成子阶段: 1 / 6 (16.7%)
+完成文件:   9 / 79 (11.4%)
+累计 smoke:21 用例
+累计耗时:   ~7h / 36-46h 预估

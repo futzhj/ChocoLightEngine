@@ -18,6 +18,7 @@
  */
 
 #include "light.h"
+#include "light_lua_helpers.h"  // Phase G.1.7 — 类型安全 helpers + magic
 #include "render_backend.h"
 #include "batch_renderer.h"
 #include <cmath>
@@ -42,7 +43,9 @@ struct Particle {
     bool active;
 };
 
+/// Phase G.1.7: 首字段 magic 防止 type-confusion
 struct ParticleEmitter {
+    uint32_t magic;     // 必须 = LT_MAGIC_EMITTER
     Particle* pool;
     int capacity;
     int activeCount;
@@ -65,12 +68,9 @@ static float randf() { return (float)rand() / (float)RAND_MAX; }
 // 随机 [a, b]
 static float randf(float a, float b) { return a + randf() * (b - a); }
 
+/// Phase G.1.7: magic 校验防 type-confusion
 static ParticleEmitter* CheckEmitter(lua_State* L, int idx) {
-    lua_getfield(L, idx, "__instance");
-    if (!lua_isuserdata(L, -1)) { lua_pop(L, 1); return nullptr; }
-    auto* em = (ParticleEmitter*)lua_touserdata(L, -1);
-    lua_pop(L, 1);
-    return em;
+    return LT::TryCheckInstance<ParticleEmitter>(L, idx, LT::LT_MAGIC_EMITTER);
 }
 
 // ==================== 粒子核心逻辑 ====================
@@ -172,6 +172,7 @@ static int l_Particles_Call(lua_State* L) {
 
     auto* em = (ParticleEmitter*)lua_newuserdata(L, sizeof(ParticleEmitter));
     memset(em, 0, sizeof(ParticleEmitter));
+    em->magic = LT::LT_MAGIC_EMITTER;  // Phase G.1.7 — type tag
     em->capacity = cap;
     em->pool = (Particle*)calloc(cap, sizeof(Particle));
     // 默认参数

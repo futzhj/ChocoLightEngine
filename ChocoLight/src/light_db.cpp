@@ -18,6 +18,7 @@
  */
 
 #include "light.h"
+#include "light_lua_helpers.h"  // Phase G.1.7 — 类型安全 helpers + magic
 #include <cstring>
 #include <cstdlib>
 #ifdef _WIN32
@@ -31,18 +32,16 @@ extern "C" {
 
 // ==================== SQLite 上下文 ====================
 
+/// Phase G.1.7: 首字段 magic 防止 type-confusion
 struct SQLiteContext {
+    uint32_t magic;        // 必须 = LT_MAGIC_DB
     sqlite3* db;           // 真实 sqlite3 句柄
     char     path[260];    // 数据库文件路径
     bool     open;
 };
 
 static SQLiteContext* GetSQLiteCtx(lua_State* L, int idx) {
-    lua_getfield(L, idx, "__instance");
-    if (!lua_isuserdata(L, -1)) { lua_pop(L, 1); return nullptr; }
-    SQLiteContext* ctx = (SQLiteContext*)lua_touserdata(L, -1);
-    lua_pop(L, 1);
-    return ctx;
+    return LT::TryCheckInstance<SQLiteContext>(L, idx, LT::LT_MAGIC_DB);
 }
 
 // ==================== Execute 回调 ====================
@@ -188,12 +187,16 @@ static int l_SQLite_TypeName(lua_State* L) {
 }
 
 /// SQLite.__gc — 析构: 关闭数据库
+/// Phase G.1.7: magic 校验 + DEAD 标记
 static int l_SQLite_GC(lua_State* L) {
     SQLiteContext* ctx = (SQLiteContext*)lua_touserdata(L, 1);
-    if (ctx && ctx->db) {
-        sqlite3_close(ctx->db);
-        ctx->db = nullptr;
+    if (ctx && ctx->magic == LT::LT_MAGIC_DB) {
+        if (ctx->db) {
+            sqlite3_close(ctx->db);
+            ctx->db = nullptr;
+        }
         ctx->open = false;
+        ctx->magic = LT::LT_MAGIC_DEAD;
     }
     return 0;
 }
@@ -210,6 +213,7 @@ static int l_SQLite_Call(lua_State* L) {
 
     SQLiteContext* ctx = (SQLiteContext*)lua_newuserdata(L, sizeof(SQLiteContext));
     memset(ctx, 0, sizeof(SQLiteContext));
+    ctx->magic = LT::LT_MAGIC_DB;  // Phase G.1.7 — type tag
     strncpy(ctx->path, path, sizeof(ctx->path) - 1);
 
     // 真实 sqlite3 打开

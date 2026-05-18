@@ -13,12 +13,17 @@
  */
 
 #include "light.h"
+#include "light_lua_helpers.h"  // Phase G.1.7 — 类型安全 helpers + magic
 #include "render_backend.h"
 #include <cstring>
 
 // ==================== Canvas 上下文 ====================
 
+/// CanvasContext — OpenGL FBO 包装
+/// Phase G.1.7: 首字段 magic 防止 type-confusion;
+///              light_graphics.cpp 内镜像 struct (CanvasCtxMirror) 需同步调整布局
 struct CanvasContext {
+    uint32_t     magic;     // 必须 = LT_MAGIC_CANVAS
     unsigned int fbo;       // OpenGL Framebuffer Object
     unsigned int texture;   // 颜色纹理附着
     unsigned int depthRB;   // 深度 Renderbuffer
@@ -27,13 +32,17 @@ struct CanvasContext {
 };
 
 /// Canvas.__gc — 释放 FBO 资源 (通过渲染后端)
+/// Phase G.1.7: magic 校验 + DEAD 标记防 use-after-free
 static int l_Canvas_GC(lua_State* L) {
     CanvasContext* ctx = (CanvasContext*)lua_touserdata(L, 1);
-    if (ctx && g_render) {
-        g_render->DeleteFBO(ctx->fbo, ctx->texture, ctx->depthRB);
+    if (ctx && ctx->magic == LT::LT_MAGIC_CANVAS) {
+        if (g_render) {
+            g_render->DeleteFBO(ctx->fbo, ctx->texture, ctx->depthRB);
+        }
         ctx->fbo = 0;
         ctx->texture = 0;
         ctx->depthRB = 0;
+        ctx->magic = LT::LT_MAGIC_DEAD;
     }
     return 0;
 }
@@ -52,6 +61,7 @@ static int l_Canvas_Call(lua_State* L) {
 
     CanvasContext* ctx = (CanvasContext*)lua_newuserdata(L, sizeof(CanvasContext));
     memset(ctx, 0, sizeof(CanvasContext));
+    ctx->magic = LT::LT_MAGIC_CANVAS;  // Phase G.1.7 — type tag
     ctx->width = w;
     ctx->height = h;
 
@@ -85,13 +95,9 @@ static int l_Canvas_Tostring(lua_State* L) {
 // ==================== Phase AS.1 — Canvas 增强方法 ====================
 
 /// 从 instance table 取出底层 CanvasContext (失败返回 nullptr)
+/// Phase G.1.7: magic 校验防 type-confusion (返 nullptr 保持老调用者兼容)
 static CanvasContext* GetCanvasCtx(lua_State* L, int idx) {
-    if (!lua_istable(L, idx)) return nullptr;
-    lua_getfield(L, idx, "__instance");
-    if (!lua_isuserdata(L, -1)) { lua_pop(L, 1); return nullptr; }
-    CanvasContext* ctx = (CanvasContext*)lua_touserdata(L, -1);
-    lua_pop(L, 1);
-    return ctx;
+    return LT::TryCheckInstance<CanvasContext>(L, idx, LT::LT_MAGIC_CANVAS);
 }
 
 /// canvas:GetTextureId() -> int  (返回原生 GL texture id, 0 表示无效)
