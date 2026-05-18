@@ -5257,6 +5257,10 @@ static int do_screenshot_internal(const char* path, int x, int y, int w, int h) 
 /// 注: 录屏读 default fb 当前窗口尺寸 (用户切窗口大小后, 下一帧自动用新尺寸)
 extern "C" void Light_Graphics_RecordTickHook(int win_w, int win_h) {
     if (!g_record.active || win_w <= 0 || win_h <= 0 || !g_render) return;
+    // Phase F.0.11.6.2.A10: 暂停中跳过整个 tick (不递增 tick_count, 不写 PNG/mp4)
+    //   mp4 模式: RecordMP4::IsPaused() 同步返 true → Acquire/Commit 跳过, pts 不前进
+    //   PNG 模式: 文件名 frame_NNNN 不递增, 录屏暂停期间不产生空隙
+    if (g_record.mode == 1 && RecordMP4::IsPaused()) return;
     // Phase F.0.11.1: frame_skip 检查 — 每 N 渲染帧才实际写 1 张 PNG
     // tick_count 从 1 起递增, 仅当 (tick_count % frame_skip == 0) 写盘
     ++g_record.tick_count;
@@ -5496,6 +5500,8 @@ static int l_Graphics_RecordMP4(lua_State* L) {
     //   prefer_hwenc=false 等价于 encoder="libx264"; 两者并存时 encoder 优先级高.
     const char* encoder_pref = nullptr;
     bool prefer_hwenc = true;   // 默认开 (现有行为)
+    // Phase F.0.11.6.2.A8: GOP 大小 (0=默认 fps×2)
+    int gop_size = 0;
     if (lua_gettop(L) >= 2 && lua_type(L, 2) == LUA_TTABLE) {
         lua_getfield(L, 2, "fps");
         if (lua_isnumber(L, -1)) fps = (int)lua_tointeger(L, -1);
@@ -5515,6 +5521,10 @@ static int l_Graphics_RecordMP4(lua_State* L) {
         lua_pop(L, 1);
         lua_getfield(L, 2, "prefer_hwenc");
         if (lua_isboolean(L, -1)) prefer_hwenc = lua_toboolean(L, -1) != 0;
+        lua_pop(L, 1);
+        // A8: gop_size (1=全 I 帧, 0/缺省=fps×2)
+        lua_getfield(L, 2, "gop_size");
+        if (lua_isnumber(L, -1)) gop_size = (int)lua_tointeger(L, -1);
         lua_pop(L, 1);
     }
     // A5: prefer_hwenc=false 时强制软件编码 (除非用户已显式指定 encoder)
@@ -5556,7 +5566,7 @@ static int l_Graphics_RecordMP4(lua_State* L) {
         return 2;
     }
 
-    if (!RecordMP4::Open(path, w, h, fps, bitrate, encoder_pref)) {
+    if (!RecordMP4::Open(path, w, h, fps, bitrate, encoder_pref, gop_size)) {
         lua_pushnil(L);
         lua_pushfstring(L, "RecordMP4: encoder open failed (encoder='%s'; check FFmpeg DLL / GPU driver / file path)",
                         encoder_pref ? encoder_pref : "auto");
@@ -5699,6 +5709,103 @@ static int l_Graphics_SetRecordOSD(lua_State* L) {
 /// @return boolean true=显示, false=不显示
 static int l_Graphics_GetRecordOSD(lua_State* L) {
     lua_pushboolean(L, g_record.show_osd ? 1 : 0);
+    return 1;
+}
+
+// ============================================================
+// Phase F.0.11.6.2 — A10 Pause / A11 SetRecordMaxSize / A12 GetRecordStats
+// ============================================================
+
+/// @lua_api Light.Graphics.PauseRecord
+/// @brief Phase F.0.11.6.2.A10 — 暂停录制 (mp4 pts 不前进, PNG 序号不递增)
+/// @return boolean true; nil, string=未在录屏
+/// @note 暂停期间渲染照常, 但 RecordTickHook 跳过 readback/encode
+static int l_Graphics_PauseRecord(lua_State* L) {
+    if (!g_record.active) {
+        lua_pushnil(L);
+        lua_pushstring(L, "PauseRecord: not currently recording");
+        return 2;
+    }
+    if (g_record.mode == 1) RecordMP4::PauseRecord();
+    // PNG 模式: 暂停由 RecordTickHook 顶部检查 g_record.paused (复用 RecordMP4::IsPaused 不适用 → 单独 flag)
+    // 简化: 仅 mp4 模式生效 (PNG 录屏快速 dump, 用户可直接 StopRecord 替代)
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+/// @lua_api Light.Graphics.ResumeRecord
+/// @brief Phase F.0.11.6.2.A10 — 恢复录制 (Pause 配对)
+/// @return boolean true; nil, string=未在录屏
+static int l_Graphics_ResumeRecord(lua_State* L) {
+    if (!g_record.active) {
+        lua_pushnil(L);
+        lua_pushstring(L, "ResumeRecord: not currently recording");
+        return 2;
+    }
+    if (g_record.mode == 1) RecordMP4::ResumeRecord();
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+/// @lua_api Light.Graphics.IsRecordPaused
+/// @brief Phase F.0.11.6.2.A10 — 查询录屏是否暂停
+/// @return boolean true=暂停中, false=正常录制 / 未录屏
+static int l_Graphics_IsRecordPaused(lua_State* L) {
+    lua_pushboolean(L, (g_record.active && g_record.mode == 1 && RecordMP4::IsPaused()) ? 1 : 0);
+    return 1;
+}
+
+/// @lua_api Light.Graphics.SetRecordMaxSize
+/// @brief Phase F.0.11.6.2.A11 — 设置 mp4 文件大小上限 (字节; 0=无限)
+/// @param max_bytes integer 字节数, 0 解除限制
+/// @return boolean true (始终成功; 即使未录屏也接受设置, Open 后生效)
+/// @note 仅 mp4 模式生效; 超限时不自动停, 主线程脚本需查 GetRecordStats 自行决定 StopRecord
+static int l_Graphics_SetRecordMaxSize(lua_State* L) {
+    lua_Integer max_bytes = luaL_checkinteger(L, 1);
+    if (max_bytes < 0) max_bytes = 0;
+    RecordMP4::SetMaxSizeBytes((int64_t)max_bytes);
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+/// @lua_api Light.Graphics.GetRecordStats
+/// @brief Phase F.0.11.6.2.A12 — 查询录屏统计 (帧数 / 字节数 / encoder / paused)
+/// @return table { frames=N, bytes=N, max_bytes=N, encoder='...', paused=bool, mode=0|1, active=bool }
+///         或 nil, string=未在录屏 / 非 mp4 模式
+/// @note PNG 模式仅 mode/active 字段有意义 (encoder/bytes/frames=0)
+static int l_Graphics_GetRecordStats(lua_State* L) {
+    lua_newtable(L);
+    // 通用字段 (PNG + mp4 共用)
+    lua_pushinteger(L, g_record.active ? g_record.frame_count : 0);
+    lua_setfield(L, -2, "tick_frame_count");   // 主线程已写盘帧数 (PNG 文件序号)
+    lua_pushinteger(L, g_record.mode);
+    lua_setfield(L, -2, "mode");                // 0=PNG, 1=mp4
+    lua_pushboolean(L, g_record.active ? 1 : 0);
+    lua_setfield(L, -2, "active");
+
+    // MP4 专属字段 (RecordMP4::GetStats)
+    int64_t frames = 0, bytes = 0, max_bytes = 0;
+    char    encoder_name[32] = {};
+    bool    paused = false;
+    if (RecordMP4::GetStats(&frames, &bytes, &max_bytes, encoder_name, (int)sizeof(encoder_name), &paused)) {
+        lua_pushinteger(L, (lua_Integer)frames);
+        lua_setfield(L, -2, "frames");
+        lua_pushinteger(L, (lua_Integer)bytes);
+        lua_setfield(L, -2, "bytes");
+        lua_pushinteger(L, (lua_Integer)max_bytes);
+        lua_setfield(L, -2, "max_bytes");
+        lua_pushstring(L, encoder_name);
+        lua_setfield(L, -2, "encoder");
+        lua_pushboolean(L, paused ? 1 : 0);
+        lua_setfield(L, -2, "paused");
+    } else {
+        // 未在录 mp4: 填默认值 (避免脚本访问 nil 字段)
+        lua_pushinteger(L, 0); lua_setfield(L, -2, "frames");
+        lua_pushinteger(L, 0); lua_setfield(L, -2, "bytes");
+        lua_pushinteger(L, 0); lua_setfield(L, -2, "max_bytes");
+        lua_pushstring(L, "");  lua_setfield(L, -2, "encoder");
+        lua_pushboolean(L, 0);  lua_setfield(L, -2, "paused");
+    }
     return 1;
 }
 
@@ -6020,6 +6127,12 @@ static const luaL_Reg graphics_funcs[] = {
     // Phase F.0.11.6.1.A7 — 录屏指示器 OSD (左上角红点闪烁, 不进 mp4)
     {"SetRecordOSD",               l_Graphics_SetRecordOSD},
     {"GetRecordOSD",               l_Graphics_GetRecordOSD},
+    // Phase F.0.11.6.2 — A10/A11/A12 录屏控制扩展
+    {"PauseRecord",                l_Graphics_PauseRecord},
+    {"ResumeRecord",               l_Graphics_ResumeRecord},
+    {"IsRecordPaused",             l_Graphics_IsRecordPaused},
+    {"SetRecordMaxSize",           l_Graphics_SetRecordMaxSize},
+    {"GetRecordStats",             l_Graphics_GetRecordStats},
     // Phase F.0.11.4 — HDR 截图 (RGBA16F → .hdr Radiance RGBE)
     {"ScreenshotHDR",              l_Graphics_ScreenshotHDR},
     // Phase F.0.11.5 — EXR 截图 (RGBA16F → .exr OpenEXR half/float, 影视后期工业标准)

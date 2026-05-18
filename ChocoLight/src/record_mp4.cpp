@@ -128,6 +128,13 @@ struct State {
     size_t                  tail      = 0;          // 主线程 push 索引 (Commit 时推进)
     size_t                  count     = 0;          // 已 commit 但未 encode 完成的 slot 数
     std::atomic<bool>       stop_flag{false};
+
+    // Phase F.0.11.6.2 — 录屏控制扩展
+    std::atomic<bool>       paused{false};          // A10: 暂停标志, true 时主线程不调 Acquire/Commit
+    int64_t                 frames_encoded = 0;     // A12: worker 已编码并写盘的帧数 (mu 保护)
+    int64_t                 bytes_written  = 0;     // A12: 已写入 mp4 的字节数累加 (mu 保护)
+    int64_t                 max_size_bytes = 0;     // A11: 上限字节数, 0=无限 (atomic store 不必要, set 是稀疏操作)
+    char                    encoder_name[32] = {};  // A12: 编码器名快照, Open 后只读
 };
 static State g;
 
@@ -222,6 +229,12 @@ static void cleanup_all() {
     }
     g.head     = 0;
     g.tail     = 0;
+    // Phase F.0.11.6.2 — 复位 A10/A11/A12 状态
+    g.paused.store(false);
+    g.frames_encoded = 0;
+    g.bytes_written  = 0;
+    g.max_size_bytes = 0;
+    g.encoder_name[0] = '\0';
     g.count    = 0;
     g.active   = false;
     g.stream   = nullptr;
@@ -229,7 +242,7 @@ static void cleanup_all() {
 
 bool IsActive() { return g.active; }
 
-bool Open(const char* path, int w, int h, int fps, int64_t bitrate, const char* encoder_pref) {
+bool Open(const char* path, int w, int h, int fps, int64_t bitrate, const char* encoder_pref, int gop_size) {
     if (g.active) {
         CC::Log(CC::LOG_WARN, "RecordMP4::Open: already active, call Close first");
         return false;
@@ -380,8 +393,10 @@ bool Open(const char* path, int w, int h, int fps, int64_t bitrate, const char* 
     if (effective_bitrate > 0) {
         g_ff.av_opt_set_int(g.codec_ctx, "b", effective_bitrate, 0);   // bit_rate option name = "b"
     }
-    // GOP / B-frame
-    g_ff.av_opt_set_int(g.codec_ctx, "g", fps * 2, 0);          // GOP size = 2 sec
+    // GOP / B-frame — Phase F.0.11.6.2.A8: gop_size 可由调用方指定
+    //   gop_size <= 0 时用默认 fps×2 (2 秒 1 关键帧); 否则用用户值 (1 = 全 I 帧)
+    const int effective_gop = (gop_size > 0) ? gop_size : (fps * 2);
+    g_ff.av_opt_set_int(g.codec_ctx, "g", effective_gop, 0);
     g_ff.av_opt_set_int(g.codec_ctx, "max_b_frames", 0, 0);     // 禁用 B-frame 简化 pts 处理
 
     // time_base / framerate (用 string 设置 rational)
@@ -526,13 +541,21 @@ bool Open(const char* path, int w, int h, int fps, int64_t bitrate, const char* 
     g.tail  = 0;
     g.count = 0;
 
+    // Phase F.0.11.6.2.A12 — 保存编码器名快照 (供 GetStats 查询; Open 后只读)
+    {
+        const char* src = codec_name ? codec_name : "h264";
+        size_t i = 0;
+        while (i + 1 < sizeof(g.encoder_name) && src[i]) { g.encoder_name[i] = src[i]; ++i; }
+        g.encoder_name[i] = '\0';
+    }
+
     // Phase F.0.11.6.1 — spawn worker thread (Open 之后才设 active, 避免 worker 启动竞争)
     g.active = true;
     g.stop_flag.store(false);
     g.worker = std::thread(worker_loop_);
 
-    CC::Log(CC::LOG_INFO, "RecordMP4::Open: '%s' %dx%d @ %dfps (bitrate=%lld, worker spawned, ring=%zu slots × %zuMB)",
-            path, w, h, fps, (long long)bitrate,
+    CC::Log(CC::LOG_INFO, "RecordMP4::Open: '%s' %dx%d @ %dfps gop=%d (bitrate=%lld, worker spawned, ring=%zu slots × %zuMB)",
+            path, w, h, fps, effective_gop, (long long)bitrate,
             State::kRingSize, bytes / (1024 * 1024));
     return true;
 }
@@ -582,6 +605,9 @@ static bool EncodeFrameInternal_(const uint8_t* rgba, int frame_index) {
     }
 
     // 6) 排空 receive_packet (encoder buffered packets)
+    // Phase F.0.11.6.2.A12 — 本帧累计写盘字节 (送 encoder 后可能 0 个 / 多个 packet, 取决于 B/P)
+    int64_t this_frame_bytes = 0;
+    int     this_frame_packets = 0;
     while (true) {
         ret = g_ff.avcodec_receive_packet(g.codec_ctx, g.packet);
         if (ret == FF_AVERROR_EAGAIN || ret == FF_AVERROR_EOF_INT32) break;
@@ -598,7 +624,16 @@ static bool EncodeFrameInternal_(const uint8_t* rgba, int frame_index) {
             if (g_ff.av_packet_unref) g_ff.av_packet_unref(g.packet);
             return false;
         }
+        // A12: 写盘成功 → 累加字节 (受 mu 保护, 与主线程 GetStats 同步)
+        this_frame_bytes += ph->size;
+        ++this_frame_packets;
         if (g_ff.av_packet_unref) g_ff.av_packet_unref(g.packet);
+    }
+    // 一次性提交本帧的 stats (减少加锁次数, 通常 max_b_frames=0 → 每帧 1 packet)
+    if (this_frame_packets > 0) {
+        std::lock_guard<std::mutex> lk(g.mu);
+        g.frames_encoded += this_frame_packets;
+        g.bytes_written  += this_frame_bytes;
     }
     return true;
 }
@@ -683,6 +718,59 @@ bool WriteRGBA(const uint8_t* rgba, int frame_index) {
     return true;
 }
 
+// ============================================================
+// Phase F.0.11.6.2 — A10 暂停 / A11 size 上限 / A12 GetStats
+// ============================================================
+
+void PauseRecord() {
+    if (!g.active) return;
+    g.paused.store(true);
+}
+
+void ResumeRecord() {
+    if (!g.active) return;
+    g.paused.store(false);
+}
+
+bool IsPaused() {
+    return g.active && g.paused.load();
+}
+
+void SetMaxSizeBytes(int64_t max_bytes) {
+    // 无需锁: 主线程稀疏写入, worker 不修改; 64-bit 写在 x86_64 上是原子的
+    g.max_size_bytes = (max_bytes < 0) ? 0 : max_bytes;
+}
+
+bool GetStats(int64_t* frames_encoded, int64_t* bytes_written, int64_t* max_size_bytes,
+              char* encoder_name_out, int encoder_name_cap, bool* paused) {
+    auto safe_zero = [&]() {
+        if (frames_encoded) *frames_encoded = 0;
+        if (bytes_written)  *bytes_written  = 0;
+        if (max_size_bytes) *max_size_bytes = 0;
+        if (encoder_name_out && encoder_name_cap > 0) encoder_name_out[0] = '\0';
+        if (paused)         *paused         = false;
+    };
+    if (!g.active) { safe_zero(); return false; }
+
+    // 加锁读 worker 累加的字段 (与 EncodeFrameInternal_ / Close flush 同 mu)
+    {
+        std::lock_guard<std::mutex> lk(g.mu);
+        if (frames_encoded) *frames_encoded = g.frames_encoded;
+        if (bytes_written)  *bytes_written  = g.bytes_written;
+    }
+    if (max_size_bytes) *max_size_bytes = g.max_size_bytes;
+    if (paused)         *paused         = g.paused.load();
+    if (encoder_name_out && encoder_name_cap > 0) {
+        int i = 0;
+        while (i + 1 < encoder_name_cap && g.encoder_name[i]) {
+            encoder_name_out[i] = g.encoder_name[i];
+            ++i;
+        }
+        encoder_name_out[i] = '\0';
+    }
+    return true;
+}
+
 void Close() {
     if (!g.active) {
         cleanup_all();   // 即便不 active 也清残留
@@ -703,16 +791,27 @@ void Close() {
     }
 
     // 3) 排空所有剩余 packet (encoder 内部 buffered B/P frames flush)
+    //    Phase F.0.11.6.2.A12: flush 阶段也累加 frames_encoded / bytes_written, 让 GetStats 反映最终值
     if (g.packet && g_ff.avcodec_receive_packet && g.codec_ctx) {
         int ret;
+        int64_t flush_bytes = 0;
+        int     flush_packets = 0;
         while ((ret = g_ff.avcodec_receive_packet(g.codec_ctx, g.packet)) >= 0) {
             AVPacketHead* ph = (AVPacketHead*)g.packet;
             ph->stream_index = 0;
-            if (g_ff.av_interleaved_write_frame) {
-                g_ff.av_interleaved_write_frame(g.fmt_ctx, g.packet);
+            if (g_ff.av_interleaved_write_frame &&
+                g_ff.av_interleaved_write_frame(g.fmt_ctx, g.packet) >= 0) {
+                flush_bytes += ph->size;
+                ++flush_packets;
             }
             if (g_ff.av_packet_unref) g_ff.av_packet_unref(g.packet);
             if (ret == FF_AVERROR_EOF_INT32) break;
+        }
+        if (flush_packets > 0) {
+            // worker 已 join, 此处无并发, 但保持 mu 加锁习惯 (与 worker 写路径一致)
+            std::lock_guard<std::mutex> lk(g.mu);
+            g.frames_encoded += flush_packets;
+            g.bytes_written  += flush_bytes;
         }
     }
 
@@ -736,13 +835,24 @@ void Close() {
 #else  // 移动端 / Web
 
 namespace RecordMP4 {
-bool     Open(const char*, int, int, int, int64_t, const char*) { return false; }
+bool     Open(const char*, int, int, int, int64_t, const char*, int) { return false; }
 bool     WriteRGBA(const uint8_t*, int) { return false; }
 uint8_t* AcquireWriteSlot(int) { return nullptr; }
 void     CommitWriteSlot() {}
 void     CancelWriteSlot() {}
 void     Close() {}
 bool     IsActive() { return false; }
+// Phase F.0.11.6.2 — A10/A11/A12 桩
+void     PauseRecord() {}
+void     ResumeRecord() {}
+bool     IsPaused() { return false; }
+void     SetMaxSizeBytes(int64_t) {}
+bool     GetStats(int64_t* fe, int64_t* bw, int64_t* mb, char* en, int ec, bool* p) {
+    if (fe) *fe = 0; if (bw) *bw = 0; if (mb) *mb = 0;
+    if (en && ec > 0) en[0] = '\0';
+    if (p) *p = false;
+    return false;
+}
 } // namespace RecordMP4
 
 #endif

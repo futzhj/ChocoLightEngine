@@ -32,9 +32,14 @@ namespace RecordMP4 {
 ///                      "h264_nvenc"          — 强制 NVIDIA GPU 硬编 (无 GPU 则 Open 失败)
 ///                      "h264_amf"            — 强制 AMD GPU 硬编 (无 GPU 则 Open 失败)
 ///                      "software"            — "libx264" 别名 (语义清晰)
+/// @param gop_size GOP 大小 / 关键帧间隔 (Phase F.0.11.6.2.A8):
+///                 0 (默认) = fps × 2 (每 2 秒 1 关键帧, 平衡 seek 和压缩比)
+///                 1 = 全 I 帧 (无 P 帧, 文件最大但任意 seek)
+///                 较大值 = 文件更小但 seek 粒度粗
 /// @return true=成功, false=失败 (FFmpeg 缺失 / encoder 不可用 / 文件创建失败)
 bool Open(const char* path, int w, int h, int fps, int64_t bitrate,
-          const char* encoder_pref = nullptr);
+          const char* encoder_pref = nullptr,
+          int gop_size = 0);
 
 /// 写入一帧 RGBA8 数据 (与 RecordPNG 同模式, OpenGL bottom-left 原点 — 内部翻转).
 /// @param rgba   长度 w*h*4 字节, 当前帧的 RGBA8
@@ -71,5 +76,38 @@ void Close();
 
 /// 是否当前 active (Open 成功后到 Close 之前)
 bool IsActive();
+
+// ============================================================
+// Phase F.0.11.6.2 — 录屏控制扩展
+// ============================================================
+
+/// Phase F.0.11.6.2.A10 — 暂停录制 (主线程跳过 Acquire/Commit, ring 不进新帧).
+///   pts 不前进 (暂停期间 mp4 时间线无缝衔接, 类似剪辑跳过空白段).
+///   仅当 IsActive() 时有效, 否则 no-op.
+/// @note 与 stop_flag 独立: paused=true 时 Acquire 直接返 nullptr;
+///       生效路径由调用方 (light_graphics RecordTickHook) 主动查 IsPaused() 提前 return.
+void PauseRecord();
+
+/// Phase F.0.11.6.2.A10 — 恢复录制. 与 Pause 配对; no-op 若未暂停.
+void ResumeRecord();
+
+/// Phase F.0.11.6.2.A10 — 查询是否暂停 (Open 后 / Close 前才有意义).
+bool IsPaused();
+
+/// Phase F.0.11.6.2.A11 — 设置 mp4 文件大小上限 (字节). 超限时不自动停, 仅供脚本查询.
+///   0 = 无限 (默认); > 0 = 上限字节数 (例如 100 * 1024 * 1024 = 100 MB)
+///   主线程脚本通过 GetStats 查 bytes_written, 自行决定何时调 StopRecord.
+void SetMaxSizeBytes(int64_t max_bytes);
+
+/// Phase F.0.11.6.2.A12 — 录屏统计快照.
+/// @param frames_encoded   [out] worker 已编码并写盘的帧数 (B-frame 延迟已 flush)
+/// @param bytes_written    [out] 已写入 mp4 文件的字节数 (累加每个 packet.size)
+/// @param max_size_bytes   [out] 当前 max_size_bytes 设定值 (0=无限)
+/// @param encoder_name_out [out, optional] 编码器名 (例: "libx264" / "h264_nvenc"), nullable
+/// @param encoder_name_cap [in] encoder_name_out 缓冲容量 (含 \0), <= 0 时跳过
+/// @param paused           [out] 当前是否处于暂停
+/// @return true=Open 后, false=未 Open / Close 后 (out 参数置 0/false/空串)
+bool GetStats(int64_t* frames_encoded, int64_t* bytes_written, int64_t* max_size_bytes,
+              char* encoder_name_out, int encoder_name_cap, bool* paused);
 
 } // namespace RecordMP4

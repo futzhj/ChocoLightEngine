@@ -118,5 +118,47 @@ local _,ns = pcall(Gfx.StopRecord); p(type(ns)=='number','StopRecord returns num
 p(ns==0,'StopRecord headless count=0')
 local _,a3 = pcall(Gfx.IsRecording); p(a3==false,'IsRecording inactive after stop')
 
+-- ============================================================
+-- F.0.11.6.2 — A8 gop_size / A10 Pause/Resume / A11 max_size / A12 stats
+-- ============================================================
+
+-- A10/A11/A12: API surface
+p(type(Gfx.PauseRecord)=='function',       'PauseRecord exists')
+p(type(Gfx.ResumeRecord)=='function',      'ResumeRecord exists')
+p(type(Gfx.IsRecordPaused)=='function',    'IsRecordPaused exists')
+p(type(Gfx.SetRecordMaxSize)=='function',  'SetRecordMaxSize exists')
+p(type(Gfx.GetRecordStats)=='function',    'GetRecordStats exists')
+
+-- A10: 未录屏时 Pause/Resume → nil+err
+local _,pr,pre = pcall(Gfx.PauseRecord)
+p(pr==nil and type(pre)=='string', 'PauseRecord without recording → nil+err')
+local _,rr,rre = pcall(Gfx.ResumeRecord)
+p(rr==nil and type(rre)=='string', 'ResumeRecord without recording → nil+err')
+
+-- A10: 未录屏时 IsRecordPaused = false
+p(Gfx.IsRecordPaused()==false, 'IsRecordPaused without recording = false')
+
+-- A11: SetRecordMaxSize 接受任意值 (含 0 / 负值归 0)
+local _,sm1 = pcall(Gfx.SetRecordMaxSize, 0)
+p(sm1==true, 'SetRecordMaxSize(0) accepted (unlimited)')
+local _,sm2 = pcall(Gfx.SetRecordMaxSize, 100*1024*1024)
+p(sm2==true, 'SetRecordMaxSize(100MB) accepted')
+local _,sm3 = pcall(Gfx.SetRecordMaxSize, -1)
+p(sm3==true, 'SetRecordMaxSize(-1) clamped to 0, accepted')
+
+-- A12: GetRecordStats 未录屏 → table 且字段齐全 (默认值)
+local _,st = pcall(Gfx.GetRecordStats)
+p(type(st)=='table', 'GetRecordStats returns table when idle')
+p(st.active==false,  'GetRecordStats.active = false when idle')
+p(st.mode==0,        'GetRecordStats.mode = 0 (PNG/idle) when idle')
+p(st.frames==0,      'GetRecordStats.frames = 0 when idle')
+p(st.bytes==0,       'GetRecordStats.bytes = 0 when idle')
+p(st.paused==false,  'GetRecordStats.paused = false when idle')
+p(type(st.encoder)=='string', 'GetRecordStats.encoder is string when idle')
+
+-- A8: RecordMP4 接受 gop_size 字段 (headless 仍会失败, 但 fps/frame_skip 之前不应崩)
+local _,mg,mge = pcall(Gfx.RecordMP4,'out.mp4', { gop_size = 1, fps = 30 })
+p(mg==nil and type(mge)=='string', 'RecordMP4(gop_size=1) headless → nil+err (parsed OK)')
+
 print(string.format("screenshot smoke: %d pass / %d fail", pass, fail))
 if fail>0 then error("screenshot smoke FAIL") end
