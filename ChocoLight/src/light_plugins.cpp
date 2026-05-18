@@ -19,6 +19,7 @@
  */
 
 #include "light.h"
+#include "light_lua_helpers.h"  // Phase G.1.7.4 — 类型安全 helpers + magic
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
@@ -47,7 +48,9 @@ struct WDFEntry {
 // 还原自 CC::Unsafe<CC::Plugins::WDFData::Context>
 // sub_1800A0E40: FNV-1a 哈希桶查找算法
 
+/// Phase G.1.7.4: 首字段 magic 防止 type-confusion (紧跟原布局 magic+vtable+file)
 struct WDFContext {
+    uint32_t magic;         // 必须 = LT_MAGIC_WDF
     void*    vtable;        // CC::Unsafe vftable
     FILE*    file;          // 打开的文件句柄
     bool     valid;         // 文件有效性标志
@@ -55,7 +58,7 @@ struct WDFContext {
     // FNV-1a 哈希桶 — 还原自 sub_1800A0E40
     std::unordered_map<uint32_t, WDFEntry> entries;
 
-    WDFContext() : vtable(nullptr), file(nullptr), valid(false) {}
+    WDFContext() : magic(LT::LT_MAGIC_WDF), vtable(nullptr), file(nullptr), valid(false) {}
 
     ~WDFContext() {
         if (file) { fclose(file); file = nullptr; }
@@ -80,6 +83,7 @@ struct WDFContext {
 // ==================== 辅助: 获取 WDFData 上下文 ====================
 // 还原自 sub_1800B2A90 — 从 Lua table 的 __instance 获取 userdata
 
+// Phase G.1.7.4: magic 双保险
 static WDFContext* GetWDFContext(lua_State* L, int idx) {
     lua_getfield(L, idx, "__instance");
     if (!lua_isuserdata(L, -1)) {
@@ -88,7 +92,9 @@ static WDFContext* GetWDFContext(lua_State* L, int idx) {
     }
     void** ud = (void**)lua_touserdata(L, -1);
     lua_pop(L, 1);
-    return ud ? (WDFContext*)ud[1] : nullptr;
+    auto* ctx = ud ? (WDFContext*)ud[1] : nullptr;
+    if (!ctx || ctx->magic != LT::LT_MAGIC_WDF) return nullptr;
+    return ctx;
 }
 
 // ==================== WDFData 函数实现 ====================
@@ -520,8 +526,9 @@ int luaopen_Light_Plugins_WDFData(lua_State* L) {
 // 还原自 IDA: 9 函数注册表 (sub_1800B4D80)
 // NEM: 2D 网格地图格式, 包含 tile 障碍数据 + 图像/遮罩层
 
-// NEM 地图上下文 — 解析后持有 tile 网格和图像数据
+/// Phase G.1.7.4: 首字段 magic 防止 type-confusion
 struct NEMContext {
+    uint32_t magic;         // 必须 = LT_MAGIC_NEM
     int     width;          // 地图宽度 (tile 数)
     int     height;         // 地图高度 (tile 数)
     uint8_t* obstacles;     // 障碍物网格 (width*height, 0=通行 1=阻挡)
@@ -533,13 +540,16 @@ struct NEMContext {
 };
 
 // 辅助: 从 Lua self 获取 NEMContext
+// Phase G.1.7.4: magic 双保险
 static NEMContext* GetNEMContext(lua_State* L, int idx) {
     lua_getfield(L, idx, "__instance");
     if (!lua_isuserdata(L, -1)) { lua_pop(L, 1); return nullptr; }
     void** ud = (void**)lua_touserdata(L, -1);
     lua_pop(L, 1);
     if (!ud || !ud[1]) return nullptr;
-    return (NEMContext*)ud[1];
+    auto* ctx = (NEMContext*)ud[1];
+    if (ctx->magic != LT::LT_MAGIC_NEM) return nullptr;
+    return ctx;
 }
 
 // __gc: 释放 NEMContext 资源
@@ -738,6 +748,7 @@ static int l_NEMData_Call(lua_State* L) {
 
     NEMContext* ctx = new NEMContext();
     memset(ctx, 0, sizeof(NEMContext));
+    ctx->magic = LT::LT_MAGIC_NEM;  // Phase G.1.7.4 — type tag
 
     // 读取 NEM 头部: 4 字节 magic + 4 字节 width + 4 字节 height
     char magic[4];
