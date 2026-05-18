@@ -412,6 +412,15 @@ static void DecodeMaterialImage_(const cgltf_texture_view* view, int slotIdx,
     job.h       = h;
     job.pixels  = pixels;
     job.glTexId = 0;
+    // Phase G.1.5 T3 — 透传 cgltf sampler (mag/min/wrap_s/wrap_t).
+    // sampler 可能为 NULL (glTF 未指定), 此时 4 字段保持 0, 上传时用默认值.
+    const cgltf_sampler* sampler = view->texture->sampler;
+    if (sampler) {
+        job.samplerMagFilter = (int)sampler->mag_filter;
+        job.samplerMinFilter = (int)sampler->min_filter;
+        job.samplerWrapS     = (int)sampler->wrap_s;
+        job.samplerWrapT     = (int)sampler->wrap_t;
+    }
     st.gltfMaterialImages.push_back(std::move(job));
 }
 
@@ -811,12 +820,21 @@ static void WorkerUploadMesh_(Task& task) {
                 continue;
             }
             glBindTexture(GL_TEXTURE_2D, tex);
-            // Phase G.1.5 收尾 T2 — PBR material texture 启用 mipmap (LINEAR_MIPMAP_LINEAR 三线性过滤).
-            // 对比直接 LINEAR: 远距离/低分辨率采样抗锯齿明显, 是 PBR 渲染标配.
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+            // Phase G.1.5 T3 — 解析 cgltf sampler (0 = 未指定, 用 glTF 2.0 默认值)
+            // 默认: mag=LINEAR / min=LINEAR_MIPMAP_LINEAR (PBR 标配三线性) / wrap=REPEAT (符合 glTF 规范)
+            const GLint magF = job.samplerMagFilter > 0 ? (GLint)job.samplerMagFilter : GL_LINEAR;
+            const GLint minF = job.samplerMinFilter > 0 ? (GLint)job.samplerMinFilter : GL_LINEAR_MIPMAP_LINEAR;
+            const GLint wrS  = job.samplerWrapS     > 0 ? (GLint)job.samplerWrapS     : GL_REPEAT;
+            const GLint wrT  = job.samplerWrapT     > 0 ? (GLint)job.samplerWrapT     : GL_REPEAT;
+            // mipmap 判定: 仅当 min_filter 是 mipmap 变体时生成 mip 链 (节省 GPU 资源)
+            const bool needsMipmap = (minF == GL_NEAREST_MIPMAP_NEAREST) ||
+                                     (minF == GL_LINEAR_MIPMAP_NEAREST)  ||
+                                     (minF == GL_NEAREST_MIPMAP_LINEAR)  ||
+                                     (minF == GL_LINEAR_MIPMAP_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, magF);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, minF);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S,     wrS);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T,     wrT);
             glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8,
                          job.w, job.h, 0, GL_RGBA, GL_UNSIGNED_BYTE, job.pixels);
             GLenum texErr = glGetError();
@@ -829,15 +847,16 @@ static void WorkerUploadMesh_(Task& task) {
                 stbi_image_free(job.pixels); job.pixels = nullptr;
                 continue;
             }
-            // Phase G.1.5 收尾 T2 — 生成 mipmap 链 (失败仅 log warn, 不破坏 mesh; 退化为 base level 采样).
-            glGenerateMipmap(GL_TEXTURE_2D);
-            GLenum mipErr = glGetError();
-            if (mipErr != GL_NO_ERROR) {
-                // mipmap 失败时 fallback 到 LINEAR (避免采样到未初始化的 mip level)
-                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-                CC::Log(CC::LOG_WARN,
-                        "WorkerUploadMesh: material slot %d glGenerateMipmap err=0x%x (fallback to LINEAR)",
-                        job.slotIdx, (unsigned)mipErr);
+            // Phase G.1.5 收尾 T2 + T3 — 按需生成 mipmap 链 (失败仅 log warn + 切 LINEAR 兜底).
+            if (needsMipmap) {
+                glGenerateMipmap(GL_TEXTURE_2D);
+                GLenum mipErr = glGetError();
+                if (mipErr != GL_NO_ERROR) {
+                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+                    CC::Log(CC::LOG_WARN,
+                            "WorkerUploadMesh: material slot %d glGenerateMipmap err=0x%x (fallback to LINEAR)",
+                            job.slotIdx, (unsigned)mipErr);
+                }
             }
             glBindTexture(GL_TEXTURE_2D, 0);
             stbi_image_free(job.pixels); job.pixels = nullptr;
@@ -1225,9 +1244,21 @@ static void UploadGLTF_(FutureState& st, const std::string& path) {
             if (!job.pixels || job.w <= 0 || job.h <= 0) continue;
             uint32_t texId = g_render->CreateTexture(job.w, job.h, 4, job.pixels);
             if (texId) {
-                // Phase G.1.5 收尾 T2 — 启用 mipmap (LINEAR_MIPMAP_LINEAR 三线性过滤).
-                // 与 worker 路径一致, 失败时 backend 内部已 no-op (Legacy) 或 fallback (GL33).
-                g_render->GenerateMipmap2D(texId);
+                // Phase G.1.5 T3 — 透传 cgltf sampler + mipmap-aware 生成.
+                // GL_NEAREST_MIPMAP_NEAREST=0x2700 / GL_LINEAR_MIPMAP_NEAREST=0x2701
+                // GL_NEAREST_MIPMAP_LINEAR=0x2702 / GL_LINEAR_MIPMAP_LINEAR=0x2703
+                // 0 = 未指定 (用 glTF 2.0 默认 = LINEAR_MIPMAP_LINEAR), 同样生成 mipmap.
+                const int minF = job.samplerMinFilter;
+                const bool needsMipmap = (minF == 0) ||                     // 未指定 = 默认 mipmap
+                                         (minF == 0x2700) || (minF == 0x2701) ||
+                                         (minF == 0x2702) || (minF == 0x2703);
+                if (needsMipmap) g_render->GenerateMipmap2D(texId);
+                // 透传 sampler 字段 (任一为 0 跳过, backend 内部已处理)
+                g_render->SetTexture2DSampler(texId,
+                                              job.samplerMagFilter,
+                                              job.samplerMinFilter,
+                                              job.samplerWrapS,
+                                              job.samplerWrapT);
                 job.glTexId = texId;
             } else {
                 CC::Log(CC::LOG_WARN,

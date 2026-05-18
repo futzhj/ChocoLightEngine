@@ -608,6 +608,8 @@ local mesh = fut2:Get()
 ### 备注
 
 - `withMaterial=true` 时返回的 Material 已附带 5 类 PBR texture（`baseColor` / `metallicRoughness` / `normal` / `emissive` / `occlusion`）+ 完整数值字段（color / metallic / roughness / emissive / normalScale / occlusionStrength / alphaMode / alphaCutoff / doubleSided）
+- **Phase G.1.5 T2** — PBR material texture 默认启用 mipmap（`LINEAR_MIPMAP_LINEAR` 三线性过滤），同步与异步路径一致
+- **Phase G.1.5 T3** — cgltf `sampler` 完整透传（`magFilter` / `minFilter` / `wrapS` / `wrapT`）；未指定时按 glTF 2.0 规范默认值（`mag=LINEAR` / `min=LINEAR_MIPMAP_LINEAR` / `wrap=REPEAT`）；`min_filter` 非 mipmap 类型自动跳过 `glGenerateMipmap` 以节省 GPU 资源
 - 详细设计见 `docs/Phase G.1.5 异步GLTF Material/FINAL_PhaseG_1_5.md`
 
 ---

@@ -7864,6 +7864,18 @@ public:
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
         glBindTexture(GL_TEXTURE_2D, 0);
     }
+    // Phase G.1.5 T3 — 设置 2D 纹理采样器参数 (透传 cgltf sampler).
+    // 任一参数为 0 表示跳过 (保持现有值), 否则用 raw GL enum 直接 glTexParameteri.
+    void SetTexture2DSampler(uint32_t texId, int magFilter, int minFilter,
+                             int wrapS, int wrapT) override {
+        if (!texId) return;
+        glBindTexture(GL_TEXTURE_2D, (GLuint)texId);
+        if (magFilter) glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, magFilter);
+        if (minFilter) glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, minFilter);
+        if (wrapS)     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S,     wrapS);
+        if (wrapT)     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T,     wrapT);
+        glBindTexture(GL_TEXTURE_2D, 0);
+    }
     void BindTexture(uint32_t texId) override {
         boundTex = texId;
         glActiveTexture(GL_TEXTURE0);

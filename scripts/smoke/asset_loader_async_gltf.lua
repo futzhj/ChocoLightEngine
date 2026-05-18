@@ -25,7 +25,8 @@ if type(Mesh.LoadGLTFAsync) ~= 'function' then
 end
 pass("Mesh.LoadGLTFAsync API exists")
 
-local FIXTURE = 'scripts/smoke/assets_g1_5/test_box_textured.glb'
+local FIXTURE         = 'scripts/smoke/assets_g1_5/test_box_textured.glb'
+local FIXTURE_SAMPLER = 'scripts/smoke/assets_g1_5/test_box_sampler.glb'  -- T3: NEAREST + MIRRORED_REPEAT
 local NOT_EXIST = '__nonexistent_g15_fixture.glb'
 
 -- ============================================================
@@ -92,7 +93,12 @@ function Demo:OnOpen()
         state.cb_results.case6 = { mesh = mesh, err = err }
     end)
 
-    print("PASS: window opened, 4 LoadGLTFAsync calls dispatched")
+    -- Case 9: T3 sampler fixture (NEAREST + MIRRORED_REPEAT/CLAMP_TO_EDGE)
+    -- 验证: cgltf sampler 字段透传不破坏 mesh+material 加载链.
+    -- (GL state 在 Lua 层不可读, 故只能间接验证加载成功)
+    state.futures.case9 = Mesh.LoadGLTFAsync(FIXTURE_SAMPLER, 0, true)
+
+    print("PASS: window opened, 5 LoadGLTFAsync calls dispatched (incl. T3 sampler)")
 end
 
 function Demo:Update(dt)
@@ -105,14 +111,16 @@ function Demo:Update(dt)
     do
         local f1 = state.futures.case1
         local f2 = state.futures.case2
-        if (f1 and f1:IsError()) or (f2 and f2:IsError()) then
+        local f9 = state.futures.case9
+        if (f1 and f1:IsError()) or (f2 and f2:IsError()) or (f9 and f9:IsError()) then
             local errmsg = (f1 and f1:IsError() and f1:GetError())
                        or  (f2 and f2:IsError() and f2:GetError())
+                       or  (f9 and f9:IsError() and f9:GetError())
                        or  "(unknown)"
             print("[skip] Worker async upload Future:IsError() = true:")
             print("       " .. tostring(errmsg))
             print("       (likely software GL on CI; fence glClientWaitSync never signals)")
-            print("       Partial pass: Cases 7+8 (error paths) PASS; Cases 1-6 skipped.")
+            print("       Partial pass: Cases 7+8 (error paths) PASS; Cases 1-6+9 skipped.")
             print("asset_loader_async_gltf smoke ok (partial: software GL fallback)")
             self:Close()
             return
@@ -177,8 +185,28 @@ function Demo:Update(dt)
         end
     end
 
+    -- Case 9: T3 sampler fixture — 验证非默认 sampler 不破坏加载
+    do
+        local f = state.futures.case9
+        if f and f:IsReady() then
+            local mesh, material = f:Get()
+            if type(mesh) ~= 'userdata' then fail("Case 9: sampler fixture mesh expected userdata") end
+            if type(material) ~= 'userdata' then fail("Case 9: sampler fixture material expected userdata") end
+            -- baseColor texture id 非 0 — 间接证明 sampler 解析没破坏 upload 流程
+            if type(material.GetTexture) == 'function' then
+                local tid = material:GetTexture('baseColor')
+                if not tid or tid == 0 then
+                    fail("Case 9: sampler fixture baseColor texId is 0 (T3 sampler upload broken)")
+                end
+            end
+            pass("Case 9: T3 sampler fixture loaded (NEAREST + MIRRORED_REPEAT pass-through)")
+            state.futures.case9 = nil
+        end
+    end
+
     -- 等所有 Future + cb 完成后, 验证 cb 结果
     if state.futures.case1 == nil and state.futures.case2 == nil
+       and state.futures.case9 == nil
        and state.cb_results.case5 and state.cb_results.case6 then
         -- Case 5 验证
         local r5 = state.cb_results.case5

@@ -1,7 +1,7 @@
 # Phase G.1.5 — 待办事项 (TODO)
 
 > **创建日期**：2026-05-18
-> **状态**：Phase G.1.5 收尾完成 (D1+T2+D2)。本文记录后续可继续优化方向。
+> **状态**：Phase G.1.5 收尾完成 (D1 + T2 + D2 + T3)。本文记录后续可继续优化方向。
 
 ---
 
@@ -20,10 +20,11 @@
 - ✅ 真实 .glb fixture (1192 bytes) + Python generator
 - ✅ 8 用例 smoke (12 PASS)
 
-### 收尾 (D1 + T2 + D2)
+### 收尾 (D1 + T2 + D2 + T3)
 - ✅ **D1**: `docs/api/Light_Graphics.md` 加入 `Light.Graphics.Mesh.LoadGLTF` + `Light.Graphics.Mesh.LoadGLTFAsync` 完整 API 描述 (灵活签名 / 性能特征 / 路径分发 / 错误处理 / 示例)
 - ✅ **T2**: PBR material texture 启用 mipmap (worker 路径 `glGenerateMipmap` + `LINEAR_MIPMAP_LINEAR`; fallback 路径 `RenderBackend::GenerateMipmap2D` 公共虚接口); 同步 `LoadGLTF` 路径同步对齐
 - ✅ **D2**: `samples/demo_gltf_async/main.lua` 演示异步加载 fixture + Future poll / Callback 双风格切换 (R / M / F 键控制)
+- ✅ **T3**: cgltf Texture Sampler 透传 (mag/min/wrap_s/wrap_t); `MaterialImageJob` 加 4 字段; `RenderBackend::SetTexture2DSampler` 公共虚接口 (default no-op, GL33 override); worker + fallback + 同步路径三路一致; min_filter mipmap-aware (非 mipmap 类型跳过 `glGenerateMipmap`); 默认值符合 glTF 2.0 规范 (mag=LINEAR / min=LINEAR_MIPMAP_LINEAR / wrap=REPEAT); 新 fixture `test_box_sampler.glb` + smoke Case 9 (13 PASS)
 
 ---
 
@@ -39,15 +40,6 @@
 - **位置**: `@e:/jinyiNew/Light/ChocoLight/src/asset_loader.cpp:DecodeGLTF_` 内 5 次 DecodeMaterialImage_ 改并发
 - **优先级**: 中 (主线程已不卡顿, 仅减少 worker 总用时)
 - **预估**: 4-6h
-
-#### T3. cgltf Texture Sampler 支持
-
-- **现状**: 忽略 cgltf sampler, 用默认 LINEAR + CLAMP
-- **场景**: glTF 文件可能指定 NEAREST / REPEAT / MIRROR 等模式
-- **方案**: 解析 `image->texture->sampler` (mag/min/wrapS/wrapT), 写入 MaterialImageJob 的 sampler 字段, worker glTexParameteri 用此值
-- **位置**: `@e:/jinyiNew/Light/ChocoLight/include/asset_loader.h:MaterialImageJob` 加 sampler 字段
-- **优先级**: 中 (大多数 glTF 用默认值 OK)
-- **预估**: 3-4h
 
 ### 2.2 功能扩展
 
@@ -109,7 +101,7 @@
 | 项 | 是否需要 | 说明 |
 |----|----|----|
 | Python 3.x | ✅ 已用 | dev/gen_test_glb.py 使用纯标准库 (struct + zlib + json), 任何 Python 3.x OK |
-| .glb 入仓体积 | ✅ 已确认 | test_box_textured.glb 1192 bytes, 不影响 repo 体积 |
+| .glb 入仓体积 | ✅ 已确认 | test_box_textured.glb 1192 bytes + test_box_sampler.glb 1280 bytes (T3), 共 ~2.5 KB |
 | 新依赖 | ❌ 无 | 复用现有 cgltf + stb_image + glad |
 | CI runner GPU | ⚠️ 待验证 | windows-latest 软件 GL 应支持 1×1 PNG 上传, 待 CI watch 确认 |
 
@@ -119,10 +111,9 @@
 
 | 优先级 | 任务 | 收益 |
 |----|----|----|
-| P0 | T3 Texture Sampler 支持 | 完整性 |
-| P1 | T6 真机性能测试 | 验证设计性能模型 |
-| P2 | T1 Worker Thread Pool | 进一步优化 worker 总用时 |
-| P3 | T5 Image Cache | 内存优化 |
-| P4 | T7 失败注入测试 | 代码已防御, 验证补充 |
-| P5 | D3 Khronos sample model | demo 视觉提升 |
+| P0 | T6 真机性能测试 | 验证设计性能模型 |
+| P1 | T1 Worker Thread Pool | 进一步优化 worker 总用时 |
+| P2 | T5 Image Cache | 内存优化 |
+| P3 | T7 失败注入测试 | 代码已防御, 验证补充 |
+| P4 | D3 Khronos sample model | demo 视觉提升 |
 | 待定 | T4 KTX/DDS | 移动端优化, 暂不紧急 |

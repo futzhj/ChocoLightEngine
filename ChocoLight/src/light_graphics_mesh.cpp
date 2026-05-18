@@ -372,8 +372,12 @@ static std::string GetGLTFDirectory(const char* gltfPath) {
 //   1. image->buffer_view 非空 -> embedded GLB chunk 数据
 //   2. image->uri 是 "data:" URI -> base64 解码
 //   3. image->uri 是文件路径 -> 拼 gltfDir + uri 读文件
-static uint32_t LoadGLTFImage(const cgltf_image* img, const std::string& gltfDir) {
-    if (!img || !g_render) return 0;
+//
+// Phase G.1.5 T3 — 入参从 cgltf_image* 改为 cgltf_texture* 以读取 sampler 字段.
+// tex->sampler 可能为 NULL (glTF 未指定), 此时用 glTF 2.0 默认值.
+static uint32_t LoadGLTFImage(const cgltf_texture* tex, const std::string& gltfDir) {
+    if (!tex || !tex->image || !g_render) return 0;
+    const cgltf_image* img = tex->image;
 
     const uint8_t* imgData = nullptr;
     size_t         imgSize = 0;
@@ -439,9 +443,23 @@ static uint32_t LoadGLTFImage(const cgltf_image* img, const std::string& gltfDir
 
     uint32_t texId = g_render->CreateTexture(w, h, 4, pixels);
     stbi_image_free(pixels);
-    // Phase G.1.5 收尾 T2 — PBR material texture 启用 mipmap (与异步 LoadGLTFAsync 行为对齐).
-    // backend 内部已做 GL 3.3+ check, Legacy 自动 no-op.
-    if (texId) g_render->GenerateMipmap2D(texId);
+    if (!texId) return 0;
+
+    // Phase G.1.5 T2 + T3 — 提取 cgltf sampler + mipmap-aware 生成 + 透传 sampler.
+    // sampler 可能为 NULL (未指定), 此时按 glTF 2.0 默认: mag=LINEAR / min=LINEAR_MIPMAP_LINEAR / wrap=REPEAT.
+    const cgltf_sampler* sampler = tex->sampler;
+    const int magF = sampler ? (int)sampler->mag_filter : 0;
+    const int minF = sampler ? (int)sampler->min_filter : 0;
+    const int wrS  = sampler ? (int)sampler->wrap_s     : 0;
+    const int wrT  = sampler ? (int)sampler->wrap_t     : 0;
+    // GL_NEAREST_MIPMAP_NEAREST=0x2700 / GL_LINEAR_MIPMAP_NEAREST=0x2701
+    // GL_NEAREST_MIPMAP_LINEAR=0x2702 / GL_LINEAR_MIPMAP_LINEAR=0x2703
+    // 0 = 未指定 (用默认 = LINEAR_MIPMAP_LINEAR), 同样生成 mipmap.
+    const bool needsMipmap = (minF == 0) ||
+                             (minF == 0x2700) || (minF == 0x2701) ||
+                             (minF == 0x2702) || (minF == 0x2703);
+    if (needsMipmap) g_render->GenerateMipmap2D(texId);
+    g_render->SetTexture2DSampler(texId, magF, minF, wrS, wrT);
     return texId;
 }
 
@@ -472,22 +490,22 @@ static void ExtractMaterial(MaterialDesc& d, const cgltf_material* mat, const st
         d.metallic  = pbr.metallic_factor;
         d.roughness = pbr.roughness_factor;
         if (pbr.base_color_texture.texture) {
-            d.texBaseColor = LoadGLTFImage(pbr.base_color_texture.texture->image, gltfDir);
+            d.texBaseColor = LoadGLTFImage(pbr.base_color_texture.texture, gltfDir);
         }
         if (pbr.metallic_roughness_texture.texture) {
-            d.texMetallicRoughness = LoadGLTFImage(pbr.metallic_roughness_texture.texture->image, gltfDir);
+            d.texMetallicRoughness = LoadGLTFImage(pbr.metallic_roughness_texture.texture, gltfDir);
         }
     }
 
     // normal texture (scale 字段)
     if (mat->normal_texture.texture) {
-        d.texNormal = LoadGLTFImage(mat->normal_texture.texture->image, gltfDir);
+        d.texNormal = LoadGLTFImage(mat->normal_texture.texture, gltfDir);
         d.normalScale = mat->normal_texture.scale;
     }
 
     // occlusion texture (cgltf 共享 cgltf_texture_view, scale 字段实为 strength)
     if (mat->occlusion_texture.texture) {
-        d.texOcclusion = LoadGLTFImage(mat->occlusion_texture.texture->image, gltfDir);
+        d.texOcclusion = LoadGLTFImage(mat->occlusion_texture.texture, gltfDir);
         d.occlusionStrength = mat->occlusion_texture.scale;
     }
 
@@ -496,7 +514,7 @@ static void ExtractMaterial(MaterialDesc& d, const cgltf_material* mat, const st
     d.emissive[1] = mat->emissive_factor[1];
     d.emissive[2] = mat->emissive_factor[2];
     if (mat->emissive_texture.texture) {
-        d.texEmissive = LoadGLTFImage(mat->emissive_texture.texture->image, gltfDir);
+        d.texEmissive = LoadGLTFImage(mat->emissive_texture.texture, gltfDir);
     }
 
     // alphaMode

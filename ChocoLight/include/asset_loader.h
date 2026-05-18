@@ -64,6 +64,14 @@ struct MaterialImageJob {
     int      h       = 0;
     uint8_t* pixels  = nullptr;   // worker stbi_load_from_memory; 上传完释放; 析构兜底
     uint32_t glTexId = 0;         // 上传完成后的 GL texture id (0=失败 / 未上传)
+
+    // Phase G.1.5 T3 — cgltf sampler 透传 (raw GL enum, 0 = 未指定 → 用 glTF 2.0 默认)
+    // glTF 默认: mag=LINEAR / min=LINEAR_MIPMAP_LINEAR / wrap_s=wrap_t=REPEAT
+    // 来自 cgltf_texture->sampler->{mag_filter, min_filter, wrap_s, wrap_t}
+    int      samplerMagFilter = 0;
+    int      samplerMinFilter = 0;
+    int      samplerWrapS     = 0;
+    int      samplerWrapT     = 0;
 };
 
 /**

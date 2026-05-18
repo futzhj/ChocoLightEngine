@@ -113,8 +113,28 @@ def make_bin_chunk(png_bytes: bytes) -> tuple[bytes, dict]:
 # ============================================================
 # Step 3: 构造 glTF JSON (引用 BIN chunk 内偏移)
 # ============================================================
-def make_gltf_json(bin_offsets: dict, bin_total_len: int) -> bytes:
-    """生成 glTF 2.0 JSON 描述文件 (UTF-8)."""
+def make_gltf_json(bin_offsets: dict, bin_total_len: int,
+                   with_sampler: bool = False) -> bytes:
+    """生成 glTF 2.0 JSON 描述文件 (UTF-8).
+
+    with_sampler=True: 添加 samplers 数组 + texture 引用 sampler 索引.
+      Phase G.1.5 T3 测试: 验证 cgltf sampler 透传 (mag/min/wrap_s/wrap_t)
+      非默认值: NEAREST + MIRRORED_REPEAT, 与 glTF 默认 LINEAR + REPEAT 区分.
+    """
+    texture_obj = {"source": 0}
+    samplers_arr = []
+    if with_sampler:
+        # 非默认 sampler — 验证透传效果:
+        #   magFilter=NEAREST (9728)  / minFilter=NEAREST (9728)
+        #   wrapS=MIRRORED_REPEAT (33648) / wrapT=CLAMP_TO_EDGE (33071)
+        # 4 个字段都与 glTF 默认 (LINEAR + REPEAT) 不同, 便于 fixture-level 验证.
+        samplers_arr = [{
+            "magFilter": 9728,
+            "minFilter": 9728,
+            "wrapS":     33648,
+            "wrapT":     33071,
+        }]
+        texture_obj["sampler"] = 0
     j = {
         "asset": {"version": "2.0", "generator": "ChocoLight Phase G.1.5 gen_test_glb.py"},
         "scene": 0,
@@ -136,7 +156,7 @@ def make_gltf_json(bin_offsets: dict, bin_total_len: int) -> bytes:
                 "baseColorTexture": {"index": 0}
             }
         }],
-        "textures": [{"source": 0}],
+        "textures": [texture_obj],
         "images": [{"bufferView": 3, "mimeType": "image/png"}],
         "accessors": [
             {  # POSITION (vec3 float)
@@ -173,6 +193,8 @@ def make_gltf_json(bin_offsets: dict, bin_total_len: int) -> bytes:
         ],
         "buffers": [{"byteLength": bin_total_len}]
     }
+    if samplers_arr:
+        j["samplers"] = samplers_arr
     # 紧凑 JSON (没有空格), 减少文件大小
     s = json.dumps(j, separators=(',', ':'), ensure_ascii=True)
     return s.encode('utf-8')
@@ -210,25 +232,26 @@ def make_glb(json_bytes: bytes, bin_bytes: bytes) -> bytes:
 # ============================================================
 # Main
 # ============================================================
-def main() -> int:
-    out_dir  = os.path.join('scripts', 'smoke', 'assets_g1_5')
-    out_path = os.path.join(out_dir, 'test_box_textured.glb')
-
-    os.makedirs(out_dir, exist_ok=True)
-
-    png_bytes        = make_red_1x1_png()
+def _write_glb(out_path: str, with_sampler: bool) -> int:
+    """生成单个 fixture (with_sampler 决定是否含 samplers 字段)."""
+    png_bytes              = make_red_1x1_png()
     bin_bytes, bin_offsets = make_bin_chunk(png_bytes)
-    json_bytes       = make_gltf_json(bin_offsets, len(bin_bytes))
-    glb_bytes        = make_glb(json_bytes, bin_bytes)
-
+    json_bytes             = make_gltf_json(bin_offsets, len(bin_bytes),
+                                            with_sampler=with_sampler)
+    glb_bytes              = make_glb(json_bytes, bin_bytes)
     with open(out_path, 'wb') as f:
         f.write(glb_bytes)
+    print(f"Generated {out_path} ({len(glb_bytes)} bytes, with_sampler={with_sampler})")
+    return len(glb_bytes)
 
-    print(f"Generated {out_path} ({len(glb_bytes)} bytes)")
-    print(f"  PNG (1x1 red): {len(png_bytes)} bytes")
-    print(f"  BIN chunk:     {len(bin_bytes)} bytes")
-    print(f"  JSON chunk:    {len(json_bytes)} bytes")
-    print(f"  Total GLB:     {len(glb_bytes)} bytes")
+
+def main() -> int:
+    out_dir = os.path.join('scripts', 'smoke', 'assets_g1_5')
+    os.makedirs(out_dir, exist_ok=True)
+    # 默认 fixture (无 samplers, 用 glTF 2.0 默认: LINEAR + REPEAT)
+    _write_glb(os.path.join(out_dir, 'test_box_textured.glb'), with_sampler=False)
+    # Phase G.1.5 T3 fixture (非默认 sampler: NEAREST + MIRRORED_REPEAT/CLAMP_TO_EDGE)
+    _write_glb(os.path.join(out_dir, 'test_box_sampler.glb'),  with_sampler=True)
     return 0
 
 

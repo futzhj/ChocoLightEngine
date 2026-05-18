@@ -291,6 +291,14 @@ public:
     // 调用方约定: texId 必须由 CreateTexture 返回, 调用后 MIN_FILTER 自动切换到 LINEAR_MIPMAP_LINEAR.
     virtual void GenerateMipmap2D(uint32_t /*texId*/) {}
 
+    // Phase G.1.5 T3 — 设置 2D 纹理采样器参数 (filter / wrap, 透传 cgltf sampler).
+    // 入参: GL enum 数值 (mag/min: GL_NEAREST/GL_LINEAR/GL_*_MIPMAP_*; wrap: GL_REPEAT/GL_CLAMP_TO_EDGE/GL_MIRRORED_REPEAT).
+    // 任一字段为 0 表示"跳过该字段, 保持现有值" — 调用方判断 cgltf 是否指定 sampler.
+    // 调用顺序: 必须在 GenerateMipmap2D 之后调 (若 minFilter 是 mipmap 类型, mipmap 必须先生成).
+    // 默认 no-op (Legacy / 不支持的 backend), 子类按需 override.
+    virtual void SetTexture2DSampler(uint32_t /*texId*/, int /*magFilter*/, int /*minFilter*/,
+                                     int /*wrapS*/, int /*wrapT*/) {}
+
     // ---- FBO (Canvas) ----
     virtual uint32_t CreateFBO(int w, int h, uint32_t* outTexture, uint32_t* outDepthRB) = 0;
     virtual void DeleteFBO(uint32_t fbo, uint32_t texture, uint32_t depthRB) = 0;
