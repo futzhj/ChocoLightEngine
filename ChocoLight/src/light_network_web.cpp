@@ -20,6 +20,7 @@
 #ifdef __EMSCRIPTEN__
 
 #include "light.h"
+#include "light_lua_helpers.h"  // Phase G.1.7.2 — 类型安全 helpers + magic
 #include <emscripten.h>
 #include <emscripten/fetch.h>
 #include <cstring>

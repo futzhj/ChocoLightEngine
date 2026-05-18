@@ -164,12 +164,20 @@ static int l_S_CreateSurface(lua_State* L) {
     int fmt = (int)luaL_checkinteger(L, 3);
     return NewHandle(L, SDL_CreateSurface(w, h, (SDL_PixelFormat)fmt));
 }
+// Phase G.1.7.1: DestroySurface 必须 idempotent (smoke 测试 double-destroy)
+// 因此不走 CheckHandle (DEAD magic 会抛错), 改为直接走 luaL_checkudata 接受
+// LT_MAGIC_SURFACE 和 LT_MAGIC_DEAD 两种状态
 static int l_S_DestroySurface(lua_State* L) {
-    LSurface* h = CheckHandle(L, 1);
+    auto* h = (LSurface*)luaL_checkudata(L, 1, MT_SURFACE);
+    if (!h) return 0;
+    // 接受 SURFACE (live) 或 DEAD (已销毁) magic
+    if (h->magic != LT::LT_MAGIC_SURFACE && h->magic != LT::LT_MAGIC_DEAD) {
+        luaL_error(L, "Light.Surface: type confusion at arg #1 (magic mismatch)");
+    }
     if (h->p) {
         SDL_DestroySurface(h->p);
         h->p = nullptr;
-        h->magic = LT::LT_MAGIC_DEAD;  // Phase G.1.7.1 — 释放后不可再访问
+        h->magic = LT::LT_MAGIC_DEAD;  // Phase G.1.7.1 — 释放后不可再访问 (但 DestroySurface idempotent)
     }
     return 0;
 }
