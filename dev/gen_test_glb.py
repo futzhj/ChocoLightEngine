@@ -52,6 +52,20 @@ def make_red_1x1_png() -> bytes:
     return sig + chunk(b'IHDR', ihdr) + chunk(b'IDAT', idat) + chunk(b'IEND', iend)
 
 
+def make_broken_png() -> bytes:
+    """Phase G.1.5 T7 失败注入测试 fixture.
+
+    生成 64 字节伪 "PNG" 数据 (不含 PNG signature, stbi_load_from_memory 必返 nullptr).
+    用途: 验证 worker 解码失败装饰性兜底路径 — texture id=0 + log warn, mesh 仍 ready.
+    需保证 GLB 容器层 (cgltf parse / buffer_view) 完全合法, 仅 image bytes 是损坏 payload.
+    """
+    # 4 字节对齐 (PNG chunk header 之外的任意 magic 都会让 stbi 失败)
+    payload = b'NOT_A_PNG_FILE_FOR_T7_FAILURE_INJECTION_TEST_PHASE_G15_GLTF'
+    # pad 到 4 字节边界
+    pad = (4 - (len(payload) % 4)) % 4
+    return payload + b'\x00' * pad
+
+
 # ============================================================
 # Step 2: 构造 BIN chunk 数据 (vertex + index + PNG)
 # ============================================================
@@ -232,16 +246,23 @@ def make_glb(json_bytes: bytes, bin_bytes: bytes) -> bytes:
 # ============================================================
 # Main
 # ============================================================
-def _write_glb(out_path: str, with_sampler: bool) -> int:
-    """生成单个 fixture (with_sampler 决定是否含 samplers 字段)."""
-    png_bytes              = make_red_1x1_png()
+def _write_glb(out_path: str, with_sampler: bool = False,
+               with_broken_png: bool = False) -> int:
+    """生成单个 fixture.
+
+    Args:
+      with_sampler: True 添加非默认 samplers 字段 (Phase G.1.5 T3)
+      with_broken_png: True 用损坏 image bytes (stbi decode 必失败, Phase G.1.5 T7 失败注入)
+    """
+    png_bytes              = make_broken_png() if with_broken_png else make_red_1x1_png()
     bin_bytes, bin_offsets = make_bin_chunk(png_bytes)
     json_bytes             = make_gltf_json(bin_offsets, len(bin_bytes),
                                             with_sampler=with_sampler)
     glb_bytes              = make_glb(json_bytes, bin_bytes)
     with open(out_path, 'wb') as f:
         f.write(glb_bytes)
-    print(f"Generated {out_path} ({len(glb_bytes)} bytes, with_sampler={with_sampler})")
+    print(f"Generated {out_path} ({len(glb_bytes)} bytes, "
+          f"with_sampler={with_sampler}, with_broken_png={with_broken_png})")
     return len(glb_bytes)
 
 
@@ -249,9 +270,11 @@ def main() -> int:
     out_dir = os.path.join('scripts', 'smoke', 'assets_g1_5')
     os.makedirs(out_dir, exist_ok=True)
     # 默认 fixture (无 samplers, 用 glTF 2.0 默认: LINEAR + REPEAT)
-    _write_glb(os.path.join(out_dir, 'test_box_textured.glb'), with_sampler=False)
+    _write_glb(os.path.join(out_dir, 'test_box_textured.glb'))
     # Phase G.1.5 T3 fixture (非默认 sampler: NEAREST + MIRRORED_REPEAT/CLAMP_TO_EDGE)
     _write_glb(os.path.join(out_dir, 'test_box_sampler.glb'),  with_sampler=True)
+    # Phase G.1.5 T7 fixture (损坏 PNG payload, GLB 结构合法; 验证装饰性兜底)
+    _write_glb(os.path.join(out_dir, 'test_box_broken.glb'),   with_broken_png=True)
     return 0
 
 

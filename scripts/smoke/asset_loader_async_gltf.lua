@@ -27,6 +27,7 @@ pass("Mesh.LoadGLTFAsync API exists")
 
 local FIXTURE         = 'scripts/smoke/assets_g1_5/test_box_textured.glb'
 local FIXTURE_SAMPLER = 'scripts/smoke/assets_g1_5/test_box_sampler.glb'  -- T3: NEAREST + MIRRORED_REPEAT
+local FIXTURE_BROKEN  = 'scripts/smoke/assets_g1_5/test_box_broken.glb'   -- T7: 损坏 PNG payload
 local NOT_EXIST = '__nonexistent_g15_fixture.glb'
 
 -- ============================================================
@@ -98,7 +99,12 @@ function Demo:OnOpen()
     -- (GL state 在 Lua 层不可读, 故只能间接验证加载成功)
     state.futures.case9 = Mesh.LoadGLTFAsync(FIXTURE_SAMPLER, 0, true)
 
-    print("PASS: window opened, 5 LoadGLTFAsync calls dispatched (incl. T3 sampler)")
+    -- Case 10: T7 失败注入 — broken PNG payload (stbi decode 必失败)
+    -- 验证装饰性兜底: mesh + material 仍 ready, 但 baseColor texture id 应为 0.
+    -- 这确认 worker 路径在 image decode 失败时仅 log warn, 不破坏 mesh 主流程.
+    state.futures.case10 = Mesh.LoadGLTFAsync(FIXTURE_BROKEN, 0, true)
+
+    print("PASS: window opened, 6 LoadGLTFAsync calls dispatched (incl. T3 sampler + T7 broken)")
 end
 
 function Demo:Update(dt)
@@ -109,18 +115,21 @@ function Demo:Update(dt)
     -- 检测 software GL fence 超时 → 任一 future 转 Error 即认为 worker 在软件 GL 下不工作
     -- 优先于 IsReady() 检查, 避免不可达的 ready 路径累积 frames
     do
-        local f1 = state.futures.case1
-        local f2 = state.futures.case2
-        local f9 = state.futures.case9
-        if (f1 and f1:IsError()) or (f2 and f2:IsError()) or (f9 and f9:IsError()) then
-            local errmsg = (f1 and f1:IsError() and f1:GetError())
-                       or  (f2 and f2:IsError() and f2:GetError())
-                       or  (f9 and f9:IsError() and f9:GetError())
+        local f1  = state.futures.case1
+        local f2  = state.futures.case2
+        local f9  = state.futures.case9
+        local f10 = state.futures.case10
+        if (f1 and f1:IsError()) or (f2 and f2:IsError())
+           or (f9 and f9:IsError()) or (f10 and f10:IsError()) then
+            local errmsg = (f1  and f1:IsError()  and f1:GetError())
+                       or  (f2  and f2:IsError()  and f2:GetError())
+                       or  (f9  and f9:IsError()  and f9:GetError())
+                       or  (f10 and f10:IsError() and f10:GetError())
                        or  "(unknown)"
             print("[skip] Worker async upload Future:IsError() = true:")
             print("       " .. tostring(errmsg))
             print("       (likely software GL on CI; fence glClientWaitSync never signals)")
-            print("       Partial pass: Cases 7+8 (error paths) PASS; Cases 1-6+9 skipped.")
+            print("       Partial pass: Cases 7+8 (error paths) PASS; Cases 1-6+9+10 skipped.")
             print("asset_loader_async_gltf smoke ok (partial: software GL fallback)")
             self:Close()
             return
@@ -204,9 +213,35 @@ function Demo:Update(dt)
         end
     end
 
+    -- Case 10: T7 失败注入 — broken PNG 装饰性兜底验证
+    do
+        local f = state.futures.case10
+        if f and f:IsReady() then
+            local mesh, material = f:Get()
+            -- 关键不变量: image decode 失败但 mesh 主流程不受影响
+            if type(mesh) ~= 'userdata' then
+                fail("Case 10: broken fixture mesh expected userdata (decorative fallback broken)")
+            end
+            if type(material) ~= 'userdata' then
+                fail("Case 10: broken fixture material expected userdata (decorative fallback broken)")
+            end
+            -- baseColor texture id 必须为 0 (stbi 解码必失败 → slot 跳过 → WriteSlots 写 0)
+            if type(material.GetTexture) == 'function' then
+                local tid = material:GetTexture('baseColor')
+                if tid and tid ~= 0 then
+                    fail(string.format(
+                        "Case 10: broken fixture baseColor texId expected 0, got %s (decode 误判成功?)",
+                        tostring(tid)))
+                end
+            end
+            pass("Case 10: T7 broken PNG → mesh+material ready, baseColor texId=0 (decorative fallback ok)")
+            state.futures.case10 = nil
+        end
+    end
+
     -- 等所有 Future + cb 完成后, 验证 cb 结果
     if state.futures.case1 == nil and state.futures.case2 == nil
-       and state.futures.case9 == nil
+       and state.futures.case9 == nil and state.futures.case10 == nil
        and state.cb_results.case5 and state.cb_results.case6 then
         -- Case 5 验证
         local r5 = state.cb_results.case5
