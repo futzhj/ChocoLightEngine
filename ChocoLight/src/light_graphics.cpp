@@ -5260,25 +5260,48 @@ extern "C" void Light_Graphics_RecordTickHook(int win_w, int win_h) {
 
     // Phase F.0.11.6: MP4 模式分支 (mode=1) — 走 RecordMP4 encoder, 不写 PNG
     // Phase F.0.11.6.1.A1: 用 zero-copy ring buffer 路径 (Acquire → readback 直写 slot → Commit)
-    //   省掉中间 std::vector buf 的 8MB memcpy (主线程 ~5ms → ~3ms).
+    // Phase F.0.11.6.1.A2: 当 use_async=true 时走 PBO ping-pong 异步 readback (主线程不 stall GPU)
     if (g_record.mode == 1) {
         if (!RecordMP4::IsActive()) return;   // Open 失败时被动 deactivate
-        // 1) Acquire ring buffer 当前 tail slot (ring 满则阻塞等 worker 出队 — back-pressure)
+
+        // A2 异步路径: ReadbackDefaultFBAsync 启动新 PBO + 取上一帧数据 (首帧无数据延后 1 帧)
+        if (g_record.use_async) {
+            g_record.last_w = win_w;   // 缓存供 StopRecord flush 最后一帧用
+            g_record.last_h = win_h;
+            uint8_t* slot = RecordMP4::AcquireWriteSlot(g_record.frame_count);
+            if (!slot) return;
+            if (g_render->ReadbackDefaultFBAsync(0, 0, win_w, win_h, slot)) {
+                // 取到上一帧 PBO 数据 → Commit
+                RecordMP4::CommitWriteSlot();
+                ++g_record.frame_count;
+                if (g_record.max_frames > 0 && g_record.frame_count >= g_record.max_frames) {
+                    // max 达成: flush 最后 1 帧 pending PBO 后再 Close (避免漏最后一帧)
+                    uint8_t* last_slot = RecordMP4::AcquireWriteSlot(g_record.frame_count);
+                    if (last_slot && g_render->ReadbackAsyncFlushLast(last_slot)) {
+                        RecordMP4::CommitWriteSlot();
+                        ++g_record.frame_count;
+                    } else if (last_slot) {
+                        RecordMP4::CancelWriteSlot();
+                    }
+                    RecordMP4::Close();
+                    g_record.active = false;
+                }
+            } else {
+                // 首次调用 PBO 已启动但没数据 → 取消 slot, 不算一帧
+                RecordMP4::CancelWriteSlot();
+            }
+            return;
+        }
+
+        // 同步路径 (use_async=false, 默认): glReadPixels 同步 stall
         uint8_t* slot = RecordMP4::AcquireWriteSlot(g_record.frame_count);
-        if (!slot) {
-            // stop_flag 已设 (Close 进行中) 或 record 未 active → 直接退出
-            return;
-        }
-        // 2) glReadPixels 直接写入 slot (跳过中间 std::vector buf 拷贝)
+        if (!slot) return;
         if (!g_render->ReadbackDefaultFB(0, 0, win_w, win_h, slot)) {
-            // Readback 失败: 不 Commit (slot 数据无效), 但需要释放 ring 占位以避免下次 Acquire 永远阻塞
-            // 简化: 直接 Commit (worker 编码一帧坏数据), Close 时主线程仍能顺利 join
-            // 真要严谨应加 RecordMP4::CancelWriteSlot, 但失败概率极低不值得
-            RecordMP4::CommitWriteSlot();
-            CC::Log(CC::LOG_WARN, "RecordMP4: ReadbackDefaultFB failed at frame %d", g_record.frame_count);
+            // Phase F.0.11.6.1.A4: 失败精确取消, 不写坏帧到 worker
+            RecordMP4::CancelWriteSlot();
+            CC::Log(CC::LOG_WARN, "RecordMP4: ReadbackDefaultFB failed at frame %d (skipped)", g_record.frame_count);
             return;
         }
-        // 3) Commit: 推进 ring tail + 通知 worker
         RecordMP4::CommitWriteSlot();
         ++g_record.frame_count;
         if (g_record.max_frames > 0 && g_record.frame_count >= g_record.max_frames) {
@@ -5513,11 +5536,25 @@ static int l_Graphics_GetRecordMode(lua_State* L) {
 ///       F.0.11.3 加 backend->ReadbackAsyncFlushLast() 同步取出 (会 sync block 1 次, ~3-8ms).
 static int l_Graphics_StopRecord(lua_State* L) {
     // Phase F.0.11.6: MP4 模式 — flush encoder + 写 trailer + 关闭文件
+    // Phase F.0.11.6.1.A2: PBO async 模式下 flush 最后 1 帧 pending PBO 数据 (避免漏最后一帧)
     if (g_record.mode == 1) {
+        if (g_record.use_async && g_render &&
+            g_record.last_w > 0 && g_record.last_h > 0 &&
+            (g_record.max_frames <= 0 || g_record.frame_count < g_record.max_frames)) {
+            uint8_t* slot = RecordMP4::AcquireWriteSlot(g_record.frame_count);
+            if (slot && g_render->ReadbackAsyncFlushLast(slot)) {
+                RecordMP4::CommitWriteSlot();
+                ++g_record.frame_count;
+            } else if (slot) {
+                RecordMP4::CancelWriteSlot();
+            }
+        }
         RecordMP4::Close();
         int n = g_record.frame_count;
         g_record.active = false;
         g_record.mode = 0;
+        g_record.last_w = 0;
+        g_record.last_h = 0;
         lua_pushinteger(L, n);
         return 1;
     }

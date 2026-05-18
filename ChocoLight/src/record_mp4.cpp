@@ -267,19 +267,35 @@ bool Open(const char* path, int w, int h, int fps, int64_t bitrate) {
     g.height = h;
     g.fps = fps;
 
-    // 1) 找 H.264 编码器
-    void* codec = g_ff.avcodec_find_encoder(FF_AV_CODEC_ID_H264);
-    if (!codec && g_ff.avcodec_find_encoder_by_name) {
-        // fallback: 按名查找 libx264 / openh264
-        codec = g_ff.avcodec_find_encoder_by_name("libx264");
-        if (!codec) codec = g_ff.avcodec_find_encoder_by_name("h264_nvenc");
-        if (!codec) codec = g_ff.avcodec_find_encoder_by_name("h264");
+    // 1) 找 H.264 编码器 — Phase F.0.11.6.1.A3: 优先 NVENC 硬件编码 (1080p ~5ms), fallback libx264
+    //    硬编无法走 CRF, 必须用 bitrate 模式; 软编两种都支持 (默认 CRF 23 if bitrate<=0).
+    void*       codec      = nullptr;
+    const char* codec_name = "h264";   // 仅日志用; opts 分支根据 is_nvenc 判断
+    bool        is_nvenc   = false;
+    if (g_ff.avcodec_find_encoder_by_name) {
+        // 优先级: NVENC (NVIDIA) > libx264 (软件) > AMF (AMD, 跨平台 mac/linux 支持有限)
+        codec = g_ff.avcodec_find_encoder_by_name("h264_nvenc");
+        if (codec) { codec_name = "h264_nvenc"; is_nvenc = true; }
+        if (!codec) {
+            codec = g_ff.avcodec_find_encoder_by_name("libx264");
+            if (codec) codec_name = "libx264";
+        }
+        if (!codec) {
+            codec = g_ff.avcodec_find_encoder_by_name("h264_amf");
+            if (codec) codec_name = "h264_amf";   // AMD AMF 与 NVENC 类似, 不支持 CRF
+        }
     }
     if (!codec) {
-        CC::Log(CC::LOG_ERROR, "RecordMP4::Open: H.264 encoder not available (try install ffmpeg with libx264)");
+        // 最后兜底: 默认 H.264 encoder (任何已 register 的)
+        codec = g_ff.avcodec_find_encoder(FF_AV_CODEC_ID_H264);
+    }
+    if (!codec) {
+        CC::Log(CC::LOG_ERROR, "RecordMP4::Open: H.264 encoder not available (need libx264 / nvenc / h264_amf)");
         cleanup_all();
         return false;
     }
+    CC::Log(CC::LOG_INFO, "RecordMP4::Open: encoder='%s' (hw=%s)",
+            codec_name, is_nvenc ? "yes" : "no");
 
     // 2) 创建 AVFormatContext (mp4 muxer)
     int ret = g_ff.avformat_alloc_output_context2(&g.fmt_ctx, nullptr, "mp4", path);
@@ -309,8 +325,10 @@ bool Open(const char* path, int w, int h, int fps, int64_t bitrate) {
     g_ff.av_opt_set_int(g.codec_ctx, "width",  w, 0);
     g_ff.av_opt_set_int(g.codec_ctx, "height", h, 0);
     g_ff.av_opt_set_int(g.codec_ctx, "pix_fmt", FF_AV_PIX_FMT_YUV420P, 0);
-    if (bitrate > 0) {
-        g_ff.av_opt_set_int(g.codec_ctx, "b", bitrate, 0);   // bit_rate option name = "b"
+    // Phase F.0.11.6.1.A3: NVENC 不支持 CRF, 强制使用 bitrate; 软件编码若用户传 0 走 CRF.
+    const int64_t effective_bitrate = (is_nvenc && bitrate <= 0) ? (int64_t)5000000 : bitrate;
+    if (effective_bitrate > 0) {
+        g_ff.av_opt_set_int(g.codec_ctx, "b", effective_bitrate, 0);   // bit_rate option name = "b"
     }
     // GOP / B-frame
     g_ff.av_opt_set_int(g.codec_ctx, "g", fps * 2, 0);          // GOP size = 2 sec
@@ -324,12 +342,22 @@ bool Open(const char* path, int w, int h, int fps, int64_t bitrate) {
     g_ff.av_opt_set(g.codec_ctx, "framerate", rate_str, 0);
     g_ff.av_opt_set(g.codec_ctx, "video_size", nullptr, 0);   // 占位, 主要靠 width/height
 
-    // libx264 私有选项 (preset / crf): 通过 dict 传给 avcodec_open2
+    // 私有选项 (preset / crf / rc): 通过 dict 传给 avcodec_open2
+    // Phase F.0.11.6.1.A3: NVENC 与 libx264 选项差异
+    //   libx264:    preset='medium' + (CRF 23 if bitrate<=0)
+    //   h264_nvenc: preset='p4' (中速, p1=fastest~p7=slowest), rc='cbr', tune='hq'
+    //   h264_amf:   preset='balanced' (与 NVENC 不同名), 用默认 bitrate 模式
     void* opts = nullptr;
     if (g_ff.av_dict_set) {
-        g_ff.av_dict_set(&opts, "preset", "medium", 0);
-        if (bitrate <= 0) {
-            g_ff.av_dict_set(&opts, "crf", "23", 0);   // 默认 CRF 23
+        if (is_nvenc) {
+            g_ff.av_dict_set(&opts, "preset", "p4", 0);     // 中速预设, NVENC 专用
+            g_ff.av_dict_set(&opts, "rc",     "cbr", 0);    // 恒定码率, GPU 编码常用
+            g_ff.av_dict_set(&opts, "tune",   "hq", 0);     // 高质量调优
+        } else {
+            g_ff.av_dict_set(&opts, "preset", "medium", 0);
+            if (bitrate <= 0) {
+                g_ff.av_dict_set(&opts, "crf", "23", 0);    // libx264 默认 CRF 23
+            }
         }
     }
 
@@ -582,6 +610,14 @@ void CommitWriteSlot() {
     g.cv.notify_one();
 }
 
+// Phase F.0.11.6.1.A4 — 取消 Acquire 拿到的 slot.
+//   主线程是 mp4 录屏唯一 producer, Acquire 时未动 tail/count, 此处真的什么都不做即可:
+//   下一次 AcquireWriteSlot 仍返回同一 ring[tail] slot, 数据被新 Readback 覆盖.
+//   语义清晰的 API > 调用方写 "什么也不调" 的注释.
+void CancelWriteSlot() {
+    // 故意空实现 — 见上注释
+}
+
 // Phase F.0.11.6.1 — WriteRGBA 现在是兼容入口 (内部 = Acquire+memcpy+Commit, 1 次 8MB memcpy).
 //   新代码推荐 Acquire+CommitWriteSlot 路径, 跳过此 memcpy.
 bool WriteRGBA(const uint8_t* rgba, int frame_index) {
@@ -650,6 +686,7 @@ bool     Open(const char*, int, int, int, int64_t) { return false; }
 bool     WriteRGBA(const uint8_t*, int) { return false; }
 uint8_t* AcquireWriteSlot(int) { return nullptr; }
 void     CommitWriteSlot() {}
+void     CancelWriteSlot() {}
 void     Close() {}
 bool     IsActive() { return false; }
 } // namespace RecordMP4

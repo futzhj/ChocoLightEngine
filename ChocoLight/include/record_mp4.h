@@ -52,6 +52,13 @@ uint8_t* AcquireWriteSlot(int frame_index);
 /// 必须在 AcquireWriteSlot 返非 nullptr 之后调用; 不可重复调.
 void CommitWriteSlot();
 
+/// Phase F.0.11.6.1.A4 — 取消 Acquire 拿到的 slot (不推进 tail, 不增 count).
+/// 适用场景: AcquireWriteSlot 后, Readback / GPU 操作失败, 不希望 worker 编码无效数据.
+/// 实现: 由于主线程是 mp4 录屏唯一 producer, Acquire 未 Commit 时 tail 还在原位,
+///       直接 do nothing 即可 — 下次 AcquireWriteSlot 仍返同一 slot, 数据被覆盖.
+/// @note 必须紧跟在 AcquireWriteSlot 返非 nullptr 后调用; 与 CommitWriteSlot 二选一.
+void CancelWriteSlot();
+
 /// 关闭 mp4: stop worker → join → flush encoder → 写 trailer → 释放资源
 void Close();
 

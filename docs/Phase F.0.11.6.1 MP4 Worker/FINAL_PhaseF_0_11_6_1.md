@@ -2,7 +2,7 @@
 
 > **交付日期**：2026-05-18
 > **基线**：Phase F.0.11.6 (MP4 录屏主线程同步编码)
-> **commits**：`d506ad7` (worker thread) + `8bdd888` (A1 ring buffer + zero-copy)
+> **commits**：`d506ad7` (worker) + `8bdd888` (A1 ring) + 待 push (A2+A3+A4)
 
 ---
 
@@ -164,21 +164,62 @@ e:\jinyiNew\Light\lumen-master\build\src\light\Release\light.exe `
 
 ---
 
-## 九. 后续优化候选 (低优先级)
+## 九. A2 + A3 + A4 增量优化 (2026-05-18 同日交付)
 
-- **A2**: PBO async readback 接入 mp4 模式 (复用 `ReadbackDefaultFBAsync`), 主线程 readback 不 stall GPU
-- **A3**: H264 NVENC 路径 (硬件编码, 编码 1080p < 5ms/frame, 取消 back-pressure 风险)
-- **A4**: Readback 失败时加 `CancelWriteSlot` API (现状: 直接 Commit 编码坏帧, 简单但理论上 mp4 偶现一帧噪点)
+### 9.1 A4 — `CancelWriteSlot()` API (精确取消)
+
+- **问题**: A1 路径下, Readback 失败时不得不 `CommitWriteSlot()` (写一帧坏数据), 否则 ring 永远卡死
+- **方案**: 加 `CancelWriteSlot()` API — 由于主线程是 mp4 录屏唯一 producer, Acquire 时未动 tail/count, Cancel 真的什么都不做即可: 下次 Acquire 仍返同一 slot, 数据被新 Readback 覆盖
+- **收益**: Readback 失败不再写坏帧到 worker; `frame_count` 不递增, mp4 帧序连续
+- **代码**: `@e:\jinyiNew\Light\ChocoLight\include\record_mp4.h:55-60` + `@e:\jinyiNew\Light\ChocoLight\src\record_mp4.cpp:585-591` (空实现 + 注释解释)
+
+### 9.2 A3 — NVENC 硬件编码优先 (libx264 fallback)
+
+- **问题**: libx264 medium @ 1080p 单帧 ~30ms, worker 编码能力 ~33fps, 主线程 > 40fps 渲染时 ring 满 → back-pressure
+- **方案**: Open 内编码器选择顺序 `h264_nvenc` → `libx264` → `h264_amf` → `avcodec_find_encoder(H264)` 兜底
+  - NVENC opts: `preset='p4' rc='cbr' tune='hq'` (NVENC 不支持 CRF, 强制 bitrate 模式; bitrate<=0 时默认 5Mbps)
+  - libx264 opts: `preset='medium'` + `crf=23` (bitrate<=0) 或 bitrate 模式
+- **收益**: 有 NVIDIA GPU 时编码 1080p ~5ms/frame, worker 能力 200fps, 几乎不可能 back-pressure
+- **回退保证**: NVENC 不可用 (无 NVIDIA / 驱动不支持) 自动 fallback libx264, Lua API 不变
+- **代码**: `@e:\jinyiNew\Light\ChocoLight\src\record_mp4.cpp:270-298` (encoder 选择) + `@e:\jinyiNew\Light\ChocoLight\src\record_mp4.cpp:350-362` (opts 分支)
+
+### 9.3 A2 — PBO Async Readback 接入 mp4 (主线程不 stall GPU)
+
+- **问题**: A1 路径主线程 `ReadbackDefaultFB` 同步 ~3-5ms (glReadPixels stall 等 GPU 完成)
+- **方案**: 当 `Light.Graphics.SetRecordAsync(true)` 时, mp4 路径走 PBO ping-pong:
+  - `RecordTickHook`: `ReadbackDefaultFBAsync(slot)` 启动新 PBO + 取上一帧数据 (首帧无数据 → `CancelWriteSlot`)
+  - `StopRecord` / `max_frames 达成`: `ReadbackAsyncFlushLast(slot)` 同步取最后一帧 PBO 数据 (~3-8ms 一次)
+- **收益**: 主线程 readback 从 ~3-5ms 降至 ~0.5ms (仅 PBO map / glReadPixels 提交 cost, GPU 异步执行)
+- **代价**: 录制延迟 1 帧 (mp4 第 N 帧 = 渲染第 N-1 帧的画面), max_frames 模式自动 flush 补齐
+- **代码**: `@e:\jinyiNew\Light\ChocoLight\src\light_graphics.cpp:5267-5294` (TickHook async 分支) + `@e:\jinyiNew\Light\ChocoLight\src\light_graphics.cpp:5540-5560` (StopRecord flush)
+
+### 9.4 累积性能收益 (1080p)
+
+| 阶段 | 主线程帧时 | 累积降幅 | 备注 |
+|------|-----------|---------|------|
+| F.0.11.6 同步基线 | **25-40ms** | — | libx264 同步编码主线程 |
+| F.0.11.6.1 worker | ~5-7ms | 80-85% | 编码移到 worker thread |
+| F.0.11.6.1.A1 ring | ~3-5ms | 85-90% | zero-copy + ring 预分配 |
+| **F.0.11.6.1.A2 + 软编** | **~0.5-2ms** | **~95%** | PBO async, 主线程不 stall |
+| **F.0.11.6.1.A2 + A3 NVENC** | **~0.5-2ms** | **~95%** | + worker 200fps 编码能力, 取消 back-pressure 风险 |
 
 ---
 
-## 十. 文件变更
+## 十. 后续优化候选 (剩余, 低优先级)
 
-| 文件 | F.0.11.6.1 | F.0.11.6.1.A1 | 说明 |
-|------|-----------|---------------|------|
-| `@e:\jinyiNew\Light\ChocoLight\src\record_mp4.cpp` | +135 / -56 | +99 / -45 | worker / ring buffer |
-| `@e:\jinyiNew\Light\ChocoLight\include\record_mp4.h` | — | +18 / -3 | 新 API 声明 |
-| `@e:\jinyiNew\Light\ChocoLight\src\light_graphics.cpp` | — | +22 / -11 | RecordTickHook zero-copy |
+- **A5**: Lua opts 加 `prefer_hwenc` / `encoder` 字段, 让用户显式指定 (现状: 自动 NVENC 优先)
+- **A6**: Encoder 内部颜色空间 BT.709 vs BT.601 默认 (现状 sws 默认, 可能与浏览器 / 播放器解析不一致)
+- **A7**: 录屏期间在屏幕角落显示 REC 标记 + 帧计数 OSD (可选, 用户体感)
 
-**commits**: `d506ad7` + `8bdd888` (`main`)
+---
+
+## 十一. 文件变更累计
+
+| 文件 | F.0.11.6.1 | A1 | A2+A3+A4 | 累计 |
+|------|-----------|-----|----------|------|
+| `@e:\jinyiNew\Light\ChocoLight\src\record_mp4.cpp` | +135 / -56 | +99 / -45 | +47 / -16 | 总 +281 / -117 |
+| `@e:\jinyiNew\Light\ChocoLight\include\record_mp4.h` | — | +18 / -3 | +8 / 0 | 总 +26 / -3 |
+| `@e:\jinyiNew\Light\ChocoLight\src\light_graphics.cpp` | — | +22 / -11 | +52 / -15 | 总 +74 / -26 |
+
+**commits**: `d506ad7` (worker) + `8bdd888` (A1) + 待 push (A2+A3+A4) — 全部 in `main`
 **author**: Cascade-assisted refactor
