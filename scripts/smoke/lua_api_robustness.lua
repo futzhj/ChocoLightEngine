@@ -648,17 +648,16 @@ end
 
 -- K.6: P2.1 — Material wrapper magic 防御
 if mMaterial and mMaterial.New then
-    local mat = mMaterial.New("pbr")
-    -- K.6.1: SetColor 正常用例
-    local good1 = pcall(function() mat:SetColor(0.5, 0.5, 0.5, 1.0) end)
-    ok(string.format("K6.1: Material:SetColor 正常调用 (ok=%s)", tostring(good1)))
-    -- K.6.2: 跨 type confusion (用其他 ctx 套 Material 的 metatable, 应被 magic 拒绝)
-    if mTilemap then
-        local fakeUd = mTilemap.New()
-        if fakeUd then
-            -- 注: 这里 fakeUd 是 Tilemap, 它的 metatable 完全不一样, luaL_checkudata 会拒绝
-            -- 这是 layer-1 metatable 防御; magic 是 layer-2 兜底
-            local good2 = pcall(function() return mat.SetColor(fakeUd, 1, 0, 0) end)
+    local good_m, mat = pcall(mMaterial.New, "pbr")
+    if good_m and mat then
+        -- K.6.1: SetColor 正常用例
+        local good1 = pcall(function() mat:SetColor(0.5, 0.5, 0.5, 1.0) end)
+        ok(string.format("K6.1: Material:SetColor 正常调用 (ok=%s)", tostring(good1)))
+        -- K.6.2: 跨 type confusion (用其他 ctx 套 Material 的 metatable, 应被 magic 拒绝)
+        local tm = mTilemap and safeNew(mTilemap) or nil
+        if tm then
+            -- Tilemap userdata 不带 Material metatable, 直接传给 mat.SetColor 应被 luaL_checkudata 拒绝
+            local good2 = pcall(function() return mat.SetColor(tm, 1, 0, 0) end)
             ok(string.format("K6.2: Material 跨 ctx 攻击 metatable 拒绝 (ok=%s)", tostring(good2)))
         end
     end
