@@ -16,6 +16,7 @@
  */
 
 #include "light.h"
+#include "light_lua_helpers.h"  // Phase G.1.7 P1 — 类型安全 helpers + magic
 #include "render_backend.h"   // Step 3: g_render + RenderVertex3D + MaterialDesc
 
 #include <vector>
@@ -90,7 +91,9 @@ struct Sampler {
     std::vector<float> values;             // 对应数据, CUBICSPLINE 时每点 3*components 元素
 };
 
+/// Phase G.1.7 P1: 首字段 magic 防止 type-confusion (使用 pointer-holder 模式)
 struct Skeleton {
+    uint32_t magic = LT::LT_MAGIC_SKELETON;  // 必须是首字段
     std::vector<JointNode> joints;
     // 反向绑定矩阵 (cgltf_skin::inverse_bind_matrices), 每关节 16 floats, 列主序
     std::vector<float>     inverseBindMatrices;
@@ -106,7 +109,9 @@ struct MorphTarget {
     std::vector<float> tanDelta;   // vCount × 3 floats (可空, glTF spec 要求 vec3)
 };
 
+/// Phase G.1.7 P1: 首字段 magic
 struct AnimationClip {
+    uint32_t magic = LT::LT_MAGIC_ANIMCLIP;  // 必须是首字段
     std::string          name;
     float                duration = 0.0f;     // 自动取所有 sampler max time
     std::vector<Sampler> samplers;
@@ -130,7 +135,9 @@ struct EventDef {
 
 // Animator (Step 2 完整化: sampler eval + 关节变换树 + 状态机基础)
 // Step 4: + Transition / Crossfade / Event / Param
+/// Phase G.1.7 P1: 首字段 magic
 struct Animator {
+    uint32_t magic = LT::LT_MAGIC_ANIMATOR;  // 必须是首字段
     Skeleton*  skeletonPtr  = nullptr;
     int        skeletonRef  = LUA_NOREF;     // 防 Skeleton GC 的强引用
 
@@ -187,7 +194,9 @@ struct Animator {
 //   - CPU 路径: 每帧 jointMatrices 变换 baseVertices -> skinnedVertices -> CreateMesh -> DrawMeshMaterial
 //   - GPU 路径 (Phase AW): 首次 Draw 时把 baseVertices+joints+weights 一次性上传到 gpuSkinnedMeshId,
 //                          之后每帧只上传 jointMatrices UBO
+/// Phase G.1.7 P1: 首字段 magic
 struct SkinnedMeshAsset {
+    uint32_t magic = LT::LT_MAGIC_SKINMESH;  // 必须是首字段
     // 原始顶点 (绑定姿态; 每帧蒙皮变换的输入)
     std::vector<RenderVertex3D> baseVertices;
     std::vector<uint32_t>       indices;
@@ -795,38 +804,58 @@ static void CallEventCallback(lua_State* L, int animatorIdx, int callbackRef) {
 
 // ==================== userdata 检查辅助 ====================
 
+// Phase G.1.7 P1: magic 双保险
 static Skeleton* CheckSkeleton(lua_State* L, int idx) {
     Skeleton** pp = (Skeleton**)luaL_checkudata(L, idx, SKELETON_MT);
     if (!pp || !*pp) {
         luaL_error(L, "Skeleton: invalid userdata");
         return nullptr;
     }
+    if ((*pp)->magic != LT::LT_MAGIC_SKELETON) {
+        luaL_error(L, "Light.Animation.Skeleton: type confusion at arg #%d (magic mismatch)", idx);
+        return nullptr;
+    }
     return *pp;
 }
 
+// Phase G.1.7 P1: magic 双保险
 static AnimationClip* CheckClip(lua_State* L, int idx) {
     AnimationClip** pp = (AnimationClip**)luaL_checkudata(L, idx, CLIP_MT);
     if (!pp || !*pp) {
         luaL_error(L, "AnimationClip: invalid userdata");
         return nullptr;
     }
+    if ((*pp)->magic != LT::LT_MAGIC_ANIMCLIP) {
+        luaL_error(L, "Light.Animation.Clip: type confusion at arg #%d (magic mismatch)", idx);
+        return nullptr;
+    }
     return *pp;
 }
 
+// Phase G.1.7 P1: magic 双保险
 static Animator* CheckAnimator(lua_State* L, int idx) {
     Animator** pp = (Animator**)luaL_checkudata(L, idx, ANIMATOR_MT);
     if (!pp || !*pp) {
         luaL_error(L, "Animator: invalid userdata");
         return nullptr;
     }
+    if ((*pp)->magic != LT::LT_MAGIC_ANIMATOR) {
+        luaL_error(L, "Light.Animation.Animator: type confusion at arg #%d (magic mismatch)", idx);
+        return nullptr;
+    }
     return *pp;
 }
 
 // Step 3: SkinnedMesh userdata 检查
+// Phase G.1.7 P1: magic 双保险
 static SkinnedMeshAsset* CheckSkinnedMesh(lua_State* L, int idx) {
     SkinnedMeshAsset** pp = (SkinnedMeshAsset**)luaL_checkudata(L, idx, SKINNED_MESH_MT);
     if (!pp || !*pp) {
         luaL_error(L, "SkinnedMesh: invalid userdata");
+        return nullptr;
+    }
+    if ((*pp)->magic != LT::LT_MAGIC_SKINMESH) {
+        luaL_error(L, "Light.Animation.SkinnedMesh: type confusion at arg #%d (magic mismatch)", idx);
         return nullptr;
     }
     return *pp;

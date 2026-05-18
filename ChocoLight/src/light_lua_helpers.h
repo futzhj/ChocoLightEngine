@@ -121,7 +121,15 @@ constexpr uint32_t LT_MAGIC_FIXTURE    = Magic4('F','X','T','R');  // light_phys
 constexpr uint32_t LT_MAGIC_JOINT      = Magic4('J','N','T','I');  // light_physics.cpp
 constexpr uint32_t LT_MAGIC_PHY3D_W    = Magic4('P','3','W','D');  // light_physics3d.cpp World
 constexpr uint32_t LT_MAGIC_PHY3D_B    = Magic4('P','3','B','D');  // light_physics3d.cpp Body
+constexpr uint32_t LT_MAGIC_CHARACTER  = Magic4('C','H','3','D');  // light_physics3d.cpp Character3D
+constexpr uint32_t LT_MAGIC_VEHICLE    = Magic4('V','H','3','D');  // light_physics3d.cpp Vehicle3D
+constexpr uint32_t LT_MAGIC_SOFTBODY   = Magic4('S','B','3','D');  // light_physics3d.cpp SoftBody3D
 constexpr uint32_t LT_MAGIC_ECS_ENT    = Magic4('E','N','T','Y');  // light_ecs.cpp Entity
+// Animation 模块 (light_animation.cpp)
+constexpr uint32_t LT_MAGIC_SKELETON   = Magic4('S','K','E','L');
+constexpr uint32_t LT_MAGIC_ANIMCLIP   = Magic4('A','C','L','P');
+constexpr uint32_t LT_MAGIC_ANIMATOR   = Magic4('A','N','M','R');
+constexpr uint32_t LT_MAGIC_SKINMESH   = Magic4('S','K','M','H');
 
 // G.1.7.4 — 系统类剩余
 constexpr uint32_t LT_MAGIC_NEM        = Magic4('N','E','M','C');  // light_plugins.cpp NEMContext

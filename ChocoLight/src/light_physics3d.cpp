@@ -181,7 +181,9 @@ enum JointType {
     JT_CONETWIST = 3,
     JT_6DOF      = 4,
 };
+/// Phase G.1.7 P1: 首字段 magic
 struct Joint3D {
+    uint32_t           magic;     // = LT_MAGIC_JOINT (Box2D 共享, MT 区分)
     btTypedConstraint* constraint;
     World3D*           owner;
     int                bodyARef;   // 防 bodyA userdata GC (registry ref)
@@ -189,42 +191,48 @@ struct Joint3D {
     int                selfRef;    // 防 joint 自身 GC (用 vector 持有)
     JointType          type;
     bool               alive;
-    Joint3D() : constraint(nullptr), owner(nullptr),
+    Joint3D() : magic(LT::LT_MAGIC_JOINT), constraint(nullptr), owner(nullptr),
                 bodyARef(LUA_NOREF), bodyBRef(LUA_NOREF), selfRef(LUA_NOREF),
                 type(JT_P2P), alive(false) {}
 };
 
 // Phase AU Step 3.3: Character userdata
+/// Phase G.1.7 P1: 首字段 magic
 struct Character3D {
+    uint32_t                        magic;       // = LT_MAGIC_CHARACTER
     btPairCachingGhostObject*       ghost;
     btKinematicCharacterController* ctrl;
     World3D*                        owner;
     int                             shapeRef;   // 防 shape udata GC (必须是 btConvexShape)
     int                             selfRef;    // 防自身 GC
     bool                            alive;
-    Character3D() : ghost(nullptr), ctrl(nullptr), owner(nullptr),
+    Character3D() : magic(LT::LT_MAGIC_CHARACTER), ghost(nullptr), ctrl(nullptr), owner(nullptr),
                     shapeRef(LUA_NOREF), selfRef(LUA_NOREF), alive(false) {}
 };
 
 // Phase AU Step 4.2: Vehicle userdata (btRaycastVehicle 4-wheel 车辆)
+/// Phase G.1.7 P1: 首字段 magic
 struct Vehicle3D {
+    uint32_t                    magic;        // = LT_MAGIC_VEHICLE
     btRaycastVehicle*           vehicle;
     btDefaultVehicleRaycaster*  raycaster;
     World3D*                    owner;
     int                         chassisBodyRef;  // 防 chassis Body udata GC
     int                         selfRef;
     bool                        alive;
-    Vehicle3D() : vehicle(nullptr), raycaster(nullptr), owner(nullptr),
+    Vehicle3D() : magic(LT::LT_MAGIC_VEHICLE), vehicle(nullptr), raycaster(nullptr), owner(nullptr),
                   chassisBodyRef(LUA_NOREF), selfRef(LUA_NOREF), alive(false) {}
 };
 
 // Phase AU Step 4.3: SoftBody userdata (cloth/rope/ellipsoid/anchor)
+/// Phase G.1.7 P1: 首字段 magic
 struct SoftBody3D {
+    uint32_t    magic;          // = LT_MAGIC_SOFTBODY
     btSoftBody* sb;
     World3D*    owner;
     int         selfRef;
     bool        alive;
-    SoftBody3D() : sb(nullptr), owner(nullptr),
+    SoftBody3D() : magic(LT::LT_MAGIC_SOFTBODY), sb(nullptr), owner(nullptr),
                    selfRef(LUA_NOREF), alive(false) {}
 };
 
@@ -828,8 +836,11 @@ static void InvalidateJoint(lua_State* L, Joint3D* j) {
     j->alive = false;
 }
 
+// Phase G.1.7 P1: magic 双保险
 static Joint3D* CheckJoint(lua_State* L, int idx) {
-    return (Joint3D*)luaL_checkudata(L, idx, JOINT_MT);
+    auto* j = (Joint3D*)luaL_checkudata(L, idx, JOINT_MT);
+    if (j && j->magic != LT::LT_MAGIC_JOINT) luaL_error(L, "Light.Physics3D.Joint: type confusion at arg #%d", idx);
+    return j;
 }
 
 static Joint3D* CheckLiveJoint(lua_State* L, int idx) {
@@ -1509,8 +1520,11 @@ static int l_Joint_6DOF_SetAngularUpper(lua_State* L) {
 
 // ==================== Phase AU Step 3.3: CharacterController ====================
 
+// Phase G.1.7 P1: magic 双保险
 static Character3D* CheckCharacter(lua_State* L, int idx) {
-    return (Character3D*)luaL_checkudata(L, idx, CHARACTER_MT);
+    auto* c = (Character3D*)luaL_checkudata(L, idx, CHARACTER_MT);
+    if (c && c->magic != LT::LT_MAGIC_CHARACTER) luaL_error(L, "Light.Physics3D.Character: type confusion at arg #%d", idx);
+    return c;
 }
 static Character3D* CheckLiveCharacter(lua_State* L, int idx) {
     Character3D* c = CheckCharacter(L, idx);
@@ -1893,8 +1907,11 @@ static int l_World_DebugDrawWorld(lua_State* L) {
 
 // ==================== Phase AU Step 4.2: btRaycastVehicle ====================
 
+// Phase G.1.7 P1: magic 双保险
 static Vehicle3D* CheckVehicle(lua_State* L, int idx) {
-    return (Vehicle3D*)luaL_checkudata(L, idx, VEHICLE_MT);
+    auto* v = (Vehicle3D*)luaL_checkudata(L, idx, VEHICLE_MT);
+    if (v && v->magic != LT::LT_MAGIC_VEHICLE) luaL_error(L, "Light.Physics3D.Vehicle: type confusion at arg #%d", idx);
+    return v;
 }
 static Vehicle3D* CheckLiveVehicle(lua_State* L, int idx) {
     Vehicle3D* v = CheckVehicle(L, idx);
@@ -2290,8 +2307,11 @@ static int l_Veh_Tostring(lua_State* L) {
 //   sb:Delete()
 //   sb:__gc / __tostring
 
+// Phase G.1.7 P1: magic 双保险
 static SoftBody3D* CheckSoftBody(lua_State* L, int idx) {
-    return (SoftBody3D*)luaL_checkudata(L, idx, SOFTBODY_MT);
+    auto* s = (SoftBody3D*)luaL_checkudata(L, idx, SOFTBODY_MT);
+    if (s && s->magic != LT::LT_MAGIC_SOFTBODY) luaL_error(L, "Light.Physics3D.SoftBody: type confusion at arg #%d", idx);
+    return s;
 }
 
 // 释放 SoftBody 资源, 可重复调用 (幂等)
