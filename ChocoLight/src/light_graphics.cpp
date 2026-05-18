@@ -5238,6 +5238,14 @@ struct RecordState {
     //   绘制时机: l_Window_Call 内 RecordTickHook 之后, SwapBuffers 之前
     //   → readback 看不到 OSD, mp4 内不会出现红点 (只在屏幕显示)
     bool        show_osd      = true;
+    // Phase F.0.11.6.3.A9 — ROI 录屏 (仅 mp4 模式): 只录屏幕指定矩形区域
+    //   坐标系: 屏幕左上原点 (Lua 友好); readback 时转 GL 左下原点 (win_h - y - h)
+    //   roi_w/h <= 0 表示未启用 → 录全屏 (与 F.0.11.6.2 之前行为一致)
+    //   尺寸必须偶数 (libx264 要求), Lua 解析时 round down 到偶数
+    int         roi_x         = 0;
+    int         roi_y         = 0;
+    int         roi_w         = 0;   // > 0 = 启用 ROI
+    int         roi_h         = 0;
 };
 static RecordState g_record;
 
@@ -5250,6 +5258,34 @@ static int do_screenshot_internal(const char* path, int x, int y, int w, int h) 
     if (!g_render->ReadbackDefaultFB(x, y, w, h, buf.data())) return 0;
     stbi_flip_vertically_on_write(1);   // GL 左下 → PNG 左上
     return stbi_write_png(path, w, h, 4, buf.data(), w * 4);
+}
+
+/// Phase F.0.11.6.3.A9 — 计算本帧实际 readback 区域 (ROI 或全屏)
+///   屏幕左上原点 (roi_x, roi_y) → GL 左下原点 (gl_x, gl_y)
+///   roi_w/h <= 0 时退回全屏 (0,0,win_w,win_h, 全屏 → gl_y=0)
+///   返 true = 区域合法可读; false = ROI 越界 / 0 尺寸 / 窗口过小
+static bool calc_readback_region_(int win_w, int win_h,
+                                  int* out_x, int* out_y, int* out_w, int* out_h) {
+    if (g_record.roi_w <= 0 || g_record.roi_h <= 0) {
+        // 未启用 ROI → 全屏
+        *out_x = 0;  *out_y = 0;
+        *out_w = win_w;  *out_h = win_h;
+        return true;
+    }
+    // ROI 模式: 屏幕坐标 → GL 坐标 (Y 翻转)
+    const int x = g_record.roi_x;
+    const int y = g_record.roi_y;
+    const int w = g_record.roi_w;
+    const int h = g_record.roi_h;
+    // 越界检查: ROI 必须完全在当前窗口内
+    if (x < 0 || y < 0 || w <= 0 || h <= 0 || x + w > win_w || y + h > win_h) {
+        return false;
+    }
+    *out_x = x;
+    *out_y = win_h - y - h;   // GL 左下原点
+    *out_w = w;
+    *out_h = h;
+    return true;
 }
 
 /// 录屏 tick hook — light_ui.cpp::l_Window_Call 在 SwapBuffers 之前调用
@@ -5269,16 +5305,26 @@ extern "C" void Light_Graphics_RecordTickHook(int win_w, int win_h) {
     // Phase F.0.11.6: MP4 模式分支 (mode=1) — 走 RecordMP4 encoder, 不写 PNG
     // Phase F.0.11.6.1.A1: 用 zero-copy ring buffer 路径 (Acquire → readback 直写 slot → Commit)
     // Phase F.0.11.6.1.A2: 当 use_async=true 时走 PBO ping-pong 异步 readback (主线程不 stall GPU)
+    // Phase F.0.11.6.3.A9: 当 roi_w/h > 0 时只录 ROI 区域 (mp4 输出尺寸 = ROI 尺寸)
     if (g_record.mode == 1) {
         if (!RecordMP4::IsActive()) return;   // Open 失败时被动 deactivate
 
+        // A9 — 计算 readback 区域 (ROI 或全屏); 越界时跳过本帧
+        int rb_x, rb_y, rb_w, rb_h;
+        if (!calc_readback_region_(win_w, win_h, &rb_x, &rb_y, &rb_w, &rb_h)) {
+            CC::Log(CC::LOG_WARN, "RecordMP4: ROI [%d,%d %dx%d] out of window %dx%d (skip frame %d)",
+                    g_record.roi_x, g_record.roi_y, g_record.roi_w, g_record.roi_h,
+                    win_w, win_h, g_record.frame_count);
+            return;
+        }
+
         // A2 异步路径: ReadbackDefaultFBAsync 启动新 PBO + 取上一帧数据 (首帧无数据延后 1 帧)
         if (g_record.use_async) {
-            g_record.last_w = win_w;   // 缓存供 StopRecord flush 最后一帧用
-            g_record.last_h = win_h;
+            g_record.last_w = rb_w;   // 缓存 readback 尺寸 (供 StopRecord flush)
+            g_record.last_h = rb_h;
             uint8_t* slot = RecordMP4::AcquireWriteSlot(g_record.frame_count);
             if (!slot) return;
-            if (g_render->ReadbackDefaultFBAsync(0, 0, win_w, win_h, slot)) {
+            if (g_render->ReadbackDefaultFBAsync(rb_x, rb_y, rb_w, rb_h, slot)) {
                 // 取到上一帧 PBO 数据 → Commit
                 RecordMP4::CommitWriteSlot();
                 ++g_record.frame_count;
@@ -5304,7 +5350,7 @@ extern "C" void Light_Graphics_RecordTickHook(int win_w, int win_h) {
         // 同步路径 (use_async=false, 默认): glReadPixels 同步 stall
         uint8_t* slot = RecordMP4::AcquireWriteSlot(g_record.frame_count);
         if (!slot) return;
-        if (!g_render->ReadbackDefaultFB(0, 0, win_w, win_h, slot)) {
+        if (!g_render->ReadbackDefaultFB(rb_x, rb_y, rb_w, rb_h, slot)) {
             // Phase F.0.11.6.1.A4: 失败精确取消, 不写坏帧到 worker
             RecordMP4::CancelWriteSlot();
             CC::Log(CC::LOG_WARN, "RecordMP4: ReadbackDefaultFB failed at frame %d (skipped)", g_record.frame_count);
@@ -5496,6 +5542,11 @@ static int l_Graphics_RecordMP4(lua_State* L) {
     int64_t bitrate = 5000000;   // 5 Mbps default
     int max_frames  = 0;
     int frame_skip  = 1;
+    // Phase F.0.11.6.3.A9: 每次新录屏前复位 ROI (避免上次值残留)
+    g_record.roi_x = 0;
+    g_record.roi_y = 0;
+    g_record.roi_w = 0;
+    g_record.roi_h = 0;
     // Phase F.0.11.6.1.A5: 显式 encoder 偏好 (auto / libx264 / h264_nvenc / h264_amf)
     //   prefer_hwenc=false 等价于 encoder="libx264"; 两者并存时 encoder 优先级高.
     const char* encoder_pref = nullptr;
@@ -5526,6 +5577,19 @@ static int l_Graphics_RecordMP4(lua_State* L) {
         lua_getfield(L, 2, "gop_size");
         if (lua_isnumber(L, -1)) gop_size = (int)lua_tointeger(L, -1);
         lua_pop(L, 1);
+        // Phase F.0.11.6.3.A9: ROI 录屏 — opts.roi = { x, y, w, h } (屏幕左上原点)
+        //   缺省 / nil = 不启用 ROI, 录全屏 (兼容旧行为)
+        lua_getfield(L, 2, "roi");
+        if (lua_type(L, -1) == LUA_TTABLE) {
+            lua_getfield(L, -1, "x"); if (lua_isnumber(L,-1)) g_record.roi_x = (int)lua_tointeger(L,-1); lua_pop(L,1);
+            lua_getfield(L, -1, "y"); if (lua_isnumber(L,-1)) g_record.roi_y = (int)lua_tointeger(L,-1); lua_pop(L,1);
+            lua_getfield(L, -1, "w"); if (lua_isnumber(L,-1)) g_record.roi_w = (int)lua_tointeger(L,-1); lua_pop(L,1);
+            lua_getfield(L, -1, "h"); if (lua_isnumber(L,-1)) g_record.roi_h = (int)lua_tointeger(L,-1); lua_pop(L,1);
+            // libx264 偶数对齐: w/h 向下取整到偶数
+            g_record.roi_w &= ~1;
+            g_record.roi_h &= ~1;
+        }
+        lua_pop(L, 1);   // pop 'roi' table (or non-table value)
     }
     // A5: prefer_hwenc=false 时强制软件编码 (除非用户已显式指定 encoder)
     if (!encoder_pref && !prefer_hwenc) encoder_pref = "libx264";
@@ -5566,7 +5630,24 @@ static int l_Graphics_RecordMP4(lua_State* L) {
         return 2;
     }
 
-    if (!RecordMP4::Open(path, w, h, fps, bitrate, encoder_pref, gop_size)) {
+    // Phase F.0.11.6.3.A9: mp4 尺寸 = ROI 尺寸 (如启用) 或 窗口尺寸 (默认)
+    //   ROI 启用时必须越界检查 (Open 时已知窗口尺寸, 早失败比录屏中 silent skip 友好)
+    int mp4_w = w, mp4_h = h;
+    if (g_record.roi_w > 0 && g_record.roi_h > 0) {
+        if (g_record.roi_x < 0 || g_record.roi_y < 0 ||
+            g_record.roi_x + g_record.roi_w > w ||
+            g_record.roi_y + g_record.roi_h > h) {
+            lua_pushnil(L);
+            lua_pushfstring(L, "RecordMP4: ROI [%d,%d %dx%d] out of window %dx%d",
+                            g_record.roi_x, g_record.roi_y,
+                            g_record.roi_w, g_record.roi_h, w, h);
+            return 2;
+        }
+        mp4_w = g_record.roi_w;
+        mp4_h = g_record.roi_h;
+    }
+
+    if (!RecordMP4::Open(path, mp4_w, mp4_h, fps, bitrate, encoder_pref, gop_size)) {
         lua_pushnil(L);
         lua_pushfstring(L, "RecordMP4: encoder open failed (encoder='%s'; check FFmpeg DLL / GPU driver / file path)",
                         encoder_pref ? encoder_pref : "auto");

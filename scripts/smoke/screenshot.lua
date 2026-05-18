@@ -160,5 +160,25 @@ p(type(st.encoder)=='string', 'GetRecordStats.encoder is string when idle')
 local _,mg,mge = pcall(Gfx.RecordMP4,'out.mp4', { gop_size = 1, fps = 30 })
 p(mg==nil and type(mge)=='string', 'RecordMP4(gop_size=1) headless → nil+err (parsed OK)')
 
+-- ============================================================
+-- F.0.11.6.3 — A9 ROI 录屏
+-- ============================================================
+
+-- A9: 接受 roi table (headless 仍会失败, 但 parsing 不应崩)
+local _,mr1,mr1e = pcall(Gfx.RecordMP4,'out.mp4', { roi = {x=0,y=0,w=640,h=480} })
+p(mr1==nil and type(mr1e)=='string', 'RecordMP4(roi={...}) headless → nil+err (parsed OK)')
+
+-- A9: roi 字段不是 table 时不应崩 (静默退回全屏)
+local _,mr2,mr2e = pcall(Gfx.RecordMP4,'out.mp4', { roi = "invalid" })
+p(mr2==nil and type(mr2e)=='string', 'RecordMP4(roi="invalid") headless → nil+err (no crash)')
+
+-- A9: roi 部分字段缺失也接受 (默认 0; w/h=0 → 全屏)
+local _,mr3,mr3e = pcall(Gfx.RecordMP4,'out.mp4', { roi = {x=10,y=20} })  -- 缺 w/h
+p(mr3==nil and type(mr3e)=='string', 'RecordMP4(roi partial) headless → nil+err (no crash)')
+
+-- A9: 不传 roi 走全屏 (兼容旧行为)
+local _,mr4,mr4e = pcall(Gfx.RecordMP4,'out.mp4')
+p(mr4==nil and type(mr4e)=='string', 'RecordMP4(no roi) headless → nil+err (full-screen path OK)')
+
 print(string.format("screenshot smoke: %d pass / %d fail", pass, fail))
 if fail>0 then error("screenshot smoke FAIL") end
