@@ -180,5 +180,32 @@ p(mr3==nil and type(mr3e)=='string', 'RecordMP4(roi partial) headless → nil+er
 local _,mr4,mr4e = pcall(Gfx.RecordMP4,'out.mp4')
 p(mr4==nil and type(mr4e)=='string', 'RecordMP4(no roi) headless → nil+err (full-screen path OK)')
 
+-- ============================================================
+-- F.0.11.6.4 — A14 GIF 录屏
+-- ============================================================
+
+-- A14: API surface
+p(type(Gfx.RecordGIF)=='function',         'RecordGIF exists')
+
+-- A14: 路径后缀 .gif → 触发 GIF 模式 (headless 仍 nil+err, 但 parsing 不应崩)
+local _,mg1,mg1e = pcall(Gfx.RecordMP4,'anim.gif', { fps = 15 })
+p(mg1==nil and type(mg1e)=='string', 'RecordMP4("anim.gif") headless → nil+err (gif path)')
+
+-- A14: 大写后缀 .GIF 也应识别
+local _,mg2,mg2e = pcall(Gfx.RecordMP4,'anim.GIF', { fps = 15 })
+p(mg2==nil and type(mg2e)=='string', 'RecordMP4("anim.GIF") headless → nil+err (case-insensitive)')
+
+-- A14: RecordGIF 别名 (等价 RecordMP4, 用户写法更直观)
+local _,mg3,mg3e = pcall(Gfx.RecordGIF,'demo.gif', { fps = 10 })
+p(mg3==nil and type(mg3e)=='string', 'RecordGIF("demo.gif") headless → nil+err (alias OK)')
+
+-- A14: encoder pref 在 gif 模式下被忽略 (不应崩, 走 gif encoder)
+local _,mg4,mg4e = pcall(Gfx.RecordMP4,'anim.gif', { encoder = "libx264" })
+p(mg4==nil and type(mg4e)=='string', 'RecordMP4(gif + encoder=libx264) headless → nil+err (ignored)')
+
+-- A14: gop_size 在 gif 模式下被忽略 (不应崩)
+local _,mg5,mg5e = pcall(Gfx.RecordMP4,'anim.gif', { gop_size = 15 })
+p(mg5==nil and type(mg5e)=='string', 'RecordMP4(gif + gop_size=15) headless → nil+err (ignored)')
+
 print(string.format("screenshot smoke: %d pass / %d fail", pass, fail))
 if fail>0 then error("screenshot smoke FAIL") end

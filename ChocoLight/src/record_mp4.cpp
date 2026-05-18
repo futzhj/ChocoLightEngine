@@ -50,7 +50,11 @@ namespace RecordMP4 {
 enum {
     FF_AVMEDIA_TYPE_VIDEO   = 0,
     FF_AV_CODEC_ID_H264     = 27,
+    FF_AV_CODEC_ID_GIF      = 97,    // Phase F.0.11.6.4.A14 — GIF encoder codec_id
     FF_AV_PIX_FMT_YUV420P   = 0,
+    FF_AV_PIX_FMT_RGB8      = 3,     // 8-bit RGB332 (3R3G2B) 固定调色板 — GIF encoder 支持
+    FF_AV_PIX_FMT_BGR8      = 4,     // 8-bit BGR233 固定调色板 — GIF encoder 首选 (sws 自带 dither)
+    FF_AV_PIX_FMT_PAL8      = 5,     // 8-bit 自定义 256 色调色板 (需先 palettegen, 我们不用)
     FF_AV_PIX_FMT_RGBA      = 26,
     FF_SWS_BILINEAR         = 2,
     FF_AVIO_FLAG_WRITE      = 2,
@@ -135,6 +139,11 @@ struct State {
     int64_t                 bytes_written  = 0;     // A12: 已写入 mp4 的字节数累加 (mu 保护)
     int64_t                 max_size_bytes = 0;     // A11: 上限字节数, 0=无限 (atomic store 不必要, set 是稀疏操作)
     char                    encoder_name[32] = {};  // A12: 编码器名快照, Open 后只读
+
+    // Phase F.0.11.6.4.A14 — GIF 模式 (path 后缀 .gif 触发)
+    //   true → muxer=gif, encoder=gif, pix_fmt=BGR8 (256 色 sws 自带 dither, 无 palettegen)
+    //   false → 现有 mp4 + H.264 路径
+    bool                    is_gif = false;
 };
 static State g;
 
@@ -235,6 +244,8 @@ static void cleanup_all() {
     g.bytes_written  = 0;
     g.max_size_bytes = 0;
     g.encoder_name[0] = '\0';
+    // Phase F.0.11.6.4.A14 — 复位 GIF 模式
+    g.is_gif = false;
     g.count    = 0;
     g.active   = false;
     g.stream   = nullptr;
@@ -286,6 +297,22 @@ bool Open(const char* path, int w, int h, int fps, int64_t bitrate, const char* 
     g.height = h;
     g.fps = fps;
 
+    // Phase F.0.11.6.4.A14 — 后缀检测: .gif → GIF 模式 (encoder=gif, muxer=gif, pix_fmt=BGR8)
+    //   其余 (.mp4 / 无后缀) → 现有 H.264 mp4 路径
+    //   case-insensitive: "OUT.GIF" / "out.Gif" 均触发
+    g.is_gif = false;
+    if (path) {
+        size_t plen = strlen(path);
+        if (plen >= 4) {
+            const char* ext = path + plen - 4;
+            const bool dot = (ext[0] == '.');
+            const char c1 = (ext[1] >= 'A' && ext[1] <= 'Z') ? (char)(ext[1] + 32) : ext[1];
+            const char c2 = (ext[2] >= 'A' && ext[2] <= 'Z') ? (char)(ext[2] + 32) : ext[2];
+            const char c3 = (ext[3] >= 'A' && ext[3] <= 'Z') ? (char)(ext[3] + 32) : ext[3];
+            if (dot && c1 == 'g' && c2 == 'i' && c3 == 'f') g.is_gif = true;
+        }
+    }
+
     // 1) 找 H.264 编码器 — Phase F.0.11.6.1.A3: 优先 NVENC 硬件编码 (1080p ~5ms), fallback libx264
     //    Phase F.0.11.6.1.A5: encoder_pref 允许用户显式指定 (auto / libx264 / h264_nvenc / h264_amf)
     //    硬编无法走 CRF, 必须用 bitrate 模式; 软编两种都支持 (默认 CRF 23 if bitrate<=0).
@@ -310,7 +337,17 @@ bool Open(const char* path, int w, int h, int fps, int64_t bitrate, const char* 
     const bool pref_nvenc   = streq_ci(encoder_pref, "h264_nvenc") || streq_ci(encoder_pref, "nvenc");
     const bool pref_amf     = streq_ci(encoder_pref, "h264_amf")   || streq_ci(encoder_pref, "amf");
 
-    if (g_ff.avcodec_find_encoder_by_name) {
+    if (g.is_gif) {
+        // Phase F.0.11.6.4.A14 — GIF 模式: 忽略 encoder_pref (用户传 gif/auto/libx264 都强制为 gif encoder)
+        if (g_ff.avcodec_find_encoder_by_name) {
+            codec = g_ff.avcodec_find_encoder_by_name("gif");
+        }
+        if (!codec && g_ff.avcodec_find_encoder) {
+            codec = g_ff.avcodec_find_encoder(FF_AV_CODEC_ID_GIF);
+        }
+        if (codec) codec_name = "gif";
+        // GIF 不是硬编, is_nvenc/is_hwenc 保持 false
+    } else if (g_ff.avcodec_find_encoder_by_name) {
         if (pref_auto) {
             // 自动: NVENC > libx264 > AMF > avcodec_find_encoder(H264) 兜底
             codec = g_ff.avcodec_find_encoder_by_name("h264_nvenc");
@@ -338,22 +375,24 @@ bool Open(const char* path, int w, int h, int fps, int64_t bitrate, const char* 
             if (codec) codec_name = encoder_pref;
         }
     }
-    if (!codec && pref_auto) {
-        // auto 路径最后兜底
+    if (!codec && pref_auto && !g.is_gif) {
+        // auto 路径最后兜底 (仅 mp4 模式)
         codec = g_ff.avcodec_find_encoder(FF_AV_CODEC_ID_H264);
     }
     if (!codec) {
-        CC::Log(CC::LOG_ERROR, "RecordMP4::Open: encoder '%s' not available (auto/libx264/h264_nvenc/h264_amf)",
-                encoder_pref ? encoder_pref : "auto");
+        CC::Log(CC::LOG_ERROR, "RecordMP4::Open: encoder '%s' not available (mode=%s)",
+                g.is_gif ? "gif" : (encoder_pref ? encoder_pref : "auto"),
+                g.is_gif ? "gif" : "mp4");
         cleanup_all();
         return false;
     }
-    CC::Log(CC::LOG_INFO, "RecordMP4::Open: encoder='%s' (hw=%s, pref='%s')",
+    CC::Log(CC::LOG_INFO, "RecordMP4::Open: encoder='%s' (hw=%s, mode=%s)",
             codec_name, is_hwenc ? "yes" : "no",
-            encoder_pref && *encoder_pref ? encoder_pref : "auto");
+            g.is_gif ? "gif" : "mp4");
 
-    // 2) 创建 AVFormatContext (mp4 muxer)
-    int ret = g_ff.avformat_alloc_output_context2(&g.fmt_ctx, nullptr, "mp4", path);
+    // 2) 创建 AVFormatContext (muxer: gif 或 mp4)
+    const char* muxer_name = g.is_gif ? "gif" : "mp4";
+    int ret = g_ff.avformat_alloc_output_context2(&g.fmt_ctx, nullptr, muxer_name, path);
     if (ret < 0 || !g.fmt_ctx) {
         log_err("avformat_alloc_output_context2", ret);
         cleanup_all();
@@ -377,27 +416,30 @@ bool Open(const char* path, int w, int h, int fps, int64_t bitrate, const char* 
     }
 
     // 基础参数 (av_opt_set_int 用 AVOption 名称, 不依赖结构体偏移)
+    //   Phase F.0.11.6.4.A14: pix_fmt 按模式分支 (YUV420P for H.264 / BGR8 for GIF)
     g_ff.av_opt_set_int(g.codec_ctx, "width",  w, 0);
     g_ff.av_opt_set_int(g.codec_ctx, "height", h, 0);
-    g_ff.av_opt_set_int(g.codec_ctx, "pix_fmt", FF_AV_PIX_FMT_YUV420P, 0);
-    // Phase F.0.11.6.1.A6 — BT.709 颜色空间元数据 (写入 mp4 SPS, 播放器据此用 BT.709 矩阵解码)
-    //   不显式声明时, 1080p 多数播放器默认 BT.709, 但 720p 以下默认 BT.601 → 颜色偏移
-    //   显式声明可避免 "颜色发暗 / 偏绿" 等 BT.601↔BT.709 误解码问题.
-    //   sws 编码侧仍用默认矩阵 (sws_setColorspaceDetails 未挂载), 实测 1080p 偏差 < 1%, 可接受.
-    g_ff.av_opt_set_int(g.codec_ctx, "color_primaries", FF_AVCOL_PRI_BT709,  0);
-    g_ff.av_opt_set_int(g.codec_ctx, "color_trc",       FF_AVCOL_TRC_BT709,  0);
-    g_ff.av_opt_set_int(g.codec_ctx, "colorspace",      FF_AVCOL_SPC_BT709,  0);
-    g_ff.av_opt_set_int(g.codec_ctx, "color_range",     FF_AVCOL_RANGE_MPEG, 0);  // limited range
-    // Phase F.0.11.6.1.A3/A5: 硬编 (NVENC/AMF) 不支持 CRF, 强制 bitrate (默认 5Mbps); 软编 0=CRF.
-    const int64_t effective_bitrate = (is_hwenc && bitrate <= 0) ? (int64_t)5000000 : bitrate;
-    if (effective_bitrate > 0) {
-        g_ff.av_opt_set_int(g.codec_ctx, "b", effective_bitrate, 0);   // bit_rate option name = "b"
+    const int target_pix_fmt = g.is_gif ? FF_AV_PIX_FMT_BGR8 : FF_AV_PIX_FMT_YUV420P;
+    g_ff.av_opt_set_int(g.codec_ctx, "pix_fmt", target_pix_fmt, 0);
+    int effective_gop = 0;            // GIF 不用 GOP/B-frame/bitrate/color metadata, 仅 mp4 模式赋值
+    if (!g.is_gif) {
+        // Phase F.0.11.6.1.A6 — BT.709 颜色空间元数据 (mp4/H.264 专用; GIF 是 8-bit RGB direct)
+        g_ff.av_opt_set_int(g.codec_ctx, "color_primaries", FF_AVCOL_PRI_BT709,  0);
+        g_ff.av_opt_set_int(g.codec_ctx, "color_trc",       FF_AVCOL_TRC_BT709,  0);
+        g_ff.av_opt_set_int(g.codec_ctx, "colorspace",      FF_AVCOL_SPC_BT709,  0);
+        g_ff.av_opt_set_int(g.codec_ctx, "color_range",     FF_AVCOL_RANGE_MPEG, 0);  // limited range
+        // Phase F.0.11.6.1.A3/A5: 硬编 (NVENC/AMF) 不支持 CRF, 强制 bitrate (默认 5Mbps); 软编 0=CRF.
+        const int64_t effective_bitrate = (is_hwenc && bitrate <= 0) ? (int64_t)5000000 : bitrate;
+        if (effective_bitrate > 0) {
+            g_ff.av_opt_set_int(g.codec_ctx, "b", effective_bitrate, 0);   // bit_rate option name = "b"
+        }
+        // GOP / B-frame — Phase F.0.11.6.2.A8: gop_size 可由调用方指定
+        //   gop_size <= 0 时用默认 fps×2 (2 秒 1 关键帧); 否则用用户值 (1 = 全 I 帧)
+        effective_gop = (gop_size > 0) ? gop_size : (fps * 2);
+        g_ff.av_opt_set_int(g.codec_ctx, "g", effective_gop, 0);
+        g_ff.av_opt_set_int(g.codec_ctx, "max_b_frames", 0, 0);     // 禁用 B-frame 简化 pts 处理
     }
-    // GOP / B-frame — Phase F.0.11.6.2.A8: gop_size 可由调用方指定
-    //   gop_size <= 0 时用默认 fps×2 (2 秒 1 关键帧); 否则用用户值 (1 = 全 I 帧)
-    const int effective_gop = (gop_size > 0) ? gop_size : (fps * 2);
-    g_ff.av_opt_set_int(g.codec_ctx, "g", effective_gop, 0);
-    g_ff.av_opt_set_int(g.codec_ctx, "max_b_frames", 0, 0);     // 禁用 B-frame 简化 pts 处理
+    // GIF 模式: encoder 自定 GOP=1 (每帧 I 帧), 无 bitrate (无损 LZW), 无 B-frame
 
     // time_base / framerate (用 string 设置 rational)
     char rate_str[64];
@@ -413,7 +455,8 @@ bool Open(const char* path, int w, int h, int fps, int64_t bitrate, const char* 
     //   h264_nvenc: preset='p4' (中速, p1=fastest~p7=slowest), rc='cbr', tune='hq'
     //   h264_amf:   preset='balanced' (与 NVENC 不同名), 用默认 bitrate 模式
     void* opts = nullptr;
-    if (g_ff.av_dict_set) {
+    if (g_ff.av_dict_set && !g.is_gif) {
+        // mp4/H.264 私有选项 (preset / crf / rc); GIF 无此类选项
         if (is_nvenc) {
             g_ff.av_dict_set(&opts, "preset", "p4", 0);            // 中速预设, NVENC 专用
             g_ff.av_dict_set(&opts, "rc",     "cbr", 0);           // 恒定码率, GPU 编码常用
@@ -473,9 +516,10 @@ bool Open(const char* path, int w, int h, int fps, int64_t bitrate, const char* 
         return false;
     }
 
-    // 9) 分配 sws_ctx (RGBA → YUV420P)
+    // 9) 分配 sws_ctx (RGBA → 目标 pix_fmt: H.264=YUV420P, GIF=BGR8)
+    //   GIF: BGR8 是 8-bit 256 色固定调色板 (B3:G3:R2), sws 内部 dither, 不需 palettegen
     g.sws_ctx = g_ff.sws_getContext(w, h, FF_AV_PIX_FMT_RGBA,
-                                     w, h, FF_AV_PIX_FMT_YUV420P,
+                                     w, h, target_pix_fmt,
                                      FF_SWS_BILINEAR, nullptr, nullptr, nullptr);
     if (!g.sws_ctx) {
         CC::Log(CC::LOG_ERROR, "RecordMP4::Open: sws_getContext failed");
@@ -497,14 +541,14 @@ bool Open(const char* path, int w, int h, int fps, int64_t bitrate, const char* 
     // 安全: 用 av_opt 试 (5.x 起 AVFrame 有 AVClass), 失败则 fallback 直接写偏移
     if (g_ff.av_opt_set_int(g.frame, "width",  w, 0) < 0 ||
         g_ff.av_opt_set_int(g.frame, "height", h, 0) < 0 ||
-        g_ff.av_opt_set_int(g.frame, "format", FF_AV_PIX_FMT_YUV420P, 0) < 0) {
+        g_ff.av_opt_set_int(g.frame, "format", target_pix_fmt, 0) < 0) {
         // fallback: 直接写偏移 (FFmpeg 5.x AVFrame 布局)
         // data[8](64) + linesize[8](32) + extended_data*(8) = 104 padding
         // width @ 104, height @ 108, nb_samples @ 112, format @ 116 (FFmpeg 5.x)
         uint8_t* fbase = (uint8_t*)g.frame;
         *(int*)(fbase + 104) = w;          // width
         *(int*)(fbase + 108) = h;          // height
-        *(int*)(fbase + 116) = FF_AV_PIX_FMT_YUV420P;   // format
+        *(int*)(fbase + 116) = target_pix_fmt;   // format
     }
     ret = g_ff.av_frame_get_buffer(g.frame, 32);
     if (ret < 0) {
@@ -554,8 +598,9 @@ bool Open(const char* path, int w, int h, int fps, int64_t bitrate, const char* 
     g.stop_flag.store(false);
     g.worker = std::thread(worker_loop_);
 
-    CC::Log(CC::LOG_INFO, "RecordMP4::Open: '%s' %dx%d @ %dfps gop=%d (bitrate=%lld, worker spawned, ring=%zu slots × %zuMB)",
-            path, w, h, fps, effective_gop, (long long)bitrate,
+    CC::Log(CC::LOG_INFO, "RecordMP4::Open: '%s' %dx%d @ %dfps (mode=%s, gop=%d, bitrate=%lld, worker spawned, ring=%zu slots × %zuMB)",
+            path, w, h, fps, g.is_gif ? "gif" : "mp4",
+            effective_gop, (long long)bitrate,
             State::kRingSize, bytes / (1024 * 1024));
     return true;
 }

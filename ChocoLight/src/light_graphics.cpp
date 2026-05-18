@@ -6199,6 +6199,8 @@ static const luaL_Reg graphics_funcs[] = {
     {"RecordPNGSequence",          l_Graphics_RecordPNGSequence},
     // Phase F.0.11.6 — H.264 MP4 录屏 (FFmpeg encoder 动态加载)
     {"RecordMP4",                  l_Graphics_RecordMP4},
+    // Phase F.0.11.6.4.A14 — GIF 录屏 (复用 RecordMP4 入口, 后缀 .gif 自动切到 gif encoder + BGR8 pix_fmt)
+    {"RecordGIF",                  l_Graphics_RecordMP4},
     {"GetRecordMode",              l_Graphics_GetRecordMode},
     {"StopRecord",                 l_Graphics_StopRecord},
     {"IsRecording",                l_Graphics_IsRecording},
