@@ -28,6 +28,20 @@
 #include <cstdio>
 #include <cstdlib>
 
+// Phase F.0.11.6.1 — worker thread 异步编码 (主线程 P95: 25-40ms → ~5ms)
+// 设计:
+//   主线程 WriteRGBA 仅 push staging buffer 到 queue + notify;
+//   worker thread (Open 时 spawn) wait queue → EncodeFrameInternal_ (sws+encode+write);
+//   queue 满 (kMaxQueueSize=16) 时主线程 push 阻塞, back-pressure 防内存爆.
+//   Close: stop flag → notify_all → join → worker 内 drain + flush + write trailer.
+#include <atomic>
+#include <condition_variable>
+#include <mutex>
+#include <queue>
+#include <thread>
+#include <utility>
+#include <vector>
+
 extern bool LoadFFmpeg();
 
 namespace RecordMP4 {
@@ -71,6 +85,12 @@ struct AVRational {
     int den;
 };
 
+// Phase F.0.11.6.1 — Worker thread 队列项 (RGBA staging + 对应帧号)
+struct FrameJob {
+    std::vector<uint8_t> rgba;       // 主线程拷贝过来的原始 RGBA 帧 (Y 未翻转)
+    int                  frame_idx;  // pts 用
+};
+
 // 内部状态 (单一全局; mp4 录屏不支持并发)
 struct State {
     bool   active = false;
@@ -85,11 +105,49 @@ struct State {
     void*  packet      = nullptr;   // AVPacket* (encoder 输出)
     void*  sws_ctx     = nullptr;   // SwsContext* (RGBA→YUV420p)
 
-    // 临时 RGBA staging (Y 翻转后再喂 sws): 每帧重用同一块
+    // 临时 RGBA staging (Y 翻转后再喂 sws): worker 内重用同一块, 主线程不碰
     uint8_t* rgba_flipped = nullptr;
     int      rgba_size    = 0;
+
+    // Phase F.0.11.6.1 — worker thread 异步编码基础设施
+    std::thread             worker;        // Open 时 spawn, Close 时 join
+    std::mutex              mu;            // 保护 q / stop_flag
+    std::condition_variable cv;            // 主线程 push / Close 通知 worker
+    std::condition_variable cv_not_full;   // worker 出队后通知主线程 (back-pressure)
+    std::queue<FrameJob>    q;             // 待编码帧队列
+    std::atomic<bool>       stop_flag{false};
+    static constexpr size_t kMaxQueueSize = 16;  // 内存上限: 16 帧 × 1080p × 4 ≈ 128 MB
 };
 static State g;
+
+// Phase F.0.11.6.1 — Forward declaration: Open 内 spawn worker thread 时引用, 实体在文件末尾
+static void worker_loop_();
+
+// Phase F.0.11.6.1 — codecpar 探针抽取到独立函数.
+// MSVC 限制: __try 不能用在含有 unwindable 对象 (std::thread/mutex 等) 的函数中.
+// Open 函数体引用 g.worker / g.mu / g.cv 等需析构对象 → __try 必须移到独立 helper.
+// stream: AVStream* 指针; 返 codecpar 指针 (失败返 nullptr).
+static void* FindCodecpar_(void* stream) {
+    if (!stream) return nullptr;
+    uint8_t* base = (uint8_t*)stream;
+    for (int off = 56; off < 256; off += sizeof(void*)) {
+        void* candidate = *(void**)(base + off);
+        if (!candidate || (uintptr_t)candidate < 0x10000) continue;
+        // codecpar 头几个 int: codec_type, codec_id, codec_tag, ...
+        int* fields = (int*)candidate;
+#ifdef _WIN32
+        __try {
+#endif
+            // codec_type=VIDEO(0): avformat_new_stream 已设此字段
+            if (fields[0] == FF_AVMEDIA_TYPE_VIDEO) {
+                return candidate;
+            }
+#ifdef _WIN32
+        } __except(EXCEPTION_EXECUTE_HANDLER) { continue; }
+#endif
+    }
+    return nullptr;
+}
 
 // ===== AVFrame.pts 写入 =====
 //   FFmpeg 4-6 AVFrame 中 pts 在固定偏移 (data[8]=64B + linesize[8]=32B + 一些指针/int)
@@ -271,35 +329,9 @@ bool Open(const char* path, int w, int h, int fps, int64_t bitrate) {
     }
 
     // 6) 复制 codec params 到 stream codecpar (供 muxer 写 header 用)
-    // AVStream 中 codecpar 字段位置 ABI-uncertain; 探针式查找
-    void* codecpar = nullptr;
-    {
-        // AVStream 早期字段: index(4), id(4), priv_data*(8), time_base(8), start_time(8), duration(8),
-        //                    nb_frames(8), disposition(4), discard(4), sample_aspect_ratio(8), metadata*,
-        //                    avg_frame_rate, attached_pic, side_data*, side_data_count, event_flags,
-        //                    r_frame_rate, codecpar
-        // 不同版本 codecpar 偏移不同, 但通常在 AVStream 头部 64-256 字节内
-        uint8_t* base = (uint8_t*)g.stream;
-        for (int off = 56; off < 256; off += sizeof(void*)) {
-            void* candidate = *(void**)(base + off);
-            if (!candidate || (uintptr_t)candidate < 0x10000) continue;
-            // codecpar 头几个 int: codec_type, codec_id, codec_tag, ...
-            int* fields = (int*)candidate;
-#ifdef _WIN32
-            __try {
-#endif
-                // codec_type=VIDEO(0), codec_id=H264(27)
-                if (fields[0] == FF_AVMEDIA_TYPE_VIDEO) {
-                    // 进一步确认: codec_id 应该现已填充 (avformat_new_stream 拿了 codec)
-                    // 但 codecpar 可能还没设 codec_id, 暂只匹配 codec_type
-                    codecpar = candidate;
-                    break;
-                }
-#ifdef _WIN32
-            } __except(EXCEPTION_EXECUTE_HANDLER) { continue; }
-#endif
-        }
-    }
+    //    Phase F.0.11.6.1 — AVStream codecpar 字段位置 ABI-uncertain, 探针式查找 (含 SEH __try).
+    //    抽到独立 helper FindCodecpar_; Open 函数体已含 std::thread 等 unwindable 对象, 不能直接用 __try.
+    void* codecpar = FindCodecpar_(g.stream);
     if (!codecpar) {
         CC::Log(CC::LOG_ERROR, "RecordMP4::Open: cannot locate stream->codecpar (FFmpeg ABI mismatch)");
         cleanup_all();
@@ -387,14 +419,23 @@ bool Open(const char* path, int w, int h, int fps, int64_t bitrate) {
         return false;
     }
 
+    // Phase F.0.11.6.1 — spawn worker thread (Open 之后才设 active, 避免 worker 启动竞争)
     g.active = true;
-    CC::Log(CC::LOG_INFO, "RecordMP4::Open: '%s' %dx%d @ %dfps (bitrate=%lld)",
+    g.stop_flag.store(false);
+    g.worker = std::thread(worker_loop_);
+
+    CC::Log(CC::LOG_INFO, "RecordMP4::Open: '%s' %dx%d @ %dfps (bitrate=%lld, worker thread spawned)",
             path, w, h, fps, (long long)bitrate);
     return true;
 }
 
-bool WriteRGBA(const uint8_t* rgba, int frame_index) {
-    if (!g.active || !rgba) return false;
+// Phase F.0.11.6.1 — worker thread 专属编码逻辑 (抽取自原 WriteRGBA 主体).
+// 仅由 worker_loop_ 调用; 不加锁 (encoder state 已被 worker thread 独占).
+// 返 true 成功, false 任一步失败 (上层 log, 不打断 worker 循环).
+static bool EncodeFrameInternal_(const uint8_t* rgba, int frame_index) {
+    if (!rgba || !g.frame || !g.codec_ctx || !g.packet || !g.sws_ctx || !g.rgba_flipped) {
+        return false;
+    }
 
     // 1) Y 翻转 (OpenGL bottom-left → 视频 top-left)
     const int row_bytes = g.width * 4;
@@ -420,13 +461,8 @@ bool WriteRGBA(const uint8_t* rgba, int frame_index) {
     g_ff.sws_scale(g.sws_ctx, src_slices, src_strides, 0, g.height,
                     fh->data, fh->linesize);
 
-    // 4) 设置 pts (frame index)
-    //    AVFrame.pts 偏移: FFmpeg 5.x AVFrame 布局
-    //    data[8] + linesize[8] + extended_data + width/height/nb_samples/format/key_frame/pict_type
-    //    + sample_aspect_ratio + pts ≈ offset 144 (8字节)
-    //    保守: 用 av_opt_set_int 试 (AVFrame in 5.x 应该有 av_class)
+    // 4) 设置 pts (frame index); 失败 fallback 直接写偏移 144 (FFmpeg 5.x 布局)
     if (g_ff.av_opt_set_int(g.frame, "pts", frame_index, 0) < 0) {
-        // fallback: 直接写偏移 144
         *(int64_t*)((uint8_t*)g.frame + 144) = frame_index;
     }
 
@@ -445,16 +481,6 @@ bool WriteRGBA(const uint8_t* rgba, int frame_index) {
             log_err("avcodec_receive_packet", ret);
             return false;
         }
-
-        // rescale pts/dts: codec time_base → stream time_base
-        // 假设 codec time_base=1/fps, stream time_base 由 muxer 决定 (mp4 通常 1/12800)
-        // av_packet_rescale_ts 内部读 codec_ctx->time_base 与 stream->time_base, 我们传 nullptr 让其内部解析
-        // (但实际 API 签名要求 src_tb/dst_tb 指针, 不能传 nullptr)
-        // 简化: 用直接偏移找 stream 的 time_base, codec 的 time_base 我们刚 set_int 设过
-        // 这里偷懒: pts 直接用 frame index, 不 rescale (mp4 默认 time_base 与 fps 同步, 视频可正常播放)
-        // 真正生产代码应调 av_packet_rescale_ts; 暂跳过, B-frame 关闭已简化时序
-
-        // packet->stream_index = 0 (我们只有一条 stream)
         AVPacketHead* ph = (AVPacketHead*)g.packet;
         ph->stream_index = 0;
 
@@ -466,7 +492,52 @@ bool WriteRGBA(const uint8_t* rgba, int frame_index) {
         }
         if (g_ff.av_packet_unref) g_ff.av_packet_unref(g.packet);
     }
+    return true;
+}
 
+// Phase F.0.11.6.1 — worker thread 主循环.
+// 退出条件: stop_flag=true 且 queue 已空.
+// 失败的 EncodeFrameInternal_ 不打断循环, 仅 log; 录屏整体仍向下推进 (避免单帧错误丢整段视频).
+static void worker_loop_() {
+    for (;;) {
+        FrameJob job;
+        {
+            std::unique_lock<std::mutex> lk(g.mu);
+            g.cv.wait(lk, [] { return !g.q.empty() || g.stop_flag.load(); });
+            if (g.q.empty()) {
+                // stop_flag=true 且 queue 空 → 干净退出
+                return;
+            }
+            job = std::move(g.q.front());
+            g.q.pop();
+            g.cv_not_full.notify_one();   // 通知阻塞中的主线程可继续 push
+        }
+        // 锁外 encode (~25-40ms), 主线程同时可继续 push
+        EncodeFrameInternal_(job.rgba.data(), job.frame_idx);
+    }
+}
+
+// Phase F.0.11.6.1 — WriteRGBA 现在是 push 路径 (主线程 ~5ms: memcpy 到 vector + 加锁 push).
+// queue 满时主线程阻塞等 cv_not_full (back-pressure), 防内存爆.
+// 注: encoder 实际编码在 worker thread 内, 此函数返回 true 仅代表"已入队", 不代表"已写盘".
+bool WriteRGBA(const uint8_t* rgba, int frame_index) {
+    if (!g.active || !rgba) return false;
+    const size_t bytes = (size_t)g.width * g.height * 4;
+
+    FrameJob job;
+    job.frame_idx = frame_index;
+    job.rgba.assign(rgba, rgba + bytes);   // memcpy 一次 (RGBA full frame, ~8MB @ 1080p)
+
+    {
+        std::unique_lock<std::mutex> lk(g.mu);
+        // back-pressure: queue 满则阻塞 (worker 还没消化完, 等)
+        g.cv_not_full.wait(lk, [] {
+            return g.q.size() < State::kMaxQueueSize || g.stop_flag.load();
+        });
+        if (g.stop_flag.load()) return false;   // Close 已开始, 拒绝新 push
+        g.q.push(std::move(job));
+    }
+    g.cv.notify_one();
     return true;
 }
 
@@ -476,13 +547,21 @@ void Close() {
         return;
     }
 
-    // 1) 发送 NULL frame 让 encoder 进入 flush 模式
-    if (g_ff.avcodec_send_frame) {
+    // Phase F.0.11.6.1 — 1) 通知 worker drain 已入队帧后退出
+    //   设 stop_flag → 唤醒所有等待者 → join (worker 内已对所有 frame encode 写盘)
+    g.stop_flag.store(true);
+    g.cv.notify_all();
+    g.cv_not_full.notify_all();   // 避免主线程被卡在 back-pressure 等
+    if (g.worker.joinable()) g.worker.join();
+
+    // 2) Worker 退出后, encoder 已编码所有 push 帧 → 发 NULL frame 让 encoder flush 内部 buffered frames
+    //    (worker 不调 send_frame(nullptr) 因为它不知道是不是最后一帧; flush 由 Close 主线程串行收尾)
+    if (g_ff.avcodec_send_frame && g.codec_ctx) {
         g_ff.avcodec_send_frame(g.codec_ctx, nullptr);
     }
 
-    // 2) 排空所有剩余 packet
-    if (g.packet && g_ff.avcodec_receive_packet) {
+    // 3) 排空所有剩余 packet (encoder 内部 buffered B/P frames flush)
+    if (g.packet && g_ff.avcodec_receive_packet && g.codec_ctx) {
         int ret;
         while ((ret = g_ff.avcodec_receive_packet(g.codec_ctx, g.packet)) >= 0) {
             AVPacketHead* ph = (AVPacketHead*)g.packet;
@@ -495,18 +574,18 @@ void Close() {
         }
     }
 
-    // 3) 写 trailer
+    // 4) 写 trailer
     if (g.fmt_ctx && g_ff.av_write_trailer) {
         g_ff.av_write_trailer(g.fmt_ctx);
     }
 
-    // 4) 关闭 IO (mp4 文件最终 finalize)
+    // 5) 关闭 IO (mp4 文件最终 finalize)
     if (g.fmt_ctx && g_ff.avio_closep) {
         void** pb_slot = (void**)((uint8_t*)g.fmt_ctx + 32);
         if (*pb_slot) g_ff.avio_closep(pb_slot);
     }
 
-    CC::Log(CC::LOG_INFO, "RecordMP4::Close: finalized mp4 (resources released)");
+    CC::Log(CC::LOG_INFO, "RecordMP4::Close: finalized mp4 (worker joined, resources released)");
     cleanup_all();
 }
 
