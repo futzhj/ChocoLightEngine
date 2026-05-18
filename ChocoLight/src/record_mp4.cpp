@@ -29,15 +29,15 @@
 #include <cstdlib>
 
 // Phase F.0.11.6.1 — worker thread 异步编码 (主线程 P95: 25-40ms → ~5ms)
+// Phase F.0.11.6.1.A1 — Ring buffer (固定 16 slot 预分配 vector) + zero-copy AcquireWriteSlot/CommitWriteSlot
 // 设计:
-//   主线程 WriteRGBA 仅 push staging buffer 到 queue + notify;
-//   worker thread (Open 时 spawn) wait queue → EncodeFrameInternal_ (sws+encode+write);
-//   queue 满 (kMaxQueueSize=16) 时主线程 push 阻塞, back-pressure 防内存爆.
-//   Close: stop flag → notify_all → join → worker 内 drain + flush + write trailer.
+//   主线程 WriteRGBA 走兼容入口 (内部 Acquire+memcpy+Commit), 1 次 8MB memcpy.
+//   推荐路径 AcquireWriteSlot → readback 直写 slot → CommitWriteSlot, 省一次 memcpy.
+//   ring 满时主线程在 Acquire 内阻塞等 worker 出队 (back-pressure 防内存爆).
+//   Close: stop flag → notify_all → join → 主线程串行 flush + write trailer.
 #include <atomic>
 #include <condition_variable>
 #include <mutex>
-#include <queue>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -85,9 +85,10 @@ struct AVRational {
     int den;
 };
 
-// Phase F.0.11.6.1 — Worker thread 队列项 (RGBA staging + 对应帧号)
-struct FrameJob {
-    std::vector<uint8_t> rgba;       // 主线程拷贝过来的原始 RGBA 帧 (Y 未翻转)
+// Phase F.0.11.6.1.A1 — Ring buffer slot (RGBA staging + 对应帧号)
+//   每个 slot 在 Open 时 reserve+resize 到 w*h*4, 后续 push/pop 仅复用 buffer (不再 heap alloc).
+struct Slot {
+    std::vector<uint8_t> rgba;       // 容量 = w*h*4, Open 后不变
     int                  frame_idx;  // pts 用
 };
 
@@ -110,13 +111,17 @@ struct State {
     int      rgba_size    = 0;
 
     // Phase F.0.11.6.1 — worker thread 异步编码基础设施
-    std::thread             worker;        // Open 时 spawn, Close 时 join
-    std::mutex              mu;            // 保护 q / stop_flag
-    std::condition_variable cv;            // 主线程 push / Close 通知 worker
-    std::condition_variable cv_not_full;   // worker 出队后通知主线程 (back-pressure)
-    std::queue<FrameJob>    q;             // 待编码帧队列
+    // Phase F.0.11.6.1.A1 — Ring buffer 替代 std::queue (省 heap alloc + 支持 zero-copy 路径)
+    static constexpr size_t kRingSize = 16;        // 内存上限: 16 帧 × 1080p × 4 ≈ 128 MB
+    std::thread             worker;                 // Open 时 spawn, Close 时 join
+    std::mutex              mu;                     // 保护 head/tail/count/stop_flag
+    std::condition_variable cv;                     // 主线程 push / Close 通知 worker
+    std::condition_variable cv_not_full;            // worker 出队后通知主线程 (back-pressure)
+    Slot                    ring[kRingSize];        // 待编码帧 ring buffer
+    size_t                  head      = 0;          // worker pop 索引 (encode 完才推进)
+    size_t                  tail      = 0;          // 主线程 push 索引 (Commit 时推进)
+    size_t                  count     = 0;          // 已 commit 但未 encode 完成的 slot 数
     std::atomic<bool>       stop_flag{false};
-    static constexpr size_t kMaxQueueSize = 16;  // 内存上限: 16 帧 × 1080p × 4 ≈ 128 MB
 };
 static State g;
 
@@ -203,8 +208,17 @@ static void cleanup_all() {
         g.rgba_flipped = nullptr;
         g.rgba_size = 0;
     }
-    g.active = false;
-    g.stream = nullptr;
+    // Phase F.0.11.6.1.A1 — 释放 ring buffer 16 个 slot 的预分配内存 (g 是 static 全局, 不会自动析构)
+    for (size_t i = 0; i < State::kRingSize; ++i) {
+        g.ring[i].rgba.clear();
+        g.ring[i].rgba.shrink_to_fit();
+        g.ring[i].frame_idx = 0;
+    }
+    g.head     = 0;
+    g.tail     = 0;
+    g.count    = 0;
+    g.active   = false;
+    g.stream   = nullptr;
 }
 
 bool IsActive() { return g.active; }
@@ -419,13 +433,25 @@ bool Open(const char* path, int w, int h, int fps, int64_t bitrate) {
         return false;
     }
 
+    // Phase F.0.11.6.1.A1 — 预分配 ring buffer 16 个 slot (后续 push/pop 不再 heap alloc)
+    //   resize 而非 reserve: 必须让 vector size == capacity, 才能用 .data() 直写有效字节.
+    const size_t bytes = (size_t)w * h * 4;
+    for (size_t i = 0; i < State::kRingSize; ++i) {
+        g.ring[i].rgba.assign(bytes, 0);   // 一次分配, 后续永不 realloc
+        g.ring[i].frame_idx = 0;
+    }
+    g.head  = 0;
+    g.tail  = 0;
+    g.count = 0;
+
     // Phase F.0.11.6.1 — spawn worker thread (Open 之后才设 active, 避免 worker 启动竞争)
     g.active = true;
     g.stop_flag.store(false);
     g.worker = std::thread(worker_loop_);
 
-    CC::Log(CC::LOG_INFO, "RecordMP4::Open: '%s' %dx%d @ %dfps (bitrate=%lld, worker thread spawned)",
-            path, w, h, fps, (long long)bitrate);
+    CC::Log(CC::LOG_INFO, "RecordMP4::Open: '%s' %dx%d @ %dfps (bitrate=%lld, worker spawned, ring=%zu slots × %zuMB)",
+            path, w, h, fps, (long long)bitrate,
+            State::kRingSize, bytes / (1024 * 1024));
     return true;
 }
 
@@ -495,49 +521,75 @@ static bool EncodeFrameInternal_(const uint8_t* rgba, int frame_index) {
     return true;
 }
 
-// Phase F.0.11.6.1 — worker thread 主循环.
-// 退出条件: stop_flag=true 且 queue 已空.
+// Phase F.0.11.6.1.A1 — worker thread 主循环 (ring buffer 版).
+// 退出条件: stop_flag=true 且 ring 已空 (count==0).
+// 关键: 锁内仅记录 head 索引, 不立即 head++/count--; 锁外 encode 期间 ring[head] 仍占位,
+//       主线程不会覆盖 (因 count > 0 时主线程在 cv_not_full 上等待 ring 空位).
+//       encode 完成后再加锁 head++/count-- + notify_not_full.
 // 失败的 EncodeFrameInternal_ 不打断循环, 仅 log; 录屏整体仍向下推进 (避免单帧错误丢整段视频).
 static void worker_loop_() {
     for (;;) {
-        FrameJob job;
+        Slot* slot     = nullptr;
+        int   frame_idx = 0;
         {
             std::unique_lock<std::mutex> lk(g.mu);
-            g.cv.wait(lk, [] { return !g.q.empty() || g.stop_flag.load(); });
-            if (g.q.empty()) {
-                // stop_flag=true 且 queue 空 → 干净退出
+            g.cv.wait(lk, [] { return g.count > 0 || g.stop_flag.load(); });
+            if (g.count == 0) {
+                // stop_flag=true 且 ring 空 → 干净退出
                 return;
             }
-            job = std::move(g.q.front());
-            g.q.pop();
-            g.cv_not_full.notify_one();   // 通知阻塞中的主线程可继续 push
+            slot      = &g.ring[g.head];
+            frame_idx = slot->frame_idx;
+            // 注意: 此处不动 head/count, 锁外 encode 期间 slot 仍被 worker 独占
         }
-        // 锁外 encode (~25-40ms), 主线程同时可继续 push
-        EncodeFrameInternal_(job.rgba.data(), job.frame_idx);
+        // 锁外 encode (~25-40ms), 主线程可继续 push 到其他 slot
+        EncodeFrameInternal_(slot->rgba.data(), frame_idx);
+        // encode 完成 → 释放 slot (head 推进 + count 减)
+        {
+            std::lock_guard<std::mutex> lk(g.mu);
+            g.head = (g.head + 1) % State::kRingSize;
+            --g.count;
+        }
+        g.cv_not_full.notify_one();   // 唤醒可能在 Acquire 内等待的主线程
     }
 }
 
-// Phase F.0.11.6.1 — WriteRGBA 现在是 push 路径 (主线程 ~5ms: memcpy 到 vector + 加锁 push).
-// queue 满时主线程阻塞等 cv_not_full (back-pressure), 防内存爆.
-// 注: encoder 实际编码在 worker thread 内, 此函数返回 true 仅代表"已入队", 不代表"已写盘".
-bool WriteRGBA(const uint8_t* rgba, int frame_index) {
-    if (!g.active || !rgba) return false;
-    const size_t bytes = (size_t)g.width * g.height * 4;
+// Phase F.0.11.6.1.A1 — Zero-copy 写入路径 (推荐).
+//   主线程持有返回的 buffer 指针后, 直接把 readback 数据写入此 buffer (省一次 memcpy);
+//   写入完成后必须调 CommitWriteSlot() 通知 worker.
+//   ring 满时阻塞等 worker 出队 (back-pressure 防内存爆).
+uint8_t* AcquireWriteSlot(int frame_index) {
+    if (!g.active) return nullptr;
+    std::unique_lock<std::mutex> lk(g.mu);
+    g.cv_not_full.wait(lk, [] {
+        return g.count < State::kRingSize || g.stop_flag.load();
+    });
+    if (g.stop_flag.load()) return nullptr;   // Close 已开始, 拒绝新 push
+    Slot& slot     = g.ring[g.tail];
+    slot.frame_idx = frame_index;
+    // 锁外即可写 slot.rgba.data() — 主线程独占 tail slot, 直到 CommitWriteSlot 才动 tail/count
+    return slot.rgba.data();
+}
 
-    FrameJob job;
-    job.frame_idx = frame_index;
-    job.rgba.assign(rgba, rgba + bytes);   // memcpy 一次 (RGBA full frame, ~8MB @ 1080p)
-
+// Phase F.0.11.6.1.A1 — Commit 配对调用: 推进 tail + 通知 worker.
+//   必须紧跟在 AcquireWriteSlot 返非 nullptr 后调用; 不可重复调.
+void CommitWriteSlot() {
     {
-        std::unique_lock<std::mutex> lk(g.mu);
-        // back-pressure: queue 满则阻塞 (worker 还没消化完, 等)
-        g.cv_not_full.wait(lk, [] {
-            return g.q.size() < State::kMaxQueueSize || g.stop_flag.load();
-        });
-        if (g.stop_flag.load()) return false;   // Close 已开始, 拒绝新 push
-        g.q.push(std::move(job));
+        std::lock_guard<std::mutex> lk(g.mu);
+        g.tail = (g.tail + 1) % State::kRingSize;
+        ++g.count;
     }
     g.cv.notify_one();
+}
+
+// Phase F.0.11.6.1 — WriteRGBA 现在是兼容入口 (内部 = Acquire+memcpy+Commit, 1 次 8MB memcpy).
+//   新代码推荐 Acquire+CommitWriteSlot 路径, 跳过此 memcpy.
+bool WriteRGBA(const uint8_t* rgba, int frame_index) {
+    if (!rgba) return false;
+    uint8_t* dst = AcquireWriteSlot(frame_index);
+    if (!dst) return false;   // 录屏未 active 或 stop_flag 已设
+    memcpy(dst, rgba, (size_t)g.width * g.height * 4);
+    CommitWriteSlot();
     return true;
 }
 
@@ -594,10 +646,12 @@ void Close() {
 #else  // 移动端 / Web
 
 namespace RecordMP4 {
-bool Open(const char*, int, int, int, int64_t) { return false; }
-bool WriteRGBA(const uint8_t*, int) { return false; }
-void Close() {}
-bool IsActive() { return false; }
+bool     Open(const char*, int, int, int, int64_t) { return false; }
+bool     WriteRGBA(const uint8_t*, int) { return false; }
+uint8_t* AcquireWriteSlot(int) { return nullptr; }
+void     CommitWriteSlot() {}
+void     Close() {}
+bool     IsActive() { return false; }
 } // namespace RecordMP4
 
 #endif

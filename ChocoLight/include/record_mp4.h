@@ -33,9 +33,26 @@ bool Open(const char* path, int w, int h, int fps, int64_t bitrate);
 /// @param rgba   长度 w*h*4 字节, 当前帧的 RGBA8
 /// @param frame_index  帧序号 (从 0 开始, 用于 pts)
 /// @return true=成功 (含 encoder buffered 但未写盘 — B-frame 延迟); false=失败
+/// @note F.0.11.6.1.A1 起内部转 Acquire+memcpy+Commit; 主线程仍 1 次 8MB memcpy.
+///       新代码推荐用 AcquireWriteSlot + CommitWriteSlot 的 zero-copy 路径 (省 1 次 memcpy).
 bool WriteRGBA(const uint8_t* rgba, int frame_index);
 
-/// 关闭 mp4: flush encoder + 写 trailer + 释放资源
+/// Phase F.0.11.6.1.A1 — Zero-copy ring buffer 写入路径.
+/// 主线程持有返回的指针后, 直接把 readback 数据 (例如 glReadPixels / PBO map) 写入此 buffer,
+/// 之后调 CommitWriteSlot() 通知 worker 编码. 比 WriteRGBA 省一次 8MB memcpy.
+///
+/// @param frame_index  帧序号 (用于 pts)
+/// @return  指向 ring buffer 当前 tail slot 的 RGBA8 buffer (容量 w*h*4 字节);
+///          失败返 nullptr (录屏未 active 或 stop_flag 已设).
+/// @note 阻塞: 若 ring 已满 (kRingSize=16 帧 in flight), 主线程在此等 worker 出队 (back-pressure).
+/// @note 配对调用: AcquireWriteSlot 返非 nullptr 后, **必须**调 CommitWriteSlot, 否则 ring 永远卡死.
+uint8_t* AcquireWriteSlot(int frame_index);
+
+/// Phase F.0.11.6.1.A1 — 推进 ring tail + 通知 worker.
+/// 必须在 AcquireWriteSlot 返非 nullptr 之后调用; 不可重复调.
+void CommitWriteSlot();
+
+/// 关闭 mp4: stop worker → join → flush encoder → 写 trailer → 释放资源
 void Close();
 
 /// 是否当前 active (Open 成功后到 Close 之前)
