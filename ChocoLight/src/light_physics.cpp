@@ -1,4 +1,5 @@
 #include "light.h"
+#include "light_lua_helpers.h"  // Phase G.1.7.3 — 类型安全 helpers + magic
 
 #if CHOCO_HAS_BOX2D
 #include <box2d/box2d.h>
@@ -28,7 +29,9 @@ enum PhysicsShapeType {
     PHYSICS_SHAPE_CHAIN,
 };
 
+/// Phase G.1.7.3: 首字段 magic 防止 type-confusion
 struct PhysicsBody {
+    uint32_t magic;          // 必须 = LT_MAGIC_BODY
     b2Body* body;
     PhysicsWorld* owner;
     int selfRef;
@@ -37,7 +40,9 @@ struct PhysicsBody {
     PhysicsBody() : body(nullptr), owner(nullptr), selfRef(LUA_NOREF), alive(false) {}
 };
 
+/// Phase G.1.7.3: 首字段 magic 防止 type-confusion
 struct PhysicsFixture {
+    uint32_t magic;          // 必须 = LT_MAGIC_FIXTURE
     b2Fixture* fixture;
     PhysicsBody* owner;
     int selfRef;
@@ -48,7 +53,9 @@ struct PhysicsFixture {
 };
 
 // Phase AO: Joint wrapper. Joint 类型识别用 b2Joint::GetType() 即可,无需在 wrapper 内冗余存储。
+/// Phase G.1.7.3: 首字段 magic 防止 type-confusion
 struct PhysicsJoint {
+    uint32_t magic;          // 必须 = LT_MAGIC_JOINT
     b2Joint* joint;
     PhysicsWorld* owner;
     int selfRef;
@@ -57,7 +64,9 @@ struct PhysicsJoint {
     PhysicsJoint() : joint(nullptr), owner(nullptr), selfRef(LUA_NOREF), alive(false) {}
 };
 
+/// Phase G.1.7.3: 首字段 magic 防止 type-confusion
 struct PhysicsShape {
+    uint32_t magic;          // 必须 = LT_MAGIC_SHAPE
     PhysicsShapeType type;
     b2CircleShape circle;
     b2PolygonShape polygon;
@@ -106,7 +115,9 @@ private:
     PhysicsWorld* world_;
 };
 
+/// Phase G.1.7.3: 首字段 magic 防止 type-confusion
 struct PhysicsWorld {
+    uint32_t magic;          // 必须 = LT_MAGIC_WORLD (首字段)
     b2World* world;
     PhysicsContactListener* listener;
     PhysicsDestructionListener* destructionListener;  // Phase AO
@@ -139,17 +150,13 @@ static void PushPixels(lua_State* L, const b2Vec2& value) {
     lua_pushnumber(L, value.y * PTM);
 }
 
+/// Phase G.1.7.3: magic 双保险
 static PhysicsWorld* CheckWorld(lua_State* L, int idx) {
-    lua_getfield(L, idx, "__instance");
-    if (!lua_isuserdata(L, -1)) {
-        lua_pop(L, 1);
-        return nullptr;
-    }
-    auto* world = (PhysicsWorld*)lua_touserdata(L, -1);
-    lua_pop(L, 1);
+    auto* world = LT::TryCheckInstance<PhysicsWorld>(L, idx, LT::LT_MAGIC_WORLD);
     return (world && world->alive && world->world) ? world : nullptr;
 }
 
+/// Phase G.1.7.3: magic 双保险; 字段名不变 (__body), 手动读取
 static PhysicsBody* CheckBody(lua_State* L, int idx) {
     lua_getfield(L, idx, "__body");
     if (!lua_isuserdata(L, -1)) {
@@ -158,9 +165,11 @@ static PhysicsBody* CheckBody(lua_State* L, int idx) {
     }
     auto* body = (PhysicsBody*)lua_touserdata(L, -1);
     lua_pop(L, 1);
-    return (body && body->alive && body->body) ? body : nullptr;
+    if (!body || body->magic != LT::LT_MAGIC_BODY) return nullptr;
+    return (body->alive && body->body) ? body : nullptr;
 }
 
+/// Phase G.1.7.3: magic 双保险
 static PhysicsShape* CheckShape(lua_State* L, int idx) {
     lua_getfield(L, idx, "__shape");
     if (!lua_isuserdata(L, -1)) {
@@ -169,9 +178,11 @@ static PhysicsShape* CheckShape(lua_State* L, int idx) {
     }
     auto* shape = (PhysicsShape*)lua_touserdata(L, -1);
     lua_pop(L, 1);
+    if (!shape || shape->magic != LT::LT_MAGIC_SHAPE) return nullptr;
     return shape;
 }
 
+/// Phase G.1.7.3: magic 双保险
 static PhysicsFixture* CheckFixture(lua_State* L, int idx) {
     lua_getfield(L, idx, "__fixture");
     if (!lua_isuserdata(L, -1)) {
@@ -180,7 +191,8 @@ static PhysicsFixture* CheckFixture(lua_State* L, int idx) {
     }
     auto* fixture = (PhysicsFixture*)lua_touserdata(L, -1);
     lua_pop(L, 1);
-    return (fixture && fixture->alive && fixture->fixture) ? fixture : nullptr;
+    if (!fixture || fixture->magic != LT::LT_MAGIC_FIXTURE) return nullptr;
+    return (fixture->alive && fixture->fixture) ? fixture : nullptr;
 }
 
 static PhysicsFixture* FixtureFromB2(b2Fixture* fixture) {
@@ -193,6 +205,7 @@ static PhysicsFixture* FixtureFromB2(b2Fixture* fixture) {
 }
 
 // Phase AO: Joint helpers
+/// Phase G.1.7.3: magic 双保险
 static PhysicsJoint* CheckJoint(lua_State* L, int idx) {
     lua_getfield(L, idx, "__joint");
     if (!lua_isuserdata(L, -1)) {
@@ -201,7 +214,8 @@ static PhysicsJoint* CheckJoint(lua_State* L, int idx) {
     }
     auto* joint = (PhysicsJoint*)lua_touserdata(L, -1);
     lua_pop(L, 1);
-    return (joint && joint->alive && joint->joint) ? joint : nullptr;
+    if (!joint || joint->magic != LT::LT_MAGIC_JOINT) return nullptr;
+    return (joint->alive && joint->joint) ? joint : nullptr;
 }
 
 // 通过 b2Joint 反查 wrapper, 利用 b2Joint::GetUserData().pointer
@@ -593,6 +607,7 @@ static PhysicsShape* PushShapeTable(lua_State* L, PhysicsShapeType type) {
     lua_createtable(L, 0, 1);
     void* storage = lua_newuserdata(L, sizeof(PhysicsShape));
     auto* shape = new (storage) PhysicsShape();
+    shape->magic = LT::LT_MAGIC_SHAPE;  // Phase G.1.7.3 — type tag (placement-new 后设)
     shape->type = type;
     SetShapeGC(L);
     lua_setfield(L, -2, "__shape");
@@ -860,6 +875,7 @@ static PhysicsFixture* PushFixtureTable(lua_State* L, PhysicsBody* body, b2Fixtu
     lua_createtable(L, 0, 16);
     void* storage = lua_newuserdata(L, sizeof(PhysicsFixture));
     auto* wrapper = new (storage) PhysicsFixture();
+    wrapper->magic = LT::LT_MAGIC_FIXTURE;  // Phase G.1.7.3 — type tag
     wrapper->fixture = fixture;
     wrapper->owner = body;
     wrapper->alive = true;
@@ -1670,6 +1686,7 @@ static int l_World_Call(lua_State* L) {
     luaL_checktype(L, 1, LUA_TTABLE);
     void* storage = lua_newuserdata(L, sizeof(PhysicsWorld));
     auto* world = new (storage) PhysicsWorld();
+    world->magic = LT::LT_MAGIC_WORLD;  // Phase G.1.7.3 — type tag
     world->world = new b2World(b2Vec2(0.0f, 10.0f));
     world->listener = new PhysicsContactListener(world);
     world->destructionListener = new PhysicsDestructionListener(world);  // Phase AO
@@ -1804,6 +1821,7 @@ static int l_World_CreateBody(lua_State* L) {
     lua_createtable(L, 0, 16);
     void* storage = lua_newuserdata(L, sizeof(PhysicsBody));
     auto* wrapper = new (storage) PhysicsBody();
+    wrapper->magic = LT::LT_MAGIC_BODY;  // Phase G.1.7.3 — type tag
     wrapper->body = body;
     wrapper->owner = world;
     wrapper->alive = true;
@@ -2853,6 +2871,7 @@ static PhysicsJoint* PushJointTable(lua_State* L, PhysicsWorld* world, b2Joint* 
     lua_createtable(L, 0, 8);
     void* storage = lua_newuserdata(L, sizeof(PhysicsJoint));
     auto* wrapper = new (storage) PhysicsJoint();
+    wrapper->magic = LT::LT_MAGIC_JOINT;  // Phase G.1.7.3 — type tag
     wrapper->joint = joint;
     wrapper->owner = world;
     wrapper->alive = true;

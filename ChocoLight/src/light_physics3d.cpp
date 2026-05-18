@@ -48,6 +48,7 @@
  */
 
 #include "light.h"
+#include "light_lua_helpers.h"  // Phase G.1.7.3 — 类型安全 helpers + magic
 
 #if CHOCO_HAS_BULLET
 #include <btBulletCollisionCommon.h>
@@ -97,7 +98,9 @@ static const char* SOFTBODY_MT  = "Light.Physics3D.SoftBody";    // Phase AU Ste
 struct World3D;
 struct Body3D;
 
+/// Phase G.1.7.3: 首字段 magic 防止 type-confusion
 struct Shape3D {
+    uint32_t magic;     // 必须 = LT_MAGIC_SHAPE (复用 2D Shape 同 magic, Check 靠 MT 区分)
     btCollisionShape* shape;
     // Heightfield 必须持有 height array (Bullet 内部只存指针不拷贝)
     float* heightData;
@@ -105,11 +108,13 @@ struct Shape3D {
     btTriangleIndexVertexArray* triMesh;
     float* triVertices;
     int*   triIndices;
-    Shape3D() : shape(nullptr), heightData(nullptr),
+    Shape3D() : magic(LT::LT_MAGIC_SHAPE), shape(nullptr), heightData(nullptr),
                 triMesh(nullptr), triVertices(nullptr), triIndices(nullptr) {}
 };
 
+/// Phase G.1.7.3: 首字段 magic 防止 type-confusion
 struct Body3D {
+    uint32_t magic;                       // 必须 = LT_MAGIC_PHY3D_B
     btRigidBody*       body;
     btMotionState*     motion;
     World3D*           owner;
@@ -119,7 +124,7 @@ struct Body3D {
     // Phase AU Step 4.1: compound shape (多形状 body)
     btCompoundShape*   compound;          // non-null 时 body 持有 compound 所有权
     std::vector<int>   childShapeRefs;    // compound 模式下每个 child shape 的 registry ref
-    Body3D() : body(nullptr), motion(nullptr), owner(nullptr),
+    Body3D() : magic(LT::LT_MAGIC_PHY3D_B), body(nullptr), motion(nullptr), owner(nullptr),
                shapeRef(LUA_NOREF), selfRef(LUA_NOREF), alive(false),
                compound(nullptr) {}
 };
@@ -137,7 +142,9 @@ class LuaDebugDrawer;
 // Phase AU Step 4.3: SoftBody userdata 前向声明
 struct SoftBody3D;
 
+/// Phase G.1.7.3: 首字段 magic 防止 type-confusion
 struct World3D {
+    uint32_t magic;     // 必须 = LT_MAGIC_PHY3D_W
     // Phase AU Step 4.3: collision config 升级为 SoftBodyRigidBody (派生自 Default), 兼容现有 RigidBody
     btSoftBodyRigidBodyCollisionConfiguration* config;
     btCollisionDispatcher*               dispatcher;
@@ -159,7 +166,7 @@ struct World3D {
     int                                  contactRef;  // OnContact callback in registry
     lua_State*                           L;
     bool                                 alive;
-    World3D() : config(nullptr), dispatcher(nullptr), broadphase(nullptr),
+    World3D() : magic(LT::LT_MAGIC_PHY3D_W), config(nullptr), dispatcher(nullptr), broadphase(nullptr),
                 solver(nullptr), world(nullptr), softBodySolver(nullptr),
                 softBodyWorldInfo(nullptr),
                 ghostPairCb(nullptr), debugDrawer(nullptr),
@@ -223,14 +230,21 @@ struct SoftBody3D {
 
 // ==================== Helpers ====================
 
+// Phase G.1.7.3: magic 双保险
 static Shape3D* CheckShape(lua_State* L, int idx) {
-    return (Shape3D*)luaL_checkudata(L, idx, SHAPE_MT);
+    auto* s = (Shape3D*)luaL_checkudata(L, idx, SHAPE_MT);
+    if (s && s->magic != LT::LT_MAGIC_SHAPE) luaL_error(L, "Light.Physics3D.Shape: type confusion at arg #%d", idx);
+    return s;
 }
 static Body3D* CheckBody(lua_State* L, int idx) {
-    return (Body3D*)luaL_checkudata(L, idx, BODY_MT);
+    auto* b = (Body3D*)luaL_checkudata(L, idx, BODY_MT);
+    if (b && b->magic != LT::LT_MAGIC_PHY3D_B) luaL_error(L, "Light.Physics3D.Body: type confusion at arg #%d", idx);
+    return b;
 }
 static World3D* CheckWorld(lua_State* L, int idx) {
-    return (World3D*)luaL_checkudata(L, idx, WORLD_MT);
+    auto* w = (World3D*)luaL_checkudata(L, idx, WORLD_MT);
+    if (w && w->magic != LT::LT_MAGIC_PHY3D_W) luaL_error(L, "Light.Physics3D.World: type confusion at arg #%d", idx);
+    return w;
 }
 
 static void PushVec3(lua_State* L, const btVector3& v) {

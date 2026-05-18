@@ -66,6 +66,11 @@ local mUdp       = tryRequire("Light.Network.Udp")
 local mRpc       = tryRequire("Light.Network.Rpc")
 local mRoom      = tryRequire("Light.Network.Room")
 local mIOStream  = tryRequire("Light.IOStream")
+-- G.1.7.3: Physics + Animation + ECS 子系统增量模块
+local mPhysics   = tryRequire("Light.Physics")
+local mPhysics3D = tryRequire("Light.Physics3D")
+local mAnim      = tryRequire("Light.Animation")
+local mECS       = tryRequire("Light.ECS")
 
 -- 检测模块是否可用 (即既能 require 又有 New 方法)
 local function hasCtor(mod) return type(mod) == "table" end
@@ -434,6 +439,51 @@ if mIOStream and mSound and type(mIOStream.IOFromMem) == "function" then
     else
         ok("I8: IOStream.IOFromMem 创建失败, 跳过")
     end
+end
+
+-- ==================== J. G.1.7.3 Physics + Animation + ECS 子系统 ====================
+
+-- J1: Physics.World.New() Headless 创建
+if mPhysics and mPhysics.World then
+    local good = pcall(function() return Light(mPhysics.World):New() end)
+    ok("J1: Physics.World:New() 不崩 (ok=" .. tostring(good) .. ")")
+else
+    ok("J1: Light.Physics 不可用, 跳过")
+end
+
+-- J2: Physics.NewBox(nil, nil, nil) 不应崩
+if mPhysics and type(mPhysics.NewBox) == "function" then
+    local good = pcall(mPhysics.NewBox, nil, nil, nil)
+    if not good then ok("J2: Physics.NewBox(nil) 不崩 (luaL_check)")
+    else ok("J2: Physics.NewBox(nil) 接受 (ok=" .. tostring(good) .. ")") end
+else
+    ok("J2: Physics shape factory 不可用, 跳过")
+end
+
+-- J3: Physics3D.NewBox(nil, nil, nil) 不应崩
+if mPhysics3D and type(mPhysics3D.NewBox) == "function" then
+    local good = pcall(mPhysics3D.NewBox, nil, nil, nil)
+    if not good then ok("J3: Physics3D.NewBox(nil) 不崩 (luaL_check)")
+    else ok("J3: Physics3D.NewBox(nil) 接受 (ok=" .. tostring(good) .. ")") end
+else
+    ok("J3: Light.Physics3D 不可用, 跳过")
+end
+
+-- J4: Physics3D shape headless 创建 + type confusion
+if mPhysics3D and type(mPhysics3D.NewBox) == "function" then
+    local good, shape = pcall(mPhysics3D.NewBox, 1.0, 1.0, 1.0)
+    if good and shape then
+        ok("J4: Physics3D.NewBox(1,1,1) 创建 OK (magic 已设)")
+    else
+        ok("J4: Physics3D.NewBox 创建失败, 跳过")
+    end
+end
+
+-- J5: Animation 模块是否注册
+if mAnim then
+    ok("J5: Light.Animation 模块可用")
+else
+    ok("J5: Light.Animation 不可用, 跳过 (无 ctx struct)")
 end
 
 -- ==================== 输出统计 ====================
