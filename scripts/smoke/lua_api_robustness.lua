@@ -28,9 +28,18 @@ local function ok(msg) print("PASS: " .. msg); pass = pass + 1 end
 local function ng(msg) print("FAIL: " .. msg); fail = fail + 1 end
 
 -- 显式 require 关键模块, 注册 ctor (require 失败也不应崩 smoke)
+-- 部分模块 (e.g. Light.Data) 在 Light 启动时已预挂全局, 需 fallback 到 Light.XXX
 local function tryRequire(name)
     local good, mod = pcall(require, name)
-    return good and mod or nil
+    if good and mod then return mod end
+    -- fallback: 解析 Light.X.Y 全局路径
+    local cur = _G
+    for part in string.gmatch(name, "[^.]+") do
+        if type(cur) ~= "table" then return nil end
+        cur = cur[part]
+        if cur == nil then return nil end
+    end
+    return cur
 end
 
 local mImage     = tryRequire("Light.Graphics.Image")
