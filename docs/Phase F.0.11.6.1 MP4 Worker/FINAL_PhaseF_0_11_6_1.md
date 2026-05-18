@@ -2,7 +2,7 @@
 
 > **交付日期**：2026-05-18
 > **基线**：Phase F.0.11.6 (MP4 录屏主线程同步编码)
-> **commit**：`d506ad7` (`main`)
+> **commits**：`d506ad7` (worker thread) + `8bdd888` (A1 ring buffer + zero-copy)
 
 ---
 
@@ -16,17 +16,19 @@
 
 ### 主线程负担 (per recorded frame)
 
-| 步骤 | F.0.11.6 同步 | F.0.11.6.1 worker | 备注 |
-|------|---------------|-------------------|------|
-| `ReadbackDefaultFB` | ~3-5ms | ~3-5ms | 不变 (PBO async 路径未启用 mp4 模式) |
-| Y 翻转 (1080p) | ~0.5ms | **0** (移到 worker) | — |
-| `sws_scale` RGBA→YUV | ~3-5ms | **0** (移到 worker) | — |
-| `avcodec_send_frame` | ~0.5ms | **0** (移到 worker) | — |
-| `avcodec_receive_packet` (libx264 medium CRF 23) | **~20-30ms** | **0** (移到 worker) | 主要瓶颈 |
-| `av_interleaved_write_frame` | ~0.5ms | **0** (移到 worker) | — |
-| **新增**: `vector::assign` (8MB memcpy) | — | ~2ms | 主线程拷贝到 staging |
-| **新增**: `mutex::lock` + `queue::push` | — | <0.1ms | — |
-| **总计** | **25-40ms** | **~5-7ms** | **降低 80-85%** |
+| 步骤 | F.0.11.6 同步 | F.0.11.6.1 worker | F.0.11.6.1.A1 ring | 备注 |
+|------|---------------|-------------------|---------------------|------|
+| `ReadbackDefaultFB` | ~3-5ms | ~3-5ms | ~3-5ms | 不变 (PBO async 路径未启用 mp4 模式) |
+| Y 翻转 (1080p) | ~0.5ms | **0** | **0** | 移到 worker |
+| `sws_scale` RGBA→YUV | ~3-5ms | **0** | **0** | 移到 worker |
+| `avcodec_send_frame` | ~0.5ms | **0** | **0** | 移到 worker |
+| `avcodec_receive_packet` (libx264 medium) | **~20-30ms** | **0** | **0** | 主要瓶颈, 移到 worker |
+| `av_interleaved_write_frame` | ~0.5ms | **0** | **0** | 移到 worker |
+| `std::vector buf` 临时分配 (8MB heap) | — | ~0.5ms | **0** | A1 用 ring buffer 预分配 |
+| `Readback → vector buf` | — | (同上) | **直写 slot** | A1 zero-copy |
+| `vector::assign` (8MB CPU memcpy) | — | ~2ms | **0** | A1 zero-copy |
+| `mutex::lock` + ring index push | — | <0.1ms | <0.1ms | — |
+| **总计** | **25-40ms** | **~5-7ms** | **~3-5ms** | **A1 在 worker 基础上再降 ~30%** |
 
 ### 编码 throughput
 
@@ -124,25 +126,59 @@ e:\jinyiNew\Light\lumen-master\build\src\light\Release\light.exe `
 
 1. **录屏期间瞬时主线程 push 阻塞**: 若主线程渲染速度 > worker 编码速度 (40+fps 渲染 / 30fps 编码), queue 会满, 主线程 push 时阻塞 ~25ms 等 worker 消化 1 帧。这是 back-pressure 的预期行为, 不会漏帧但会**主动降速**主线程到 worker 编码速度。
 
-2. **memcpy 8MB / frame 主线程开销**: 1080p RGBA full frame 拷贝约 ~2ms。后续可优化为 ring buffer (Open 时预分配 16 个 staging buffer, push/pop 仅交换指针)。当前 vector::assign 简单可靠, 收益已足够明显。
+2. ~~**memcpy 8MB / frame 主线程开销**~~: ✅ **A1 已解决** (见 §八), zero-copy 路径 `Readback` 直写 ring buffer slot, 主线程 8MB memcpy 已消除.
 
-3. **Close 同步阻塞**: `worker.join()` 会等 queue 完全 drain, 1080p × 16 帧 × 30ms = ~480ms 最坏情况。用户体感: 按 M 停止录屏后偶尔会卡 0.5s。可后续加进度提示。
+3. **Close 同步阻塞**: `worker.join()` 会等 ring 完全 drain, 1080p × 16 帧 × 30ms = ~480ms 最坏情况。用户体感: 按 M 停止录屏后偶尔会卡 0.5s。可后续加进度提示。
 
 ---
 
-## 八. 后续优化候选 (低优先级)
+## 八. A1 增量优化 (2026-05-18 后续交付)
 
-- **A1**: Ring buffer 替换 `std::queue<std::vector>`, 主线程 push 仅指针交换 (主线程开销 ~2ms → ~0.1ms)
+### 8.1 设计
+
+将 `std::queue<FrameJob>` 替换为固定大小 (16) 的 ring buffer + 暴露 zero-copy 写入 API:
+
+- `Slot ring[16]` 在 `Open()` 时一次性预分配每个 slot 的 RGBA buffer (`assign(w*h*4, 0)`), 后续永不 realloc
+- 新增 `AcquireWriteSlot(frame_idx)` 返当前 tail slot 的 buffer 指针 (ring 满则阻塞等 worker)
+- 新增 `CommitWriteSlot()` 推进 tail + 通知 worker
+- 主线程 `RecordTickHook` 改为: `Acquire → Readback 直写 slot → Commit`, 跳过中间 `std::vector buf` 拷贝
+
+### 8.2 关键不变量
+
+- **Worker 持有 `ring[head]` 期间 slot 占位**: 锁内仅记录 head 引用, 不立即 head++/count--; 锁外 encode 完成后才推进 head + 减 count + notify_not_full. 主线程在 `cv_not_full` 上等 `count < kRingSize`, 永不会覆盖 worker 正在用的 slot.
+- **`WriteRGBA` 兼容入口保留**: 内部 = `Acquire + memcpy + Commit`, 旧调用代码不需改.
+- **Readback 失败仍 Commit**: 简化逻辑 — Readback 失败时直接 Commit (worker 编码一帧坏数据), 避免 ring 永久卡住.
+
+### 8.3 性能收益
+
+| 指标 | 改造前 (worker) | 改造后 (ring) | 降幅 |
+|------|-----------------|----------------|------|
+| 主线程 push 路径开销 | ~2ms (vector::assign 8MB memcpy) | ~0ms (zero-copy) | 100% |
+| 主线程 push 路径 heap alloc | ~0.5ms (vector 临时分配) | 0 (ring 预分配) | 100% |
+| **主线程 mp4 路径总开销** | **~5-7ms** | **~3-5ms** | **~30%** |
+| 内存峰值 | 不稳定 (queue 大小波动) | 稳定 128 MB (16 × 8MB) | — |
+
+### 8.4 commit
+
+`8bdd888` — Ring buffer + zero-copy AcquireWriteSlot/CommitWriteSlot
+
+---
+
+## 九. 后续优化候选 (低优先级)
+
 - **A2**: PBO async readback 接入 mp4 模式 (复用 `ReadbackDefaultFBAsync`), 主线程 readback 不 stall GPU
 - **A3**: H264 NVENC 路径 (硬件编码, 编码 1080p < 5ms/frame, 取消 back-pressure 风险)
+- **A4**: Readback 失败时加 `CancelWriteSlot` API (现状: 直接 Commit 编码坏帧, 简单但理论上 mp4 偶现一帧噪点)
 
 ---
 
-## 九. 文件变更
+## 十. 文件变更
 
-| 文件 | 行数变更 | 说明 |
-|------|----------|------|
-| `@e:\jinyiNew\Light\ChocoLight\src\record_mp4.cpp` | +135 / -56 | worker thread + state + helper 抽取 |
+| 文件 | F.0.11.6.1 | F.0.11.6.1.A1 | 说明 |
+|------|-----------|---------------|------|
+| `@e:\jinyiNew\Light\ChocoLight\src\record_mp4.cpp` | +135 / -56 | +99 / -45 | worker / ring buffer |
+| `@e:\jinyiNew\Light\ChocoLight\include\record_mp4.h` | — | +18 / -3 | 新 API 声明 |
+| `@e:\jinyiNew\Light\ChocoLight\src\light_graphics.cpp` | — | +22 / -11 | RecordTickHook zero-copy |
 
-**commit**: `d506ad7` (`main`)
+**commits**: `d506ad7` + `8bdd888` (`main`)
 **author**: Cascade-assisted refactor

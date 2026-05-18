@@ -58,12 +58,13 @@
   - 进一步完善对错误传参的 C++ 侧容错, 避免导致 Engine Crash。
   - 完善 Lua 端的热重载 (Hot Reload) 机制, 不仅仅是 LUT 的热重载, 还包括 Lua 脚本本身逻辑的热重载。
 
-### ✅ [已交付 2026-05-18] Phase F.0.11.6.1 — MP4 录屏 Worker Thread 编码
+### ✅ [已交付 2026-05-18] Phase F.0.11.6.1 — MP4 录屏 Worker Thread 编码 + A1 Ring Buffer
 * `record_mp4.cpp` 加 worker thread + queue + back-pressure (commit `d506ad7`)
-* 主线程帧时 25-40ms → ~5-7ms (降低 80-85%)
+* A1: ring buffer + zero-copy `AcquireWriteSlot/CommitWriteSlot` API (commit `8bdd888`)
+* 主线程帧时 25-40ms → ~3-5ms (降低 85-90%, A1 在 worker 基础上再降 30%)
 * API 完全兼容 (Lua 不感知); encoder state 严格 worker thread 独占
 * 文档: `docs/Phase F.0.11.6.1 MP4 Worker/FINAL_PhaseF_0_11_6_1.md`
-* 后续候选: ring buffer (A1) / PBO async readback 接入 mp4 (A2) / NVENC 硬编 (A3)
+* 后续候选: PBO async readback 接入 mp4 (A2) / NVENC 硬编 (A3) / CancelWriteSlot (A4)
 
 ---
 
