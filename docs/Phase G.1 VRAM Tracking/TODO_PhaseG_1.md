@@ -1,6 +1,7 @@
 # Phase G.1 — VRAM Tracking TODO (v2+ 候选)
 
 > Phase G.1 已交付 (commit `ef91120`, CI 全平台绿, 13/13 smoke PASS).
+> **Phase G.1.1 已交付** (commit `fe916c3`, CI 全平台绿, 14/14 smoke PASS) — P0 全部闭合.
 > 本文档记录用户/未来扩展可能需要的事项. **无任何阻塞 TODO**.
 
 ## 一. 用户配置 TODO
@@ -9,28 +10,16 @@
 
 ## 二. v2 扩展候选 (按优先级)
 
-### P0 (高价值, 实现简单)
+### ✅ P0 已全部交付 — Phase G.1.1 (commit `fe916c3`)
 
-#### 1. Bloom mipmap chain 跟踪
-- **价值**: Bloom 是大块占用 (1080p ≈ 30 MB, 6-7 levels mipmap)
-- **改动**: 1 处 hook 在 `bloom_renderer.cpp::CreateRT`
-- **公式**: `base × (1 + 1/4 + 1/16 + ... ) ≈ base × 4/3`
-- **估时**: 0.5h
+详见 `docs/Phase G.1.1 VRAM Tracking v1.1/FINAL_PhaseG_1_1.md`.
 
-#### 2. SSAO RT 跟踪 (occlusion + blur)
-- **价值**: 1 项 R8/R16F 占 ~2-4 MB
-- **改动**: 1 处 hook 在 `ssao_renderer.cpp`
-- **估时**: 0.5h
-
-#### 3. Auto Exposure luminance RT 跟踪
-- **价值**: R16F 1x1 (1 KB), 体积小但完整性高
-- **改动**: 1 处 hook 在 `auto_exposure_renderer.cpp`
-- **估时**: 0.5h
-
-#### 4. TAAU outputSceneTex 主动 Track
-- **现状**: 仅 ReleaseRT 路径已 Untrack, CreateRT 路径未 Track (TAAU 创建 outputSceneTex 在另一函数)
-- **改动**: 找到 TAAU outputSceneTex 创建点, 加 1 行 Track
-- **估时**: 0.3h
+| 项 | 状态 | 实际改动 |
+|----|------|----------|
+| 1. Bloom mipmap chain 跟踪 | ✅ | `bloom_renderer.cpp` Enable / ReleasePyramid 各 N 次 Track/Untrack (per-level) |
+| 2. SSAO RT 跟踪 | ✅ | depthTex DEPTH24 + AO×2 R16F |
+| 3. Auto Exposure luminance RT | ✅ | base 级 R16F (mipmap chain 简化不计) |
+| 4. TAAU outputSceneTex 主动 Track | ✅ | `OnTAAURenderScaleChanged` 内补 Track, 与 ReleaseRT Untrack 形成闭环 |
 
 ### P1 (中价值, 改动适中)
 

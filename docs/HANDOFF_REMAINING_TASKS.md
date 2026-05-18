@@ -45,7 +45,8 @@
 ### 2. 内存与显存管理优化 (Memory & VRAM Profiling)
 * **需求**:
   - ✅ [Phase G.1 已交付] 补充引擎级的显存 (VRAM) 追踪 — `Light.Graphics.GetMemoryStats()` / `ResetMemoryStats()` (commit `ef91120` + `a544fcf`)
-  - **遗留**: 用户 Image / ImageData / Mesh / Font / Bloom mipmap 跟踪 (留 v2, 见 `docs/Phase G.1 VRAM Tracking/TODO_PhaseG_1.md`)
+  - ✅ [Phase G.1.1 已交付] Bloom / SSAO / AE / TAAU outputSceneTex 跟踪 (commit `fe916c3`)
+  - **遗留 v1.2 P1**: 用户 Image / ImageData / Mesh / Font 跟踪 (见 `docs/Phase G.1 VRAM Tracking/TODO_PhaseG_1.md`)
   - **遗留**: Lua 垃圾回收 (GC) 与 C++ 侧资源的生命周期绑定强化。确保无主资源被及时 `glDeleteTextures`。
 
 ### 3. 多线程与物理逻辑分离 (Tick vs Render)
@@ -129,17 +130,32 @@
 * smoke `gpumem.lua` **13/13 PASS** (headless graceful skip), CI 全 6 平台绿
 * 文档: `docs/Phase G.1 VRAM Tracking/{ALIGNMENT,DESIGN,FINAL,TODO}_PhaseG_1.md`
 
+### ✅ [已交付 2026-05-18] Phase G.1.1 — VRAM Tracking v1.1 (Bloom + SSAO + AE + TAAU)
+* **闭合 G.1 P0 TODO 4 项**: 复用 `LT::GpuMem`, 零架构变更, 零新 API
+* **新增跟踪 4 类 (9 unique items)**:
+  - Bloom pyramid (RGBA16F per-level, 5 levels @ 1080p ≈ 22 MB)
+  - SSAO depthTex (DEPTH24 full-res) + AO×2 (R16F half-res)
+  - AE luminance (R16F base 级, mipmap 简化不计)
+  - HDR outputSceneTex (TAAU, RGBA16F at outputW×outputH) — G.1 漏 Track 修复
+* **hook 算法严格对齐 backend**: Bloom mip 递推与 `render_gl33.cpp:5688-5689` 完全一致; SSAO depthTex 用 DEPTH24 (与 SSR DEPTH32F 区分)
+* **多 instance 友好**: Bloom 4 + AE 4 instance, count 自然累加
+* commit `fe916c3` (6 files +308 LOC, 含 ALIGNMENT + FINAL)
+* smoke `gpumem.lua` **14/14 PASS** (G.1 13 + G.1.1 +1), CI 全 6 平台绿
+* 实绩: 估时 1.8h, 实际 1.6h (-11%)
+* 文档: `docs/Phase G.1.1 VRAM Tracking v1.1/{ALIGNMENT,FINAL}_PhaseG_1_1.md`
+
 ---
 
-## 3. 下一步候选方向 (Phase G.1 收尾后)
+## 3. 下一步候选方向 (Phase G.1.1 收尾后)
 
 ### 选项 A — 非渲染基础架构 (推荐, 长期价值高)
 1. ~~**VRAM tracking + `Light.Graphics.GetMemoryStats()`**~~: ✅ 已交付 Phase G.1
-2. **Tick-Render 解耦**: 60Hz 逻辑 + VSync 渲染, 为未来插帧 / 网络同步铺路
+2. **Tick-Render 解耦**: 60Hz 逻辑 + VSync 渲染, 为未来插帧 / 网络同步铺路 (估时 8-15h, 架构级)
 3. ~~**Lua 热重载**: 不仅 LUT, 包括脚本逻辑热重载~~: ✅ 已交付 Phase G.0
-4. **Lua API 容错**: 错误传参不应 crash, 全 API audit + nil+err 返回
-5. **VRAM v2 扩展**: Bloom mipmap / 用户 Image / Mesh / Font 跟踪 (见 `docs/Phase G.1 VRAM Tracking/TODO_PhaseG_1.md`)
-6. **Async Asset Management**: 异步资源加载 (Phase 2 §1, 大场景加载不卡顿)
+4. **Lua API 容错 audit**: 错误传参不应 crash, 全 API audit + nil+err 返回 (估时 4-6h, **推荐顺序处理优先**)
+5. ~~**Bloom mipmap / SSAO / AE / TAAU**~~: ✅ 已交付 Phase G.1.1
+6. **VRAM v1.2**: 用户 Image / Mesh / Font 跟踪 (估时 5h, 见 G.1 TODO P1)
+7. **Async Asset Management**: 异步资源加载 (Phase 2 §1, 大场景加载不卡顿, 估时 6-10h)
 
 ### 选项 B — 渲染管线收尾
 1. **F.1.2 Velocity Nearest-Filter**: 仅当 F.1.1 真机测试 ghost 严重时启用
