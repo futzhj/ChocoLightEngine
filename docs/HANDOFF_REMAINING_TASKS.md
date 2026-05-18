@@ -104,6 +104,16 @@
 * **未真机验收**: 用户需自行验证音质 / 同步 / AAC encoder 可用性 (作者无音频测试环境)
 * 文档: `docs/Phase F.0.11.6.5 MP4 Audio Capture/FINAL_PhaseF_0_11_6_5.md`
 
+### ✅ [已交付 2026-05-18] Phase G.0 — Lua 脚本热重载 (Light.Reload + lumen RestartScript)
+* **新模块 Light.Reload (12 API)**: Module / File / Preserve / ResetState / WatchModule / UnwatchModule / SetErrorHandler / GetLastError / Stats / Clear / RestartScript / IsRestartPending
+* **lumen-master 主入口热重启**: pMain 加 restart 循环, ChocoLight 通过 GetProcAddress 反查 light.exe 导出符号 (LUMEN_EXPORT)
+* **状态保留**: `Preserve(key, factory)` 用 Lua registry 持 state, reload 后 angle/frame 等保留
+* **错误恢复**: reload 失败保留老 package.loaded + SetErrorHandler hook + GetLastError 查询
+* **demo_hot_reload 示例**: 旋转方块 + 在线改色 + 修 syntax error 不挂 demo
+* smoke `reload.lua` **41 PASS / 0 FAIL** + `reload_restart_e2e.lua` 端到端 PASS, 全 8 套 smoke 零退化
+* lumen 加载模块数 97 → 98
+* 文档: `docs/Phase G.0 Lua Hot Reload/{ALIGNMENT,DESIGN,FINAL}_PhaseG_0.md`
+
 ---
 
 ## 3. 下一步候选方向 (Phase F.0.11.6.1 收尾后)

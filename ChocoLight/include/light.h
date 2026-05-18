@@ -180,6 +180,10 @@ LIGHT_API int luaopen_Light_Graphics_Shader(lua_State* L);
 // 资源热重载 (Phase 3)
 LIGHT_API int luaopen_Light_HotReload(lua_State* L);
 
+// Lua 脚本热重载 (Phase G.0) — Light.HotReload 之上的语义层
+//   提供 Module/File/WatchModule/Preserve/RestartScript 等接口
+LIGHT_API int luaopen_Light_Reload(lua_State* L);
+
 // UI 控件库 (Phase 3)
 LIGHT_API int luaopen_Light_UI_Widget(lua_State* L);
 

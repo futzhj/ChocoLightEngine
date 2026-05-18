@@ -399,6 +399,34 @@ struct MainArgs {
     int status;
 };
 
+// ==================== Phase G.0 — Lua 脚本热重载 (RestartScript) ====================
+// ChocoLight 中 Light.Reload.RestartScript(path) 调 lumen_RequestRestart(path).
+// pMain 主循环检测到 s_restartPending=true 后, 退出当前脚本 main → dofile(target).
+// mobile/web 平台无 pMain 主循环, 此机制不生效 (Light.Reload 桩内部直接返 false).
+static char s_restartTargetPath[1024] = {0};
+static bool s_restartPending = false;
+
+// Windows: __declspec(dllexport) 让 Light.dll 可通过 GetProcAddress 反查 light.exe 内符号
+#ifdef _WIN32
+#  define LUMEN_EXPORT __declspec(dllexport)
+#else
+#  define LUMEN_EXPORT __attribute__((visibility("default")))
+#endif
+
+extern "C" LUMEN_EXPORT void lumen_RequestRestart(const char* path) {
+    if (path && *path) {
+        size_t n = strlen(path);
+        if (n >= sizeof(s_restartTargetPath)) n = sizeof(s_restartTargetPath) - 1;
+        memcpy(s_restartTargetPath, path, n);
+        s_restartTargetPath[n] = '\0';
+        s_restartPending = true;
+    }
+}
+
+extern "C" LUMEN_EXPORT bool lumen_IsRestartPending() {
+    return s_restartPending;
+}
+
 
 // ==================== Light.dll engine auto-preload ====================
 // Dynamically load Light.dll from exe directory and preload all luaopen_* modules
@@ -444,6 +472,8 @@ static const struct { const char *modName; const char *procName; } g_lightModule
     {"Light.ECS",                 "luaopen_Light_ECS"},
     {"Light.Scene",               "luaopen_Light_Scene"},
     {"Light.HotReload",           "luaopen_Light_HotReload"},
+    // Phase G.0 — Lua 脚本热重载 (Module / File / Preserve / WatchModule / RestartScript)
+    {"Light.Reload",              "luaopen_Light_Reload"},
     {"Light.Crypto",              "luaopen_Light_Crypto"},
     {"Light.IO",                  "luaopen_Light_IO"},
     {"Light.Storage",             "luaopen_Light_Storage"},
@@ -747,6 +777,18 @@ static int pMain(Lumen::IState *L) {
     if (s->status != 0) return 0;
     if (script)
         s->status = handleScript(L, argv, script);
+    // Phase G.0 — Lua 脚本热重载: 主脚本退出后若 lumen_RequestRestart 被调过, 重新 dofile 目标脚本
+    //   循环以支持多次连续 restart; 每次 restart 后清 pending flag
+    //   重新执行的脚本若再次失败, 退出循环并报告
+    while (s->status == 0 && s_restartPending) {
+        s_restartPending = false;
+        const char* target = s_restartTargetPath;
+        if (target && *target) {
+            s->status = doFile(L, target);
+        } else {
+            break;
+        }
+    }
     if (s->status != 0) return 0;
     if (has_i)
         dotty(L);
