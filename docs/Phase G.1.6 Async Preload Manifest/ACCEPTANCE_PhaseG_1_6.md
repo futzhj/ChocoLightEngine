@@ -143,17 +143,35 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 ---
 
-## 六. 待 CI 实测确认
+## 六. CI 实测结果 — 全绿 (commit `bd8ded3`)
+
+CI run: [26041676477](https://github.com/futzhj/ChocoLightEngine/actions/runs/26041676477) (2026-05-18 15:00 UTC)
 
 | 项 | 状态 |
 |----|------|
-| Windows 编译 | ⏳ 等 commit + push |
-| Linux 编译 | ⏳ |
-| macOS 编译 | ⏳ |
-| iOS 编译 | ⏳ |
-| Android 编译 | ⏳ |
-| Emscripten 编译 | ⏳ |
-| Windows smoke runtime | ⏳ |
+| Windows 编译 + smoke | ✅ 8/8 PASS |
+| Linux 编译 | ✅ |
+| macOS 编译 | ✅ |
+| iOS 编译 | ✅ |
+| Android 编译 | ✅ |
+| Emscripten 编译 | ✅ |
+| 总耗时 | ~7 min (与 G.1.1/G.1.5 同量级) |
+| 全套 smoke 零回归 | ✅ TAAU/VRAM/GLTF Async/Audio/SSR/Bloom/Tonemap 等 30+ smoke 全 PASS |
+
+实测 Windows smoke 输出 (`scripts/smoke/asset_loader_preload.lua`):
+
+```
+PASS: Light.AssetLoader API surface ok
+PASS: Case 1: empty manifest -> cb(0, 0, {}) synchronous
+PASS: Case 2: 3 missing images -> cb(0, 3, errors) with path reverse-lookup
+PASS: Case 3: 6-type mixed missing manifest -> all routed to corresponding LoadXxxAsync
+PASS: Case 4: missing optional fields + unknown fields tolerated
+PASS: Case 5: default params (font.size=16, mesh.primIdx=0, withMaterial=false)
+PASS: Case 6: argument errors raise (nil manifest / non-func cb / entry typo / missing path)
+PASS: Case 7: BatchHandle method signatures (GetProgress / IsDone / Cancel / __tostring)
+PASS: Case 8: Cancel after-done is no-op (advisory, idempotent)
+=== Phase G.1.6 Async Preload Manifest smoke: ALL TESTS PASSED ===
+```
 
 ---
 
@@ -176,12 +194,18 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 ---
 
-## 八. 验收结论
+## 八. 验收结论 — 全部通过
 
-**功能完整**: ✅ 8 用例 smoke 全覆盖核心场景
+**功能完整**: ✅ 8 用例 smoke 全覆盖核心场景, CI 全 PASS
 **API 设计**: ✅ 与现有 LoadAsync 模式对齐
 **架构集成**: ✅ 零侵入 asset_loader.h/cpp
 **文档完整**: ✅ ALIGNMENT/DESIGN/TASK/FINAL/ACCEPTANCE/TODO 6 文档
-**待 CI 实测**: ⏳ 6 平台 build + Windows smoke
+**CI 6 平台**: ✅ windows / linux / macos / ios / android / web 全绿
+**回归测试**: ✅ 全套既有 smoke 零回归 (TAAU/VRAM/GLTF Async/Audio/SSR/Bloom/Tonemap 等)
 
-**总结**: 代码与文档已完整, 可提交 commit + push, 等 CI 验证.
+**总结**: Phase G.1.6 已完整交付。commit `bd8ded3`, CI run [26041676477](https://github.com/futzhj/ChocoLightEngine/actions/runs/26041676477) 6/6 平台绿, Windows runtime smoke 8/8 PASS。
+
+**Phase G.1 系列累计交付状态**:
+- G.1.0 / G.1.1 / G.1.2 / G.1.3 / G.1.5 / G.1.6 全部交付完成
+- 完整覆盖异步资源加载从基础 worker thread 到 manifest 聚合的所有需求
+- HANDOFF §2 异步资源加载方向闭合

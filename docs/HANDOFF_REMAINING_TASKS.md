@@ -43,7 +43,7 @@
 * **零侵入设计**: 仅 binding 层聚合, 不动 `asset_loader.h/cpp` / `light_ui.cpp` / 8 个现有 LoadAsync
 * **立即 Error 同步路径**: worker 未启动时 sync fallback 失败 → binding 层同步更新 ud → cb 立即触发
 * **边界全覆盖**: 空 manifest / 未识别字段静默忽略 / 错参 luaL_argerror / Cancel 幂等
-* commit `pending` (6 files 新增 + 3 files 修改); smoke 8 用例
+* commit `bd8ded3` (6 新增 + 3 修改); CI run [26041676477](https://github.com/futzhj/ChocoLightEngine/actions/runs/26041676477) 6/6 平台绿, Windows smoke 8/8 PASS
 * 文档: `docs/Phase G.1.6 Async Preload Manifest/{ALIGNMENT,DESIGN,TASK,FINAL,ACCEPTANCE,TODO}_PhaseG_1_6.md`
 
 ### ✅ 1. 异步资源加载 (Async Asset Management) — 已完整交付 (G.1.0 → G.1.6)

@@ -284,18 +284,37 @@ meshes 字段 `withMaterial=true` 时, 每个 mesh sub-future 内部并行解码
 
 ---
 
-## 十一. 验收状态
+## 十一. 验收状态 — CI 全绿 (commit `bd8ded3`)
 
 | 项 | 状态 |
 |----|------|
 | 代码实现完成 | ✅ |
-| 文档 (ALIGNMENT/DESIGN/TASK/FINAL) | ✅ |
-| smoke 编写 | ✅ |
+| 文档 (ALIGNMENT/DESIGN/TASK/FINAL/ACCEPTANCE/TODO) | ✅ |
+| smoke 8 用例 | ✅ |
 | CMake / lumen 集成 | ✅ |
-| CI 接入 | ✅ |
-| 本地编译 | ⚠️ 待 CI 验证 |
-| Windows runtime smoke | ⚠️ 待 CI |
-| 6 平台 build green | ⚠️ 待 CI |
+| CI 接入 (Windows runtime + 6 平台 build) | ✅ |
+| **CI run [26041676477](https://github.com/futzhj/ChocoLightEngine/actions/runs/26041676477)** | ✅ 6/6 绿 |
+| Windows runtime smoke | ✅ 8/8 PASS |
+| 6 平台 build green | ✅ windows / linux / macos / ios / android / web |
+
+### CI 实测输出 (Windows job, 2026-05-18 15:06 UTC)
+
+```
+PASS: Light.AssetLoader API surface ok
+PASS: Case 1: empty manifest -> cb(0, 0, {}) synchronous
+PASS: Case 2: 3 missing images -> cb(0, 3, errors) with path reverse-lookup
+PASS: Case 3: 6-type mixed missing manifest -> all routed to corresponding LoadXxxAsync
+PASS: Case 4: missing optional fields + unknown fields tolerated
+PASS: Case 5: default params (font.size=16, mesh.primIdx=0, withMaterial=false)
+PASS: Case 6: argument errors raise (nil manifest / non-func cb / entry typo / missing path)
+PASS: Case 7: BatchHandle method signatures (GetProgress / IsDone / Cancel / __tostring)
+PASS: Case 8: Cancel after-done is no-op (advisory, idempotent)
+=== Phase G.1.6 Async Preload Manifest smoke: ALL TESTS PASSED ===
+```
+
+### 全套各期 smoke 零回归
+
+同 run 中 30+ smoke 脚本 (TAAU / VRAM / GLTF Async / Audio / SSR / Bloom / Tonemap / etc) 全部 PASS, 本期未引入任何回归.
 
 ---
 
