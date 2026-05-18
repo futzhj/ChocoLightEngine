@@ -279,10 +279,27 @@ Gfx.StopRecord()
 
 ## 七. 后续候选 (Phase F.0.11.6.3+)
 
-### A9 — ROI 录屏 (录指定 viewport 区域, 中等复杂度)
+### ✅ A9 — ROI 录屏 (已完成 2026-05-18, commit `3bb7d3b`)
 - 需求: 录某个 UI 元素 / 局部 debug, 不录整屏
-- 改造: `ReadbackDefaultFB` 加 ROI 参数 / mp4 输出尺寸 = ROI 尺寸 / Open 时拍板
-- 工作量: ~3h (含 readback 接口变更回归测试)
+- 实现策略 (比预估简单, ~1.5h 完成):
+  - `ReadbackDefaultFB` 接口已支持 x/y/w/h 参数, PBO 自适应 w/h → 不需改 backend
+  - 仅在 `light_graphics::g_record` 加 `roi_x/y/w/h` + 抽 helper `calc_readback_region_`
+  - Lua: `opts.roi = { x, y, w, h }` (屏幕左上原点, libx264 偶数对齐自动 round down)
+  - Open 时 mp4 尺寸 = ROI 尺寸; Open 失败若 ROI 越界 (早失败比 silent skip 友好)
+  - 运行中 ROI 越界 (窗口缩小) → CancelWriteSlot + warn, mp4 帧序不断
+- 代码:
+  - `@e:\jinyiNew\Light\ChocoLight\src\light_graphics.cpp:5241-5248` (RecordState ROI 字段)
+  - `@e:\jinyiNew\Light\ChocoLight\src\light_graphics.cpp:5263-5289` (`calc_readback_region_` helper)
+  - `@e:\jinyiNew\Light\ChocoLight\src\light_graphics.cpp:5309-5366` (RecordTickHook mp4 分支用 ROI)
+  - `@e:\jinyiNew\Light\ChocoLight\src\light_graphics.cpp:5575-5587` (Lua opts.roi 解析)
+  - `@e:\jinyiNew\Light\ChocoLight\src\light_graphics.cpp:5633-5648` (Open ROI 越界检查 + mp4 尺寸用 ROI)
+- smoke: `@e:\jinyiNew\Light\scripts\smoke\screenshot.lua:163-181` (+4 用例: 合法 / 非 table / 部分字段 / 不传 roi)
+- Lua 示例:
+  ```lua
+  Gfx.RecordMP4("ui.mp4", { fps=30, roi = { x=100, y=50, w=640, h=480 } })
+  -- mp4 输出尺寸 = 640x480, 仅录屏幕 [100,50 ~ 740,530] 区域
+  -- 不传 roi = 录全屏 (兼容旧行为)
+  ```
 
 ### A13 — 多轨音频 (高价值, 高工作量)
 - 需求: 录屏带声音是用户最直接体感

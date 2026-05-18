@@ -80,6 +80,13 @@
 * smoke `screenshot` 增 19 用例 → 61 PASS / 0 FAIL; 全 7 套 smoke 回归 PASS
 * 文档: `docs/Phase F.0.11.6.2 MP4 Recording Ext/FINAL_PhaseF_0_11_6_2.md`
 
+### ✅ [已交付 2026-05-18] Phase F.0.11.6.3.A9 — MP4 ROI 录屏
+* **A9 ROI**: `Gfx.RecordMP4(path, {roi={x,y,w,h}})` — 仅录屏幕指定矩形区域, mp4 输出尺寸 = ROI 尺寸
+* 坐标系: 屏幕左上原点 (Lua 友好), 内部转 GL 左下原点; libx264 偶数对齐自动 round down
+* 越界保护: Open 时早失败 + 运行中窗口缩小 → CancelWriteSlot + warn (帧序不断)
+* commit `3bb7d3b` (2 files +106/-5); smoke +4 用例 → screenshot 65 PASS
+* 实现策略比预估简单 (~1.5h): 不改 backend, 仅在 light_graphics 层加 ROI 字段 + helper
+
 ---
 
 ## 3. 下一步候选方向 (Phase F.0.11.6.1 收尾后)
