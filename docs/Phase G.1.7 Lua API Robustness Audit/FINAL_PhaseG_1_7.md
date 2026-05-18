@@ -1,8 +1,9 @@
 # Phase G.1.7 — Lua API Robustness Audit — 最终交付报告
 
-> **完成日期**: 2026-05-19
-> **总耗时**: ~14h (vs 36-46h 预估; 实际通过 batch edit + 合并 commit 大幅缩短)
-> **覆盖文件**: 24 个核心文件 (vs 79 计划; 剩余文件均为无 ctx 函数库, 已 sanity 验证)
+> **完成日期**: 2026-05-19 (含 P1 闭合)
+> **总耗时**: ~16h (vs 36-46h 预估; 实际通过 batch edit + 合并 commit 大幅缩短)
+> **覆盖文件**: 25 个核心文件 / 46 ctx struct
+> (剩余文件均为无 ctx 函数库, 已 sanity 验证)
 
 ---
 
@@ -56,6 +57,12 @@
 - WDFContext + NEMContext (light_plugins.cpp)
 - 其他 input / 设备 / 系统 / 工具 / 进程库 文件均无 ctx struct
 
+✅ **G.1.7 P1 闭合 (2 文件 / 8 ctx)**:
+- Physics3D 剩余: Joint3D + Character3D + Vehicle3D + SoftBody3D
+- Animation pointer-holder: Skeleton + AnimationClip + Animator + SkinnedMeshAsset
+  - 策略: 不改 8B userdata, 在 pointed-to struct 加 magic 首字段
+  - ZERO ABI break
+
 ### 1.2 改造统计
 
 | 子阶段 | 文件 | Ctx struct | Lines+ | Lines- |
@@ -65,7 +72,8 @@
 | G.1.7.2 | 8 | 11 | ~191 | ~16 |
 | G.1.7.3 | 2 | 8 | ~99 | ~16 |
 | G.1.7.4 | 1 | 2 | ~15 | ~4 |
-| **总计** | **23** | **34** | **~2255** | **~99** |
+| G.1.7 P1 | 2 | 8 | ~65 | ~8 |
+| **总计** | **25** | **42** | **~2320** | **~107** |
 
 ---
 

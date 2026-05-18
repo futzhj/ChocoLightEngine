@@ -108,9 +108,25 @@ G.1.7.1 ~ G.1.7.5 — 全部完成 [2026-05-19]
 进度统计
 ============================================================
 
-完成子阶段: 6 / 6 (100%) ✅
-完成文件:   24 / 79 (30.4%) — 剩余文件均为无 ctx 函数库
-累计 smoke: 39+ 用例
-累计耗时:   ~14h / 36-46h 预估 (节约 60%, 通过 batch edit + 合并 commit)
+完成子阶段: 6 / 6 (100%) ✅ + P1 闭合 ✅
+完成文件:   25 / 79 (31.6%) — 剩余文件均为无 ctx 函数库
+完成 ctx:   42 个 magic 改造 (G.1.7.0~4 34 个 + P1 8 个)
+累计 smoke: 34 PASS / 0 FAIL 持续保持
+累计耗时:   ~16h / 36-46h 预估 (节约 60%, 通过 batch edit + 合并 commit)
+
+============================================================
+G.1.7 P1 闭合 [2026-05-19]
+============================================================
+
+✅ Physics3D 剩余 4 struct: Joint3D/Character3D/Vehicle3D/SoftBody3D
+✅ Animation 4 struct: Skeleton/AnimationClip/Animator/SkinnedMeshAsset
+   策略: pointer-holder 模式不改 ABI, 在 pointed-to struct 加 magic 首字段
+✅ 新增 7 个 LT_MAGIC_* 常量 (CHARACTER/VEHICLE/SOFTBODY/SKELETON/ANIMCLIP/ANIMATOR/SKINMESH)
+✅ CI 验证: 6/6 平台全绿 (run 26055572055), smoke 34 PASS / 0 FAIL
+
+剩余 TODO (P2/P3 可选):
+- MaterialDesc 间接保护 (P2)
+- 100+ fuzz smoke 扩展 (P2)
+- magic perf benchmark + 公共 API 文档 + 审计报告 + 静态分析工具 (P3)
 
 详见 FINAL_PhaseG_1_7.md + TODO_PhaseG_1_7.md
