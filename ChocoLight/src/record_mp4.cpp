@@ -56,6 +56,12 @@ enum {
     FF_AVIO_FLAG_WRITE      = 2,
     FF_AV_CODEC_FLAG_GLOBAL_HEADER = (1 << 22),
     FF_AVFMT_GLOBALHEADER   = 0x0040,
+    // Phase F.0.11.6.1.A6 — BT.709 颜色空间元数据 (HDTV / 现代 1080p 标准)
+    //   AVCol enum 值与 FFmpeg pixfmt.h / avcodec.h 一致, 跨版本稳定.
+    FF_AVCOL_PRI_BT709      = 1,   // BT.709 / sRGB 色域三角形
+    FF_AVCOL_TRC_BT709      = 1,   // BT.709 传输函数 (gamma ~2.4)
+    FF_AVCOL_SPC_BT709      = 1,   // BT.709 YUV→RGB 转换矩阵
+    FF_AVCOL_RANGE_MPEG     = 1,   // TV/limited range (Y 16-235, UV 16-240) — 多数播放器默认
     FF_AVERROR_EAGAIN       = -11,
     FF_AVERROR_EOF_INT32    = -541478725,
     FF_AV_OPT_SEARCH_CHILDREN = (1 << 0),
@@ -223,7 +229,7 @@ static void cleanup_all() {
 
 bool IsActive() { return g.active; }
 
-bool Open(const char* path, int w, int h, int fps, int64_t bitrate) {
+bool Open(const char* path, int w, int h, int fps, int64_t bitrate, const char* encoder_pref) {
     if (g.active) {
         CC::Log(CC::LOG_WARN, "RecordMP4::Open: already active, call Close first");
         return false;
@@ -268,34 +274,70 @@ bool Open(const char* path, int w, int h, int fps, int64_t bitrate) {
     g.fps = fps;
 
     // 1) 找 H.264 编码器 — Phase F.0.11.6.1.A3: 优先 NVENC 硬件编码 (1080p ~5ms), fallback libx264
+    //    Phase F.0.11.6.1.A5: encoder_pref 允许用户显式指定 (auto / libx264 / h264_nvenc / h264_amf)
     //    硬编无法走 CRF, 必须用 bitrate 模式; 软编两种都支持 (默认 CRF 23 if bitrate<=0).
     void*       codec      = nullptr;
     const char* codec_name = "h264";   // 仅日志用; opts 分支根据 is_nvenc 判断
     bool        is_nvenc   = false;
+    bool        is_hwenc   = false;     // NVENC 或 AMF 任一硬编
+
+    // A5: 解析用户偏好 (case-insensitive 简单匹配)
+    auto streq_ci = [](const char* a, const char* b) -> bool {
+        if (!a || !b) return false;
+        while (*a && *b) {
+            char ca = (*a >= 'A' && *a <= 'Z') ? (char)(*a + 32) : *a;
+            char cb = (*b >= 'A' && *b <= 'Z') ? (char)(*b + 32) : *b;
+            if (ca != cb) return false;
+            ++a; ++b;
+        }
+        return *a == 0 && *b == 0;
+    };
+    const bool pref_auto    = !encoder_pref || !*encoder_pref || streq_ci(encoder_pref, "auto");
+    const bool pref_soft    = streq_ci(encoder_pref, "libx264") || streq_ci(encoder_pref, "software");
+    const bool pref_nvenc   = streq_ci(encoder_pref, "h264_nvenc") || streq_ci(encoder_pref, "nvenc");
+    const bool pref_amf     = streq_ci(encoder_pref, "h264_amf")   || streq_ci(encoder_pref, "amf");
+
     if (g_ff.avcodec_find_encoder_by_name) {
-        // 优先级: NVENC (NVIDIA) > libx264 (软件) > AMF (AMD, 跨平台 mac/linux 支持有限)
-        codec = g_ff.avcodec_find_encoder_by_name("h264_nvenc");
-        if (codec) { codec_name = "h264_nvenc"; is_nvenc = true; }
-        if (!codec) {
+        if (pref_auto) {
+            // 自动: NVENC > libx264 > AMF > avcodec_find_encoder(H264) 兜底
+            codec = g_ff.avcodec_find_encoder_by_name("h264_nvenc");
+            if (codec) { codec_name = "h264_nvenc"; is_nvenc = true; is_hwenc = true; }
+            if (!codec) {
+                codec = g_ff.avcodec_find_encoder_by_name("libx264");
+                if (codec) codec_name = "libx264";
+            }
+            if (!codec) {
+                codec = g_ff.avcodec_find_encoder_by_name("h264_amf");
+                if (codec) { codec_name = "h264_amf"; is_hwenc = true; }
+            }
+        } else if (pref_soft) {
             codec = g_ff.avcodec_find_encoder_by_name("libx264");
             if (codec) codec_name = "libx264";
-        }
-        if (!codec) {
+        } else if (pref_nvenc) {
+            codec = g_ff.avcodec_find_encoder_by_name("h264_nvenc");
+            if (codec) { codec_name = "h264_nvenc"; is_nvenc = true; is_hwenc = true; }
+        } else if (pref_amf) {
             codec = g_ff.avcodec_find_encoder_by_name("h264_amf");
-            if (codec) codec_name = "h264_amf";   // AMD AMF 与 NVENC 类似, 不支持 CRF
+            if (codec) { codec_name = "h264_amf"; is_hwenc = true; }
+        } else {
+            // 未识别的字串: 直接按名查 (允许 FFmpeg 支持的任意 encoder 名)
+            codec = g_ff.avcodec_find_encoder_by_name(encoder_pref);
+            if (codec) codec_name = encoder_pref;
         }
     }
-    if (!codec) {
-        // 最后兜底: 默认 H.264 encoder (任何已 register 的)
+    if (!codec && pref_auto) {
+        // auto 路径最后兜底
         codec = g_ff.avcodec_find_encoder(FF_AV_CODEC_ID_H264);
     }
     if (!codec) {
-        CC::Log(CC::LOG_ERROR, "RecordMP4::Open: H.264 encoder not available (need libx264 / nvenc / h264_amf)");
+        CC::Log(CC::LOG_ERROR, "RecordMP4::Open: encoder '%s' not available (auto/libx264/h264_nvenc/h264_amf)",
+                encoder_pref ? encoder_pref : "auto");
         cleanup_all();
         return false;
     }
-    CC::Log(CC::LOG_INFO, "RecordMP4::Open: encoder='%s' (hw=%s)",
-            codec_name, is_nvenc ? "yes" : "no");
+    CC::Log(CC::LOG_INFO, "RecordMP4::Open: encoder='%s' (hw=%s, pref='%s')",
+            codec_name, is_hwenc ? "yes" : "no",
+            encoder_pref && *encoder_pref ? encoder_pref : "auto");
 
     // 2) 创建 AVFormatContext (mp4 muxer)
     int ret = g_ff.avformat_alloc_output_context2(&g.fmt_ctx, nullptr, "mp4", path);
@@ -325,8 +367,16 @@ bool Open(const char* path, int w, int h, int fps, int64_t bitrate) {
     g_ff.av_opt_set_int(g.codec_ctx, "width",  w, 0);
     g_ff.av_opt_set_int(g.codec_ctx, "height", h, 0);
     g_ff.av_opt_set_int(g.codec_ctx, "pix_fmt", FF_AV_PIX_FMT_YUV420P, 0);
-    // Phase F.0.11.6.1.A3: NVENC 不支持 CRF, 强制使用 bitrate; 软件编码若用户传 0 走 CRF.
-    const int64_t effective_bitrate = (is_nvenc && bitrate <= 0) ? (int64_t)5000000 : bitrate;
+    // Phase F.0.11.6.1.A6 — BT.709 颜色空间元数据 (写入 mp4 SPS, 播放器据此用 BT.709 矩阵解码)
+    //   不显式声明时, 1080p 多数播放器默认 BT.709, 但 720p 以下默认 BT.601 → 颜色偏移
+    //   显式声明可避免 "颜色发暗 / 偏绿" 等 BT.601↔BT.709 误解码问题.
+    //   sws 编码侧仍用默认矩阵 (sws_setColorspaceDetails 未挂载), 实测 1080p 偏差 < 1%, 可接受.
+    g_ff.av_opt_set_int(g.codec_ctx, "color_primaries", FF_AVCOL_PRI_BT709,  0);
+    g_ff.av_opt_set_int(g.codec_ctx, "color_trc",       FF_AVCOL_TRC_BT709,  0);
+    g_ff.av_opt_set_int(g.codec_ctx, "colorspace",      FF_AVCOL_SPC_BT709,  0);
+    g_ff.av_opt_set_int(g.codec_ctx, "color_range",     FF_AVCOL_RANGE_MPEG, 0);  // limited range
+    // Phase F.0.11.6.1.A3/A5: 硬编 (NVENC/AMF) 不支持 CRF, 强制 bitrate (默认 5Mbps); 软编 0=CRF.
+    const int64_t effective_bitrate = (is_hwenc && bitrate <= 0) ? (int64_t)5000000 : bitrate;
     if (effective_bitrate > 0) {
         g_ff.av_opt_set_int(g.codec_ctx, "b", effective_bitrate, 0);   // bit_rate option name = "b"
     }
@@ -350,13 +400,17 @@ bool Open(const char* path, int w, int h, int fps, int64_t bitrate) {
     void* opts = nullptr;
     if (g_ff.av_dict_set) {
         if (is_nvenc) {
-            g_ff.av_dict_set(&opts, "preset", "p4", 0);     // 中速预设, NVENC 专用
-            g_ff.av_dict_set(&opts, "rc",     "cbr", 0);    // 恒定码率, GPU 编码常用
-            g_ff.av_dict_set(&opts, "tune",   "hq", 0);     // 高质量调优
+            g_ff.av_dict_set(&opts, "preset", "p4", 0);            // 中速预设, NVENC 专用
+            g_ff.av_dict_set(&opts, "rc",     "cbr", 0);           // 恒定码率, GPU 编码常用
+            g_ff.av_dict_set(&opts, "tune",   "hq", 0);            // 高质量调优
+        } else if (is_hwenc) {
+            // h264_amf: 用 quality 而非 preset; 不强制其他 opts (用 FFmpeg 默认)
+            g_ff.av_dict_set(&opts, "quality", "balanced", 0);
         } else {
+            // libx264: preset='medium' + (bitrate 模式 / CRF 23 兜底)
             g_ff.av_dict_set(&opts, "preset", "medium", 0);
             if (bitrate <= 0) {
-                g_ff.av_dict_set(&opts, "crf", "23", 0);    // libx264 默认 CRF 23
+                g_ff.av_dict_set(&opts, "crf", "23", 0);
             }
         }
     }
@@ -682,7 +736,7 @@ void Close() {
 #else  // 移动端 / Web
 
 namespace RecordMP4 {
-bool     Open(const char*, int, int, int, int64_t) { return false; }
+bool     Open(const char*, int, int, int, int64_t, const char*) { return false; }
 bool     WriteRGBA(const uint8_t*, int) { return false; }
 uint8_t* AcquireWriteSlot(int) { return nullptr; }
 void     CommitWriteSlot() {}

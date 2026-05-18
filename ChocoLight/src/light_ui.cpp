@@ -72,6 +72,9 @@ extern void InputProcessEvent(const PlatformWindow::Event& ev);
 
 // Phase F.0.11 — 录屏 tick hook (实现在 light_graphics.cpp)
 extern "C" void Light_Graphics_RecordTickHook(int win_w, int win_h);
+// Phase F.0.11.6.1.A7 — 录屏指示器 OSD (实现在 light_graphics.cpp)
+//   注意调用顺序: RecordTickHook 之后, SwapBuffers 之前 — 确保 readback 不含 OSD
+extern "C" void Light_Graphics_DrawRecordOSD(int win_w, int win_h);
 
 // ==================== 全局状态 ====================
 
@@ -744,6 +747,9 @@ static int l_Window_Call(lua_State* L) {
         int win_w = 0, win_h = 0;
         PlatformWindow::GetWindowSize(g_mainWindow, &win_w, &win_h);
         Light_Graphics_RecordTickHook(win_w, win_h);
+        // Phase F.0.11.6.1.A7: OSD 红点闪烁 — 在 readback (RecordTickHook) 之后绘制,
+        //   保证 mp4 内不含 OSD; 仅在屏幕显示给用户视觉反馈 (录屏中).
+        Light_Graphics_DrawRecordOSD(win_w, win_h);
     }
 
     PlatformWindow::SwapBuffers(g_mainWindow);

@@ -26,8 +26,15 @@ namespace RecordMP4 {
 /// @param w, h     视频宽高 (像素), 必须 > 0 且偶数 (libx264 要求)
 /// @param fps      帧率 (例如 30, 60)
 /// @param bitrate  目标码率 bit/s (例如 5_000_000 = 5 Mbps); 0 = libx264 自动 (CRF 模式)
+/// @param encoder_pref  编码器偏好 (Phase F.0.11.6.1.A5):
+///                      nullptr / "" / "auto" — 自动 (NVENC > libx264 > AMF, 默认行为)
+///                      "libx264"             — 强制软件编码
+///                      "h264_nvenc"          — 强制 NVIDIA GPU 硬编 (无 GPU 则 Open 失败)
+///                      "h264_amf"            — 强制 AMD GPU 硬编 (无 GPU 则 Open 失败)
+///                      "software"            — "libx264" 别名 (语义清晰)
 /// @return true=成功, false=失败 (FFmpeg 缺失 / encoder 不可用 / 文件创建失败)
-bool Open(const char* path, int w, int h, int fps, int64_t bitrate);
+bool Open(const char* path, int w, int h, int fps, int64_t bitrate,
+          const char* encoder_pref = nullptr);
 
 /// 写入一帧 RGBA8 数据 (与 RecordPNG 同模式, OpenGL bottom-left 原点 — 内部翻转).
 /// @param rgba   长度 w*h*4 字节, 当前帧的 RGBA8

@@ -5234,6 +5234,10 @@ struct RecordState {
     // Phase F.0.11.6 — 录屏模式: 0=PNG sequence (F.0.11 默认) / 1=MP4 H.264 (FFmpeg encoder)
     //   mode=1 时 dir_prefix 当作 mp4 path 用 (用户传 "out.mp4" 而非目录前缀)
     int         mode          = 0;
+    // Phase F.0.11.6.1.A7 — 录屏期间屏幕角落显示 ● REC 闪烁标记 (默认开)
+    //   绘制时机: l_Window_Call 内 RecordTickHook 之后, SwapBuffers 之前
+    //   → readback 看不到 OSD, mp4 内不会出现红点 (只在屏幕显示)
+    bool        show_osd      = true;
 };
 static RecordState g_record;
 
@@ -5347,6 +5351,43 @@ extern "C" void Light_Graphics_RecordTickHook(int win_w, int win_h) {
     }
 }
 
+/// Phase F.0.11.6.1.A7 — 录屏指示器 OSD (左上角红点闪烁)
+/// 调用时机: light_ui::l_Window_Call 在 Light_Graphics_RecordTickHook 之后, SwapBuffers 之前.
+/// → readback 已完成, OSD 不进 mp4; 仅显示在屏幕给用户视觉反馈.
+/// 实现: 直接走 g_render->DrawArrays immediate 路径 (不走 BatchRenderer, 因 EndFrame 已调).
+extern "C" void Light_Graphics_DrawRecordOSD(int win_w, int win_h) {
+    if (!g_record.active || !g_record.show_osd) return;
+    if (!g_render || win_w <= 0 || win_h <= 0) return;
+
+    // OSD 几何: 左上角距边 12px, 16x16 红色方块 (OpenGL 像素坐标系, 左下原点)
+    const float pad  = 12.0f;
+    const float size = 16.0f;
+    const float x0   = pad;
+    const float x1   = pad + size;
+    const float y0   = (float)win_h - pad - size;
+    const float y1   = (float)win_h - pad;
+
+    // 闪烁: 1 秒周期 (60 ticks @ 60fps), 前 30 ticks 满红, 后 30 ticks 暗红
+    //   tick_count 来自 RecordTickHook 累计帧数 (与 frame_skip 无关, 始终递增)
+    const int   phase = g_record.tick_count % 60;
+    const float alpha = (phase < 30) ? 1.0f : 0.35f;
+
+    RenderVertex verts[4];
+    for (int i = 0; i < 4; ++i) {
+        verts[i].r = 1.0f; verts[i].g = 0.0f; verts[i].b = 0.0f; verts[i].a = alpha;
+        verts[i].u = 0.0f; verts[i].v = 0.0f;
+        verts[i].z = 0.0f;
+    }
+    // Quad: BL, BR, TR, TL (OpenGL DrawMode::Quads 顺序与 GL_QUADS 一致)
+    verts[0].x = x0; verts[0].y = y0;
+    verts[1].x = x1; verts[1].y = y0;
+    verts[2].x = x1; verts[2].y = y1;
+    verts[3].x = x0; verts[3].y = y1;
+
+    // immediate 提交 (跳过 BatchRenderer, EndFrame 已调过)
+    g_render->DrawArrays(DrawMode::Quads, verts, 4);
+}
+
 /// @lua_api Light.Graphics.Screenshot
 /// @brief Phase F.0.11 — 同步截屏当前 default fb 全屏 → PNG
 /// @param path string  输出文件路径 (调用方需保证目录存在; PNG 编码 RGBA8)
@@ -5451,6 +5492,10 @@ static int l_Graphics_RecordMP4(lua_State* L) {
     int64_t bitrate = 5000000;   // 5 Mbps default
     int max_frames  = 0;
     int frame_skip  = 1;
+    // Phase F.0.11.6.1.A5: 显式 encoder 偏好 (auto / libx264 / h264_nvenc / h264_amf)
+    //   prefer_hwenc=false 等价于 encoder="libx264"; 两者并存时 encoder 优先级高.
+    const char* encoder_pref = nullptr;
+    bool prefer_hwenc = true;   // 默认开 (现有行为)
     if (lua_gettop(L) >= 2 && lua_type(L, 2) == LUA_TTABLE) {
         lua_getfield(L, 2, "fps");
         if (lua_isnumber(L, -1)) fps = (int)lua_tointeger(L, -1);
@@ -5464,7 +5509,16 @@ static int l_Graphics_RecordMP4(lua_State* L) {
         lua_getfield(L, 2, "frame_skip");
         if (lua_isnumber(L, -1)) frame_skip = (int)lua_tointeger(L, -1);
         lua_pop(L, 1);
+        // A5: encoder + prefer_hwenc
+        lua_getfield(L, 2, "encoder");
+        if (lua_isstring(L, -1)) encoder_pref = lua_tostring(L, -1);
+        lua_pop(L, 1);
+        lua_getfield(L, 2, "prefer_hwenc");
+        if (lua_isboolean(L, -1)) prefer_hwenc = lua_toboolean(L, -1) != 0;
+        lua_pop(L, 1);
     }
+    // A5: prefer_hwenc=false 时强制软件编码 (除非用户已显式指定 encoder)
+    if (!encoder_pref && !prefer_hwenc) encoder_pref = "libx264";
 
     if (fps <= 0 || fps > 240) {
         lua_pushnil(L);
@@ -5502,9 +5556,10 @@ static int l_Graphics_RecordMP4(lua_State* L) {
         return 2;
     }
 
-    if (!RecordMP4::Open(path, w, h, fps, bitrate)) {
+    if (!RecordMP4::Open(path, w, h, fps, bitrate, encoder_pref)) {
         lua_pushnil(L);
-        lua_pushstring(L, "RecordMP4: encoder open failed (FFmpeg DLL missing / libx264 unavailable / file write error)");
+        lua_pushfstring(L, "RecordMP4: encoder open failed (encoder='%s'; check FFmpeg DLL / GPU driver / file path)",
+                        encoder_pref ? encoder_pref : "auto");
         return 2;
     }
 
@@ -5625,6 +5680,25 @@ static int l_Graphics_SetRecordAsync(lua_State* L) {
 /// @return boolean true=async, false=sync
 static int l_Graphics_IsRecordAsync(lua_State* L) {
     lua_pushboolean(L, g_record.use_async ? 1 : 0);
+    return 1;
+}
+
+/// @lua_api Light.Graphics.SetRecordOSD
+/// @brief Phase F.0.11.6.1.A7 — 切换录屏指示器 OSD 显示开关
+/// @param enabled boolean true=显示左上角红点闪烁 (默认); false=不显示
+/// @return boolean true (始终成功)
+/// @note 录屏中可随时切换 (无副作用); OSD 不会进 mp4 (绘制时机晚于 readback)
+static int l_Graphics_SetRecordOSD(lua_State* L) {
+    g_record.show_osd = lua_toboolean(L, 1) != 0;
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+/// @lua_api Light.Graphics.GetRecordOSD
+/// @brief Phase F.0.11.6.1.A7 — 查询录屏 OSD 是否启用
+/// @return boolean true=显示, false=不显示
+static int l_Graphics_GetRecordOSD(lua_State* L) {
+    lua_pushboolean(L, g_record.show_osd ? 1 : 0);
     return 1;
 }
 
@@ -5943,6 +6017,9 @@ static const luaL_Reg graphics_funcs[] = {
     // Phase F.0.11.2 — 异步 readback (PBO ping-pong)
     {"SetRecordAsync",             l_Graphics_SetRecordAsync},
     {"IsRecordAsync",              l_Graphics_IsRecordAsync},
+    // Phase F.0.11.6.1.A7 — 录屏指示器 OSD (左上角红点闪烁, 不进 mp4)
+    {"SetRecordOSD",               l_Graphics_SetRecordOSD},
+    {"GetRecordOSD",               l_Graphics_GetRecordOSD},
     // Phase F.0.11.4 — HDR 截图 (RGBA16F → .hdr Radiance RGBE)
     {"ScreenshotHDR",              l_Graphics_ScreenshotHDR},
     // Phase F.0.11.5 — EXR 截图 (RGBA16F → .exr OpenEXR half/float, 影视后期工业标准)
