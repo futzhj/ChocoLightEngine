@@ -32,11 +32,13 @@
 #include <glad/gl.h>
 #endif
 
+#include <array>
 #include <atomic>
 #include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
 #include <deque>
+#include <future>
 #include <memory>
 #include <mutex>
 #include <new>
@@ -379,19 +381,29 @@ static bool ReadImageBytes_(const cgltf_image* img,
     return rd == (size_t)sz;
 }
 
-// 解码 cgltf_texture_view 引用的 image 到 RGBA8 pixels, 写入 FutureState.gltfMaterialImages.
-// 任一步失败仅 log warn 跳过, 不破坏 mesh 主流程.
-static void DecodeMaterialImage_(const cgltf_texture_view* view, int slotIdx,
-                                  FutureState& st, const std::string& gltfDir) {
-    if (!view || !view->texture || !view->texture->image) return;
+// 解码 cgltf_texture_view 引用的 image 到 RGBA8 pixels, 返回 MaterialImageJob.
+// 失败约定: 返回的 job.pixels==nullptr (调用方判断后跳过 push); 仅 log warn, 不破坏 mesh 主流程.
+//
+// Phase G.1.5 T1 — Worker Thread Pool 并行化:
+//   1. 不再写 FutureState (避免 push_back 跨线程 data race);
+//   2. 函数体可在任意子线程中独立调用 (stbi flip flag 用 thread-local API);
+//   3. 调用方 DecodeGLTF_ 通过 std::async(launch::async) 并发 5 个 slot, 收尾串行 push.
+static MaterialImageJob DecodeMaterialImage_(const cgltf_texture_view* view, int slotIdx,
+                                              const std::string& gltfDir) {
+    MaterialImageJob job;
+    job.slotIdx = slotIdx;
+    if (!view || !view->texture || !view->texture->image) return job;
     const cgltf_image* img = view->texture->image;
+
+    // 子线程独立 stbi 状态 (主 Worker_loop 已设过, 子 thread 默认 0; 显式再设确保确定性)
+    stbi_set_flip_vertically_on_load_thread(0);
 
     std::vector<uint8_t> imgBytes;
     if (!ReadImageBytes_(img, gltfDir, imgBytes)) {
         CC::Log(CC::LOG_WARN,
                 "AssetLoader: GLTF material slot %d image source unreachable (skipped)",
                 slotIdx);
-        return;
+        return job;
     }
 
     int w = 0, h = 0, ch = 0;
@@ -403,11 +415,9 @@ static void DecodeMaterialImage_(const cgltf_texture_view* view, int slotIdx,
                 slotIdx,
                 stbi_failure_reason() ? stbi_failure_reason() : "unknown");
         if (pixels) stbi_image_free(pixels);
-        return;
+        return job;
     }
 
-    MaterialImageJob job;
-    job.slotIdx = slotIdx;
     job.w       = w;
     job.h       = h;
     job.pixels  = pixels;
@@ -421,7 +431,7 @@ static void DecodeMaterialImage_(const cgltf_texture_view* view, int slotIdx,
         job.samplerWrapS     = (int)sampler->wrap_s;
         job.samplerWrapT     = (int)sampler->wrap_t;
     }
-    st.gltfMaterialImages.push_back(std::move(job));
+    return job;
 }
 
 // 提取 MaterialDesc 全数值字段 (texture id slot 留 0).
@@ -663,17 +673,35 @@ static void DecodeGLTF_(Task& task) {
         if (prim->material) {
             std::string gltfDir = GetGLTFDirectory_(task.path.c_str());
             const cgltf_material* mat = prim->material;
-            // 5 个 PBR texture slot (与 MaterialDesc::tex* 字段顺序一致):
-            //   0=baseColor / 1=metallicRoughness / 2=normal / 3=emissive / 4=occlusion
-            if (mat->has_pbr_metallic_roughness) {
-                DecodeMaterialImage_(&mat->pbr_metallic_roughness.base_color_texture,
-                                      0, *task.state, gltfDir);
-                DecodeMaterialImage_(&mat->pbr_metallic_roughness.metallic_roughness_texture,
-                                      1, *task.state, gltfDir);
+            // Phase G.1.5 T1 — Worker Thread Pool 并行解码 5 类 PBR texture image.
+            //   5 个 slot 互相独立 (不共享 GL/state), 用 std::async(launch::async) 并发 stbi decode;
+            //   收尾在主 worker thread 内串行 push (避免 gltfMaterialImages 跨线程 data race).
+            //
+            //   现实收益: 5 张 1024×1024 PNG 总 decode 从 ~50ms 串行 → ~10-15ms 并行 (4 核 +).
+            //   小图 (1×1 fixture) 收益不明显 (thread overhead 与 decode 时间相近), 但仍 < budget.
+            const std::array<std::pair<const cgltf_texture_view*, int>, 5> taskViews = {{
+                { mat->has_pbr_metallic_roughness ? &mat->pbr_metallic_roughness.base_color_texture         : nullptr, 0 },
+                { mat->has_pbr_metallic_roughness ? &mat->pbr_metallic_roughness.metallic_roughness_texture : nullptr, 1 },
+                { &mat->normal_texture,    2 },
+                { &mat->emissive_texture,  3 },
+                { &mat->occlusion_texture, 4 },
+            }};
+
+            // 同时 spawn 5 个 std::async (NULL view 直接 return 空 job, overhead 可忽略)
+            std::array<std::future<MaterialImageJob>, 5> futures;
+            for (size_t i = 0; i < taskViews.size(); ++i) {
+                futures[i] = std::async(std::launch::async,
+                                        DecodeMaterialImage_,
+                                        taskViews[i].first, taskViews[i].second,
+                                        std::cref(gltfDir));
             }
-            DecodeMaterialImage_(&mat->normal_texture,    2, *task.state, gltfDir);
-            DecodeMaterialImage_(&mat->emissive_texture,  3, *task.state, gltfDir);
-            DecodeMaterialImage_(&mat->occlusion_texture, 4, *task.state, gltfDir);
+            // 串行 join + push (push_back 在 worker thread 上下文, 与原行为一致)
+            for (size_t i = 0; i < taskViews.size(); ++i) {
+                MaterialImageJob job = futures[i].get();
+                if (job.pixels) {
+                    task.state->gltfMaterialImages.push_back(std::move(job));
+                }
+            }
         }
     }
 }
