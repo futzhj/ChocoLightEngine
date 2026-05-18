@@ -13,13 +13,13 @@
 
 | 类别 | 文件数 | 占比 | 处理 |
 |------|--------|------|------|
-| **有 ctx struct (高/中风险)** | 25 | 31.6% | ✅ 全部 magic 改造 |
+| **有 ctx struct (高/中风险)** | 26 | 32.9% | ✅ 全部 magic 改造 |
 | **无 ctx (纯函数库)** | ~40 | ~50% | ✅ 已 sanity 验证 (无 type confusion 风险) |
-| **特殊 (handle id / POD)** | ~14 | ~17% | ✅ 决策不改造 (见 §3) |
+| **特殊 (handle id / POD)** | ~13 | ~17% | ✅ 决策不改造 (见 §3) |
 
 ### 1.2 Ctx struct 覆盖率
 
-**42 / 42** 已识别的 ctx struct 全部加 magic (100%):
+**43 / 43** 已识别的 ctx struct 全部加 magic (100%):
 
 - G.1.7.0: 10 ctx (Image / Canvas / Font / SQLite / AV / Video / Data / Http / Particles / Tilemap)
 - G.1.7.1: 3 ctx (Mesh / Shader / Surface)
@@ -27,6 +27,7 @@
 - G.1.7.3: 8 ctx (5 Box2D + 3 Bullet 核心)
 - G.1.7.4: 2 ctx (WDF + NEM)
 - P1: 8 ctx (4 Physics3D 剩余 + 4 Animation)
+- P2.1: 1 ctx (MaterialDesc wrapper, 创造出 Material userdata 路径)
 
 ---
 
@@ -65,13 +66,12 @@
 
 ## 三. 已知遗留 / 设计决策
 
-### 3.1 MaterialDesc (POD struct)
+### 3.1 MaterialDesc (已闭合 — P2.1) ✅
 
-- **文件**: `light_graphics_material.cpp`
-- **现状**: 仅 `luaL_checkudata` (Layer 1) 防护
-- **风险**: 低 — Layer 1 已足够防御 metatable 替换攻击
-- **遗留原因**: `MaterialDesc` 定义在 `render_backend.h`, 是 RenderBackend 核心 POD, 改 ABI 风险高
-- **后续建议**: 包一层 wrapper `MaterialUserdata { magic; desc; }` (TODO P2.1, 2h)
+- **文件**: `light_graphics_material.cpp` + `light_graphics_mesh.cpp`
+- **现状**: 双层防护 (Layer 1 + Layer 2 magic)
+- **实现策略**: wrapper struct 模式 — `MaterialUserdata { magic; desc; }`, 不动 `MaterialDesc` POD 极低 ABI 风险
+- **全局 helper**: 新增 `PushNewMaterialUserdata(L) -> MaterialDesc*` 走其他创建路径
 
 ### 3.2 ECS (handle id 模式)
 
@@ -126,7 +126,6 @@
 
 | 风险 | 等级 | 缓解 |
 |------|------|------|
-| MaterialDesc 单层防御 | 🟡 中 | Layer 1 已足够; P2.1 后续闭合 |
 | Use-after-free P1 部分覆盖 | 🟡 中 | 4 个 Physics3D struct + 4 个 Animation struct 暂未实现 DEAD 标记 |
 | 内存 corruption | 🔴 高 (理论) | 不可防御; 依赖 OS / hardware 保护 |
 | Lua VM bug | 🟢 低 | Lua 5.1 / LuaJIT 成熟稳定 |
@@ -143,8 +142,8 @@
 
 ### P2 (建议尽快做)
 
-1. **MaterialDesc wrapper** (2h): 闭合 §3.1 单层防御
-2. **fuzz smoke 100+ 扩展** (2h): 提高覆盖率到 100+ 用例
+1. ~~MaterialDesc wrapper~~ ✅ 已完成 (P2.1)
+2. ~~fuzz smoke 100+ 扩展~~ ✅ 已完成 (K 系列 41+ 用例, 当前 77 PASS)
 3. **Use-after-free 闭合 P1**: Physics3D + Animation 的 __gc 路径加 DEAD 标记 (1h)
 
 ### P3 (低优先级)
@@ -159,9 +158,9 @@
 
 ✅ **当前状态**: ChocoLight 已达到 **"Lua 端任意错参不崩"** 的安全基线.
 
-✅ **建议生产部署**: 当前实现质量足以支撑 production 环境.
+✅ **全部 ctx struct 双层防护** (43 / 43, P2.1 闭合 MaterialDesc).
 
-🟡 **建议后续改进**: P2 项目 (MaterialDesc / fuzz 扩展) 可在下次例行重构中实施.
+✅ **建议生产部署**: 当前实现质量足以支撑 production 环境.
 
 ❌ **不建议**: 移除任何 magic 校验代码 — 即使 metatable 名校验"足够", 双保险机制也是低成本高收益的实践.
 

@@ -321,11 +321,22 @@ int LT::PushBooleanError(lua_State* L, const char* msg); // push false, push msg
 
 ## 七. 已知例外 / 设计决策
 
-### 7.1 MaterialDesc 不动 magic
+### 7.1 Light.Graphics.Material (已闭合 — P2.1)
 
-`MaterialDesc` 定义在 `render_backend.h`, 是引擎核心 POD struct, 由 RenderBackend 直接消费. 改 layout 会破坏整个引擎 ABI.
+✅ **双层防护** (Layer 1 metatable + Layer 2 magic).
 
-**决策**: 仅依赖 `luaL_checkudata` + `MATERIAL_MT` metatable 名校验. 后续可考虑包一层 `MaterialUserdata { uint32_t magic; MaterialDesc desc; }` wrapper (TODO P2.1).
+**实现策略**: 因 `MaterialDesc` 定义在 `render_backend.h` 是 RenderBackend 核心 POD struct, 改 ABI 风险高, 改用 **wrapper struct** 模式:
+
+```cpp
+struct MaterialUserdata {
+    uint32_t     magic;   // = LT_MAGIC_MATERIAL
+    MaterialDesc desc;    // 嵌入原始 POD, 调用 RenderBackend 时传 &ud->desc
+};
+```
+
+**透明性**: 调用点 (e.g. `g_render->DrawMeshMaterial`) 不需要修改, `CheckMaterialUserdata` 仍返回 `const MaterialDesc*`.
+
+**跨模块创建**: 添加公开 helper `PushNewMaterialUserdata(L) -> MaterialDesc*` 供 `light_graphics_mesh.cpp` (glTF mesh load 路径) 调用.
 
 ### 7.2 Animation pointer-holder 模式
 
