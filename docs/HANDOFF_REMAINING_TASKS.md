@@ -58,19 +58,43 @@
   - 进一步完善对错误传参的 C++ 侧容错, 避免导致 Engine Crash。
   - 完善 Lua 端的热重载 (Hot Reload) 机制, 不仅仅是 LUT 的热重载, 还包括 Lua 脚本本身逻辑的热重载。
 
-### ✅ [已交付 2026-05-18] Phase F.0.11.6.1 — MP4 录屏 Worker + A1~A4 全套优化
+### ✅ [已交付 2026-05-18] Phase F.0.11.6.1 — MP4 录屏 Worker + A1~A7 全套优化
 * F.0.11.6.1: worker thread + queue + back-pressure (commit `d506ad7`)
 * A1: ring buffer + zero-copy `AcquireWriteSlot/CommitWriteSlot` (commit `8bdd888`)
 * **A4**: `CancelWriteSlot` API — Readback 失败精确取消, 不写坏帧
 * **A3**: NVENC 硬件编码优先 (libx264/AMF fallback), `preset='p4' rc='cbr' tune='hq'`
-* **A2**: PBO async readback 接入 mp4 (use_async=true), 主线程不 stall GPU
+* **A2**: PBO async readback 接入 mp4 (use_async=true), 主线程不 stall GPU (commit `81789dd`)
+* **A5**: Lua opts 显式 encoder pref (`encoder=...` / `prefer_hwenc=...`) — 用户可强制软编/硬编
+* **A6**: BT.709 color metadata (`colorspace/primaries/trc/range`) — 主流播放器颜色一致
+* **A7**: REC OSD 录屏指示器 (`DrawRecordOSD` 在 readback 之后绘制, 不进 mp4) + `Set/GetRecordOSD` API (commit `0e5487b` + `9b0507f`)
 * **累计性能**: 主线程帧时 25-40ms → ~0.5-2ms (~95% 降幅, 软编/硬编都达到)
 * API 完全兼容 (Lua 不感知); encoder state 严格 worker thread 独占
-* 文档: `docs/Phase F.0.11.6.1 MP4 Worker/FINAL_PhaseF_0_11_6_1.md`
-* 后续候选: Lua opts 字段 (A5) / 色空间默认 (A6) / REC OSD (A7)
+* 文档: `docs/Phase F.0.11.6.1 MP4 Worker/FINAL_PhaseF_0_11_6_1.md` (含十一章全部交付细节)
 
 ---
 
-## 3. 交接给新 AI 的启动指令建议
+## 3. 下一步候选方向 (Phase F.0.11.6.1 收尾后)
 
-> "请阅读 `docs/HANDOFF_REMAINING_TASKS.md` 了解目前引擎的进度。当前基线是 Phase F.2 (渲染架构补齐完结). 渲染管线方向已闭环 (10 后处理多实例 + TAAU 全联动 + 截图录屏). 下一步根据用户需求选择: (a) 非渲染基础架构 (async asset / VRAM tracking / Tick-Render 解耦 / Lua 健壮性 + 热重载), (b) F.1.2 Velocity nearest-filter, (c) F.0.11.6 worker thread 编码, (d) 其他用户特定需求. 请先确认用户优先级."
+### 选项 A — 非渲染基础架构 (推荐, 长期价值高)
+1. **VRAM tracking + `Light.Graphics.GetMemoryStats()`**: 多 instance HDR / TAA history / Dilation RT 显存占用追踪
+2. **Tick-Render 解耦**: 60Hz 逻辑 + VSync 渲染, 为未来插帧 / 网络同步铺路
+3. **Lua 热重载**: 不仅 LUT, 包括脚本逻辑热重载
+4. **Lua API 容错**: 错误传参不应 crash, 全 API audit + nil+err 返回
+
+### 选项 B — 渲染管线收尾
+1. **F.1.2 Velocity Nearest-Filter**: 仅当 F.1.1 真机测试 ghost 严重时启用
+2. **A8+**: MP4 多轨道音频 / 字幕 / 关键帧间隔 / 录屏 ROI
+
+### 选项 C — 工程化 / 工具链
+1. CI smoke 矩阵补全 (mp4 录屏 / async loading 端到端)
+2. 性能 profiling 工具集成 (Tracy / RenderDoc 接入)
+3. demo 美化 (demo_taau / demo_ssr OSD 整合)
+
+### 选项 D — 用户特定需求
+按用户拍板.
+
+---
+
+## 4. 交接给新 AI 的启动指令建议
+
+> "请阅读 `docs/HANDOFF_REMAINING_TASKS.md` 了解目前引擎的进度。当前基线是 **Phase F.0.11.6.1 (MP4 Worker A1~A7 全套优化交付完成)**. 渲染管线方向已闭环 (10 后处理多实例 + TAAU 全联动 + 截图录屏 + MP4 异步编码 95% 主线程降幅). 下一步参考 §3 候选方向, 请先确认用户优先级."
