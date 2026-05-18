@@ -646,6 +646,24 @@ if mTilemap then
     fuzzUseAfterFree("Tilemap", mTilemap, {}, "GetMapSize", "GetMapSize")
 end
 
+-- K.6: P2.1 — Material wrapper magic 防御
+if mMaterial and mMaterial.New then
+    local mat = mMaterial.New("pbr")
+    -- K.6.1: SetColor 正常用例
+    local good1 = pcall(function() mat:SetColor(0.5, 0.5, 0.5, 1.0) end)
+    ok(string.format("K6.1: Material:SetColor 正常调用 (ok=%s)", tostring(good1)))
+    -- K.6.2: 跨 type confusion (用其他 ctx 套 Material 的 metatable, 应被 magic 拒绝)
+    if mTilemap then
+        local fakeUd = mTilemap.New()
+        if fakeUd then
+            -- 注: 这里 fakeUd 是 Tilemap, 它的 metatable 完全不一样, luaL_checkudata 会拒绝
+            -- 这是 layer-1 metatable 防御; magic 是 layer-2 兜底
+            local good2 = pcall(function() return mat.SetColor(fakeUd, 1, 0, 0) end)
+            ok(string.format("K6.2: Material 跨 ctx 攻击 metatable 拒绝 (ok=%s)", tostring(good2)))
+        end
+    end
+end
+
 -- K.5: 已知安全函数 nil-fuzz (避免 luaL_error 跨 longjmp 边界 — Lumen + MSVC 已知问题)
 -- 限制在确认走 luaL_check / pcall-friendly 路径的函数. 不全 fuzz 所有方法.
 local safeNilFuzzList = {

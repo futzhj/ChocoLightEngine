@@ -93,14 +93,15 @@ constexpr uint32_t LT_MAGIC_HTTPCTX    = Magic4('H','T','T','P');  // light_netw
 constexpr uint32_t LT_MAGIC_EMITTER    = Magic4('E','M','I','T');  // light_particles.cpp
 constexpr uint32_t LT_MAGIC_TILEMAP    = Magic4('T','L','M','P');  // light_tilemap.cpp
 
-// G.1.7.1 — Graphics 子系统 (后续会话填充)
+// G.1.7.1 — 渲染子系统
 constexpr uint32_t LT_MAGIC_MESH       = Magic4('M','E','S','H');  // light_graphics_mesh.cpp
 constexpr uint32_t LT_MAGIC_SHADER     = Magic4('S','H','D','R');  // light_graphics_shader.cpp
+constexpr uint32_t LT_MAGIC_SURFACE    = Magic4('S','R','F','C');  // light_graphics_surface.cpp
+// G.1.7 P2.1 — Material wrapper (MaterialDesc POD 不动, wrapper struct 加 magic)
 constexpr uint32_t LT_MAGIC_MATERIAL   = Magic4('M','A','T','L');  // light_graphics_material.cpp
 constexpr uint32_t LT_MAGIC_SPRITE     = Magic4('S','P','R','T');  // light_graphics_spriteanimation.cpp
 constexpr uint32_t LT_MAGIC_LIGHT2D    = Magic4('L','I','T','2');  // light_lighting2d.cpp
 constexpr uint32_t LT_MAGIC_CAMERA     = Magic4('C','A','M','R');  // light_camera.cpp
-constexpr uint32_t LT_MAGIC_SURFACE    = Magic4('S','R','F','C');  // light_surface.cpp
 constexpr uint32_t LT_MAGIC_CURSOR     = Magic4('C','R','S','R');  // light_cursor.cpp
 
 // G.1.7.2 — Audio + Network 子系统

@@ -618,11 +618,10 @@ static int l_Mesh_LoadGLTF(lua_State* L) {
     lua_setmetatable(L, -2);
 
     // Phase AS.4.x: 附加 Material userdata
+    // Phase G.1.7 P2.1: 走 PushNewMaterialUserdata 以启用 magic 防御
     if (withMaterial) {
-        MaterialDesc* matUd = (MaterialDesc*)lua_newuserdata(L, sizeof(MaterialDesc));
+        MaterialDesc* matUd = PushNewMaterialUserdata(L);
         *matUd = matDesc;
-        luaL_getmetatable(L, MATERIAL_MT_NAME);
-        lua_setmetatable(L, -2);
         return 2;  // (Mesh, Material)
     }
     return 1;
@@ -668,13 +667,12 @@ static int MeshPushResult_(void* L_, AssetLoader::FutureState* state) {
     lua_setmetatable(L, -2);
 
     // 2) Phase G.1.5: with_material=true 时 push Material userdata (反序列化 MaterialDesc 字节)
+    // Phase G.1.7 P2.1: 走 PushNewMaterialUserdata 以启用 magic 防御
     if (state->gltfWithMaterial) {
         static_assert(sizeof(MaterialDesc) <= sizeof(state->gltfMaterialDesc),
                       "MaterialDesc exceeds gltfMaterialDesc[128] buffer; bump capacity in asset_loader.h");
-        MaterialDesc* matUd = (MaterialDesc*)lua_newuserdata(L, sizeof(MaterialDesc));
+        MaterialDesc* matUd = PushNewMaterialUserdata(L);
         memcpy(matUd, state->gltfMaterialDesc, sizeof(MaterialDesc));
-        luaL_getmetatable(L, MATERIAL_MT_NAME);
-        lua_setmetatable(L, -2);
         return 2;   // (Mesh, Material)
     }
     return 1;   // (Mesh) 仅 mesh, 与 G.1.0 行为一致
@@ -775,6 +773,8 @@ static int l_Mesh_LoadGLTFAsync(lua_State* L) {
 //   - integer / nil 缺省 -> 老路径 (DrawMesh + textureId)
 //   - userdata (Material) -> 新路径 (DrawMeshMaterial)
 extern "C" const MaterialDesc* CheckMaterialUserdata(lua_State* L, int idx);
+// Phase G.1.7 P2.1 — material wrapper push helper
+extern "C" MaterialDesc* PushNewMaterialUserdata(lua_State* L);
 
 static int l_Mesh_Draw(lua_State* L) {
     MeshUserdata* ud = CheckMesh(L, 1);

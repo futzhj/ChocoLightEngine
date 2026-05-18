@@ -28,6 +28,7 @@
  */
 
 #include "light.h"
+#include "light_lua_helpers.h"  // Phase G.1.7 P2.1 — magic 常量
 #include "render_backend.h"
 
 #include <cstring>
@@ -39,6 +40,21 @@ extern "C" {
 
 // userdata 元表名
 static const char* MATERIAL_MT = "Light.Graphics.Material";
+
+/**
+ * Phase G.1.7 P2.1 — Material wrapper struct
+ *
+ * 背景: MaterialDesc 是 RenderBackend 核心 POD struct, 定义在 render_backend.h,
+ * 改其 layout 会破坏整个引擎 ABI. 但 G.1.7 安全审计要求所有 Lua-facing
+ * userdata 都有 magic 防御.
+ *
+ * 解决: 包一层 wrapper, userdata 外包是 MaterialUserdata, 内部嵌 MaterialDesc.
+ * 所有 Check 函数返回 &ud->desc, 调用点透明 (不需修改 RenderBackend).
+ */
+struct MaterialUserdata {
+    uint32_t     magic;   // = LT_MAGIC_MATERIAL
+    MaterialDesc desc;
+};
 
 // 模式字符串 -> 数值
 static int ParseMode(const char* s) {
@@ -85,8 +101,14 @@ static void InitDefault(MaterialDesc* d, int mode) {
     d->doubleSided = 0;
 }
 
+// Phase G.1.7 P2.1: 双保险 (metatable + magic)
 static MaterialDesc* CheckMaterial(lua_State* L, int idx) {
-    return (MaterialDesc*)luaL_checkudata(L, idx, MATERIAL_MT);
+    auto* ud = (MaterialUserdata*)luaL_checkudata(L, idx, MATERIAL_MT);
+    if (ud && ud->magic != LT::LT_MAGIC_MATERIAL) {
+        luaL_error(L, "Light.Graphics.Material: type confusion at arg #%d", idx);
+        return nullptr;
+    }
+    return ud ? &ud->desc : nullptr;
 }
 
 // ==================== Material.New([mode]) ====================
@@ -94,8 +116,9 @@ static int l_Material_New(lua_State* L) {
     const char* modeStr = luaL_optstring(L, 1, "pbr");
     int mode = ParseMode(modeStr);
 
-    MaterialDesc* d = (MaterialDesc*)lua_newuserdata(L, sizeof(MaterialDesc));
-    InitDefault(d, mode);
+    auto* ud = (MaterialUserdata*)lua_newuserdata(L, sizeof(MaterialUserdata));
+    ud->magic = LT::LT_MAGIC_MATERIAL;
+    InitDefault(&ud->desc, mode);
     luaL_getmetatable(L, MATERIAL_MT);
     lua_setmetatable(L, -2);
     return 1;
@@ -359,7 +382,24 @@ extern "C" LIGHT_API int luaopen_Light_Graphics_Material(lua_State* L) {
 
 // ==================== 内部 C++ helper (供 light_graphics_mesh.cpp 用) ====================
 
+// Phase G.1.7 P2.1: 公开 helper 给 light_graphics_mesh.cpp 等调用.
+// 返回只读 MaterialDesc 指针 (wrapper 透明), 失败返 nullptr (不抛错以保持兑心 API).
 extern "C" const MaterialDesc* CheckMaterialUserdata(lua_State* L, int idx) {
     if (lua_type(L, idx) != LUA_TUSERDATA) return nullptr;
-    return (const MaterialDesc*)luaL_testudata(L, idx, MATERIAL_MT);
+    auto* ud = (MaterialUserdata*)luaL_testudata(L, idx, MATERIAL_MT);
+    if (!ud) return nullptr;
+    if (ud->magic != LT::LT_MAGIC_MATERIAL) return nullptr;  // magic 拒绝 type-confusion
+    return &ud->desc;
+}
+
+// Phase G.1.7 P2.1: 供 light_graphics_mesh.cpp 等需要 *创建* Material userdata 的地方调用.
+// 返回可写的 MaterialDesc* (在 wrapper 内), 调用者 memcpy / 赋值 均可.
+// userdata 已 push 到栈顶, 调用者负责当作返值 (或按需处理栈).
+extern "C" MaterialDesc* PushNewMaterialUserdata(lua_State* L) {
+    auto* ud = (MaterialUserdata*)lua_newuserdata(L, sizeof(MaterialUserdata));
+    ud->magic = LT::LT_MAGIC_MATERIAL;
+    memset(&ud->desc, 0, sizeof(MaterialDesc));
+    luaL_getmetatable(L, MATERIAL_MT);
+    lua_setmetatable(L, -2);
+    return &ud->desc;
 }
