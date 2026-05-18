@@ -367,4 +367,28 @@ int   DynamicFramesSinceLastAdjust();
 bool  DynamicWarmingUp();
 float DynamicWindowProgress();
 
+// ==================== Phase F.1.5 — GPU Timer for DRS ====================
+//
+// 增强 F.1.4 DRS 决策路径: 优先用 backend GPU timer 真实测得的 GPU 帧时间,
+//   否则 fallback 到 F.1.4 CPU 滑动窗口平均.
+// 解决 F.1.4 TODO §1.2 主循环耦合问题: Lua tick 重时 CPU dt 大但 GPU 实际空闲被误判为 GPU 瓶颈.
+//
+// 实现细节:
+//   - backend->SupportsGpuTimer() 探测 (桌面 GL3.3+ Core 必 true; GLES3/WebGL2 暂 fallback)
+//   - backend->PollGpuTimer(&ms) 异步读取上一帧 GPU 时间 (双 query ping-pong)
+//   - 静默 fallback: backend 不支持或 Poll 失败时 → CPU 路径 (用户无感)
+//
+// 默认 drsPreferGpuSource=true; 用户可关让 DRS 强制走 CPU (调试 / driver bug 临时避难).
+// GetDynamicStats 表新增 2 字段: gpuFrameTimeMs (number) / source (string: "none"/"cpu"/"gpu")
+
+/// Phase F.1.5 — 用户开关 (默认 true). 关后 UpdateDRS 强制 CPU 路径, 即使 backend 支持 GPU timer.
+void  SetPreferGpuSource(bool flag);
+bool  GetPreferGpuSource();
+
+/// Phase F.1.5 — 上一帧 GPU 时间 (ms); 0 = 未取到 / backend 不支持
+double DynamicGpuFrameTimeMs();
+
+/// Phase F.1.5 — 上次决策使用的源: "none" / "cpu" / "gpu"
+const char* DynamicLastSource();
+
 } // namespace TAARenderer

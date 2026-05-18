@@ -97,6 +97,7 @@ local fn_names = {
     "SetDynamicTarget", "GetDynamicTarget",         -- Phase F.1.4 DRS
     "UpdateDRS", "GetDynamicStats",                 -- Phase F.1.4 DRS
     "SetDynamicConfig",                             -- Phase F.1.4 DRS
+    "SetPreferGpuSource", "GetPreferGpuSource",     -- Phase F.1.5 GPU Timer
 }
 for _, k in ipairs(fn_names) do
     if type(TAA[k]) ~= "function" then
@@ -1975,9 +1976,112 @@ do
     pass("Phase F.1.4: 状态已复位为默认")
 end
 
+-- ============================================================
+-- 15) Phase F.1.5 — GPU Timer for DRS
+-- ============================================================
+
+-- 15.1) 默认值: preferGpuSource=true (零回归 — backend 不支持时仍 fallback CPU)
+do
+    if TAA.GetPreferGpuSource() ~= true then
+        fail("Default preferGpuSource 应 true (零回归; backend 不支持时静默 fallback CPU)")
+    end
+    pass("Phase F.1.5: Default preferGpuSource=true")
+end
+
+-- 15.2) SetPreferGpuSource round-trip
+do
+    TAA.SetPreferGpuSource(false)
+    if TAA.GetPreferGpuSource() ~= false then fail("SetPreferGpuSource(false) round-trip 失败") end
+    TAA.SetPreferGpuSource(true)
+    if TAA.GetPreferGpuSource() ~= true then fail("SetPreferGpuSource(true) round-trip 失败") end
+    pass("Phase F.1.5: SetPreferGpuSource round-trip OK")
+end
+
+-- 15.3) 类型校验 (raise on non-boolean)
+do
+    local ok = pcall(TAA.SetPreferGpuSource, "yes")
+    if ok then fail("SetPreferGpuSource('yes') 应 raise (非 boolean)") end
+    local ok2 = pcall(TAA.SetPreferGpuSource, 1)
+    if ok2 then fail("SetPreferGpuSource(1) 应 raise (非 boolean)") end
+    pass("Phase F.1.5: SetPreferGpuSource 类型校验 (string/number raise)")
+end
+
+-- 15.4) GetDynamicStats 增 2 字段 (gpuFrameTimeMs / source)
+do
+    local s = TAA.GetDynamicStats()
+    if s.gpuFrameTimeMs == nil then fail("GetDynamicStats 缺字段 gpuFrameTimeMs (F.1.5)") end
+    if type(s.gpuFrameTimeMs) ~= "number" then
+        fail("gpuFrameTimeMs 应 number, 得 " .. type(s.gpuFrameTimeMs))
+    end
+    if s.source == nil then fail("GetDynamicStats 缺字段 source (F.1.5)") end
+    if type(s.source) ~= "string" then fail("source 应 string, 得 " .. type(s.source)) end
+    -- source 必为 "none" / "cpu" / "gpu" 之一
+    if s.source ~= "none" and s.source ~= "cpu" and s.source ~= "gpu" then
+        fail("source 值非法: " .. tostring(s.source))
+    end
+    pass("Phase F.1.5: GetDynamicStats 新增 2 字段 (gpuFrameTimeMs=" ..
+         tostring(s.gpuFrameTimeMs) .. ", source='" .. s.source .. "')")
+end
+
+-- 15.5) preferGpuSource=false 时 DRS 走 CPU (source != "gpu")
+do
+    TAA.SetPreferGpuSource(false)
+    TAA.SetDynamicEnabled(true)
+    TAA.SetDynamicConfig({ windowSize = 5, cooldownFrames = 5 })
+    -- 推 5 帧让窗口填满
+    for _ = 1, 5 do TAA.UpdateDRS(0.020) end
+    -- 再推 1 帧触发决策
+    TAA.UpdateDRS(0.020)
+    local s = TAA.GetDynamicStats()
+    -- preferGpu=false 时 source 不应为 "gpu" (可为 "cpu" 或决策未跑时为 "none")
+    if s.source == "gpu" then
+        fail("preferGpuSource=false 时 source 不应为 'gpu', 得 " .. s.source)
+    end
+    pass("Phase F.1.5: preferGpuSource=false 时 source='" .. s.source ..
+         "' (CPU fallback 正确)")
+    -- 清理
+    TAA.SetDynamicEnabled(false)
+    TAA.SetPreferGpuSource(true)
+    TAA.SetDynamicConfig({ windowSize = 30, cooldownFrames = 60 })
+end
+
+-- 15.6) Multi-instance 隔离 (各 instance 独立 source 状态)
+do
+    local id = TAA.CreateInstance()
+    if id and id > 0 then
+        TAA.SetActiveInstance(0)
+        TAA.SetPreferGpuSource(false)
+        TAA.SetActiveInstance(id)
+        -- instance 1 默认 preferGpuSource=true (CloneInstance 复制源 instance 配置)
+        -- 但 instance 0 刚设为 false, instance 1 复制了该配置 → false
+        -- 这是预期行为 (drsPreferGpuSource 视为配置传递)
+        local inst1Pref = TAA.GetPreferGpuSource()
+        -- 关键检查: instance 1 之后修改不应影响 instance 0
+        TAA.SetPreferGpuSource(true)
+        TAA.SetActiveInstance(0)
+        if TAA.GetPreferGpuSource() ~= false then
+            fail("instance 0 的 preferGpuSource 不应被 instance " .. id .. " 的修改影响")
+        end
+        -- 清理
+        TAA.SetPreferGpuSource(true)
+        TAA.DestroyInstance(id)
+        pass("Phase F.1.5: Multi-instance 隔离 (instance 0 / " .. id ..
+             " 各自 preferGpuSource, clone 复制初值=" .. tostring(inst1Pref) .. ")")
+    else
+        pass("Phase F.1.5: Multi-instance 隔离 跳过 (CreateInstance 失败)")
+    end
+end
+
+-- 15.7) 状态复位
+do
+    TAA.SetPreferGpuSource(true)
+    TAA.SetDynamicEnabled(false)
+    pass("Phase F.1.5: 状态已复位 (preferGpuSource=true, DRS off)")
+end
+
 print("")
-print("=== Phase F.0 + F.0.1 + F.0.2 + F.0.3 + F.0.4 + F.0.5 + F.0.6 + F.0.8 + F.0.9 + F.0.10 + F.0.10.2 + F.0.12 + F.0.13 + F.0.14 + F.1 + F.1.0.1 + F.1.1 + F.1.4 TAA smoke: ALL TESTS PASSED ===")
-print("Functions covered: " .. #fn_names .. " / 60 (F.0.10 +5 fn: multi-instance API; F.0.10.2 +1 fn: TAA.Process; F.1 +8 fn: TAAU; F.1.1 +4 fn: MipBias; F.1.4 +7 fn: DRS)")
+print("=== Phase F.0 + F.0.1 + F.0.2 + F.0.3 + F.0.4 + F.0.5 + F.0.6 + F.0.8 + F.0.9 + F.0.10 + F.0.10.2 + F.0.12 + F.0.13 + F.0.14 + F.1 + F.1.0.1 + F.1.1 + F.1.4 + F.1.5 TAA smoke: ALL TESTS PASSED ===")
+print("Functions covered: " .. #fn_names .. " / 62 (F.0.10 +5 fn: multi-instance API; F.0.10.2 +1 fn: TAA.Process; F.1 +8 fn: TAAU; F.1.1 +4 fn: MipBias; F.1.4 +7 fn: DRS; F.1.5 +2 fn: GPU Timer)")
 print("Highlights:")
 print("  - default OFF, alpha=0.92, neighborhoodClip=true, jitterEnabled=true, sharpness=0.5, antiFlicker=true, clipMode='ycocg', varianceGamma=1.0, halfResHistory=false, sharpenMode='unsharp', motionGamma=1.5, motionAdaptive=false")
 print("  - clamp: BlendAlpha [0, 1], Sharpness [0, 2], VarianceGamma [0, 4], MotionGamma [0, 4]")

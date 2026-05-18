@@ -35,6 +35,7 @@
 | **B**  | 切 AutoMipBias (Phase F.1.1: 自动 LOD bias 让纹理在低 scale 下保持锐度) |
 | **N**  | 切 DRS 总开关 (Phase F.1.4: 帧率自适应, 监控帧时间自动跳档) |
 | **F**  | 循环切目标 FPS (Phase F.1.4: 60 → 72 → 120 → 144 → 60) |
+| **G**  | 切 DRS 决策源 (Phase F.1.5: prefer GPU/CPU; GPU 时间更精确, CPU 用作 fallback) |
 | **E**  | 截图为 OpenEXR (Phase F.0.11.5: half-float HDR + ZIP 压缩, 影视后期工业格式) |
 | **M**  | 切 MP4 录屏 (Phase F.0.11.6: H.264 30 fps + 5 Mbps; 需要 lib/ 内有 FFmpeg DLL) |
 

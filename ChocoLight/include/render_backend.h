@@ -1732,6 +1732,44 @@ public:
 
     /// 查询当前是否启用了 jittered projection (debug HUD 用)
     virtual bool IsJitteredProjectionActive() const { return false; }
+
+    // ==================== Phase F.1.5 — GPU Timer Query for DRS ====================
+    //
+    // 整帧 GPU 时间测量 (BeginFrame → EndFrame 之间的实际 GPU 工作时长).
+    // 主要用于 Phase F.1.4 DRS 决策: GPU 时间比 CPU dt 更精确反映 GPU 负载,
+    //   避免 Lua tick 重时 CPU dt 大但 GPU 实际空闲被误判为 GPU 瓶颈.
+    //
+    // 实现 (GL33Backend):
+    //   - GL_TIMESTAMP query (GL3.3 core / GLES3 + EXT_disjoint_timer_query)
+    //   - 双 query ping-pong (当帧 issue, N+1 帧 poll, 异步避免 stall)
+    //   - 跨平台运行时探测 ext, 不支持时 SupportsGpuTimer=false
+    //
+    // 调用顺序 (典型):
+    //   每帧 BeginFrame 内: backend 自动调 BeginGpuTimer (用户无感)
+    //   每帧 EndFrame   内: backend 自动调 EndGpuTimer
+    //   用户在 TAARenderer::UpdateDRS 路径调 PollGpuTimer 取上一帧时间
+    //
+    // 默认实现 (legacy / 不支持平台): no-op return false, 调用方自动 fallback CPU 路径.
+
+    /// 后端是否支持 GPU 整帧 timer query
+    /// @return false = 不支持 (legacy / 移动端无 ext / WebGL2 用户未激活); 调用方应 fallback CPU 时间
+    virtual bool SupportsGpuTimer() const { return false; }
+
+    /// 整帧 GPU timer 起点 (BeginFrame 内自动调用; 重入安全)
+    /// 失败/未支持时静默 no-op
+    virtual void BeginGpuTimer() {}
+
+    /// 整帧 GPU timer 终点 (EndFrame 内自动调用; 必须先 BeginGpuTimer 否则 no-op)
+    virtual void EndGpuTimer() {}
+
+    /// Poll 上一帧 GPU 时间 (异步; 数据未到 / disjoint / 未支持时 return false)
+    /// @param outMs 输出毫秒; nullptr 安全 (return false 不写)
+    /// @return true = 有效数据已写入 outMs; false = 不支持 / 未到 / 异常 (调用方自行 fallback)
+    /// @note 内部双 query ping-pong, 实际是 N-1 帧或 N-2 帧的 GPU 时间, 滞后 1-2 帧
+    virtual bool PollGpuTimer(double* outMs) {
+        if (outMs) *outMs = 0.0;
+        return false;
+    }
 };
 
 // ==================== 工厂函数 ====================

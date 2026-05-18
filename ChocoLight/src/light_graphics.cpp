@@ -4993,10 +4993,11 @@ static int l_TAA_UpdateDRS(lua_State* L) {
 /// @lua_api Light.Graphics.TAA.GetDynamicStats
 /// @return table {
 ///   enabled, targetFps, avgFrameTimeMs, avgFps, currentScale, currentPreset,
-///   adjustments, framesSinceLastAdjust, warmingUp, windowProgress
+///   adjustments, framesSinceLastAdjust, warmingUp, windowProgress,
+///   gpuFrameTimeMs (F.1.5), source (F.1.5: "none"/"cpu"/"gpu")
 /// }
 static int l_TAA_GetDynamicStats(lua_State* L) {
-    lua_createtable(L, 0, 10);
+    lua_createtable(L, 0, 12);   // F.1.5: 10 → 12 字段
     lua_pushboolean(L, TAARenderer::GetDynamicEnabled() ? 1 : 0);
     lua_setfield(L, -2, "enabled");
     lua_pushnumber(L, (lua_Number)TAARenderer::GetDynamicTarget());
@@ -5017,6 +5018,31 @@ static int l_TAA_GetDynamicStats(lua_State* L) {
     lua_setfield(L, -2, "warmingUp");
     lua_pushnumber(L, (lua_Number)TAARenderer::DynamicWindowProgress());
     lua_setfield(L, -2, "windowProgress");
+    // Phase F.1.5 — GPU timer 数据
+    lua_pushnumber(L, (lua_Number)TAARenderer::DynamicGpuFrameTimeMs());
+    lua_setfield(L, -2, "gpuFrameTimeMs");
+    lua_pushstring(L, TAARenderer::DynamicLastSource());
+    lua_setfield(L, -2, "source");
+    return 1;
+}
+
+// ==================== Phase F.1.5 — GPU Timer for DRS (2 fn) ====================
+//
+// 用户开关让 DRS 决策强制 CPU/GPU 时间源.
+// 默认 prefer GPU (backend->SupportsGpuTimer()=true 时启用).
+
+/// @lua_api Light.Graphics.TAA.SetPreferGpuSource
+/// @param flag boolean 默认 true; 关后 DRS 走 CPU 路径 (即使 backend 支持 GPU timer)
+static int l_TAA_SetPreferGpuSource(lua_State* L) {
+    luaL_checktype(L, 1, LUA_TBOOLEAN);
+    TAARenderer::SetPreferGpuSource(lua_toboolean(L, 1) != 0);
+    return 0;
+}
+
+/// @lua_api Light.Graphics.TAA.GetPreferGpuSource
+/// @return boolean
+static int l_TAA_GetPreferGpuSource(lua_State* L) {
+    lua_pushboolean(L, TAARenderer::GetPreferGpuSource() ? 1 : 0);
     return 1;
 }
 
@@ -5332,6 +5358,9 @@ static const luaL_Reg taa_funcs[] = {
     {"UpdateDRS",             l_TAA_UpdateDRS},
     {"GetDynamicStats",       l_TAA_GetDynamicStats},
     {"SetDynamicConfig",      l_TAA_SetDynamicConfig},
+    // Phase F.1.5 — GPU Timer for DRS (2 fn)
+    {"SetPreferGpuSource",    l_TAA_SetPreferGpuSource},
+    {"GetPreferGpuSource",    l_TAA_GetPreferGpuSource},
     {NULL, NULL}
 };
 

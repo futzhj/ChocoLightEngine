@@ -108,6 +108,13 @@ struct State {
     int      drsWindowFilled   = 0;         // 已填充帧数 (饱和到 windowSize)
     int      drsCooldownLeft   = 0;         // 剩余冷却帧数
     int      drsAdjustments    = 0;         // 累计调整次数 (供 stats 显示)
+
+    // ==================== Phase F.1.5 — GPU Timer for DRS ====================
+    // 决策时优先用 backend->PollGpuTimer 取真实 GPU 时间, 退化到 CPU 滑动窗口平均
+    // 详见 docs/Phase F.1.5 .../DESIGN_PhaseF_1_5.md §2.7
+    double   drsGpuFrameTimeMs  = 0.0;       // 上一帧 GPU 时间 (ms); 0 = 未取到
+    int      drsLastSource      = 0;         // 决策源: 0=none / 1=cpu / 2=gpu
+    bool     drsPreferGpuSource = true;      // 用户开关 (默认 true; 关后强制 CPU 路径)
 };
 
 // Phase F.0.10 — multi-instance support
@@ -228,12 +235,16 @@ void Shutdown() {
     (void)saved_active;  // saved_active 不需保留 (Shutdown 后默认回 0)
 
     // Phase F.1.4: 复位 DRS 运行时状态 (默认/参数字段保留, 用户下次 SetDynamicEnabled 时重新启动)
+    // Phase F.1.5: 同时复位 GPU timer 状态 (drsPreferGpuSource 保留用户设置)
     for (int i = 0; i < MAX_INSTANCES; ++i) {
-        g_states[i].drsEnabled      = false;
-        g_states[i].drsWindowHead   = 0;
-        g_states[i].drsWindowFilled = 0;
-        g_states[i].drsCooldownLeft = 0;
-        g_states[i].drsAdjustments  = 0;
+        g_states[i].drsEnabled        = false;
+        g_states[i].drsWindowHead     = 0;
+        g_states[i].drsWindowFilled   = 0;
+        g_states[i].drsCooldownLeft   = 0;
+        g_states[i].drsAdjustments    = 0;
+        g_states[i].drsGpuFrameTimeMs = 0.0;
+        g_states[i].drsLastSource     = 0;
+        // drsPreferGpuSource 保留 (用户交互式调过不该被 Shutdown 抹除)
     }
 }
 
@@ -1007,6 +1018,11 @@ int CloneInstance(int srcId) {
             g_states[i].drsAdjustments  = 0;
             // drsFrameTimes 缓冲 unfilled 时不被读, 不必显式清零
 
+            // Phase F.1.5: GPU timer 状态不复制 (运行时上下文), 配置 drsPreferGpuSource 保留
+            g_states[i].drsGpuFrameTimeMs = 0.0;
+            g_states[i].drsLastSource     = 0;
+            // drsPreferGpuSource 随源 instance 复制 (用户调优意图传递)
+
             g_slot_in_use[i] = true;
             ++g_count;
             CC::Log(CC::LOG_INFO,
@@ -1131,9 +1147,28 @@ void UpdateDRS(float dtSec) {
     // 窗口未填满 → warming up 阶段, 不调整
     if (g.drsWindowFilled < g.drsWindowSize) return;
 
-    // 决策
-    const float avgMs    = drsAvgFrameTimeMs_();
-    if (avgMs <= 0.0f || g.drsTargetFps <= 0.0f) return;
+    // ==================== Phase F.1.5 — 决策时间源选择 (GPU 优先, CPU fallback) ====================
+    double srcMs = 0.0;
+    g.drsLastSource = 0;     // 0=none
+    if (g.drsPreferGpuSource && g.backend && g.backend->SupportsGpuTimer()) {
+        double gpuMs = 0.0;
+        if (g.backend->PollGpuTimer(&gpuMs) && gpuMs > 0.0) {
+            g.drsGpuFrameTimeMs = gpuMs;
+            srcMs = gpuMs;
+            g.drsLastSource = 2;    // gpu
+        }
+    }
+    if (g.drsLastSource != 2) {
+        const float cpuMs = drsAvgFrameTimeMs_();
+        if (cpuMs > 0.0f) {
+            srcMs = (double)cpuMs;
+            g.drsLastSource = 1;    // cpu
+        }
+    }
+
+    // 决策 (与 F.1.4 逻辑等价, 仅金 srcMs 来源变为 F.1.5 优先级链)
+    if (srcMs <= 0.0 || g.drsTargetFps <= 0.0f) return;
+    const float avgMs    = (float)srcMs;   // 保留名称兼容后续日志
     const float targetMs = 1000.0f / g.drsTargetFps;
     const float ratio    = avgMs / targetMs;
     const int   curPreset = g.upscalePreset;
@@ -1154,10 +1189,40 @@ void UpdateDRS(float dtSec) {
         // 调整后清窗口: 让新 scale 下的帧时间被独立累积, 避免 transient 污染
         g.drsWindowHead   = 0;
         g.drsWindowFilled = 0;
+        // Phase F.1.5: 日志补足决策源 (gpu/cpu) 让调优可追溯
+        const char* sourceTxt = (g.drsLastSource == 2) ? "gpu" :
+                                (g.drsLastSource == 1) ? "cpu" : "none";
         CC::Log(CC::LOG_INFO,
-                "TAARenderer::UpdateDRS: %s -> %s (avg=%.2fms target=%.2fms ratio=%.2f, adjust#%d)",
+                "TAARenderer::UpdateDRS: %s -> %s (avg=%.2fms target=%.2fms ratio=%.2f, source=%s, adjust#%d)",
                 kPresetName[curPreset], kPresetName[newPreset],
-                (double)avgMs, (double)targetMs, (double)ratio, g.drsAdjustments);
+                (double)avgMs, (double)targetMs, (double)ratio, sourceTxt, g.drsAdjustments);
+    }
+}
+
+// ==================== Phase F.1.5 — GPU Timer for DRS API ====================
+//
+// drsPreferGpuSource: 用户开关 (默认 true). 关后 UpdateDRS 强制走 CPU 路径 (即使 backend 支持 GPU timer).
+// 使用场景: 调试时手动对比 CPU vs GPU 决策差异; 或代码发现 GPU timer driver bug 时临时避难.
+
+void SetPreferGpuSource(bool flag) {
+    if (g.drsPreferGpuSource == flag) return;
+    g.drsPreferGpuSource = flag;
+    CC::Log(CC::LOG_INFO,
+            "TAARenderer::SetPreferGpuSource: %s (DRS 决策将优先用 %s)",
+            flag ? "true" : "false",
+            flag ? "GPU 时间 (如 backend 支持)" : "CPU 时间");
+    // 不清滑动窗口 / cooldown: 下次 UpdateDRS 自然重选源
+}
+
+bool GetPreferGpuSource() { return g.drsPreferGpuSource; }
+
+double DynamicGpuFrameTimeMs() { return g.drsGpuFrameTimeMs; }
+
+const char* DynamicLastSource() {
+    switch (g.drsLastSource) {
+        case 2:  return "gpu";
+        case 1:  return "cpu";
+        default: return "none";
     }
 }
 

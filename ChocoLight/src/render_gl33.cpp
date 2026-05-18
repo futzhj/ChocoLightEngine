@@ -4029,6 +4029,54 @@ class GL33Backend : public RenderBackend {
         vboCapacity = newCap;
     }
 
+    // ==================== Phase F.1.5 — GPU Timer Query (整帧 GPU 时间) ====================
+    // GL_TIMESTAMP query 双 query ping-pong: BeginFrame 起 / EndFrame 终
+    // - 桌面 GL3.3 core 必有 ARB_timer_query
+    // - GLES3 / WebGL2 检测 GL_EXT_disjoint_timer_query 字符串
+    // - 不支持时 m_gpuTimerSupported=false, 全部 4 override 静默 no-op return false
+    bool   m_gpuTimerSupported  = false;          // capability bit (Init 时探测)
+    GLuint m_gpuTimerQuery[2][2] = {{0,0},{0,0}}; // [frame N % 2][0=start, 1=end]
+    int    m_gpuTimerWriteIdx   = 0;               // 当前写入 ring 索引
+    bool   m_gpuTimerInFrame    = false;           // BeginGpuTimer 已调但 End 未调
+    int    m_gpuTimerWarmup     = 0;               // 已 issue 帧数 (饱和到 2)
+
+    // 探测 + 创建 4 个 query (Init 末尾调用; 失败时静默 disabled)
+    void InitGpuTimer() {
+#if defined(__EMSCRIPTEN__) || defined(__ANDROID__) || defined(CHOCO_PLATFORM_IOS)
+        // GLES3 / WebGL2: GL_EXT_disjoint_timer_query 函数 (glQueryCounterEXT / glGetQueryObjectui64vEXT)
+        // 需 eglGetProcAddress 加载, 当前实现不引入此复杂度, 直接 fallback CPU 路径.
+        // 详见 docs/Phase F.1.5 .../DESIGN_PhaseF_1_5.md §2.3
+        CC::Log(CC::LOG_INFO, "GL33Backend: GPU timer query 不支持 (GLES3/WebGL2 走 CPU fallback)");
+        return;
+#else
+        // 桌面: GL3.3 core 自带 ARB_timer_query (CreateRenderBackend 已确认 GLAD_GL_VERSION_3_3)
+        glGenQueries(4, &m_gpuTimerQuery[0][0]);
+        if (m_gpuTimerQuery[0][0] == 0) {
+            CC::Log(CC::LOG_WARN, "GL33Backend: glGenQueries 失败, GPU timer 禁用");
+            return;
+        }
+        m_gpuTimerSupported = true;
+        m_gpuTimerWriteIdx  = 0;
+        m_gpuTimerWarmup    = 0;
+        CC::Log(CC::LOG_INFO, "GL33Backend: GPU timer query 启用 (GL_TIMESTAMP, double-buffered)");
+#endif
+    }
+
+    // Shutdown 时释放 4 个 query (与 InitGpuTimer 配对)
+    void ShutdownGpuTimer() {
+        if (m_gpuTimerSupported && m_gpuTimerQuery[0][0] != 0) {
+            glDeleteQueries(4, &m_gpuTimerQuery[0][0]);
+        }
+        for (int i = 0; i < 2; ++i) {
+            m_gpuTimerQuery[i][0] = 0;
+            m_gpuTimerQuery[i][1] = 0;
+        }
+        m_gpuTimerSupported = false;
+        m_gpuTimerInFrame   = false;
+        m_gpuTimerWarmup    = 0;
+        m_gpuTimerWriteIdx  = 0;
+    }
+
 public:
     bool Init() override {
         // 编译链接 shader
@@ -4112,12 +4160,16 @@ public:
         // ---- Phase E.6 — Lens Dirt + Streak shader (依赖 tonemap 的 vaoTonemap + Bloom bright pass) ----
         InitLensFx();
 
-        CC::Log(CC::LOG_INFO, "RenderBackend: GL33 Core initialized (GL %s)%s%s%s",
+        // ---- Phase F.1.5 — GPU Timer Query (供 DRS 决策用) ----
+        InitGpuTimer();
+
+        CC::Log(CC::LOG_INFO, "RenderBackend: GL33 Core initialized (GL %s)%s%s%s%s",
                 (const char*)glGetString(GL_VERSION),
                 (programUnlit && programPBR) ? ", 3D Unlit+PBR enabled" :
                 (programUnlit || programPBR) ? ", partial 3D shader" : "",
                 gpuSkinningSupported ? ", GPU skinning enabled" : "",
-                lit2DSupported       ? ", Lit2D enabled" : "");
+                lit2DSupported       ? ", Lit2D enabled" : "",
+                m_gpuTimerSupported  ? ", GPU timer enabled" : "");
         return true;
     }
 
@@ -4998,6 +5050,9 @@ public:
 
         // Phase F.0.11.2 — 释放异步 readback PBO (若有)
         ReadbackAsyncShutdown();
+
+        // Phase F.1.5 — 释放 GPU Timer query (若创建过)
+        ShutdownGpuTimer();
 
         // Phase AS.4 — 释放 3D 资源
         if (programUnlit) { glDeleteProgram(programUnlit); programUnlit = 0; }
@@ -7481,6 +7536,9 @@ public:
 
     // ---- 帧控制 ----
     void BeginFrame(float cr, float cg, float cb, float ca) override {
+        // Phase F.1.5: 起 GPU 整帧 timer (clear 之前, 涵盖所有 GPU 工作)
+        BeginGpuTimer();
+
         glClearColor(cr, cg, cb, ca);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         glUseProgram(program);
@@ -7489,6 +7547,74 @@ public:
     void EndFrame() override {
         glBindVertexArray(0);
         glUseProgram(0);
+
+        // Phase F.1.5: 结束 GPU 整帧 timer (在用户所有 draw 之后)
+        EndGpuTimer();
+    }
+
+    // ==================== Phase F.1.5 — GPU Timer Query 4 override ====================
+    // 跨平台编译保护: GLES3 core 无 glQueryCounter / glGetQueryObjectui64v
+    //   (它们是 EXT_disjoint_timer_query 扩展函数, 名为 *EXT, 需 eglGetProcAddress 加载).
+    // 为简化跨平台编译, GLES3 路径下 4 override 全部静默 fallback (m_gpuTimerSupported=false).
+    // 桌面 GL3.3 core 内置 ARB_timer_query (无后缀函数), 直接调用即可.
+    // 详见 docs/Phase F.1.5 .../DESIGN_PhaseF_1_5.md §2.5
+
+    /// 能力位 (Init 探测后设定; GLES3 平台永 false)
+    bool SupportsGpuTimer() const override { return m_gpuTimerSupported; }
+
+    /// 起 timer (BeginFrame 内自动调; 重入安全—中间重复调静默 skip)
+    void BeginGpuTimer() override {
+        if (!m_gpuTimerSupported) return;
+        if (m_gpuTimerInFrame) return;     // 防御重入
+#if !defined(__EMSCRIPTEN__) && !defined(__ANDROID__) && !defined(CHOCO_PLATFORM_IOS)
+        const int idx = m_gpuTimerWriteIdx;
+        glQueryCounter(m_gpuTimerQuery[idx][0], GL_TIMESTAMP);
+        m_gpuTimerInFrame = true;
+#endif
+    }
+
+    /// 终 timer (EndFrame 内自动调; 未 Begin 过静默 skip)
+    void EndGpuTimer() override {
+        if (!m_gpuTimerSupported) return;
+        if (!m_gpuTimerInFrame) return;
+#if !defined(__EMSCRIPTEN__) && !defined(__ANDROID__) && !defined(CHOCO_PLATFORM_IOS)
+        const int idx = m_gpuTimerWriteIdx;
+        glQueryCounter(m_gpuTimerQuery[idx][1], GL_TIMESTAMP);
+        // ping-pong 翻转到另一 slot, 下帧写进另一 slot, 同时本 slot 可被 Poll
+        m_gpuTimerWriteIdx = 1 - idx;
+        m_gpuTimerInFrame  = false;
+        if (m_gpuTimerWarmup < 2) ++m_gpuTimerWarmup;
+#endif
+    }
+
+    /// Poll 上一帧 GPU 时间 (异步; 未支持/未到/disjoint 返 false)
+    bool PollGpuTimer(double* outMs) override {
+        if (outMs) *outMs = 0.0;
+        if (!m_gpuTimerSupported) return false;
+        if (m_gpuTimerWarmup < 2)   return false;   // 暖机阶段 (需 ≥2 帧 issue)
+
+#if !defined(__EMSCRIPTEN__) && !defined(__ANDROID__) && !defined(CHOCO_PLATFORM_IOS)
+        // 桌面: GL3.3 core ARB_timer_query, 直接调用无后缀函数
+
+        // 上一帧写入的 slot = m_gpuTimerWriteIdx (EndGpuTimer 后已翻转, 现指向上帧写的 slot)
+        const int prevIdx = m_gpuTimerWriteIdx;
+
+        // 检查 query 数据就绪
+        GLint available = 0;
+        glGetQueryObjectiv(m_gpuTimerQuery[prevIdx][1], GL_QUERY_RESULT_AVAILABLE, &available);
+        if (!available) return false;
+
+        GLuint64 t0 = 0, t1 = 0;
+        glGetQueryObjectui64v(m_gpuTimerQuery[prevIdx][0], GL_QUERY_RESULT, &t0);
+        glGetQueryObjectui64v(m_gpuTimerQuery[prevIdx][1], GL_QUERY_RESULT, &t1);
+        if (t1 <= t0) return false;
+
+        if (outMs) *outMs = (double)(t1 - t0) / 1.0e6;   // ns → ms
+        return true;
+#else
+        // GLES3 / WebGL2: 不支持 (m_gpuTimerSupported 应已 false, 此路径理论上走不到)
+        return false;
+#endif
     }
 
     // Phase F.0.11 — 同步读 default fb 到 RGBA8 (用于 Screenshot / RecordPNGSequence)

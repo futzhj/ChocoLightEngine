@@ -188,6 +188,7 @@ function Demo:Draw()
         end
 
         -- Phase F.1.4: DRS 状态 (target / avg fps / current preset / adjustments / warming)
+        -- Phase F.1.5: 增 GPU/CPU source + gpu 时间显示
         if TAA.GetDynamicStats then
             local s = TAA.GetDynamicStats()
             if s.enabled then
@@ -195,8 +196,16 @@ function Demo:Draw()
                 local stateTxt = s.warmingUp and string.format('warming %.0f%%', s.windowProgress * 100) or 'ready'
                 line(string.format('DRS: target=%.0f avg=%s preset=%s adj=%d (%s)',
                     s.targetFps, fpsTxt, s.currentPreset, s.adjustments, stateTxt))
+                -- F.1.5: 决策源 + GPU 时间 (仅 DRS 启用时显)
+                local gpuTxt = (s.gpuFrameTimeMs and s.gpuFrameTimeMs > 0) and
+                               string.format(' gpuMs=%.2f', s.gpuFrameTimeMs) or ''
+                local prefer = TAA.GetPreferGpuSource and TAA.GetPreferGpuSource() or true
+                line(string.format('Source: %s (prefer=%s)%s',
+                    s.source or 'none',
+                    prefer and 'gpu' or 'cpu',
+                    gpuTxt))
             else
-                line('DRS: OFF (press N to enable)')
+                line('DRS: OFF (press N to enable, G toggles GPU-source preference)')
             end
         end
 
@@ -207,7 +216,7 @@ function Demo:Draw()
         line('')
         line('Keys: Y=TAAU 1/2/3/4=preset(perf/bal/qual/nat) -/= RenderScale')
         line('      T=TAA J=Jitter H=Sharp Z=SharpenMode X=HalfRes B=AutoMipBias')
-        line('      N=DRS F=DRSTarget(60->72->120->144)')
+        line('      N=DRS F=DRSTarget(60->72->120->144) G=PreferGpuSource')
         line('      E=ScreenshotEXR M=RecordMP4toggle R=reset ESC')
     end
 end
@@ -318,6 +327,16 @@ function Demo:OnKey(key, scancode, action, mods)
             print(string.format('[demo_taau] DRS target = %d fps', next_fps))
         end
 
+    elseif key == string.byte('G') then
+        -- Phase F.1.5: 切换 DRS 决策源优先级 (GPU vs CPU)
+        --   GPU: backend->PollGpuTimer 取真实 GPU 时间 (桌面默认)
+        --   CPU: 走 F.1.4 滑动窗口 dt 平均 (调试 / driver bug 避难)
+        if TAA.SetPreferGpuSource then
+            local cur = TAA.GetPreferGpuSource()
+            TAA.SetPreferGpuSource(not cur)
+            print(string.format('[demo_taau] PreferGpuSource = %s', not cur and 'true (GPU)' or 'false (CPU)'))
+        end
+
     elseif key == string.byte('E') then
         -- Phase F.0.11.5: ScreenshotEXR (HDR 高精度 OpenEXR, half-float ZIP 压缩)
         if Gfx.ScreenshotEXR then
@@ -360,6 +379,8 @@ function Demo:OnKey(key, scancode, action, mods)
             TAA.SetDynamicConfig({ windowSize = 30, cooldownFrames = 60,
                                      downThreshold = 1.10, upThreshold = 0.85 })
         end
+        -- Phase F.1.5: 复位 GPU 源偏好为默认 true
+        if TAA.SetPreferGpuSource then TAA.SetPreferGpuSource(true) end
         print('[demo_taau] reset to defaults')
     end
 end
