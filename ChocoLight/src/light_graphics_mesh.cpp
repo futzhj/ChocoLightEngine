@@ -363,7 +363,12 @@ static bool GLTF_ExtractPrimitive(const cgltf_primitive* prim,
 // ==================== Phase AS.4.x — glTF 材质提取 ====================
 
 // userdata 元表名 (与 light_graphics_material.cpp 一致, 用于创建 Material userdata)
-static const char* MATERIAL_MT_NAME = "Light.Graphics.Material";
+// Phase G.1.7 P2.1: 保留供调试参考, 实际创建走 PushNewMaterialUserdata helper
+[[maybe_unused]] static const char* MATERIAL_MT_NAME = "Light.Graphics.Material";
+
+// Phase G.1.7 P2.1 — forward decl: Material userdata wrapper helpers (实现在 light_graphics_material.cpp)
+extern "C" const MaterialDesc* CheckMaterialUserdata(lua_State* L, int idx);
+extern "C" MaterialDesc*       PushNewMaterialUserdata(lua_State* L);
 
 // 取 .gltf 文件所在目录 (含尾部分隔符), 用于解析相对纹理 URI
 static std::string GetGLTFDirectory(const char* gltfPath) {
@@ -772,9 +777,7 @@ static int l_Mesh_LoadGLTFAsync(lua_State* L) {
 // Phase AS.4: 自动判断参数类型
 //   - integer / nil 缺省 -> 老路径 (DrawMesh + textureId)
 //   - userdata (Material) -> 新路径 (DrawMeshMaterial)
-extern "C" const MaterialDesc* CheckMaterialUserdata(lua_State* L, int idx);
-// Phase G.1.7 P2.1 — material wrapper push helper
-extern "C" MaterialDesc* PushNewMaterialUserdata(lua_State* L);
+// (forward decl 已提前到文件顶部 — G.1.7 P2.1)
 
 static int l_Mesh_Draw(lua_State* L) {
     MeshUserdata* ud = CheckMesh(L, 1);
