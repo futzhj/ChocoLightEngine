@@ -44,8 +44,9 @@
 
 ### 2. 内存与显存管理优化 (Memory & VRAM Profiling)
 * **需求**:
-  - 补充引擎级的显存 (VRAM) 追踪。目前动态创建的 FBO、RT (特别是多实例 HDR、TAA 历史帧、Dilation pass) 占用了大量显存。需要一套 API `Light.Graphics.GetMemoryStats()` 返回 VRAM 使用量。
-  - Lua 垃圾回收 (GC) 与 C++ 侧资源的生命周期绑定强化。确保无主资源被及时 `glDeleteTextures`。
+  - ✅ [Phase G.1 已交付] 补充引擎级的显存 (VRAM) 追踪 — `Light.Graphics.GetMemoryStats()` / `ResetMemoryStats()` (commit `ef91120` + `a544fcf`)
+  - **遗留**: 用户 Image / ImageData / Mesh / Font / Bloom mipmap 跟踪 (留 v2, 见 `docs/Phase G.1 VRAM Tracking/TODO_PhaseG_1.md`)
+  - **遗留**: Lua 垃圾回收 (GC) 与 C++ 侧资源的生命周期绑定强化。确保无主资源被及时 `glDeleteTextures`。
 
 ### 3. 多线程与物理逻辑分离 (Tick vs Render)
 * **需求**:
@@ -114,15 +115,31 @@
 * lumen 加载模块数 97 → 98
 * 文档: `docs/Phase G.0 Lua Hot Reload/{ALIGNMENT,DESIGN,FINAL}_PhaseG_0.md`
 
+### ✅ [已交付 2026-05-18] Phase G.1 — VRAM Tracking (Light.Graphics.GetMemoryStats + ResetMemoryStats)
+* **新模块 LT::GpuMem** (`light_gpumem.cpp` ~260 LOC): 引擎自计 GPU 显存占用, 静态 64-slot 数组, 不依赖 OS API, 跨平台一致
+* **跟踪范围 v1**: 高层 wrapper (HDR/TAA/SSR/Dilate/UBO Skin), 5 类高价值 RT
+  - HDR FBO 5 组件: sceneTex (RGBA16F) + normalTex (RG16F) + velocityTex (RG16F/RG8) + cameraVelocityTex + depthRBO (DEPTH24)
+  - TAA history × 2 (RGBA16F ping-pong)
+  - SSR: depthTex (DEPTH32F) + reflectTex + blur×2 + history×2 (全 RGBA16F)
+  - Velocity Dilate (combined + camera, RG16F/RG8)
+  - UBO Skin: joints + prev (4096 B 各)
+* **Lua API**: `Light.Graphics.GetMemoryStats()` → `{total_bytes, render_targets={count,bytes}, ubos={count,bytes}, items={{name,format,count,bytes,w,h}, ...}}` + `ResetMemoryStats()`
+* **多 instance 友好**: `count` 自动累加 (split-screen HDR×4 显示 sceneTex ×4)
+* commit `ef91120` (12 files +1084) + `a544fcf` (FINAL+TODO docs)
+* smoke `gpumem.lua` **13/13 PASS** (headless graceful skip), CI 全 6 平台绿
+* 文档: `docs/Phase G.1 VRAM Tracking/{ALIGNMENT,DESIGN,FINAL,TODO}_PhaseG_1.md`
+
 ---
 
-## 3. 下一步候选方向 (Phase F.0.11.6.1 收尾后)
+## 3. 下一步候选方向 (Phase G.1 收尾后)
 
 ### 选项 A — 非渲染基础架构 (推荐, 长期价值高)
-1. **VRAM tracking + `Light.Graphics.GetMemoryStats()`**: 多 instance HDR / TAA history / Dilation RT 显存占用追踪
+1. ~~**VRAM tracking + `Light.Graphics.GetMemoryStats()`**~~: ✅ 已交付 Phase G.1
 2. **Tick-Render 解耦**: 60Hz 逻辑 + VSync 渲染, 为未来插帧 / 网络同步铺路
-3. **Lua 热重载**: 不仅 LUT, 包括脚本逻辑热重载
+3. ~~**Lua 热重载**: 不仅 LUT, 包括脚本逻辑热重载~~: ✅ 已交付 Phase G.0
 4. **Lua API 容错**: 错误传参不应 crash, 全 API audit + nil+err 返回
+5. **VRAM v2 扩展**: Bloom mipmap / 用户 Image / Mesh / Font 跟踪 (见 `docs/Phase G.1 VRAM Tracking/TODO_PhaseG_1.md`)
+6. **Async Asset Management**: 异步资源加载 (Phase 2 §1, 大场景加载不卡顿)
 
 ### 选项 B — 渲染管线收尾
 1. **F.1.2 Velocity Nearest-Filter**: 仅当 F.1.1 真机测试 ghost 严重时启用
