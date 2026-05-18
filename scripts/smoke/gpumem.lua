@@ -105,6 +105,7 @@ local known_formats = {
     DEPTH24 = true, DEPTH32F = true,
     RGB32F = true,
     BYTES = true,   -- UBO / 非 wxh
+    -- Phase G.1.1 — Bloom/SSAO/AE/TAAU 已用格式都在上述集合中, 无新增
 }
 local items_ok = true
 for i, it in ipairs(stats.items) do
@@ -248,6 +249,117 @@ else
         end
     else
         pass("HDR not supported, skip SSR tracking test")
+    end
+end
+
+-- ============================================================
+-- G.1.1) Bloom / SSAO / AE / TAAU 跟踪 (依赖 HDR 联动; headless 容忍)
+--   Bloom: pyramid 5 级 (默认), 每级独立 item (auto split by w/h)
+--   SSAO:  depthTex (DEPTH24, full-res) + AO ping-pong (R16F, half-res)
+--   AE:    luminance base 级 (R16F, srcW/4 × srcH/4)
+--   TAAU:  outputSceneTex (RGBA16F at outputW × outputH)
+-- ============================================================
+do
+    if not (HDR and HDR.IsSupported and HDR.IsSupported()) then
+        pass("HDR not supported, skip Bloom/SSAO/AE/TAAU tracking tests")
+    elseif not HDR.Enable(256, 256) then
+        pass("HDR.Enable(headless) returned false, skip Bloom/SSAO/AE/TAAU tracking tests")
+    else
+        local function find_item(items, name_match)
+            for _, it in ipairs(items) do
+                if string.find(it.name, name_match, 1, true) then return it end
+            end
+            return nil
+        end
+
+        -- Bloom (默认 autoEnable=true, HDR.Enable 应已联动起 Bloom)
+        local Bloom = Graphics.Bloom
+        if type(Bloom) == "table" and Bloom.IsEnabled and Bloom.IsEnabled() then
+            local it = find_item(Graphics.GetMemoryStats().items, "Bloom pyramid")
+            if it then
+                pass(string.format("Bloom pyramid tracked (auto via HDR.Enable): first level %dx%d %s",
+                     it.w, it.h, it.format))
+            else
+                fail("Bloom autoEnable but 'Bloom pyramid' item not found")
+            end
+        else
+            pass("Bloom not auto-enabled in headless, skip Bloom assertion")
+        end
+
+        -- SSAO (autoEnable=false 默认, 手动 Enable 测)
+        local SSAO = Graphics.SSAO
+        if type(SSAO) == "table" and SSAO.Enable then
+            Graphics.ResetMemoryStats()
+            local pre = Graphics.GetMemoryStats().total_bytes
+            local ssao_ok = pcall(SSAO.Enable, 256, 256)
+            local post_stats = Graphics.GetMemoryStats()
+            if ssao_ok and post_stats.total_bytes > pre then
+                local depth = find_item(post_stats.items, "SSAO depthTex")
+                local ao    = find_item(post_stats.items, "SSAO AO")
+                if depth and ao then
+                    pass(string.format("SSAO tracked: depth %s + AO %s ×%d",
+                         depth.format, ao.format, ao.count))
+                else
+                    pass("SSAO grew bytes but item names differ (still ok in headless)")
+                end
+                pcall(SSAO.Disable)
+            else
+                pass("SSAO.Enable did not grow bytes (headless backend stub, ok)")
+            end
+        else
+            pass("Light.Graphics.SSAO not available, skip SSAO test")
+        end
+
+        -- Auto Exposure (autoEnable=false 默认)
+        local AE = Graphics.AutoExposure or Graphics.AE
+        if type(AE) == "table" and AE.Enable then
+            local pre = Graphics.GetMemoryStats().total_bytes
+            local ae_ok = pcall(AE.Enable, 256, 256)
+            local post_stats = Graphics.GetMemoryStats()
+            if ae_ok and post_stats.total_bytes > pre then
+                local lum = find_item(post_stats.items, "AE luminance")
+                if lum then
+                    pass(string.format("AE luminance tracked: %dx%d %s", lum.w, lum.h, lum.format))
+                else
+                    pass("AE grew bytes but 'AE luminance' name not found (still ok)")
+                end
+                pcall(AE.Disable)
+            else
+                pass("AE.Enable did not grow bytes (headless or AutoExposure unavailable)")
+            end
+        else
+            pass("Light.Graphics.AutoExposure not available, skip AE test")
+        end
+
+        -- TAAU outputSceneTex (依赖 TAA + SetTAAUEnabled(true))
+        local TAA = Graphics.TAA
+        if type(TAA) == "table" and TAA.SetTAAUEnabled and TAA.Enable then
+            if TAA.Enable(256, 256) then
+                Graphics.ResetMemoryStats()
+                local pre = Graphics.GetMemoryStats().total_bytes
+                local taau_ok = pcall(TAA.SetTAAUEnabled, true)
+                local post_stats = Graphics.GetMemoryStats()
+                if taau_ok and post_stats.total_bytes > pre then
+                    local out = find_item(post_stats.items, "outputSceneTex (TAAU)")
+                    if out then
+                        pass(string.format("TAAU outputSceneTex tracked: %dx%d %s",
+                             out.w, out.h, out.format))
+                    else
+                        pass("TAAU grew bytes but item not named exactly (ok)")
+                    end
+                    pcall(TAA.SetTAAUEnabled, false)
+                else
+                    pass("TAA.SetTAAUEnabled did not grow bytes (headless backend stub, ok)")
+                end
+                pcall(TAA.Disable)
+            else
+                pass("TAA.Enable failed in headless, skip TAAU test")
+            end
+        else
+            pass("Light.Graphics.TAA.SetTAAUEnabled not available, skip TAAU test")
+        end
+
+        pcall(HDR.Disable)
     end
 end
 

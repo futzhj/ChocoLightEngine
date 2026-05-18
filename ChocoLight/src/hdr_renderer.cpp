@@ -854,6 +854,10 @@ bool OnTAAURenderScaleChanged(int renderW, int renderH, int outputW, int outputH
     g.outputH    = outputH;
     g.taauActive = true;
 
+    // Phase G.1.1 — VRAM Tracking: outputSceneTex 在此处分配 (CreateRT 路径不会到这, 故不在 G.1 hook 范围)
+    //   ReleaseRT 已 Untrack (G.1 line 264-266), 此处补 Track 完成对称
+    LT::GpuMem::Track("HDR outputSceneTex (TAAU)", "RGBA16F", outputW, outputH);
+
     // Phase F.2.0 — TAAU 切换通知下游后处理重建到 render-res
     // DESIGN F.1 §2.1: "Bloom/SSAO/SSR/MotionBlur 全部 @ render-res"
     // 缺此通知, 下游 RT 仍是 outputRes, 与 sceneTex(renderRes) 比例错位 + 性能浪费.

@@ -63,6 +63,16 @@ static bool  g_slot_in_use[MAX_INSTANCES] = { true, false, false, false };
 
 /// 内部辅助: 释放 pyramid 资源 + 重置状态字段 (不改参数)
 void ReleasePyramid() {
+    // Phase G.1.1 — VRAM Tracking: 在 backend Delete 前 Untrack 各级 (此时 g.width/height/actualLevels 仍有效)
+    //   每级尺寸递推 = w/2^i × h/2^i (与 backend->CreateBloomPyramid 算法严格一致, 见 render_gl33.cpp:5688-5689)
+    if (g.actualLevels > 0 && g.width > 0 && g.height > 0) {
+        int curW = g.width, curH = g.height;
+        for (int i = 0; i < g.actualLevels; ++i) {
+            LT::GpuMem::Untrack("Bloom pyramid", "RGBA16F", curW, curH);
+            curW = (curW > 1) ? curW / 2 : 1;
+            curH = (curH > 1) ? curH / 2 : 1;
+        }
+    }
     if (g.backend && g.actualLevels > 0) {
         g.backend->DeleteBloomPyramid(g.fbos, g.texs, g.actualLevels);
     }
@@ -165,6 +175,17 @@ bool Enable(int w, int h) {
     g.width   = w;
     g.height  = h;
     g.enabled = true;
+
+    // Phase G.1.1 — VRAM Tracking: 逐级 Track, 与 ReleasePyramid 严格对称
+    //   各级尺寸 w/2^i × h/2^i (min 1×1), RGBA16F (backend 固定格式, 见 render_gl33.cpp:5658)
+    {
+        int curW = w, curH = h;
+        for (int i = 0; i < created; ++i) {
+            LT::GpuMem::Track("Bloom pyramid", "RGBA16F", curW, curH);
+            curW = (curW > 1) ? curW / 2 : 1;
+            curH = (curH > 1) ? curH / 2 : 1;
+        }
+    }
 
     CC::Log(CC::LOG_INFO,
             "BloomRenderer::Enable: %dx%d, %d level pyramid", w, h, created);

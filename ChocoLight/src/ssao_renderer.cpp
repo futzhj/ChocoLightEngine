@@ -141,6 +141,16 @@ static bool  g_slot_in_use[MAX_INSTANCES] = { true, false, false, false };
 /// 释放所有动态资源 (depth/AO RT + noise tex), 不动 backend 指针 / 参数
 static void DestroyResources() {
     if (!g.backend) return;
+    // Phase G.1.1 — VRAM Tracking: 在 backend Delete 前 Untrack (srcW/H + rtW/H 仍有效)
+    //   noise tex 4×4 RGBA8 (~64 B 太小, 不跟踪)
+    if (g.depthTex && g.srcW > 0 && g.srcH > 0) {
+        LT::GpuMem::Untrack("SSAO depthTex", "DEPTH24", g.srcW, g.srcH);
+    }
+    if ((g.texs[0] || g.texs[1]) && g.rtW > 0 && g.rtH > 0) {
+        LT::GpuMem::Untrack("SSAO AO", "R16F", g.rtW, g.rtH);
+        LT::GpuMem::Untrack("SSAO AO", "R16F", g.rtW, g.rtH);
+    }
+
     if (g.depthFbo || g.depthTex) {
         g.backend->DeleteSSAODepthRT(g.depthFbo, g.depthTex);
         g.depthFbo = g.depthTex = 0;
@@ -184,6 +194,17 @@ static bool AllocateResources(int w, int h) {
     }
     g.srcW = w;
     g.srcH = h;
+
+    // Phase G.1.1 — VRAM Tracking: 仅 Track 实际成功创建的部分 (与 DestroyResources 严格对称)
+    //   depthTex 是 DEPTH_COMPONENT24 (render_gl33.cpp:6349, 不是 DEPTH32F, SSR 才是 DEPTH32F)
+    //   AO ping-pong 半分辨率 R16F (rtW/rtH 在 CreateSSAOTargets 内 clamp ≥ 32)
+    if (g.depthTex) {
+        LT::GpuMem::Track("SSAO depthTex", "DEPTH24", w, h);
+    }
+    if (g.texs[0] && g.texs[1] && g.rtW > 0 && g.rtH > 0) {
+        LT::GpuMem::Track("SSAO AO", "R16F", g.rtW, g.rtH);
+        LT::GpuMem::Track("SSAO AO", "R16F", g.rtW, g.rtH);
+    }
     return true;
 }
 

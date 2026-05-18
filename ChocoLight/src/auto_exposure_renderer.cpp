@@ -64,6 +64,11 @@ static bool  g_slot_in_use[MAX_INSTANCES] = { true, false, false, false };
 
 /// 释放 luminance RT 资源 + 重置状态字段 (不改参数)
 void ReleaseLuminanceRT() {
+    // Phase G.1.1 — VRAM Tracking: 在 backend Delete 前 Untrack (lumW/lumH 仍有效)
+    //   只跟 base 级 R16F (mipmap chain 多分配 ~33%, 体积小, v2 P0+ 再考虑)
+    if (g.lumTex && g.lumW > 0 && g.lumH > 0) {
+        LT::GpuMem::Untrack("AE luminance", "R16F", g.lumW, g.lumH);
+    }
     if (g.backend && g.lumFbo) {
         g.backend->DeleteLuminanceTarget(g.lumFbo, g.lumTex);
     }
@@ -148,6 +153,11 @@ bool Enable(int w, int h) {
     g.height  = h;
     g.enabled = true;
     g.hasFirstSample = false;   // 第一帧重新建立 baseline
+
+    // Phase G.1.1 — VRAM Tracking: 跟 base 级 R16F (与 ReleaseLuminanceRT 对称)
+    //   lumW/H = max(srcW/4, 8) × max(srcH/4, 8), ~480×270 @ 1080p
+    //   mipmap chain 实际多分配 ~33%, 此处不计入 (v2 改进)
+    LT::GpuMem::Track("AE luminance", "R16F", lumW, lumH);
 
     CC::Log(CC::LOG_INFO,
             "AutoExposureRenderer::Enable: src=%dx%d, lum=%dx%d, lastMip=%d",
