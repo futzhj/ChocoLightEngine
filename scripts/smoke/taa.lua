@@ -1841,11 +1841,12 @@ do
     pass("Phase F.1.4: SetDynamicEnabled round-trip + 非 bool raise")
 end
 
--- 14.3) SetDynamicTarget 类型校验 (raise on non-number)
+-- 14.3) SetDynamicTarget 类型校验 (raise on non-number; 注: Lua 会将可转字符串 '120' 自动转为 120)
 do
-    local ok = pcall(TAA.SetDynamicTarget, "120")
-    if ok then fail("SetDynamicTarget('120') 应 raise (非 number)") end
-    pass("Phase F.1.4: SetDynamicTarget 非 number raise")
+    -- 使用 table 作为不可转类型 (luaL_checknumber 必 raise)
+    local ok = pcall(TAA.SetDynamicTarget, {})
+    if ok then fail("SetDynamicTarget(table) 应 raise (非 number)") end
+    pass("Phase F.1.4: SetDynamicTarget 非 number raise (table)")
 end
 
 -- 14.4) target <= 0 自动关 DRS
@@ -1903,11 +1904,11 @@ do
     pass("Phase F.1.4: UpdateDRS no-op when drsEnabled=false")
 end
 
--- 14.8) UpdateDRS 类型校验 (raise on non-number)
+-- 14.8) UpdateDRS 类型校验 (raise on non-number; 同样不能用数字字符串)
 do
-    local ok = pcall(TAA.UpdateDRS, "0.016")
-    if ok then fail("UpdateDRS('0.016') 应 raise (非 number)") end
-    pass("Phase F.1.4: UpdateDRS 非 number raise")
+    local ok = pcall(TAA.UpdateDRS, {})
+    if ok then fail("UpdateDRS(table) 应 raise (非 number)") end
+    pass("Phase F.1.4: UpdateDRS 非 number raise (table)")
 end
 
 -- 14.9) Warming up phase: 窗口未填满不调整
