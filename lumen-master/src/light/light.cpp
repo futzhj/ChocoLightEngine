@@ -538,6 +538,8 @@ static const struct { const char *modName; const char *procName; } g_lightModule
     {"Light.Animation.SkinnedMesh","luaopen_Light_Animation_SkinnedMesh"},
     // Phase E.1.4 — 2D Lighting (16 forward lights + ambient + normal map)
     {"Light.Lighting2D",           "luaopen_Light_Lighting2D"},
+    // Phase G.1.6 — Async Preload Manifest (聚合 6 个 LoadAsync 一次投递 + 总 cb)
+    {"Light.AssetLoader",          "luaopen_Light_AssetLoader"},
     {nullptr, nullptr}
 };
 

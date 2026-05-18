@@ -224,6 +224,7 @@ set(LIGHT_SOURCES
     ${CHOCO_SRC}/record_mp4.cpp        # Phase F.0.11.6 — H.264 MP4 录屏 (FFmpeg encoder)
     ${CHOCO_SRC}/audio_capture_wasapi.cpp  # Phase F.0.11.6.5.A13 — Windows WASAPI loopback audio capture
     ${CHOCO_SRC}/asset_loader.cpp      # Phase G.1 — 异步资源加载 (worker thread + shared GL ctx)
+    ${CHOCO_SRC}/light_asset.cpp       # Phase G.1.6 — Light.AssetLoader.Preload manifest 聚合 binding
     ${CHOCO_SRC}/light_db.cpp
     ${CHOCO_SRC}/light_network.cpp
     ${CHOCO_SRC}/light_network_packet.cpp

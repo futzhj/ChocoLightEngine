@@ -1,8 +1,8 @@
 # ChocoLight Engine - 交接与未完成任务清单 (Handoff Summary)
 
 > **创建时间**: 2026-05-17
-> **最后更新**: 2026-05-18 (G.1.5 异步 GLTF Material 收尾 + F.0.11.6.1 MP4 worker thread 已交付)
-> **当前基线**: G.1.5 完结 (异步 GLTF + worker pool + sampler + benchmark + 失败注入) + F.0.11.6.1 (MP4 编码 worker thread)
+> **最后更新**: 2026-05-18 (G.1.6 异步预加载 manifest 交付 + 完整闭环 §2 异步资源加载)
+> **当前基线**: G.1.6 完结 (Light.AssetLoader.Preload manifest + BatchHandle) + G.1.5 完结 + F.0.11.6.x 全套
 > **目的**: 供下一个 AI 助手接手开发时，快速建立上下文并明确下一步任务优先级。
 
 ---
@@ -36,11 +36,37 @@
 
 ## 2. 非渲染基础架构与引擎优化 (Non-Rendering & Infrastructure)
 
-### 1. 异步资源加载 (Async Asset Management)
-* **现状**: 模型的加载 (Assimp) 和纹理的加载 (stb_image) 通常是同步阻塞的, 在加载大场景时会导致主线程卡顿。
-* **需求**:
-  - 实现基于线程池的后台文件 I/O 与解码。
-  - OpenGL 纹理/VBO 的上传需要同步回主线程 (或利用 OpenGL Shared Context 在后台线程上传)。
+### ✅ [已交付 2026-05-18] Phase G.1.6 — 异步预加载 manifest (Light.AssetLoader.Preload)
+* **新模块 Light.AssetLoader**: `Preload(manifest, totalCb)` 一次提交 N 个混合类型异步资源, 全部完成触发统一 cb
+* **6 字段聚合**: images / sounds / cubeLUTs / haldLUTs / fonts / meshes — 索引映射到 6 个 `LoadXxxAsync` 入口
+* **BatchHandle userdata**: `:GetProgress()` 返 done/total/errors_count · `:IsDone()` · `:Cancel()` advisory 语义 · `__tostring` 调试
+* **零侵入设计**: 仅 binding 层聚合, 不动 `asset_loader.h/cpp` / `light_ui.cpp` / 8 个现有 LoadAsync
+* **立即 Error 同步路径**: worker 未启动时 sync fallback 失败 → binding 层同步更新 ud → cb 立即触发
+* **边界全覆盖**: 空 manifest / 未识别字段静默忽略 / 错参 luaL_argerror / Cancel 幂等
+* commit `pending` (6 files 新增 + 3 files 修改); smoke 8 用例
+* 文档: `docs/Phase G.1.6 Async Preload Manifest/{ALIGNMENT,DESIGN,TASK,FINAL,ACCEPTANCE,TODO}_PhaseG_1_6.md`
+
+### ✅ 1. 异步资源加载 (Async Asset Management) — 已完整交付 (G.1.0 → G.1.6)
+
+* **交付范围**:
+  - **G.1.0**: 基础 worker thread + task/result queue + 6 类型异步 (Image/LUT/Hald/Font/Sound/GLTF Mesh)
+  - **G.1.1**: Shared GL Context probe + worker `glTexImage2D` + `glFenceSync`
+  - **G.1.2**: Mesh worker GL upload (VAO/VBO/EBO + RegisterUploadedMesh)
+  - **G.1.3**: 进程退出 RAII guard + STATUS_STACK_BUFFER_OVERRUN 修复
+  - **G.1.5**: GLTF Material + 5 类 PBR texture + Worker Thread Pool + sampler 透传 + benchmark
+  - **G.1.6**: `Light.AssetLoader.Preload` manifest 聚合 + BatchHandle 进度/取消
+* **API**: 6 LoadAsync + 1 Preload + 4 BatchHandle 方法 + Future:Get/IsReady/IsError/GetError
+* **文档**: `docs/Phase G.1*/{ALIGNMENT,DESIGN,FINAL}_PhaseG_1*.md` (~30 件套)
+* **性能**: 主线程 P95 < 5ms (实测 @ NVIDIA RTX); worker 上传路径 + fallback 同步路径全面覆盖
+* **smoke**: `asset_loader_async.lua` + `asset_loader_async_gltf.lua` + `asset_loader_preload.lua` 14+ 用例
+
+后续可选 (见 `docs/Phase G.1.6 Async Preload Manifest/TODO_PhaseG_1_6.md`):
+- T1 Per-entry sub-cb (渐进加载, P2, 3-4h)
+- T2 Results 嵌套结构 (P2, 4-5h)
+- T3 协程化 AwaitPreload (P3, 2-3h)
+- T4 .json manifest 加载器 (P3, 4h)
+- T6 perf_async_preload sample (推荐, P1, 2-3h)
+- T8 demo_preload_manifest sample (推荐, P1, 3-4h)
 
 ### 2. 内存与显存管理优化 (Memory & VRAM Profiling)
 * **需求**:
@@ -155,7 +181,8 @@
 4. **Lua API 容错 audit**: 错误传参不应 crash, 全 API audit + nil+err 返回 (估时 4-6h, **推荐顺序处理优先**)
 5. ~~**Bloom mipmap / SSAO / AE / TAAU**~~: ✅ 已交付 Phase G.1.1
 6. **VRAM v1.2**: 用户 Image / Mesh / Font 跟踪 (估时 5h, 见 G.1 TODO P1)
-7. **Async Asset Management**: 异步资源加载 (Phase 2 §1, 大场景加载不卡顿, 估时 6-10h)
+7. ~~**Async Asset Management**~~: ✅ 已完整交付 Phase G.1.0 → G.1.6 (6 LoadAsync + Preload manifest + BatchHandle)
+8. **Async sample / demo**: `samples/perf_async_preload/` + `samples/demo_preload_manifest/` (P1 推荐, 估时 5-7h, 见 G.1.6 TODO)
 
 ### 选项 B — 渲染管线收尾
 1. **F.1.2 Velocity Nearest-Filter**: 仅当 F.1.1 真机测试 ghost 严重时启用
@@ -173,4 +200,4 @@
 
 ## 4. 交接给新 AI 的启动指令建议
 
-> "请阅读 `docs/HANDOFF_REMAINING_TASKS.md` 了解目前引擎的进度。当前基线是 **Phase F.0.11.6.1 (MP4 Worker A1~A7 全套优化交付完成)**. 渲染管线方向已闭环 (10 后处理多实例 + TAAU 全联动 + 截图录屏 + MP4 异步编码 95% 主线程降幅). 下一步参考 §3 候选方向, 请先确认用户优先级."
+> "请阅读 `docs/HANDOFF_REMAINING_TASKS.md` 了解目前引擎的进度。当前基线是 **Phase G.1.6 (异步预加载 manifest 交付完成, 闭环 §2 异步资源加载方向)**. 现有能力: 10 后处理多实例 + TAAU 全联动 + 截图录屏 + MP4 异步编码 95% 主线程降幅 + 6 类型异步资源 + Preload manifest + BatchHandle. 下一步推荐 §3 选项 A.4 (Lua API 容错 audit, 4-6h), 请先确认用户优先级."

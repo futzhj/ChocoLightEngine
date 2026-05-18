@@ -106,6 +106,7 @@ jobs:
           $phaseG1Smoke   = Resolve-Path "scripts\smoke\asset_loader_async.lua"
           $phaseG15Smoke  = Resolve-Path "scripts\smoke\asset_loader_async_gltf.lua"
           $phaseG1VramSmoke = Resolve-Path "scripts\smoke\gpumem.lua"
+          $phaseG16Smoke  = Resolve-Path "scripts\smoke\asset_loader_preload.lua"
           Copy-Item ChocoLight\build\bin\Release\Light.dll $runtimeDir -Force
           & "$runtimeDir\light.exe" $coreSmoke
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -228,6 +229,8 @@ jobs:
           & "$runtimeDir\light.exe" $phaseG15Smoke
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & "$runtimeDir\light.exe" $phaseG1VramSmoke
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & "$runtimeDir\light.exe" $phaseG16Smoke
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Package Windows Template
