@@ -4942,6 +4942,123 @@ static int l_TAA_GetMipBias(lua_State* L) {
     return 1;
 }
 
+// ==================== Phase F.1.4 — Dynamic Resolution Scaling (5 fn) ====================
+//
+// 帧率自适应 — 用户每帧调 UpdateDRS, 内部按滑动窗口决策 4 档预设跳转
+// 详见 docs/Phase F.1.4 .../DESIGN_PhaseF_1_4.md
+//
+// 暴露 5 个 Lua API: SetDynamicEnabled / SetDynamicTarget / UpdateDRS / GetDynamicStats / SetDynamicConfig
+// (其余 setter pair 通过 SetDynamicConfig table 字段统一访问)
+
+/// @lua_api Light.Graphics.TAA.SetDynamicEnabled
+/// @param flag boolean  DRS 总开关; 默认 false (零回归)
+/// 关闭时清滑动窗口/cooldown, 但保留 adjustments 累计计数
+static int l_TAA_SetDynamicEnabled(lua_State* L) {
+    luaL_checktype(L, 1, LUA_TBOOLEAN);
+    TAARenderer::SetDynamicEnabled(lua_toboolean(L, 1) != 0);
+    return 0;
+}
+
+/// @lua_api Light.Graphics.TAA.GetDynamicEnabled
+/// @return boolean
+static int l_TAA_GetDynamicEnabled(lua_State* L) {
+    lua_pushboolean(L, TAARenderer::GetDynamicEnabled() ? 1 : 0);
+    return 1;
+}
+
+/// @lua_api Light.Graphics.TAA.SetDynamicTarget
+/// @param fps number 目标 FPS, clamp [30, 240]; <=0 自动关 DRS
+static int l_TAA_SetDynamicTarget(lua_State* L) {
+    const lua_Number fps = luaL_checknumber(L, 1);
+    TAARenderer::SetDynamicTarget((float)fps);
+    return 0;
+}
+
+/// @lua_api Light.Graphics.TAA.GetDynamicTarget
+/// @return number
+static int l_TAA_GetDynamicTarget(lua_State* L) {
+    lua_pushnumber(L, (lua_Number)TAARenderer::GetDynamicTarget());
+    return 1;
+}
+
+/// @lua_api Light.Graphics.TAA.UpdateDRS
+/// @param dt number  秒, 当前帧的 deltaTime
+/// 用户每帧调用. drsEnabled=false / dt<=0 时立即返回 (no-op)
+static int l_TAA_UpdateDRS(lua_State* L) {
+    const lua_Number dt = luaL_checknumber(L, 1);
+    TAARenderer::UpdateDRS((float)dt);
+    return 0;
+}
+
+/// @lua_api Light.Graphics.TAA.GetDynamicStats
+/// @return table {
+///   enabled, targetFps, avgFrameTimeMs, avgFps, currentScale, currentPreset,
+///   adjustments, framesSinceLastAdjust, warmingUp, windowProgress
+/// }
+static int l_TAA_GetDynamicStats(lua_State* L) {
+    lua_createtable(L, 0, 10);
+    lua_pushboolean(L, TAARenderer::GetDynamicEnabled() ? 1 : 0);
+    lua_setfield(L, -2, "enabled");
+    lua_pushnumber(L, (lua_Number)TAARenderer::GetDynamicTarget());
+    lua_setfield(L, -2, "targetFps");
+    lua_pushnumber(L, (lua_Number)TAARenderer::DynamicAvgFrameTimeMs());
+    lua_setfield(L, -2, "avgFrameTimeMs");
+    lua_pushnumber(L, (lua_Number)TAARenderer::DynamicAvgFps());
+    lua_setfield(L, -2, "avgFps");
+    lua_pushnumber(L, (lua_Number)TAARenderer::GetRenderScale());
+    lua_setfield(L, -2, "currentScale");
+    lua_pushstring(L, TAARenderer::GetUpscalePreset());
+    lua_setfield(L, -2, "currentPreset");
+    lua_pushinteger(L, (lua_Integer)TAARenderer::DynamicAdjustments());
+    lua_setfield(L, -2, "adjustments");
+    lua_pushinteger(L, (lua_Integer)TAARenderer::DynamicFramesSinceLastAdjust());
+    lua_setfield(L, -2, "framesSinceLastAdjust");
+    lua_pushboolean(L, TAARenderer::DynamicWarmingUp() ? 1 : 0);
+    lua_setfield(L, -2, "warmingUp");
+    lua_pushnumber(L, (lua_Number)TAARenderer::DynamicWindowProgress());
+    lua_setfield(L, -2, "windowProgress");
+    return 1;
+}
+
+/// @lua_api Light.Graphics.TAA.SetDynamicConfig
+/// @param cfg table  可选字段:
+///   windowSize     integer [5, 120]   滑动窗口大小 (默认 30)
+///   cooldownFrames integer [10, 600]  调整冷却帧数 (默认 60)
+///   downThreshold  number  [1.01, 2.0] 降级阈值 (默认 1.10)
+///   upThreshold    number  [0.5, 0.99] 升级阈值 (默认 0.85)
+/// 缺失字段保持原值; 越界值 clamp + log warning (不 raise, 友好降级)
+static int l_TAA_SetDynamicConfig(lua_State* L) {
+    if (lua_type(L, 1) != LUA_TTABLE) {
+        // 友好降级: 非 table 时静默忽略 (与 SetClipMode/SetSharpenMode 容错风格一致)
+        return 0;
+    }
+    // windowSize
+    lua_getfield(L, 1, "windowSize");
+    if (lua_type(L, -1) == LUA_TNUMBER) {
+        TAARenderer::SetDynamicWindowSize((int)lua_tointeger(L, -1));
+    }
+    lua_pop(L, 1);
+    // cooldownFrames
+    lua_getfield(L, 1, "cooldownFrames");
+    if (lua_type(L, -1) == LUA_TNUMBER) {
+        TAARenderer::SetDynamicCooldownFrames((int)lua_tointeger(L, -1));
+    }
+    lua_pop(L, 1);
+    // downThreshold
+    lua_getfield(L, 1, "downThreshold");
+    if (lua_type(L, -1) == LUA_TNUMBER) {
+        TAARenderer::SetDynamicDownThreshold((float)lua_tonumber(L, -1));
+    }
+    lua_pop(L, 1);
+    // upThreshold
+    lua_getfield(L, 1, "upThreshold");
+    if (lua_type(L, -1) == LUA_TNUMBER) {
+        TAARenderer::SetDynamicUpThreshold((float)lua_tonumber(L, -1));
+    }
+    lua_pop(L, 1);
+    return 0;
+}
+
 // ==================== Phase F.0.10 — Multi-Instance API (5 fn) ====================
 
 /// @lua_api Light.Graphics.TAA.CreateInstance
@@ -5207,6 +5324,14 @@ static const luaL_Reg taa_funcs[] = {
     {"GetAutoMipBias",        l_TAA_GetAutoMipBias},
     {"SetMipBias",            l_TAA_SetMipBias},
     {"GetMipBias",            l_TAA_GetMipBias},
+    // Phase F.1.4 TAAU — Dynamic Resolution Scaling (7 fn: 5 主 + 2 query)
+    {"SetDynamicEnabled",     l_TAA_SetDynamicEnabled},
+    {"GetDynamicEnabled",     l_TAA_GetDynamicEnabled},
+    {"SetDynamicTarget",      l_TAA_SetDynamicTarget},
+    {"GetDynamicTarget",      l_TAA_GetDynamicTarget},
+    {"UpdateDRS",             l_TAA_UpdateDRS},
+    {"GetDynamicStats",       l_TAA_GetDynamicStats},
+    {"SetDynamicConfig",      l_TAA_SetDynamicConfig},
     {NULL, NULL}
 };
 

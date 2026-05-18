@@ -91,6 +91,23 @@ struct State {
     uint64_t frameCounter   = 0;
     float    curJitterX     = 0.0f;
     float    curJitterY     = 0.0f;
+
+    // ==================== Phase F.1.4 — Dynamic Resolution Scaling ====================
+    // 帧率自适应: 监控帧时间, 自动在 4 档预设之间跳转维持目标 FPS
+    // 默认全关 (零回归); 详见 docs/Phase F.1.4 .../DESIGN_PhaseF_1_4.md §2.1
+    bool     drsEnabled        = false;     // 总开关 (默认 false 零回归)
+    float    drsTargetFps      = 60.0f;     // 目标 FPS, clamp [30, 240], <=0 自动关 DRS
+    int      drsWindowSize     = 30;        // 滑动窗口大小, clamp [5, 120]
+    int      drsCooldownFrames = 60;        // 调整后冷却帧数, clamp [10, 600]
+    float    drsDownThreshold  = 1.10f;     // ratio > 1.10 → 降一档, clamp [1.01, 2.0]
+    float    drsUpThreshold    = 0.85f;     // ratio < 0.85 → 升一档, clamp [0.5, 0.99]
+
+    // 运行时累积状态:
+    float    drsFrameTimes[120] = {0};      // 滑动窗口缓冲 (固定上限避免堆分配)
+    int      drsWindowHead     = 0;         // 环形队列头索引
+    int      drsWindowFilled   = 0;         // 已填充帧数 (饱和到 windowSize)
+    int      drsCooldownLeft   = 0;         // 剩余冷却帧数
+    int      drsAdjustments    = 0;         // 累计调整次数 (供 stats 显示)
 };
 
 // Phase F.0.10 — multi-instance support
@@ -209,6 +226,15 @@ void Shutdown() {
     g_count  = 1;
     for (int i = 0; i < MAX_INSTANCES; ++i) g_slot_in_use[i] = (i == 0);
     (void)saved_active;  // saved_active 不需保留 (Shutdown 后默认回 0)
+
+    // Phase F.1.4: 复位 DRS 运行时状态 (默认/参数字段保留, 用户下次 SetDynamicEnabled 时重新启动)
+    for (int i = 0; i < MAX_INSTANCES; ++i) {
+        g_states[i].drsEnabled      = false;
+        g_states[i].drsWindowHead   = 0;
+        g_states[i].drsWindowFilled = 0;
+        g_states[i].drsCooldownLeft = 0;
+        g_states[i].drsAdjustments  = 0;
+    }
 }
 
 bool IsInited() { return g.inited; }
@@ -970,6 +996,17 @@ int CloneInstance(int srcId) {
             g_states[i].renderH       = 0;
             // renderScale / upscalePreset 保留 (源 instance 调过的设置, 复制过来,
             //   新 instance SetTAAUEnabled(true) 会按此 scale 重算 renderW/H)
+
+            // Phase F.1.4: DRS 运行时状态不复制 (避免跨 instance 决策污染), 但配置参数保留
+            //   配置 (target/window/cooldown/thresholds) 反映用户调优意图, 复制过来合理;
+            //   运行时 (enabled/window/cooldown/adjustments) 必须复位让新 instance 独立累积
+            g_states[i].drsEnabled      = false;
+            g_states[i].drsWindowHead   = 0;
+            g_states[i].drsWindowFilled = 0;
+            g_states[i].drsCooldownLeft = 0;
+            g_states[i].drsAdjustments  = 0;
+            // drsFrameTimes 缓冲 unfilled 时不被读, 不必显式清零
+
             g_slot_in_use[i] = true;
             ++g_count;
             CC::Log(CC::LOG_INFO,
@@ -980,6 +1017,221 @@ int CloneInstance(int srcId) {
     }
     CC::Log(CC::LOG_WARN, "TAARenderer::CloneInstance: 槽位已满");
     return 0;
+}
+
+// ==================== Phase F.1.4 — Dynamic Resolution Scaling ====================
+//
+// 帧率自适应实现 (per-instance, 基于 g_active 透明跟随):
+//   - 用户每帧调 UpdateDRS(dt), 推进滑动窗口 + cooldown 倒计数
+//   - 窗口填满 + 冷却结束时, 按 ratio = avgMs / targetMs 决策升降一档
+//   - 仅在 4 档预设之间跳转, 复用 SetRenderScale 触发 applyTAAUChange_ 链
+//
+// 详见 docs/Phase F.1.4 .../DESIGN_PhaseF_1_4.md §3 (核心算法).
+
+// 内部 helpers — 滑动窗口 / 配置 clamp
+//
+// drsPushFrameTime_: 写入环形队列 + 进度饱和.
+// drsAvgFrameTimeMs_: O(N) 累加, N <= 120 (微秒级开销).
+// drsResetWindow_: 清窗口 + 冷却 (但不清 adjustments 累计).
+// drsClampConfig_: 全部配置字段强制 clamp 到合法范围.
+
+static void drsPushFrameTime_(float dtSec) {
+    const float dtMs = dtSec * 1000.0f;
+    g.drsFrameTimes[g.drsWindowHead] = dtMs;
+    g.drsWindowHead = (g.drsWindowHead + 1) % g.drsWindowSize;
+    if (g.drsWindowFilled < g.drsWindowSize) g.drsWindowFilled++;
+}
+
+static float drsAvgFrameTimeMs_() {
+    if (g.drsWindowFilled == 0) return 0.0f;
+    float sum = 0.0f;
+    for (int i = 0; i < g.drsWindowFilled; ++i) sum += g.drsFrameTimes[i];
+    return sum / (float)g.drsWindowFilled;
+}
+
+static void drsResetWindow_() {
+    g.drsWindowHead   = 0;
+    g.drsWindowFilled = 0;
+    g.drsCooldownLeft = 0;
+}
+
+static void drsClampConfig_() {
+    if (g.drsWindowSize     < 5)    g.drsWindowSize     = 5;
+    if (g.drsWindowSize     > 120)  g.drsWindowSize     = 120;
+    if (g.drsCooldownFrames < 10)   g.drsCooldownFrames = 10;
+    if (g.drsCooldownFrames > 600)  g.drsCooldownFrames = 600;
+    if (g.drsDownThreshold  < 1.01f) g.drsDownThreshold = 1.01f;
+    if (g.drsDownThreshold  > 2.0f)  g.drsDownThreshold = 2.0f;
+    if (g.drsUpThreshold    < 0.5f)  g.drsUpThreshold   = 0.5f;
+    if (g.drsUpThreshold    > 0.99f) g.drsUpThreshold   = 0.99f;
+}
+
+// ==================== F.1.4 公开 API ====================
+
+void SetDynamicEnabled(bool flag) {
+    if (g.drsEnabled == flag) return;   // no-op
+    g.drsEnabled = flag;
+    if (!flag) {
+        // 关 DRS: 清窗口/冷却, 但保留 adjustments 累计 (供 stats 显示历史)
+        drsResetWindow_();
+        CC::Log(CC::LOG_INFO, "TAARenderer::SetDynamicEnabled: DRS 已关闭");
+    } else {
+        // 开 DRS: 强制 clamp 配置 (防止之前误设过界)
+        drsClampConfig_();
+        drsResetWindow_();
+        CC::Log(CC::LOG_INFO,
+                "TAARenderer::SetDynamicEnabled: DRS 已启用 (target=%.0f fps, window=%d, cooldown=%d)",
+                (double)g.drsTargetFps, g.drsWindowSize, g.drsCooldownFrames);
+    }
+}
+bool GetDynamicEnabled() { return g.drsEnabled; }
+
+void SetDynamicTarget(float fps) {
+    // <=0 视为关闭 DRS
+    if (fps <= 0.0f) {
+        if (g.drsEnabled) {
+            CC::Log(CC::LOG_INFO,
+                    "TAARenderer::SetDynamicTarget: target=%.1f <= 0, 自动关 DRS",
+                    (double)fps);
+        }
+        SetDynamicEnabled(false);
+        return;
+    }
+    // clamp [30, 240]
+    float clamped = fps;
+    if (clamped < 30.0f) {
+        CC::Log(CC::LOG_INFO,
+                "TAARenderer::SetDynamicTarget: target=%.1f < 30, clamp 到 30 fps",
+                (double)fps);
+        clamped = 30.0f;
+    } else if (clamped > 240.0f) {
+        CC::Log(CC::LOG_INFO,
+                "TAARenderer::SetDynamicTarget: target=%.1f > 240, clamp 到 240 fps",
+                (double)fps);
+        clamped = 240.0f;
+    }
+    g.drsTargetFps = clamped;
+    // 不重置滑动窗口: 用户调目标但场景未变, 延续旧统计可减少 warming up 时间
+}
+float GetDynamicTarget() { return g.drsTargetFps; }
+
+void UpdateDRS(float dtSec) {
+    // 快速退出: 关闭 / 非法 dt
+    if (!g.drsEnabled) return;
+    if (dtSec <= 0.0f) return;
+
+    drsPushFrameTime_(dtSec);
+
+    // cooldown 倒计数 (但仍累积窗口)
+    if (g.drsCooldownLeft > 0) {
+        g.drsCooldownLeft--;
+        return;
+    }
+
+    // 窗口未填满 → warming up 阶段, 不调整
+    if (g.drsWindowFilled < g.drsWindowSize) return;
+
+    // 决策
+    const float avgMs    = drsAvgFrameTimeMs_();
+    if (avgMs <= 0.0f || g.drsTargetFps <= 0.0f) return;
+    const float targetMs = 1000.0f / g.drsTargetFps;
+    const float ratio    = avgMs / targetMs;
+    const int   curPreset = g.upscalePreset;
+    int newPreset = curPreset;
+
+    if (ratio > g.drsDownThreshold && curPreset > 0) {
+        newPreset = curPreset - 1;     // 降画质 (scale 减小, FPS 升)
+    } else if (ratio < g.drsUpThreshold && curPreset < 3) {
+        newPreset = curPreset + 1;     // 升画质 (scale 增大, FPS 降)
+    }
+
+    if (newPreset != curPreset) {
+        // 触发 F.1 已有路径; SetRenderScale 内部会调 applyTAAUChange_ + updateMipBias_
+        SetRenderScale(kPresetScale[newPreset]);
+        g.upscalePreset = newPreset;     // SetRenderScale 已 set, 此处冗余防浮点容差边界
+        g.drsAdjustments++;
+        g.drsCooldownLeft = g.drsCooldownFrames;
+        // 调整后清窗口: 让新 scale 下的帧时间被独立累积, 避免 transient 污染
+        g.drsWindowHead   = 0;
+        g.drsWindowFilled = 0;
+        CC::Log(CC::LOG_INFO,
+                "TAARenderer::UpdateDRS: %s -> %s (avg=%.2fms target=%.2fms ratio=%.2f, adjust#%d)",
+                kPresetName[curPreset], kPresetName[newPreset],
+                (double)avgMs, (double)targetMs, (double)ratio, g.drsAdjustments);
+    }
+}
+
+void SetDynamicWindowSize(int n) {
+    int clamped = n;
+    if (clamped < 5)   clamped = 5;
+    if (clamped > 120) clamped = 120;
+    if (n != clamped) {
+        CC::Log(CC::LOG_INFO,
+                "TAARenderer::SetDynamicWindowSize: %d clamped to [5, 120] -> %d", n, clamped);
+    }
+    if (g.drsWindowSize == clamped) return;
+    g.drsWindowSize = clamped;
+    drsResetWindow_();   // 改大小必清窗口 (索引/填充计数语义变化)
+}
+int GetDynamicWindowSize() { return g.drsWindowSize; }
+
+void SetDynamicCooldownFrames(int n) {
+    int clamped = n;
+    if (clamped < 10)  clamped = 10;
+    if (clamped > 600) clamped = 600;
+    if (n != clamped) {
+        CC::Log(CC::LOG_INFO,
+                "TAARenderer::SetDynamicCooldownFrames: %d clamped to [10, 600] -> %d", n, clamped);
+    }
+    g.drsCooldownFrames = clamped;
+    // 不清窗口: 仅影响下次调整后的等待长度
+}
+int GetDynamicCooldownFrames() { return g.drsCooldownFrames; }
+
+void SetDynamicDownThreshold(float t) {
+    float clamped = t;
+    if (clamped < 1.01f) clamped = 1.01f;
+    if (clamped > 2.0f)  clamped = 2.0f;
+    if (t != clamped) {
+        CC::Log(CC::LOG_WARN,
+                "TAARenderer::SetDynamicDownThreshold: %.2f clamped to [1.01, 2.0] -> %.2f",
+                (double)t, (double)clamped);
+    }
+    g.drsDownThreshold = clamped;
+}
+float GetDynamicDownThreshold() { return g.drsDownThreshold; }
+
+void SetDynamicUpThreshold(float t) {
+    float clamped = t;
+    if (clamped < 0.5f)  clamped = 0.5f;
+    if (clamped > 0.99f) clamped = 0.99f;
+    if (t != clamped) {
+        CC::Log(CC::LOG_WARN,
+                "TAARenderer::SetDynamicUpThreshold: %.2f clamped to [0.5, 0.99] -> %.2f",
+                (double)t, (double)clamped);
+    }
+    g.drsUpThreshold = clamped;
+}
+float GetDynamicUpThreshold() { return g.drsUpThreshold; }
+
+// 统计字段 getter (Lua bridge 组合 GetDynamicStats 表)
+float DynamicAvgFrameTimeMs() { return drsAvgFrameTimeMs_(); }
+float DynamicAvgFps() {
+    const float avgMs = drsAvgFrameTimeMs_();
+    return (avgMs > 0.0f) ? (1000.0f / avgMs) : 0.0f;
+}
+int   DynamicAdjustments()           { return g.drsAdjustments; }
+int   DynamicFramesSinceLastAdjust() {
+    // 已用冷却帧数 (= 总冷却 - 剩余), 仅在最近触发过调整时有意义
+    return g.drsCooldownFrames - g.drsCooldownLeft;
+}
+bool  DynamicWarmingUp() {
+    // 启用且窗口未满 → warming up
+    return g.drsEnabled && (g.drsWindowFilled < g.drsWindowSize);
+}
+float DynamicWindowProgress() {
+    if (g.drsWindowSize <= 0) return 0.0f;
+    return (float)g.drsWindowFilled / (float)g.drsWindowSize;
 }
 
 } // namespace TAARenderer

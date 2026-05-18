@@ -93,6 +93,10 @@ local fn_names = {
     "GetRenderResolution", "GetOutputResolution",   -- Phase F.1 TAAU
     "SetAutoMipBias", "GetAutoMipBias",             -- Phase F.1.1 Mipmap LOD bias
     "SetMipBias", "GetMipBias",                     -- Phase F.1.1 Mipmap LOD bias
+    "SetDynamicEnabled", "GetDynamicEnabled",       -- Phase F.1.4 DRS
+    "SetDynamicTarget", "GetDynamicTarget",         -- Phase F.1.4 DRS
+    "UpdateDRS", "GetDynamicStats",                 -- Phase F.1.4 DRS
+    "SetDynamicConfig",                             -- Phase F.1.4 DRS
 }
 for _, k in ipairs(fn_names) do
     if type(TAA[k]) ~= "function" then
@@ -1812,9 +1816,167 @@ do
     TAA.SetRenderScale(1.0)
 end
 
+-- ============================================================
+-- 14) Phase F.1.4 — Dynamic Resolution Scaling (DRS)
+-- ============================================================
+
+-- 14.1) 默认值: drsEnabled=false, target=60 (零回归)
+do
+    if TAA.GetDynamicEnabled() ~= false then fail("Default DRS enabled 应 false (零回归)") end
+    if math.abs(TAA.GetDynamicTarget() - 60.0) > 0.001 then
+        fail("Default target 应 60, 得 " .. tostring(TAA.GetDynamicTarget()))
+    end
+    pass("Phase F.1.4: Default drsEnabled=false, target=60")
+end
+
+-- 14.2) SetDynamicEnabled round-trip + 类型校验 (raise on non-bool)
+do
+    TAA.SetDynamicEnabled(true)
+    if TAA.GetDynamicEnabled() ~= true then fail("SetDynamicEnabled(true) round-trip 失败") end
+    TAA.SetDynamicEnabled(false)
+    if TAA.GetDynamicEnabled() ~= false then fail("SetDynamicEnabled(false) round-trip 失败") end
+    -- 非 boolean 应 raise
+    local ok = pcall(TAA.SetDynamicEnabled, "yes")
+    if ok then fail("SetDynamicEnabled('yes') 应 raise (非 boolean)") end
+    pass("Phase F.1.4: SetDynamicEnabled round-trip + 非 bool raise")
+end
+
+-- 14.3) SetDynamicTarget 类型校验 (raise on non-number)
+do
+    local ok = pcall(TAA.SetDynamicTarget, "120")
+    if ok then fail("SetDynamicTarget('120') 应 raise (非 number)") end
+    pass("Phase F.1.4: SetDynamicTarget 非 number raise")
+end
+
+-- 14.4) target <= 0 自动关 DRS
+do
+    TAA.SetDynamicEnabled(true)
+    TAA.SetDynamicTarget(-5)
+    if TAA.GetDynamicEnabled() ~= false then fail("target=-5 应自动关 DRS") end
+    pass("Phase F.1.4: target<=0 自动关 DRS")
+    -- 复位
+    TAA.SetDynamicTarget(60)
+end
+
+-- 14.5) target clamp [30, 240]
+do
+    TAA.SetDynamicTarget(10)
+    if math.abs(TAA.GetDynamicTarget() - 30.0) > 0.001 then
+        fail("target=10 应 clamp 到 30, 得 " .. tostring(TAA.GetDynamicTarget()))
+    end
+    TAA.SetDynamicTarget(500)
+    if math.abs(TAA.GetDynamicTarget() - 240.0) > 0.001 then
+        fail("target=500 应 clamp 到 240, 得 " .. tostring(TAA.GetDynamicTarget()))
+    end
+    pass("Phase F.1.4: target clamp [30, 240]")
+    -- 复位
+    TAA.SetDynamicTarget(60)
+end
+
+-- 14.6) SetDynamicConfig round-trip + clamp
+do
+    TAA.SetDynamicConfig({ windowSize = 10, cooldownFrames = 30 })
+    -- Config 字段不暴露独立 getter, 通过 GetDynamicStats 间接验证 (无法直接读 windowSize)
+    -- 改为: 推 5 帧, warmingUp 应反映新 windowSize=10 进度
+    TAA.SetDynamicEnabled(true)
+    for _ = 1, 5 do TAA.UpdateDRS(0.016) end
+    local s = TAA.GetDynamicStats()
+    if s.warmingUp ~= true then fail("windowSize=10 推 5 帧后 warmingUp 应 true") end
+    if s.windowProgress < 0.4 or s.windowProgress > 0.6 then
+        fail("5/10 windowProgress 应 ~0.5, 得 " .. tostring(s.windowProgress))
+    end
+    -- clamp 测试: windowSize=-5 → 5, downThreshold=0.5 → 1.01
+    TAA.SetDynamicConfig({ windowSize = -5, downThreshold = 0.5 })
+    pass("Phase F.1.4: SetDynamicConfig 部分更新 + clamp 不 raise")
+    TAA.SetDynamicEnabled(false)
+end
+
+-- 14.7) UpdateDRS no-op when disabled
+do
+    TAA.SetDynamicEnabled(false)
+    local s0 = TAA.GetDynamicStats()
+    for _ = 1, 30 do TAA.UpdateDRS(0.020) end
+    local s1 = TAA.GetDynamicStats()
+    if s0.adjustments ~= s1.adjustments then
+        fail("DRS 关闭时 UpdateDRS 不应增 adjustments")
+    end
+    pass("Phase F.1.4: UpdateDRS no-op when drsEnabled=false")
+end
+
+-- 14.8) UpdateDRS 类型校验 (raise on non-number)
+do
+    local ok = pcall(TAA.UpdateDRS, "0.016")
+    if ok then fail("UpdateDRS('0.016') 应 raise (非 number)") end
+    pass("Phase F.1.4: UpdateDRS 非 number raise")
+end
+
+-- 14.9) Warming up phase: 窗口未填满不调整
+do
+    TAA.SetDynamicConfig({ windowSize = 10, cooldownFrames = 5 })
+    TAA.SetDynamicTarget(60)
+    TAA.SetDynamicEnabled(true)
+    -- 推 5 帧 (< windowSize=10), 即使帧时间超阈值也不应调整
+    for _ = 1, 5 do TAA.UpdateDRS(0.030) end   -- 30ms 远超 1.10×16.66ms
+    local s = TAA.GetDynamicStats()
+    if s.warmingUp ~= true then fail("5/10 应仍 warming up") end
+    if s.adjustments ~= 0 then fail("warming up 阶段不应调整, 得 adj=" .. s.adjustments) end
+    pass("Phase F.1.4: warming up 阶段不触发调整")
+    TAA.SetDynamicEnabled(false)
+end
+
+-- 14.10) GetDynamicStats 返表字段完整性 (10 字段)
+do
+    local s = TAA.GetDynamicStats()
+    if type(s) ~= "table" then fail("GetDynamicStats 应返 table, 得 " .. type(s)) end
+    local required = {
+        "enabled", "targetFps", "avgFrameTimeMs", "avgFps",
+        "currentScale", "currentPreset", "adjustments",
+        "framesSinceLastAdjust", "warmingUp", "windowProgress",
+    }
+    for _, k in ipairs(required) do
+        if s[k] == nil then fail("GetDynamicStats 缺字段 " .. k) end
+    end
+    pass("Phase F.1.4: GetDynamicStats 10 字段完整 (" .. #required .. " 字段验证)")
+end
+
+-- 14.11) Multi-instance 隔离: instance 0 启 DRS, instance 1 不受影响
+do
+    -- 创建 instance 1
+    local id = TAA.CreateInstance()
+    if id and id > 0 then
+        TAA.SetActiveInstance(0)
+        TAA.SetDynamicEnabled(true)
+        TAA.SetDynamicTarget(72)
+        -- 切到 instance 1
+        TAA.SetActiveInstance(id)
+        if TAA.GetDynamicEnabled() ~= false then
+            fail("instance " .. id .. " 不应继承 instance 0 的 drsEnabled=true")
+        end
+        if math.abs(TAA.GetDynamicTarget() - 60.0) > 0.001 then
+            fail("instance " .. id .. " 应有独立 target=60 默认, 得 " .. tostring(TAA.GetDynamicTarget()))
+        end
+        -- 清理
+        TAA.SetActiveInstance(0)
+        TAA.SetDynamicEnabled(false)
+        TAA.DestroyInstance(id)
+        pass("Phase F.1.4: Multi-instance 隔离 (instance 0 vs " .. id .. ")")
+    else
+        pass("Phase F.1.4: Multi-instance 隔离 跳过 (CreateInstance 失败 / 槽位满)")
+    end
+end
+
+-- 14.12) 复位状态 (确保后续测试不受 F.1.4 影响)
+do
+    TAA.SetDynamicEnabled(false)
+    TAA.SetDynamicTarget(60)
+    TAA.SetDynamicConfig({ windowSize = 30, cooldownFrames = 60,
+                            downThreshold = 1.10, upThreshold = 0.85 })
+    pass("Phase F.1.4: 状态已复位为默认")
+end
+
 print("")
-print("=== Phase F.0 + F.0.1 + F.0.2 + F.0.3 + F.0.4 + F.0.5 + F.0.6 + F.0.8 + F.0.9 + F.0.10 + F.0.10.2 + F.0.12 + F.0.13 + F.0.14 + F.1 + F.1.0.1 + F.1.1 TAA smoke: ALL TESTS PASSED ===")
-print("Functions covered: " .. #fn_names .. " / 53 (F.0.10 +5 fn: multi-instance API; F.0.10.2 +1 fn: TAA.Process; F.1 +8 fn: TAAU; F.1.1 +4 fn: MipBias)")
+print("=== Phase F.0 + F.0.1 + F.0.2 + F.0.3 + F.0.4 + F.0.5 + F.0.6 + F.0.8 + F.0.9 + F.0.10 + F.0.10.2 + F.0.12 + F.0.13 + F.0.14 + F.1 + F.1.0.1 + F.1.1 + F.1.4 TAA smoke: ALL TESTS PASSED ===")
+print("Functions covered: " .. #fn_names .. " / 60 (F.0.10 +5 fn: multi-instance API; F.0.10.2 +1 fn: TAA.Process; F.1 +8 fn: TAAU; F.1.1 +4 fn: MipBias; F.1.4 +7 fn: DRS)")
 print("Highlights:")
 print("  - default OFF, alpha=0.92, neighborhoodClip=true, jitterEnabled=true, sharpness=0.5, antiFlicker=true, clipMode='ycocg', varianceGamma=1.0, halfResHistory=false, sharpenMode='unsharp', motionGamma=1.5, motionAdaptive=false")
 print("  - clamp: BlendAlpha [0, 1], Sharpness [0, 2], VarianceGamma [0, 4], MotionGamma [0, 4]")

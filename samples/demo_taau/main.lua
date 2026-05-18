@@ -132,6 +132,11 @@ end
 function Demo:Update(dt)
     if dt > 0.1 then dt = 0.1 end
     g_camAngle = g_camAngle + dt * 0.20
+
+    -- Phase F.1.4: 驱动 DRS 状态机 (drsEnabled=false 时内部会立即 return, no-op)
+    if TAA.UpdateDRS then
+        TAA.UpdateDRS(dt)
+    end
 end
 
 function Demo:Draw()
@@ -182,6 +187,19 @@ function Demo:Draw()
                 TAA.GetMipBias(), TAA.GetAutoMipBias() and 'ON' or 'OFF'))
         end
 
+        -- Phase F.1.4: DRS 状态 (target / avg fps / current preset / adjustments / warming)
+        if TAA.GetDynamicStats then
+            local s = TAA.GetDynamicStats()
+            if s.enabled then
+                local fpsTxt = (s.avgFps > 0) and string.format('%.0f fps', s.avgFps) or '...'
+                local stateTxt = s.warmingUp and string.format('warming %.0f%%', s.windowProgress * 100) or 'ready'
+                line(string.format('DRS: target=%.0f avg=%s preset=%s adj=%d (%s)',
+                    s.targetFps, fpsTxt, s.currentPreset, s.adjustments, stateTxt))
+            else
+                line('DRS: OFF (press N to enable)')
+            end
+        end
+
         local jx, jy = TAA.GetCurrentJitter()
         line(string.format('Jitter: frame=%d  jx=%.3f  jy=%.3f (in %s pixel)',
             TAA.GetFrameCounter(), jx, jy, taauOn and 'render' or 'output'))
@@ -189,6 +207,7 @@ function Demo:Draw()
         line('')
         line('Keys: Y=TAAU 1/2/3/4=preset(perf/bal/qual/nat) -/= RenderScale')
         line('      T=TAA J=Jitter H=Sharp Z=SharpenMode X=HalfRes B=AutoMipBias')
+        line('      N=DRS F=DRSTarget(60->72->120->144)')
         line('      E=ScreenshotEXR M=RecordMP4toggle R=reset ESC')
     end
 end
@@ -277,6 +296,28 @@ function Demo:OnKey(key, scancode, action, mods)
                 TAA.GetAutoMipBias() and 'ON' or 'OFF', TAA.GetMipBias()))
         end
 
+    elseif key == string.byte('N') then
+        -- Phase F.1.4: DRS 总开关 (帧率自适应)
+        if TAA.SetDynamicEnabled then
+            local cur = TAA.GetDynamicEnabled()
+            TAA.SetDynamicEnabled(not cur)
+            print(string.format('[demo_taau] DRS = %s (target=%.0f fps)',
+                TAA.GetDynamicEnabled() and 'ON' or 'OFF', TAA.GetDynamicTarget()))
+        end
+
+    elseif key == string.byte('F') then
+        -- Phase F.1.4: 循环切换目标 FPS (60 -> 72 -> 120 -> 144 -> 60)
+        if TAA.SetDynamicTarget then
+            local cur = math.floor(TAA.GetDynamicTarget() + 0.5)
+            local next_fps = 60
+            if cur == 60 then next_fps = 72
+            elseif cur == 72 then next_fps = 120
+            elseif cur == 120 then next_fps = 144
+            else next_fps = 60 end
+            TAA.SetDynamicTarget(next_fps)
+            print(string.format('[demo_taau] DRS target = %d fps', next_fps))
+        end
+
     elseif key == string.byte('E') then
         -- Phase F.0.11.5: ScreenshotEXR (HDR 高精度 OpenEXR, half-float ZIP 压缩)
         if Gfx.ScreenshotEXR then
@@ -312,6 +353,13 @@ function Demo:OnKey(key, scancode, action, mods)
         TAA.SetJitterEnabled(true)
         TAA.SetHalfResHistory(false)
         if TAA.SetAutoMipBias then TAA.SetAutoMipBias(true) end
+        -- Phase F.1.4: 复位 DRS 为默认 (关闭 + 60fps + 默认配置)
+        if TAA.SetDynamicEnabled then
+            TAA.SetDynamicEnabled(false)
+            TAA.SetDynamicTarget(60)
+            TAA.SetDynamicConfig({ windowSize = 30, cooldownFrames = 60,
+                                     downThreshold = 1.10, upThreshold = 0.85 })
+        end
         print('[demo_taau] reset to defaults')
     end
 end

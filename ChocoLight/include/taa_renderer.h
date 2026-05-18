@@ -312,4 +312,59 @@ bool GetAutoMipBias();
 void  SetMipBias(float bias);
 float GetMipBias();
 
+// ==================== Phase F.1.4 — Dynamic Resolution Scaling ====================
+//
+// 帧率自适应: 用户每帧 UpdateDRS(dt), 内部维护滑动窗口监控帧时间, 超出预算时自动
+// 在 4 档预设之间跳转 (与 F.1 SetUpscalePreset 共享 kPresetScale[]).
+//
+// 设计要点:
+//   - per-instance state (multi-pip 各自独立 DRS 决策)
+//   - 限频 cooldown + hysteresis (deadband [up, down]) 防 ping-pong
+//   - 调整后清滑动窗口 (避免 transient 帧时间污染下次决策)
+//   - 仅在 taauEnabled=true 时实际触发 SetRenderScale; 否则仅累积统计
+//   - 与手动 SetRenderScale 透明融合 (DRS 状态机重读 g.renderScale 作为起点)
+//
+// 默认 drsEnabled=false (零回归).
+
+/// Phase F.1.4 — DRS 总开关. drsEnabled=false 时清滑动窗口 + cooldown.
+void SetDynamicEnabled(bool flag);
+bool GetDynamicEnabled();
+
+/// Phase F.1.4 — 目标 FPS, clamp [30, 240].
+///   fps <= 0 → 自动关 DRS (drsEnabled=false)
+///   fps < 30 / fps > 240 → clamp + log info
+void  SetDynamicTarget(float fps);
+float GetDynamicTarget();
+
+/// Phase F.1.4 — 用户每帧调用, 推进 DRS 状态机.
+///   dtSec <= 0 或 drsEnabled=false → 立即返回 (no-op)
+///   滑动窗口未填满 → 累积但不调整
+///   cooldown > 0 → 累积但不调整
+///   超阈值 + 4 档边界允许 → SetRenderScale(下一档) + 重置 cooldown + 清窗口
+void UpdateDRS(float dtSec);
+
+/// Phase F.1.4 — 滑动窗口大小, clamp [5, 120]. 修改时清窗口.
+void SetDynamicWindowSize(int n);
+int  GetDynamicWindowSize();
+
+/// Phase F.1.4 — 调整冷却帧数, clamp [10, 600].
+void SetDynamicCooldownFrames(int n);
+int  GetDynamicCooldownFrames();
+
+/// Phase F.1.4 — 降级阈值 (frameTime > target × t), clamp [1.01, 2.0].
+void  SetDynamicDownThreshold(float t);
+float GetDynamicDownThreshold();
+
+/// Phase F.1.4 — 升级阈值 (frameTime < target × t), clamp [0.5, 0.99].
+void  SetDynamicUpThreshold(float t);
+float GetDynamicUpThreshold();
+
+/// Phase F.1.4 — 统计字段 getter (供 Lua bridge 组合 GetDynamicStats 表).
+float DynamicAvgFrameTimeMs();
+float DynamicAvgFps();
+int   DynamicAdjustments();
+int   DynamicFramesSinceLastAdjust();
+bool  DynamicWarmingUp();
+float DynamicWindowProgress();
+
 } // namespace TAARenderer
