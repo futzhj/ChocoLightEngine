@@ -20,6 +20,7 @@
  */
 
 #include "light.h"
+#include "light_lua_helpers.h"  // Phase G.1.7.1 — 类型安全 helpers + magic
 #include "render_backend.h"
 #include "asset_loader.h"
 
@@ -46,14 +47,21 @@ static constexpr int FLOATS_PER_VERTEX = 12;
 // userdata 元表名
 static const char* MESH_MT = "Light.Graphics.Mesh";
 
+/// Phase G.1.7.1: 首字段 magic 防止 type-confusion (双保险: metatable 名 + magic)
 struct MeshUserdata {
+    uint32_t magic;        // 必须 = LT_MAGIC_MESH (首字段)
     uint32_t meshId;       // RenderBackend 返回的 mesh id (0 = invalid)
     int      vertexCount;  // 顶点数 (用于 GetVertexCount)
     int      indexCount;   // 索引数
 };
 
+/// Phase G.1.7.1: magic 双保险
 static MeshUserdata* CheckMesh(lua_State* L, int idx) {
-    return (MeshUserdata*)luaL_checkudata(L, idx, MESH_MT);
+    auto* ud = (MeshUserdata*)luaL_checkudata(L, idx, MESH_MT);
+    if (ud && ud->magic != LT::LT_MAGIC_MESH) {
+        luaL_error(L, "Light.Graphics.Mesh: type confusion at arg #%d (magic mismatch)", idx);
+    }
+    return ud;
 }
 
 static bool ReadMat4FromTable(lua_State* L, int idx, float* outMat) {
@@ -175,6 +183,7 @@ static int l_Mesh_New(lua_State* L) {
 
     // 创建 userdata + 元表
     MeshUserdata* ud = (MeshUserdata*)lua_newuserdata(L, sizeof(MeshUserdata));
+    ud->magic       = LT::LT_MAGIC_MESH;  // Phase G.1.7.1 — type tag
     ud->meshId      = meshId;
     ud->vertexCount = vertexCount;
     ud->indexCount  = indexCount;
@@ -601,6 +610,7 @@ static int l_Mesh_LoadGLTF(lua_State* L) {
 
     // 创建 mesh userdata + 元表
     MeshUserdata* ud = (MeshUserdata*)lua_newuserdata(L, sizeof(MeshUserdata));
+    ud->magic       = LT::LT_MAGIC_MESH;  // Phase G.1.7.1 — type tag
     ud->meshId      = meshId;
     ud->vertexCount = (int)verts.size();
     ud->indexCount  = (int)indices.size();
@@ -649,6 +659,7 @@ static int MeshPushResult_(void* L_, AssetLoader::FutureState* state) {
     }
     // 1) push Mesh userdata
     MeshUserdata* ud = (MeshUserdata*)lua_newuserdata(L, sizeof(MeshUserdata));
+    ud->magic       = LT::LT_MAGIC_MESH;  // Phase G.1.7.1 — type tag
     ud->meshId      = state->resMeshId;
     ud->vertexCount = state->gltfVertCount;
     ud->indexCount  = state->gltfIdxCount;
@@ -807,11 +818,13 @@ static int l_Mesh_GetIndexCount(lua_State* L) {
 }
 
 // ==================== mesh:Delete() / __gc ====================
+// Phase G.1.7.1: __gc 后 设 magic = DEAD, 防 use-after-free
 static int l_Mesh_Delete(lua_State* L) {
     MeshUserdata* ud = CheckMesh(L, 1);
     if (ud->meshId && g_render) {
         g_render->DeleteMesh(ud->meshId);
         ud->meshId = 0;
+        ud->magic = LT::LT_MAGIC_DEAD;  // Phase G.1.7.1 — 释放后不可再访问
     }
     return 0;
 }

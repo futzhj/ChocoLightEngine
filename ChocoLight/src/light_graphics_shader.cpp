@@ -24,18 +24,25 @@
  */
 
 #include "light.h"
+#include "light_lua_helpers.h"  // Phase G.1.7.1 — 类型安全 helpers + magic
 #include "render_backend.h"
 
 // Shader userdata 元表名
 static const char* SHADER_MT = "Light.Graphics.Shader";
 
-// userdata 结构: 固定大小, 避免跨模块依赖
+/// Phase G.1.7.1: 首字段 magic 防止 type-confusion (双保险: metatable 名 + magic)
 struct ShaderUserdata {
+    uint32_t magic;       // 必须 = LT_MAGIC_SHADER (首字段)
     uint32_t programId;   // GL program ID (0 = 无效)
 };
 
+/// Phase G.1.7.1: magic 双保险
 static ShaderUserdata* CheckShader(lua_State* L, int idx) {
-    return (ShaderUserdata*)luaL_checkudata(L, idx, SHADER_MT);
+    auto* ud = (ShaderUserdata*)luaL_checkudata(L, idx, SHADER_MT);
+    if (ud && ud->magic != LT::LT_MAGIC_SHADER) {
+        luaL_error(L, "Light.Graphics.Shader: type confusion at arg #%d (magic mismatch)", idx);
+    }
+    return ud;
 }
 
 // ==================== Shader.New(vsSrc, fsSrc) ====================
@@ -61,6 +68,7 @@ static int l_Shader_New(lua_State* L) {
 
     // 创建 userdata
     ShaderUserdata* ud = (ShaderUserdata*)lua_newuserdata(L, sizeof(ShaderUserdata));
+    ud->magic     = LT::LT_MAGIC_SHADER;  // Phase G.1.7.1 — type tag
     ud->programId = prog;
     luaL_getmetatable(L, SHADER_MT);
     lua_setmetatable(L, -2);
@@ -295,10 +303,12 @@ static int l_Shader_SetTexture(lua_State* L) {
 }
 
 // shader:Delete() / __gc
+// Phase G.1.7.1: __gc 后 设 magic = DEAD, 防 use-after-free
 static int l_Shader_Delete(lua_State* L) {
     ShaderUserdata* ud = CheckShader(L, 1);
     if (ud->programId && g_render) {
         g_render->DeleteShader(ud->programId);
+        ud->magic = LT::LT_MAGIC_DEAD;  // Phase G.1.7.1 — 释放后不可再访问
         ud->programId = 0;
     }
     return 0;

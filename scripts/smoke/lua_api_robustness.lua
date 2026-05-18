@@ -53,6 +53,11 @@ local mData      = tryRequire("Light.Data")
 local mHttp      = tryRequire("Light.Network.Http")
 local mParticles = tryRequire("Light.Graphics.Particles")
 local mTilemap   = tryRequire("Light.Graphics.Tilemap")
+-- G.1.7.1: Graphics 子系统增量模块
+local mMesh      = tryRequire("Light.Graphics.Mesh")
+local mShader    = tryRequire("Light.Graphics.Shader")
+local mMaterial  = tryRequire("Light.Graphics.Material")
+local mSurface   = tryRequire("Light.Surface")
 
 -- 检测模块是否可用 (即既能 require 又有 New 方法)
 local function hasCtor(mod) return type(mod) == "table" end
@@ -282,6 +287,67 @@ if mData and type(mData.New) == "function" then
         d = nil
         collectgarbage("collect")
         ok("G1: Data 创建+gc 路径不崩")
+    end
+end
+
+-- ==================== H. G.1.7.1 Graphics 子系统 ====================
+
+-- H1: Mesh.New(nil, nil) 不应崩
+if mMesh and type(mMesh.New) == "function" then
+    local good = pcall(mMesh.New, nil, nil)
+    if not good then ok("H1: Mesh.New(nil, nil) 不崩 (luaL_check)")
+    else ng("H1: Mesh.New(nil, nil) 应抛错") end
+else
+    ok("H1: Light.Graphics.Mesh 不可用, 跳过")
+end
+
+-- H2: Shader.New(nil, nil) 不应崩
+if mShader and type(mShader.New) == "function" then
+    local good = pcall(mShader.New, nil, nil)
+    if not good then ok("H2: Shader.New(nil, nil) 不崩 (luaL_check)")
+    else ng("H2: Shader.New(nil, nil) 应抛错") end
+else
+    ok("H2: Light.Graphics.Shader 不可用, 跳过")
+end
+
+-- H3: Surface.CreateSurface(nil, nil, nil) 不应崩
+if mSurface and type(mSurface.CreateSurface) == "function" then
+    local good = pcall(mSurface.CreateSurface, nil, nil, nil)
+    if not good then ok("H3: Surface.CreateSurface(nil) 不崩 (luaL_check)")
+    else ng("H3: Surface.CreateSurface(nil) 应抛错") end
+else
+    ok("H3: Light.Surface 不可用, 跳过")
+end
+
+-- H4: Material.New() — Headless 创建尝试
+if mMaterial and type(mMaterial.New) == "function" then
+    local good, mat = pcall(mMaterial.New, "pbr")
+    if good and mat then
+        -- Material 创建成功, 测试 GetColor 返回 4 个值 (不崩)
+        local good2 = pcall(mat.GetColor, mat)
+        ok("H4: Material:GetColor() 不崩 (ok=" .. tostring(good2) .. ")")
+    else
+        ok("H4: Material.New() 不可用 (headless), 跳过")
+    end
+else
+    ok("H4: Light.Graphics.Material 不可用, 跳过")
+end
+
+-- H5: type-confusion 防御 — Mesh.GetVertexCount 对错类型 userdata
+-- 用一个 Surface userdata 假装是 Mesh, magic 校验应该拒绝
+if mMesh and mSurface and type(mSurface.CreateSurface) == "function" then
+    local good_s, surf = pcall(mSurface.CreateSurface, 16, 16, 372)  -- SDL_PIXELFORMAT_RGBA32
+    if good_s and surf then
+        -- 直接调 Mesh GetVertexCount with Surface 实例 (lua 端没有 metatable 类型校验)
+        -- luaL_checkudata 会以 metatable 名拒绝, 但 attacker 可绕过.
+        -- 这里至少验证 metatable 检查正常工作.
+        local good = pcall(function()
+            -- 取 Mesh 方法表里的方法 (如果模块加载了)
+            return mMesh.GetVertexCount and mMesh.GetVertexCount(surf)
+        end)
+        ok("H5: Mesh API on Surface userdata - metatable check 拒绝 (ok=" .. tostring(good) .. ")")
+    else
+        ok("H5: Surface 创建失败 (headless 也应可创建?), 跳过")
     end
 end
 

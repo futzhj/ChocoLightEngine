@@ -87,6 +87,7 @@
  *    supported and is idempotent.
  */
 #include "light.h"
+#include "light_lua_helpers.h"  // Phase G.1.7.1 — 类型安全 helpers + magic
 
 #include <SDL3/SDL.h>
 
@@ -97,15 +98,22 @@ extern "C" {
 
 #define MT_SURFACE "Light.Surface.Surface"
 
+/// Phase G.1.7.1: 首字段 magic 防止 type-confusion (双保险: metatable 名 + magic)
 struct LSurface {
+    uint32_t     magic;  // 必须 = LT_MAGIC_SURFACE (首字段)
     SDL_Surface* p;
 };
 
 // ============================================================
 // helpers
 // ============================================================
+/// Phase G.1.7.1: magic 双保险
 static LSurface* CheckHandle(lua_State* L, int idx) {
-    return (LSurface*)luaL_checkudata(L, idx, MT_SURFACE);
+    auto* h = (LSurface*)luaL_checkudata(L, idx, MT_SURFACE);
+    if (h && h->magic != LT::LT_MAGIC_SURFACE) {
+        luaL_error(L, "Light.Surface: type confusion at arg #%d (magic mismatch)", idx);
+    }
+    return h;
 }
 static SDL_Surface* CheckLive(lua_State* L, int idx) {
     LSurface* h = CheckHandle(L, idx);
@@ -121,6 +129,7 @@ static int PushSdlError(lua_State* L) {
 static int NewHandle(lua_State* L, SDL_Surface* s) {
     if (!s) return PushSdlError(L);
     LSurface* h = (LSurface*)lua_newuserdata(L, sizeof(LSurface));
+    h->magic = LT::LT_MAGIC_SURFACE;  // Phase G.1.7.1 — type tag
     h->p = s;
     luaL_getmetatable(L, MT_SURFACE);
     lua_setmetatable(L, -2);
@@ -157,7 +166,11 @@ static int l_S_CreateSurface(lua_State* L) {
 }
 static int l_S_DestroySurface(lua_State* L) {
     LSurface* h = CheckHandle(L, 1);
-    if (h->p) { SDL_DestroySurface(h->p); h->p = nullptr; }
+    if (h->p) {
+        SDL_DestroySurface(h->p);
+        h->p = nullptr;
+        h->magic = LT::LT_MAGIC_DEAD;  // Phase G.1.7.1 — 释放后不可再访问
+    }
     return 0;
 }
 static int l_S_DuplicateSurface(lua_State* L) {
