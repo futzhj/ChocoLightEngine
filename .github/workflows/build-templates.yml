@@ -108,6 +108,7 @@ jobs:
           $phaseG1VramSmoke = Resolve-Path "scripts\smoke\gpumem.lua"
           $phaseG16Smoke  = Resolve-Path "scripts\smoke\asset_loader_preload.lua"
           $phaseG170Smoke = Resolve-Path "scripts\smoke\lua_api_robustness.lua"
+          $phaseG171PerfSmoke = Resolve-Path "scripts\smoke\lua_api_magic_perf.lua"
           Copy-Item ChocoLight\build\bin\Release\Light.dll $runtimeDir -Force
           & "$runtimeDir\light.exe" $coreSmoke
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -235,6 +236,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & "$runtimeDir\light.exe" $phaseG170Smoke
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & "$runtimeDir\light.exe" $phaseG171PerfSmoke
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Package Windows Template
         shell: pwsh
@@ -275,6 +278,11 @@ jobs:
           for script in scripts/smoke/*.lua; do
             lumen-master/build/src/lightc/lightc -p "$script"
           done
+
+      # Phase G.1.7 P3.4 - magic constant coverage sanity check
+      - name: Verify magic constant coverage
+        run: |
+          python3 scripts/verify_magic_coverage.py
 
       # ChocoLight 引擎 (libLight.so) - 严格模式, 编译失败即中断 CI
       - name: Build ChocoLight Engine
