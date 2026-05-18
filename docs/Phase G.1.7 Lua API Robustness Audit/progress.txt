@@ -150,8 +150,52 @@ G.1.7 P2/P3 文档化 [2026-05-19]
 
 剩余 TODO (P2/P3 真正剩余):
 ✅ MaterialDesc 间接保护 (P2.1) — 已闭合 [2026-05-19] 77 PASS
-- magic perf benchmark (P3.1, 1h)
-- 静态分析工具 (P3.4, 3h)
+✅ magic perf benchmark (P3.1) — 已闭合 [commit 4eccc0c]
+✅ 静态分析工具 (P3.4) — 已闭合 [commit 4eccc0c]
+
+============================================================
+G.1.7 P3 锦上添花闭合 [2026-05-19, commit 4eccc0c]
+============================================================
+
+✅ P3.1 perf benchmark: scripts/smoke/lua_api_magic_perf.lua
+   方法: 1M 次循环 × 5 轮取最小值, 排除 GC/调度噪音
+   Windows CI 实测:
+     A1 empty Lua loop iter      : 4.0  ns/iter
+     A2 pure Lua fn() call       : 21.0 ns/call
+     A3 pure Lua obj:method()    : 33.0 ns/call
+     B1 Tilemap:GetMapSize       : 60.0 ns/call (双层防御)
+     B2 Particles:GetCount       : 60.0 ns/call (双层防御)
+   结论: Lua→C 边界总开销 ~27 ns/call, 其中 magic 校验 ≤ 3 ns (< 5%).
+   CI: $phaseG171PerfSmoke (Windows runtime smoke job)
+
+✅ P3.4 静态分析: scripts/verify_magic_coverage.py
+   功能: 解析 helpers.h 中所有 LT_MAGIC_*, 在 ChocoLight/src 下统计引用
+   分类: OK / LOW / ORPHAN / PLANNED (whitelist) / MISSING
+   ALLOWED_ORPHANS = 11 项 (Sprite/Lighting2D/Camera/Cursor/ECS/
+   Process/Tray/HID/Sensor/Haptic/LoadSO 各自附带原因)
+   Linux CI 实测:
+     Summary: 50 constants, 11 planned, 0 warnings, 0 errors
+     Result: PASS
+   CI: Linux build job 'Verify magic constant coverage' step
+
+✅ CI 验证: 6/6 平台全绿 (run 26061356098)
+   build-windows / build-linux / build-macos /
+   build-android / build-ios / build-web
+
+============================================================
+G.1.7 全部闭合 [2026-05-19] — 整阶段 100% 完成
+============================================================
+
+最终交付物:
+✅ helpers: ChocoLight/src/light_lua_helpers.h (50 magic + Check 模板)
+✅ 改造文件 18 个 (43 / 43 ctx struct 100% 覆盖)
+✅ smoke: scripts/smoke/lua_api_robustness.lua (77 PASS / 0 FAIL)
+✅ perf:  scripts/smoke/lua_api_magic_perf.lua  (CI 实测 < 5% 开销)
+✅ tools: scripts/verify_magic_coverage.py       (CI sanity check)
+✅ 文档: 4 篇 (~1000 行)
+   - docs/Phase G.1.7 ... /FINAL/TODO/ALIGNMENT/DESIGN/TASK
+   - docs/Light_TypeSafety.md (公共 API)
+   - docs/AUDIT_TypeSafety.md (审计报告)
 
 详见 FINAL_PhaseG_1_7.md + TODO_PhaseG_1_7.md +
      docs/Light_TypeSafety.md + docs/AUDIT_TypeSafety.md

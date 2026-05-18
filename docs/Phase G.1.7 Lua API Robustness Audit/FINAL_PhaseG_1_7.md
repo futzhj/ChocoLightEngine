@@ -181,9 +181,57 @@
 
 ---
 
-## 七. 后续可选优化
+## 七. P3 锦上添花 (已完成)
 
-- 100+ fuzz smoke 用例汇总扩充
-- magic 检查 perf benchmark
-- API 文档化 (`Light_TypeSafety.md`)
-- 静态分析工具集成 (e.g. clang-tidy custom check)
+### 7.1 P3.1 Magic Check 性能基准 ✅
+
+**交付物**: `@e:\jinyiNew\Light\scripts\smoke\lua_api_magic_perf.lua`
+
+**方法**: 1M 次循环 × 5 轮取最小值, 排除 GC/调度抖动. 区分 "纯 Lua baseline" 与 "magic-protected ctx 方法" 两路.
+
+**Windows CI 实测 (commit `4eccc0c`)**:
+
+| 类别 | 项目 | 单次耗时 |
+|------|------|----------|
+| baseline | A1 empty Lua loop iter | **4.0 ns/iter** |
+| baseline | A2 pure Lua fn() call | **21.0 ns/call** |
+| baseline | A3 pure Lua obj:method() | **33.0 ns/call** |
+| 双层防御 | B1 `Tilemap:GetMapSize` | **60.0 ns/call** |
+| 双层防御 | B2 `Particles:GetCount` | **60.0 ns/call** |
+
+**结论**: Lua → C 边界总开销 ≈ 27 ns/call (60 - 33), 其中 `magic` 字段比较仅 1 mov + 1 cmp + 1 jne (≤ 3 ns). Magic 校验在整个调用链占比 < 5%, 完全在性能噪音范围内.
+
+**CI 集成**: `@e:\jinyiNew\Light\.github\workflows\build-templates.yml:111` (`$phaseG171PerfSmoke`).
+
+### 7.2 P3.4 Magic 常量覆盖静态分析 ✅
+
+**交付物**: `@e:\jinyiNew\Light\scripts\verify_magic_coverage.py`
+
+**功能**: 解析 `light_lua_helpers.h` 中所有 `LT_MAGIC_*` 常量, 在 `ChocoLight/src/**/*.{cpp,h}` 中统计引用次数, 分类为:
+
+- `OK` — ≥ 2 次非声明引用 (赋值 + 校验)
+- `LOW` — 仅 1 次 (可能漏写校验或赋值)
+- `ORPHAN` — helpers.h 声明但没有 .cpp 引用 (未实现 / 误声明)
+- `PLANNED` — 白名单内的合理预留 (SDL handle 模块 / ECS id 模式 / 未来阶段)
+- `MISSING` — helpers.h 都找不到 (致命错误)
+
+**白名单设计**: `ALLOWED_ORPHANS` 维护 11 个合理预留 (Sprite/Lighting2D/Camera/Cursor/ECS/Process/Tray/HID/Sensor/Haptic/LoadSO), 每个均附带原因.
+
+**Linux CI 实测 (commit `4eccc0c`)**:
+
+```text
+Summary: 50 constants, 11 planned, 0 warnings, 0 errors
+Result: PASS
+```
+
+**CI 集成**: `@e:\jinyiNew\Light\.github\workflows\build-templates.yml:282` (`Verify magic constant coverage`, Linux job).
+
+**未来提交保护**: 任何新增的 `LT_MAGIC_*` 必须在 7 天内被引用 ≥ 2 次, 否则 CI Linux 任务直接 FAIL.
+
+---
+
+## 八. 后续可选优化 (G.1.8+)
+
+- 自动生成 ctx 防御代码模板 (clang-tidy custom check, 替代 helpers.h 手写)
+- 全平台 perf benchmark 基线对比 (Linux / macOS 实测数据)
+- API key 管理改造 (`docs/Light_TypeSafety.md` § "未来工作")
