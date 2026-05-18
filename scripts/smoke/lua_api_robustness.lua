@@ -489,8 +489,8 @@ end
 -- ==================== 输出统计 ====================
 
 print("")
-print(string.format("=== Phase G.1.7.0 robustness smoke: %d PASS, %d FAIL ===", pass, fail))
+print(string.format("=== Phase G.1.7 robustness smoke: %d PASS, %d FAIL ===", pass, fail))
 if fail > 0 then
-    error(string.format("Phase G.1.7.0 smoke FAILED (%d errors)", fail), 0)
+    error(string.format("Phase G.1.7 smoke FAILED (%d errors)", fail), 0)
 end
-print("=== Phase G.1.7.0 Lua API Robustness smoke: ALL TESTS PASSED ===")
+print("=== Phase G.1.7 (G.1.7.0 ~ G.1.7.5) Lua API Robustness smoke: ALL TESTS PASSED ===")

@@ -95,6 +95,19 @@
 
 ## 三. CI 验证
 
+### 3.0 最终 CI 状态 ✅
+
+**Run ID**: `26054758851` (Windows runtime smoke)
+
+- **build-windows**: ✅ 6/6 lua_api_robustness smoke 34 PASS / 0 FAIL
+- **build-linux**: ✅
+- **build-macos**: ✅
+- **build-android**: ✅
+- **build-web** (Emscripten): ✅
+- **build-ios**: ✅
+
+**6/6 平台全绿**.
+
 ### 3.1 Smoke 测试 (lua_api_robustness.lua)
 
 - A 系列 (5): nil 参数容错
