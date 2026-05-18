@@ -36,10 +36,15 @@ namespace RecordMP4 {
 ///                 0 (默认) = fps × 2 (每 2 秒 1 关键帧, 平衡 seek 和压缩比)
 ///                 1 = 全 I 帧 (无 P 帧, 文件最大但任意 seek)
 ///                 较大值 = 文件更小但 seek 粒度粗
+/// @param enable_audio Phase F.0.11.6.5.A13 — 启用音频录制 (Windows WASAPI loopback 系统声音 + AAC encoder):
+///                     true  = 录系统声音 (扬声器输出) 并 mux 进 mp4 (单 Windows, 其他平台静默 disable)
+///                     false (默认) = 仅视频 (与 F.0.11.6.4 之前行为一致)
+///                     gif 模式忽略此参数 (GIF 无音轨概念)
 /// @return true=成功, false=失败 (FFmpeg 缺失 / encoder 不可用 / 文件创建失败)
 bool Open(const char* path, int w, int h, int fps, int64_t bitrate,
           const char* encoder_pref = nullptr,
-          int gop_size = 0);
+          int gop_size = 0,
+          bool enable_audio = false);
 
 /// 写入一帧 RGBA8 数据 (与 RecordPNG 同模式, OpenGL bottom-left 原点 — 内部翻转).
 /// @param rgba   长度 w*h*4 字节, 当前帧的 RGBA8
@@ -109,5 +114,15 @@ void SetMaxSizeBytes(int64_t max_bytes);
 /// @return true=Open 后, false=未 Open / Close 后 (out 参数置 0/false/空串)
 bool GetStats(int64_t* frames_encoded, int64_t* bytes_written, int64_t* max_size_bytes,
               char* encoder_name_out, int encoder_name_cap, bool* paused);
+
+/// Phase F.0.11.6.5.A13 — 音频录制统计快照.
+/// @param audio_enabled    [out] 当前 mp4 是否启用音频录制 (Open 时传 enable_audio=true 且 WASAPI 启动成功)
+/// @param audio_frames     [out] 已编码并 mux 的音频 frame 数 (1 frame = 1024 samples for AAC)
+/// @param audio_sample_rate[out] 采样率 (例: 48000)
+/// @param audio_channels   [out] 声道数 (例: 2)
+/// @param audio_dropped    [out] WASAPI ring overflow 丢弃的 frame 数 (主线程不应丢弃, audio_thread 慢于 capture 才丢)
+/// @return true = mp4 active 且 audio 启用, false = 未 active / 未启用 audio
+bool GetAudioStats(bool* audio_enabled, int64_t* audio_frames,
+                   int* audio_sample_rate, int* audio_channels, int64_t* audio_dropped);
 
 } // namespace RecordMP4

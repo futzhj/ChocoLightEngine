@@ -207,5 +207,33 @@ p(mg4==nil and type(mg4e)=='string', 'RecordMP4(gif + encoder=libx264) headless 
 local _,mg5,mg5e = pcall(Gfx.RecordMP4,'anim.gif', { gop_size = 15 })
 p(mg5==nil and type(mg5e)=='string', 'RecordMP4(gif + gop_size=15) headless → nil+err (ignored)')
 
+-- ============================================================
+-- F.0.11.6.5 — A13 多轨音频 (Windows WASAPI loopback + AAC)
+-- ============================================================
+
+-- A13: opts.audio 字段解析 (headless 仍 nil+err, 但 parsing 不应崩)
+local _,ma1,ma1e = pcall(Gfx.RecordMP4,'out.mp4', { audio = true })
+p(ma1==nil and type(ma1e)=='string', 'RecordMP4(audio=true) headless → nil+err (parsed)')
+
+local _,ma2,ma2e = pcall(Gfx.RecordMP4,'out.mp4', { audio = false })
+p(ma2==nil and type(ma2e)=='string', 'RecordMP4(audio=false) headless → nil+err (parsed)')
+
+-- A13: opts.audio = "system" 别名
+local _,ma3,ma3e = pcall(Gfx.RecordMP4,'out.mp4', { audio = "system" })
+p(ma3==nil and type(ma3e)=='string', 'RecordMP4(audio="system") headless → nil+err (alias OK)')
+
+-- A13: opts.audio 与 gif 模式互不冲突 (gif 自动忽略 audio)
+local _,ma4,ma4e = pcall(Gfx.RecordMP4,'anim.gif', { audio = true })
+p(ma4==nil and type(ma4e)=='string', 'RecordMP4(gif + audio=true) headless → nil+err (gif ignores audio)')
+
+-- A13: GetRecordStats 未录屏时 audio 字段齐全
+local stA = Gfx.GetRecordStats()
+p(type(stA)=='table',                         'GetRecordStats returns table when idle (audio)')
+p(stA.audio_enabled==false,                   'GetRecordStats.audio_enabled = false when idle')
+p(stA.audio_frames==0,                        'GetRecordStats.audio_frames = 0 when idle')
+p(stA.audio_sample_rate==0,                   'GetRecordStats.audio_sample_rate = 0 when idle')
+p(stA.audio_channels==0,                      'GetRecordStats.audio_channels = 0 when idle')
+p(stA.audio_dropped==0,                       'GetRecordStats.audio_dropped = 0 when idle')
+
 print(string.format("screenshot smoke: %d pass / %d fail", pass, fail))
 if fail>0 then error("screenshot smoke FAIL") end

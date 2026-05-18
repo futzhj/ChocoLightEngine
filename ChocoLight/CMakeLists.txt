@@ -222,6 +222,7 @@ set(LIGHT_SOURCES
     ${CHOCO_SRC}/light_graphics_font.cpp
     ${CHOCO_SRC}/light_av.cpp
     ${CHOCO_SRC}/record_mp4.cpp        # Phase F.0.11.6 — H.264 MP4 录屏 (FFmpeg encoder)
+    ${CHOCO_SRC}/audio_capture_wasapi.cpp  # Phase F.0.11.6.5.A13 — Windows WASAPI loopback audio capture
     ${CHOCO_SRC}/asset_loader.cpp      # Phase G.1 — 异步资源加载 (worker thread + shared GL ctx)
     ${CHOCO_SRC}/light_db.cpp
     ${CHOCO_SRC}/light_network.cpp
@@ -430,8 +431,10 @@ endif()
 
 # 平台系统库
 if(WIN32)
+    # Phase F.0.11.6.5.A13: 新增 ole32 + uuid (WASAPI loopback audio capture 需 CoInitializeEx/CoCreateInstance/IID_*)
     target_link_libraries(Light PRIVATE
         ws2_32 gdi32 user32 shell32 opengl32 winmm
+        ole32 uuid
     )
 elseif(APPLE AND NOT EMSCRIPTEN AND NOT CHOCO_IOS)
     find_library(COCOA_FRAMEWORK Cocoa)

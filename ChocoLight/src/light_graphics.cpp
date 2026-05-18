@@ -5553,6 +5553,8 @@ static int l_Graphics_RecordMP4(lua_State* L) {
     bool prefer_hwenc = true;   // 默认开 (现有行为)
     // Phase F.0.11.6.2.A8: GOP 大小 (0=默认 fps×2)
     int gop_size = 0;
+    // Phase F.0.11.6.5.A13: 启用音频录制 (Windows WASAPI loopback + AAC); 默认 false (兼容)
+    bool enable_audio = false;
     if (lua_gettop(L) >= 2 && lua_type(L, 2) == LUA_TTABLE) {
         lua_getfield(L, 2, "fps");
         if (lua_isnumber(L, -1)) fps = (int)lua_tointeger(L, -1);
@@ -5576,6 +5578,18 @@ static int l_Graphics_RecordMP4(lua_State* L) {
         // A8: gop_size (1=全 I 帧, 0/缺省=fps×2)
         lua_getfield(L, 2, "gop_size");
         if (lua_isnumber(L, -1)) gop_size = (int)lua_tointeger(L, -1);
+        lua_pop(L, 1);
+        // Phase F.0.11.6.5.A13: audio 录制 (Windows WASAPI loopback + AAC)
+        //   opts.audio = true / false (boolean) — 默认 false
+        //   opts.audio = "system" → true 别名 (语义更清晰)
+        //   非 Windows / FFmpeg AAC 不可用 → Open 内部静默 disable audio, 仅 video
+        lua_getfield(L, 2, "audio");
+        if (lua_isboolean(L, -1)) {
+            enable_audio = lua_toboolean(L, -1) != 0;
+        } else if (lua_isstring(L, -1)) {
+            const char* s = lua_tostring(L, -1);
+            enable_audio = (s && (strcmp(s, "system") == 0 || strcmp(s, "on") == 0));
+        }
         lua_pop(L, 1);
         // Phase F.0.11.6.3.A9: ROI 录屏 — opts.roi = { x, y, w, h } (屏幕左上原点)
         //   缺省 / nil = 不启用 ROI, 录全屏 (兼容旧行为)
@@ -5647,7 +5661,7 @@ static int l_Graphics_RecordMP4(lua_State* L) {
         mp4_h = g_record.roi_h;
     }
 
-    if (!RecordMP4::Open(path, mp4_w, mp4_h, fps, bitrate, encoder_pref, gop_size)) {
+    if (!RecordMP4::Open(path, mp4_w, mp4_h, fps, bitrate, encoder_pref, gop_size, enable_audio)) {
         lua_pushnil(L);
         lua_pushfstring(L, "RecordMP4: encoder open failed (encoder='%s'; check FFmpeg DLL / GPU driver / file path)",
                         encoder_pref ? encoder_pref : "auto");
@@ -5887,6 +5901,16 @@ static int l_Graphics_GetRecordStats(lua_State* L) {
         lua_pushstring(L, "");  lua_setfield(L, -2, "encoder");
         lua_pushboolean(L, 0);  lua_setfield(L, -2, "paused");
     }
+    // Phase F.0.11.6.5.A13 — audio 字段 (audio_enabled / audio_frames / sample_rate / channels / dropped)
+    bool a_enabled = false;
+    int64_t a_frames = 0, a_dropped = 0;
+    int a_rate = 0, a_channels = 0;
+    RecordMP4::GetAudioStats(&a_enabled, &a_frames, &a_rate, &a_channels, &a_dropped);
+    lua_pushboolean(L, a_enabled ? 1 : 0);  lua_setfield(L, -2, "audio_enabled");
+    lua_pushinteger(L, (lua_Integer)a_frames);   lua_setfield(L, -2, "audio_frames");
+    lua_pushinteger(L, (lua_Integer)a_rate);     lua_setfield(L, -2, "audio_sample_rate");
+    lua_pushinteger(L, (lua_Integer)a_channels); lua_setfield(L, -2, "audio_channels");
+    lua_pushinteger(L, (lua_Integer)a_dropped);  lua_setfield(L, -2, "audio_dropped");
     return 1;
 }
 

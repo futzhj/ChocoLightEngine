@@ -23,6 +23,7 @@
 #include "record_mp4.h"
 #include "ffmpeg_common.h"
 #include "light.h"
+#include "audio_capture_wasapi.h"   // Phase F.0.11.6.5.A13 — Windows WASAPI loopback
 
 #include <cstring>
 #include <cstdio>
@@ -49,13 +50,22 @@ namespace RecordMP4 {
 // FFmpeg 常量 (与 video_backend_ffmpeg.cpp 同模式)
 enum {
     FF_AVMEDIA_TYPE_VIDEO   = 0,
+    FF_AVMEDIA_TYPE_AUDIO   = 1,    // Phase F.0.11.6.5.A13 — AAC audio stream type
     FF_AV_CODEC_ID_H264     = 27,
+    FF_AV_CODEC_ID_AAC      = 86018, // Phase F.0.11.6.5.A13 — AAC encoder codec_id
     FF_AV_CODEC_ID_GIF      = 97,    // Phase F.0.11.6.4.A14 — GIF encoder codec_id
     FF_AV_PIX_FMT_YUV420P   = 0,
     FF_AV_PIX_FMT_RGB8      = 3,     // 8-bit RGB332 (3R3G2B) 固定调色板 — GIF encoder 支持
     FF_AV_PIX_FMT_BGR8      = 4,     // 8-bit BGR233 固定调色板 — GIF encoder 首选 (sws 自带 dither)
     FF_AV_PIX_FMT_PAL8      = 5,     // 8-bit 自定义 256 色调色板 (需先 palettegen, 我们不用)
     FF_AV_PIX_FMT_RGBA      = 26,
+    // Phase F.0.11.6.5.A13 — AVSampleFormat (FFmpeg avutil/samplefmt.h)
+    FF_AV_SAMPLE_FMT_S16    = 1,    // interleaved int16 — WASAPI PCM mix format 备选
+    FF_AV_SAMPLE_FMT_FLT    = 3,    // interleaved float32 — WASAPI loopback 最常见
+    FF_AV_SAMPLE_FMT_FLTP   = 8,    // planar float32 — AAC encoder 默认要求
+    // Phase F.0.11.6.5.A13 — channel layout (FFmpeg channel_layout.h, 64-bit bitmask)
+    FF_AV_CH_LAYOUT_MONO    = 0x4,
+    FF_AV_CH_LAYOUT_STEREO  = 0x3,
     FF_SWS_BILINEAR         = 2,
     FF_AVIO_FLAG_WRITE      = 2,
     FF_AV_CODEC_FLAG_GLOBAL_HEADER = (1 << 22),
@@ -69,6 +79,8 @@ enum {
     FF_AVERROR_EAGAIN       = -11,
     FF_AVERROR_EOF_INT32    = -541478725,
     FF_AV_OPT_SEARCH_CHILDREN = (1 << 0),
+    // Phase F.0.11.6.5.A13 — AAC encoder frame size (大多数 AAC encoder 用 1024 samples/frame)
+    AAC_FRAME_SAMPLES       = 1024,
 };
 
 // AVFrame ABI-stable header (与 video_backend_ffmpeg.cpp 共用思路)
@@ -144,6 +156,27 @@ struct State {
     //   true → muxer=gif, encoder=gif, pix_fmt=BGR8 (256 色 sws 自带 dither, 无 palettegen)
     //   false → 现有 mp4 + H.264 路径
     bool                    is_gif = false;
+
+    // Phase F.0.11.6.5.A13 — 音频录制 (Windows WASAPI loopback + AAC encoder)
+    bool                    audio_enabled  = false;   // Open 时设, audio_thread 退出条件
+    void*                   audio_codec_ctx = nullptr; // AVCodecContext* for AAC
+    void*                   audio_stream    = nullptr; // AVStream* (audio, stream_index=1)
+    void*                   audio_frame     = nullptr; // AVFrame* (planar float32, 1024 samples)
+    void*                   audio_packet    = nullptr; // AVPacket* (AAC encoder 输出)
+    void*                   swr_ctx         = nullptr; // SwrContext* (WASAPI 输入 → AAC FLTP)
+    int                     audio_sample_rate = 0;     // 实际采样率 (WASAPI 报告, 通常 48000)
+    int                     audio_channels    = 0;     // 声道数 (通常 2)
+    int                     audio_src_fmt     = 0;     // WASAPI PCM 格式 (FLT / S16)
+    int                     audio_src_bytes_per_frame = 0;   // channels × bytes_per_sample
+    std::thread             audio_thread;
+    std::atomic<int64_t>    audio_frames_encoded{0};   // AAC frame 计数 (每 frame = 1024 samples)
+    std::atomic<int64_t>    audio_dropped_frames{0};   // WASAPI ring 溢出丢弃的 frame 数
+    int                     audio_stream_index = 1;    // mp4 内 audio stream index (video=0)
+    // Phase F.0.11.6.5.A13 — 多 stream 并发写 fmt_ctx 的保护锁
+    //   audio_thread 和 video worker_loop_ 都调 av_interleaved_write_frame,
+    //   FFmpeg 5.x AVFormatContext 的 interleaving queue 多线程并发 unsafe.
+    //   audio_enabled=false 时此锁无任何争用 (worker_loop_ 单线程持有).
+    std::mutex              output_mu;
 };
 static State g;
 
@@ -246,6 +279,32 @@ static void cleanup_all() {
     g.encoder_name[0] = '\0';
     // Phase F.0.11.6.4.A14 — 复位 GIF 模式
     g.is_gif = false;
+    // Phase F.0.11.6.5.A13 — 释放音频资源 (audio_thread 已在 Close 内 join, 此处仅释放 FFmpeg)
+    //   注意: 必须先 free swr_ctx, 否则 audio_codec_ctx 释放后 swr 仍引用其字段会 crash
+    if (g.swr_ctx && g_ff.swr_free) {
+        g_ff.swr_free(&g.swr_ctx);
+        g.swr_ctx = nullptr;
+    }
+    if (g.audio_frame && g_ff.av_frame_free) {
+        g_ff.av_frame_free(&g.audio_frame);
+        g.audio_frame = nullptr;
+    }
+    if (g.audio_packet && g_ff.av_packet_free) {
+        g_ff.av_packet_free(&g.audio_packet);
+        g.audio_packet = nullptr;
+    }
+    if (g.audio_codec_ctx && g_ff.avcodec_free_context) {
+        g_ff.avcodec_free_context(&g.audio_codec_ctx);
+        g.audio_codec_ctx = nullptr;
+    }
+    g.audio_stream = nullptr;   // 由 fmt_ctx 拥有, free_context 时一起释放
+    g.audio_enabled = false;
+    g.audio_sample_rate = 0;
+    g.audio_channels    = 0;
+    g.audio_src_fmt     = 0;
+    g.audio_src_bytes_per_frame = 0;
+    g.audio_frames_encoded.store(0);
+    g.audio_dropped_frames.store(0);
     g.count    = 0;
     g.active   = false;
     g.stream   = nullptr;
@@ -253,7 +312,10 @@ static void cleanup_all() {
 
 bool IsActive() { return g.active; }
 
-bool Open(const char* path, int w, int h, int fps, int64_t bitrate, const char* encoder_pref, int gop_size) {
+// Phase F.0.11.6.5.A13 — 前向声明 (Open 内 spawn, 实体放在文件末尾)
+static void audio_thread_loop_();
+
+bool Open(const char* path, int w, int h, int fps, int64_t bitrate, const char* encoder_pref, int gop_size, bool enable_audio) {
     if (g.active) {
         CC::Log(CC::LOG_WARN, "RecordMP4::Open: already active, call Close first");
         return false;
@@ -498,6 +560,81 @@ bool Open(const char* path, int w, int h, int fps, int64_t bitrate, const char* 
         return false;
     }
 
+    // ============================================================
+    // Phase F.0.11.6.5.A13 — 音频流准备 (write_header 之前!)
+    //   流程: WASAPI 启动 → find_encoder(aac) → new_stream → codec_ctx → open2 → codecpar
+    //   GIF 模式不支持音频 (gif 容器无音轨); 任一步失败仅 disable audio, video 继续
+    // ============================================================
+    if (enable_audio && !g.is_gif) {
+        int wasapi_rate = 0, wasapi_ch = 0, wasapi_fmt = 0;
+        if (!AudioCaptureWASAPI::Start(&wasapi_rate, &wasapi_ch, &wasapi_fmt)) {
+            CC::Log(CC::LOG_WARN, "RecordMP4::Open: WASAPI start failed → audio disabled, video only");
+        } else {
+            void* aac = nullptr;
+            if (g_ff.avcodec_find_encoder_by_name)
+                aac = g_ff.avcodec_find_encoder_by_name("aac");
+            if (!aac && g_ff.avcodec_find_encoder)
+                aac = g_ff.avcodec_find_encoder(FF_AV_CODEC_ID_AAC);
+            if (!aac) {
+                CC::Log(CC::LOG_WARN, "RecordMP4::Open: AAC encoder not found in FFmpeg DLL → audio disabled");
+                AudioCaptureWASAPI::Stop();
+            } else {
+                g.audio_stream = g_ff.avformat_new_stream(g.fmt_ctx, aac);
+                g.audio_codec_ctx = g.audio_stream ? g_ff.avcodec_alloc_context3(aac) : nullptr;
+                if (!g.audio_stream || !g.audio_codec_ctx) {
+                    CC::Log(CC::LOG_WARN, "RecordMP4::Open: audio stream/ctx alloc failed → audio disabled");
+                    if (g.audio_codec_ctx && g_ff.avcodec_free_context) g_ff.avcodec_free_context(&g.audio_codec_ctx);
+                    g.audio_stream = nullptr;
+                    AudioCaptureWASAPI::Stop();
+                } else {
+                    // 配置 AAC encoder: 输入 WASAPI 报告的 rate/channels, 输出 FLTP planar float
+                    const int64_t ch_layout = (wasapi_ch == 1) ? FF_AV_CH_LAYOUT_MONO : FF_AV_CH_LAYOUT_STEREO;
+                    g_ff.av_opt_set_int(g.audio_codec_ctx, "sample_rate",    wasapi_rate, 0);
+                    g_ff.av_opt_set_int(g.audio_codec_ctx, "channels",       wasapi_ch,   0);
+                    g_ff.av_opt_set_int(g.audio_codec_ctx, "channel_layout", ch_layout,   0);
+                    g_ff.av_opt_set_int(g.audio_codec_ctx, "sample_fmt",     FF_AV_SAMPLE_FMT_FLTP, 0);
+                    g_ff.av_opt_set_int(g.audio_codec_ctx, "b",              128000, 0);  // 128 kbps default
+                    // time_base = 1/sample_rate
+                    char ts[64];
+                    snprintf(ts, 64, "1/%d", wasapi_rate);
+                    g_ff.av_opt_set(g.audio_codec_ctx, "time_base", ts, 0);
+
+                    void* aopts = nullptr;
+                    int aret = (int)(intptr_t)g_ff.avcodec_open2(g.audio_codec_ctx, aac, aopts ? &aopts : nullptr);
+                    if (g_ff.av_dict_free && aopts) g_ff.av_dict_free(&aopts);
+                    if (aret < 0) {
+                        CC::Log(CC::LOG_WARN, "RecordMP4::Open: AAC avcodec_open2 failed (err=%d) → audio disabled", aret);
+                        if (g_ff.avcodec_free_context) g_ff.avcodec_free_context(&g.audio_codec_ctx);
+                        g.audio_stream = nullptr;
+                        AudioCaptureWASAPI::Stop();
+                    } else {
+                        // codecpar 拷贝 (audio stream 用同 FindCodecpar_ 探针)
+                        void* a_codecpar = FindCodecpar_(g.audio_stream);
+                        if (a_codecpar &&
+                            g_ff.avcodec_parameters_from_context(a_codecpar, g.audio_codec_ctx) >= 0) {
+                            g.audio_enabled     = true;
+                            g.audio_sample_rate = wasapi_rate;
+                            g.audio_channels    = wasapi_ch;
+                            g.audio_src_fmt     = wasapi_fmt;
+                            g.audio_src_bytes_per_frame =
+                                wasapi_ch * (wasapi_fmt == FF_AV_SAMPLE_FMT_S16 ? 2 : 4);
+                            // audio_stream_index = video 之后的下一个 (video=0, audio=1)
+                            g.audio_stream_index = 1;
+                            CC::Log(CC::LOG_INFO, "RecordMP4::Open: audio AAC @ %dHz × %dch, src_fmt=%s",
+                                    wasapi_rate, wasapi_ch,
+                                    wasapi_fmt == FF_AV_SAMPLE_FMT_FLT ? "FLT" : "S16");
+                        } else {
+                            CC::Log(CC::LOG_WARN, "RecordMP4::Open: audio codecpar copy failed → audio disabled");
+                            if (g_ff.avcodec_free_context) g_ff.avcodec_free_context(&g.audio_codec_ctx);
+                            g.audio_stream = nullptr;
+                            AudioCaptureWASAPI::Stop();
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // 7) 打开 IO
     // AVFormatContext::pb 字段位置: 在 av_class(8) + iformat(8) + oformat(8) + priv_data(8) 之后, 即 32 字节
     void** pb_slot = (void**)((uint8_t*)g.fmt_ctx + 32);
@@ -593,10 +730,76 @@ bool Open(const char* path, int w, int h, int fps, int64_t bitrate, const char* 
         g.encoder_name[i] = '\0';
     }
 
+    // ============================================================
+    // Phase F.0.11.6.5.A13 — 音频 frame / packet / swr_ctx + spawn audio_thread
+    //   只在前面 audio_enabled = true 时执行 (WASAPI + AAC 都已就绪)
+    //   任一步失败仅 disable audio (释放刚分配的 audio 资源), video 仍正常录
+    // ============================================================
+    if (g.audio_enabled) {
+        bool audio_ok = false;
+        do {
+            // 1) 分配 AAC packet
+            g.audio_packet = g_ff.av_packet_alloc();
+            if (!g.audio_packet) { CC::Log(CC::LOG_WARN, "RecordMP4::Open: audio packet alloc failed"); break; }
+
+            // 2) 分配 AAC frame (planar float, AAC_FRAME_SAMPLES=1024)
+            g.audio_frame = g_ff.av_frame_alloc();
+            if (!g.audio_frame) { CC::Log(CC::LOG_WARN, "RecordMP4::Open: audio frame alloc failed"); break; }
+            const int64_t ch_layout = (g.audio_channels == 1) ? FF_AV_CH_LAYOUT_MONO : FF_AV_CH_LAYOUT_STEREO;
+            if (g_ff.av_opt_set_int(g.audio_frame, "nb_samples",     AAC_FRAME_SAMPLES, 0) < 0 ||
+                g_ff.av_opt_set_int(g.audio_frame, "format",         FF_AV_SAMPLE_FMT_FLTP, 0) < 0 ||
+                g_ff.av_opt_set_int(g.audio_frame, "sample_rate",    g.audio_sample_rate, 0) < 0 ||
+                g_ff.av_opt_set_int(g.audio_frame, "channel_layout", ch_layout, 0) < 0) {
+                // fallback: 直接写偏移 (FFmpeg 5.x AVFrame audio 布局: nb_samples@112, format@116, sample_rate@120)
+                uint8_t* fbase = (uint8_t*)g.audio_frame;
+                *(int*)(fbase + 112) = AAC_FRAME_SAMPLES;       // nb_samples
+                *(int*)(fbase + 116) = FF_AV_SAMPLE_FMT_FLTP;   // format
+                *(int*)(fbase + 120) = g.audio_sample_rate;     // sample_rate (FFmpeg 6.x 可能不同, av_opt 优先)
+            }
+            const int afr = g_ff.av_frame_get_buffer(g.audio_frame, 0);
+            if (afr < 0) { CC::Log(CC::LOG_WARN, "RecordMP4::Open: audio frame get_buffer failed (err=%d)", afr); break; }
+
+            // 3) swr_ctx: WASAPI interleaved → AAC planar FLTP, 同 rate 同 channels (仅格式转换)
+            if (!g_ff.swr_alloc_set_opts || !g_ff.swr_init || !g_ff.swr_convert) {
+                CC::Log(CC::LOG_WARN, "RecordMP4::Open: swresample symbols not loaded");
+                break;
+            }
+            g.swr_ctx = g_ff.swr_alloc_set_opts(nullptr,
+                ch_layout, FF_AV_SAMPLE_FMT_FLTP, g.audio_sample_rate,
+                ch_layout, g.audio_src_fmt,       g.audio_sample_rate,
+                0, nullptr);
+            if (!g.swr_ctx || g_ff.swr_init(g.swr_ctx) < 0) {
+                CC::Log(CC::LOG_WARN, "RecordMP4::Open: swr_init failed");
+                if (g.swr_ctx) { g_ff.swr_free(&g.swr_ctx); g.swr_ctx = nullptr; }
+                break;
+            }
+            audio_ok = true;
+        } while (false);
+
+        if (!audio_ok) {
+            // 回滚: 释放 audio 资源 + 停 WASAPI, 让 video 继续录
+            CC::Log(CC::LOG_WARN, "RecordMP4::Open: audio setup partial failure → disabled, video only");
+            if (g.audio_frame && g_ff.av_frame_free)   g_ff.av_frame_free(&g.audio_frame);
+            if (g.audio_packet && g_ff.av_packet_free) g_ff.av_packet_free(&g.audio_packet);
+            if (g.audio_codec_ctx && g_ff.avcodec_free_context) g_ff.avcodec_free_context(&g.audio_codec_ctx);
+            g.audio_frame = nullptr;
+            g.audio_packet = nullptr;
+            g.audio_stream = nullptr;
+            g.audio_enabled = false;
+            AudioCaptureWASAPI::Stop();
+        }
+    }
+
     // Phase F.0.11.6.1 — spawn worker thread (Open 之后才设 active, 避免 worker 启动竞争)
     g.active = true;
     g.stop_flag.store(false);
+    g.audio_frames_encoded.store(0);
+    g.audio_dropped_frames.store(0);
     g.worker = std::thread(worker_loop_);
+    // Phase F.0.11.6.5.A13 — spawn audio_thread (仅 audio_enabled 时)
+    if (g.audio_enabled) {
+        g.audio_thread = std::thread(audio_thread_loop_);
+    }
 
     CC::Log(CC::LOG_INFO, "RecordMP4::Open: '%s' %dx%d @ %dfps (mode=%s, gop=%d, bitrate=%lld, worker spawned, ring=%zu slots × %zuMB)",
             path, w, h, fps, g.is_gif ? "gif" : "mp4",
@@ -663,7 +866,12 @@ static bool EncodeFrameInternal_(const uint8_t* rgba, int frame_index) {
         AVPacketHead* ph = (AVPacketHead*)g.packet;
         ph->stream_index = 0;
 
-        ret = g_ff.av_interleaved_write_frame(g.fmt_ctx, g.packet);
+        // Phase F.0.11.6.5.A13 — output_mu 保护 av_interleaved_write_frame 多 stream 并发
+        //   audio_enabled=false 时 output_mu 仅本线程持有, 锁开销可忽略 (uncontended mutex ~10ns)
+        {
+            std::lock_guard<std::mutex> olk(g.output_mu);
+            ret = g_ff.av_interleaved_write_frame(g.fmt_ctx, g.packet);
+        }
         if (ret < 0) {
             log_err("av_interleaved_write_frame", ret);
             if (g_ff.av_packet_unref) g_ff.av_packet_unref(g.packet);
@@ -829,6 +1037,11 @@ void Close() {
     g.cv_not_full.notify_all();   // 避免主线程被卡在 back-pressure 等
     if (g.worker.joinable()) g.worker.join();
 
+    // Phase F.0.11.6.5.A13 — 1.5) 通知 audio_thread 退出, 同步停 WASAPI (audio_thread 退出后 WASAPI 才安全 stop)
+    //   audio_thread 内部循环检查 g.stop_flag, 自然退出. WASAPI capture thread 由 audio_thread 退出后停止.
+    if (g.audio_thread.joinable()) g.audio_thread.join();
+    if (g.audio_enabled) AudioCaptureWASAPI::Stop();
+
     // 2) Worker 退出后, encoder 已编码所有 push 帧 → 发 NULL frame 让 encoder flush 内部 buffered frames
     //    (worker 不调 send_frame(nullptr) 因为它不知道是不是最后一帧; flush 由 Close 主线程串行收尾)
     if (g_ff.avcodec_send_frame && g.codec_ctx) {
@@ -860,6 +1073,24 @@ void Close() {
         }
     }
 
+    // Phase F.0.11.6.5.A13 — 3.5) Flush AAC encoder (send NULL → drain receive_packet → write_frame)
+    //   audio_thread 已 join, 此处串行执行, 无需 output_mu
+    //   不显式 rescale_ts (codec_ctx time_base = 1/sample_rate, mp4 muxer 内部会自动 rescale 到 stream time_base)
+    if (g.audio_enabled && g.audio_codec_ctx && g.audio_packet &&
+        g_ff.avcodec_send_frame && g_ff.avcodec_receive_packet) {
+        g_ff.avcodec_send_frame(g.audio_codec_ctx, nullptr);
+        int ret;
+        while ((ret = g_ff.avcodec_receive_packet(g.audio_codec_ctx, g.audio_packet)) >= 0) {
+            AVPacketHead* ph = (AVPacketHead*)g.audio_packet;
+            ph->stream_index = g.audio_stream_index;
+            if (g_ff.av_interleaved_write_frame) {
+                g_ff.av_interleaved_write_frame(g.fmt_ctx, g.audio_packet);
+            }
+            if (g_ff.av_packet_unref) g_ff.av_packet_unref(g.audio_packet);
+            if (ret == FF_AVERROR_EOF_INT32) break;
+        }
+    }
+
     // 4) 写 trailer
     if (g.fmt_ctx && g_ff.av_write_trailer) {
         g_ff.av_write_trailer(g.fmt_ctx);
@@ -875,12 +1106,130 @@ void Close() {
     cleanup_all();
 }
 
+// ============================================================
+// Phase F.0.11.6.5.A13 — audio_thread 主循环 + GetAudioStats
+// ============================================================
+
+/// audio_thread: 从 WASAPI ring 拉 PCM → swr 转 planar → AAC encode → mux
+/// 退出条件: g.stop_flag.load() && WASAPI ring 已空 (drain 完)
+static void audio_thread_loop_() {
+    if (!g.audio_enabled) return;
+    const int sample_rate = g.audio_sample_rate;
+    const int channels    = g.audio_channels;
+    const int src_bpf     = g.audio_src_bytes_per_frame;
+    const int frame_samples = AAC_FRAME_SAMPLES;
+
+    // 本线程独占的累积 buffer (interleaved PCM, 容量 = 4 个 AAC frame 大小)
+    std::vector<uint8_t> accum;
+    accum.reserve((size_t)frame_samples * 4 * src_bpf);
+    int64_t pts = 0;   // 累计 sample 数 (AAC frame pts 用)
+
+    auto encode_one_frame = [&](const uint8_t* pcm_interleaved) {
+        // 1) swr_convert: interleaved (FLT/S16) → planar FLTP
+        AVFrameHead* afh = (AVFrameHead*)g.audio_frame;
+        if (g_ff.av_frame_make_writable) {
+            if (g_ff.av_frame_make_writable(g.audio_frame) < 0) return;
+        }
+        const uint8_t* in_planes[1]  = { pcm_interleaved };
+        const int converted = g_ff.swr_convert(g.swr_ctx,
+            afh->data, frame_samples,
+            in_planes, frame_samples);
+        if (converted <= 0) return;
+
+        // 2) 设 audio_frame.pts (sample 累计计数, 与 codec_ctx time_base 1/sample_rate 配套)
+        //    用 av_opt_set_int 优先 (FFmpeg 6.x AVFrame av_class), fallback 偏移 144 (与 video frame 同位置)
+        if (g_ff.av_opt_set_int(g.audio_frame, "pts", pts, 0) < 0) {
+            *(int64_t*)((uint8_t*)g.audio_frame + 144) = pts;
+        }
+
+        // 3) send_frame
+        int sret = g_ff.avcodec_send_frame(g.audio_codec_ctx, g.audio_frame);
+        if (sret < 0 && sret != FF_AVERROR_EAGAIN) {
+            CC::Log(CC::LOG_WARN, "audio_thread: avcodec_send_frame failed (err=%d)", sret);
+            return;
+        }
+
+        // 4) 排空 receive_packet (AAC 可能 buffer 多帧)
+        while (true) {
+            int rret = g_ff.avcodec_receive_packet(g.audio_codec_ctx, g.audio_packet);
+            if (rret == FF_AVERROR_EAGAIN || rret == FF_AVERROR_EOF_INT32) break;
+            if (rret < 0) {
+                CC::Log(CC::LOG_WARN, "audio_thread: receive_packet failed (err=%d)", rret);
+                break;
+            }
+            AVPacketHead* ph = (AVPacketHead*)g.audio_packet;
+            ph->stream_index = g.audio_stream_index;
+            // av_interleaved_write_frame 必须与 video worker 互斥
+            {
+                std::lock_guard<std::mutex> olk(g.output_mu);
+                g_ff.av_interleaved_write_frame(g.fmt_ctx, g.audio_packet);
+            }
+            g.audio_frames_encoded.fetch_add(1);
+            if (g_ff.av_packet_unref) g_ff.av_packet_unref(g.audio_packet);
+        }
+        pts += converted;   // sample 计数
+    };
+
+    // 主循环: 直到 stop_flag 且 ring 空
+    while (true) {
+        const bool stopping = g.stop_flag.load();
+        // 拉一批 PCM (最多 4 个 AAC frame, 避免单次拉太多导致 latency)
+        const int max_pull_frames = frame_samples * 4;
+        const size_t pull_bytes = (size_t)max_pull_frames * src_bpf;
+        const size_t old_size = accum.size();
+        accum.resize(old_size + pull_bytes);
+        int got = AudioCaptureWASAPI::Pull(accum.data() + old_size, max_pull_frames);
+        accum.resize(old_size + (size_t)got * src_bpf);
+
+        if (got == 0 && !stopping) {
+            // ring 暂无数据 + 仍在录 → 短 sleep
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            continue;
+        }
+        if (got == 0 && stopping && accum.empty()) {
+            // 收到 stop 信号且本地 buffer 已 drain → 退出
+            break;
+        }
+
+        // 凑够 1024 samples (frame_samples) 的整数倍, 逐 frame 编码
+        const size_t bytes_per_frame_acc = (size_t)frame_samples * src_bpf;
+        size_t consumed = 0;
+        while (accum.size() - consumed >= bytes_per_frame_acc) {
+            encode_one_frame(accum.data() + consumed);
+            consumed += bytes_per_frame_acc;
+        }
+        // 移除已消费数据 (用 memmove + resize)
+        if (consumed > 0) {
+            std::memmove(accum.data(), accum.data() + consumed, accum.size() - consumed);
+            accum.resize(accum.size() - consumed);
+        }
+
+        // stopping 时不再等更多数据, 但要先 drain 当前 accum (上面已尽量), 末尾不足 1 frame 的丢弃 (静音填充会过复杂)
+        if (stopping && accum.size() < bytes_per_frame_acc) {
+            break;
+        }
+    }
+    CC::Log(CC::LOG_INFO, "audio_thread: exited (encoded=%lld frames, dropped=%lld)",
+            (long long)g.audio_frames_encoded.load(),
+            (long long)g.audio_dropped_frames.load());
+}
+
+bool GetAudioStats(bool* audio_enabled, int64_t* audio_frames,
+                   int* audio_sample_rate, int* audio_channels, int64_t* audio_dropped) {
+    if (audio_enabled)     *audio_enabled     = g.audio_enabled;
+    if (audio_frames)      *audio_frames      = g.audio_frames_encoded.load();
+    if (audio_sample_rate) *audio_sample_rate = g.audio_sample_rate;
+    if (audio_channels)    *audio_channels    = g.audio_channels;
+    if (audio_dropped)     *audio_dropped     = g.audio_dropped_frames.load();
+    return g.active && g.audio_enabled;
+}
+
 } // namespace RecordMP4
 
 #else  // 移动端 / Web
 
 namespace RecordMP4 {
-bool     Open(const char*, int, int, int, int64_t, const char*, int) { return false; }
+bool     Open(const char*, int, int, int, int64_t, const char*, int, bool) { return false; }
 bool     WriteRGBA(const uint8_t*, int) { return false; }
 uint8_t* AcquireWriteSlot(int) { return nullptr; }
 void     CommitWriteSlot() {}
@@ -896,6 +1245,11 @@ bool     GetStats(int64_t* fe, int64_t* bw, int64_t* mb, char* en, int ec, bool*
     if (fe) *fe = 0; if (bw) *bw = 0; if (mb) *mb = 0;
     if (en && ec > 0) en[0] = '\0';
     if (p) *p = false;
+    return false;
+}
+// Phase F.0.11.6.5.A13 — audio 桩
+bool     GetAudioStats(bool* ae, int64_t* af, int* sr, int* ch, int64_t* dr) {
+    if (ae) *ae = false; if (af) *af = 0; if (sr) *sr = 0; if (ch) *ch = 0; if (dr) *dr = 0;
     return false;
 }
 } // namespace RecordMP4
