@@ -46,6 +46,7 @@
  */
 
 #include "light.h"
+#include "light_lua_helpers.h"  // Phase G.1.7.2 — 类型安全 helpers + magic
 #include "light_platform_net.h"
 #include "light_network_packet.h"
 
@@ -144,7 +145,9 @@ static cJSON* PushLuaAsCJson(lua_State* L, int idx) {
 
 // ==================== userdata ====================
 
+/// Phase G.1.7.2: 首字段 magic 防止 type-confusion (host 与 client 共 magic, Check 函数靠 MT 区分)
 struct RoomHost {
+    uint32_t  magic;            // = LT_MAGIC_NET_ROOM
     PlatformNet::EnetHost* host;
     int       onJoinRef;       // function(peer_id, hello) -> bool[, reason]
     int       onLeaveRef;      // function(peer_id)
@@ -154,7 +157,9 @@ struct RoomHost {
     lua_State* L;
 };
 
+/// Phase G.1.7.2: 首字段 magic 防止 type-confusion
 struct RoomClient {
+    uint32_t  magic;            // = LT_MAGIC_NET_ROOM
     PlatformNet::EnetHost* host;
     PlatformNet::EnetPeer* peer;
     int       onReadyRef;      // function()
@@ -168,8 +173,17 @@ struct RoomClient {
     lua_State* L;
 };
 
-static RoomHost*   CheckHost(lua_State* L, int idx)   { return (RoomHost*)luaL_checkudata(L, idx, ROOM_HOST_MT); }
-static RoomClient* CheckClient(lua_State* L, int idx) { return (RoomClient*)luaL_checkudata(L, idx, ROOM_CLIENT_MT); }
+/// Phase G.1.7.2: magic 双保险
+static RoomHost* CheckHost(lua_State* L, int idx) {
+    auto* h = (RoomHost*)luaL_checkudata(L, idx, ROOM_HOST_MT);
+    if (h && h->magic != LT::LT_MAGIC_NET_ROOM) luaL_error(L, "Light.Network.Room.Host: type confusion at arg #%d", idx);
+    return h;
+}
+static RoomClient* CheckClient(lua_State* L, int idx) {
+    auto* c = (RoomClient*)luaL_checkudata(L, idx, ROOM_CLIENT_MT);
+    if (c && c->magic != LT::LT_MAGIC_NET_ROOM) luaL_error(L, "Light.Network.Room.Client: type confusion at arg #%d", idx);
+    return c;
+}
 
 // ==================== 共用 ====================
 
@@ -513,6 +527,7 @@ static int l_Room_Host(lua_State* L) {
     }
 
     auto* h = (RoomHost*)lua_newuserdata(L, sizeof(RoomHost));
+    h->magic      = LT::LT_MAGIC_NET_ROOM;  // Phase G.1.7.2 — type tag
     h->host       = eh;
     h->onJoinRef  = LUA_NOREF;
     h->onLeaveRef = LUA_NOREF;
@@ -776,6 +791,7 @@ static int l_Room_Join(lua_State* L) {
     }
 
     auto* c = (RoomClient*)lua_newuserdata(L, sizeof(RoomClient));
+    c->magic         = LT::LT_MAGIC_NET_ROOM;  // Phase G.1.7.2 — type tag
     c->host          = eh;
     c->peer          = peer;
     c->onReadyRef    = LUA_NOREF;

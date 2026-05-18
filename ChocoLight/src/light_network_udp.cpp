@@ -25,6 +25,7 @@
  */
 
 #include "light.h"
+#include "light_lua_helpers.h"  // Phase G.1.7.2 — 类型安全 helpers + magic
 #include "light_platform_net.h"
 
 extern "C" {
@@ -39,15 +40,22 @@ extern "C" {
 
 static const char* UDP_SOCKET_MT = "Light.Network.Udp.Socket";
 
+/// Phase G.1.7.2: 首字段 magic 防止 type-confusion
 struct UdpSocketUserdata {
+    uint32_t  magic;       // 必须 = LT_MAGIC_NET_UDP
     uv_udp_s* sock;        // PlatformNet handle (nullptr 表示已关闭)
     int       cbRef;       // OnReceive 回调 registry ref (LUA_NOREF = 未设置)
     lua_State* L;          // 触发回调时所用 L (对 ChocoLight 单线程一致, 安全)
 };
 
 // 校验栈位置是 UDP socket userdata, 返回指针 (失败 lua_error)
+// Phase G.1.7.2: magic 双保险
 static UdpSocketUserdata* CheckUdpUd(lua_State* L, int idx) {
-    return (UdpSocketUserdata*)luaL_checkudata(L, idx, UDP_SOCKET_MT);
+    auto* ud = (UdpSocketUserdata*)luaL_checkudata(L, idx, UDP_SOCKET_MT);
+    if (ud && ud->magic != LT::LT_MAGIC_NET_UDP) {
+        luaL_error(L, "Light.Network.Udp.Socket: type confusion at arg #%d", idx);
+    }
+    return ud;
 }
 
 // ==================== 内部回调桥 ====================
@@ -114,6 +122,7 @@ static int l_Udp_Open(lua_State* L) {
     }
 
     auto* ud = (UdpSocketUserdata*)lua_newuserdata(L, sizeof(UdpSocketUserdata));
+    ud->magic = LT::LT_MAGIC_NET_UDP;  // Phase G.1.7.2 — type tag
     ud->sock  = sock;
     ud->cbRef = LUA_NOREF;
     ud->L     = L;

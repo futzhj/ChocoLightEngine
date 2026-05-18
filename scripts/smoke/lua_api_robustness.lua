@@ -58,6 +58,14 @@ local mMesh      = tryRequire("Light.Graphics.Mesh")
 local mShader    = tryRequire("Light.Graphics.Shader")
 local mMaterial  = tryRequire("Light.Graphics.Material")
 local mSurface   = tryRequire("Light.Surface")
+-- G.1.7.2: Audio + Network 子系统增量模块
+local mSound     = tryRequire("Light.Audio.Sound")
+local mGroup     = tryRequire("Light.Audio.SoundGroup")
+local mEffect    = tryRequire("Light.Audio.Effect")
+local mUdp       = tryRequire("Light.Network.Udp")
+local mRpc       = tryRequire("Light.Network.Rpc")
+local mRoom      = tryRequire("Light.Network.Room")
+local mIOStream  = tryRequire("Light.IOStream")
 
 -- 检测模块是否可用 (即既能 require 又有 New 方法)
 local function hasCtor(mod) return type(mod) == "table" end
@@ -348,6 +356,83 @@ if mMesh and mSurface and type(mSurface.CreateSurface) == "function" then
         ok("H5: Mesh API on Surface userdata - metatable check 拒绝 (ok=" .. tostring(good) .. ")")
     else
         ok("H5: Surface 创建失败 (headless 也应可创建?), 跳过")
+    end
+end
+
+-- ==================== I. G.1.7.2 Audio + Network 子系统 ====================
+
+-- I1: Sound.Load(nil) 不应崩
+if mSound and type(mSound.Load) == "function" then
+    local good = pcall(mSound.Load, nil)
+    if not good then ok("I1: Sound.Load(nil) 不崩 (luaL_check)")
+    else ng("I1: Sound.Load(nil) 应抛错") end
+else
+    ok("I1: Light.Audio.Sound 不可用, 跳过")
+end
+
+-- I2: SoundGroup.New(non-group) 不应崩 — 错误 parent 类型
+if mGroup and type(mGroup.New) == "function" then
+    local good = pcall(mGroup.New, "not a group")
+    ok("I2: SoundGroup.New('string') 不崩 (ok=" .. tostring(good) .. ")")
+else
+    ok("I2: Light.Audio.SoundGroup 不可用, 跳过")
+end
+
+-- I3: Effect.NewLowPass(nil) 不应崩 — 缺参
+if mEffect and type(mEffect.NewLowPass) == "function" then
+    local good = pcall(mEffect.NewLowPass, nil)
+    ok("I3: Effect.NewLowPass(nil) 不崩 (ok=" .. tostring(good) .. ")")
+else
+    ok("I3: Light.Audio.Effect 不可用, 跳过")
+end
+
+-- I4: Udp.Open(nil) 不应崩
+if mUdp and type(mUdp.Open) == "function" then
+    local good = pcall(mUdp.Open, nil)
+    if not good then ok("I4: Udp.Open(nil) 不崩 (luaL_check)")
+    else ok("I4: Udp.Open(nil) 接受 (ok=" .. tostring(good) .. ")") end
+else
+    ok("I4: Light.Network.Udp 不可用, 跳过")
+end
+
+-- I5: Rpc.Connect(nil, nil) 不应崩
+if mRpc and type(mRpc.Connect) == "function" then
+    local good = pcall(mRpc.Connect, nil, nil)
+    if not good then ok("I5: Rpc.Connect(nil, nil) 不崩 (luaL_check)")
+    else ok("I5: Rpc.Connect(nil, nil) 接受 (ok=" .. tostring(good) .. ")") end
+else
+    ok("I5: Light.Network.Rpc 不可用, 跳过")
+end
+
+-- I6: Room.Host(nil) 不应崩
+if mRoom and type(mRoom.Host) == "function" then
+    local good = pcall(mRoom.Host, nil)
+    if not good then ok("I6: Room.Host(nil) 不崩 (luaL_check)")
+    else ok("I6: Room.Host(nil) 接受 (ok=" .. tostring(good) .. ")") end
+else
+    ok("I6: Light.Network.Room 不可用, 跳过")
+end
+
+-- I7: IOStream.IOFromFile(nil, nil) 不应崩
+if mIOStream and type(mIOStream.IOFromFile) == "function" then
+    local good = pcall(mIOStream.IOFromFile, nil, nil)
+    if not good then ok("I7: IOStream.IOFromFile(nil, nil) 不崩 (luaL_check)")
+    else ok("I7: IOStream.IOFromFile(nil, nil) 接受 (ok=" .. tostring(good) .. ")") end
+else
+    ok("I7: Light.IOStream 不可用, 跳过")
+end
+
+-- I8: cross-magic type confusion — IOStream userdata 套 Sound API
+if mIOStream and mSound and type(mIOStream.IOFromMem) == "function" then
+    local good_s, stream = pcall(mIOStream.IOFromMem, "test_data_smoke", 14)
+    if good_s and stream then
+        -- 直接调 Sound.Play with IOStream userdata - luaL_checkudata 拒绝
+        local good = pcall(function()
+            return mSound.Play and mSound.Play(stream)
+        end)
+        ok("I8: IOStream → Sound.Play - metatable + magic 双拒绝 (ok=" .. tostring(good) .. ")")
+    else
+        ok("I8: IOStream.IOFromMem 创建失败, 跳过")
     end
 end
 

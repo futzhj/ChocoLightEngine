@@ -21,6 +21,7 @@
  */
 
 #include "light.h"
+#include "light_lua_helpers.h"  // Phase G.1.7.2 — 类型安全 helpers + magic
 #include "light_audio_backend.h"
 
 extern "C" {
@@ -30,12 +31,19 @@ extern "C" {
 
 static const char* EFFECT_MT = "Light.Audio.Effect";
 
+/// Phase G.1.7.2: 首字段 magic 防止 type-confusion
 struct EffectUserdata {
+    uint32_t magic;  // 必须 = LT_MAGIC_AUDIO_FX
     EffectHandle* h;
 };
 
+/// Phase G.1.7.2: magic 双保险
 static EffectUserdata* CheckEffect(lua_State* L, int idx) {
-    return (EffectUserdata*)luaL_checkudata(L, idx, EFFECT_MT);
+    auto* ud = (EffectUserdata*)luaL_checkudata(L, idx, EFFECT_MT);
+    if (ud && ud->magic != LT::LT_MAGIC_AUDIO_FX) {
+        luaL_error(L, "Light.Audio.Effect: type confusion at arg #%d (magic mismatch)", idx);
+    }
+    return ud;
 }
 
 static int PushEffectUserdata(lua_State* L, EffectHandle* h, const char* errMsg) {
@@ -45,6 +53,7 @@ static int PushEffectUserdata(lua_State* L, EffectHandle* h, const char* errMsg)
         return 2;
     }
     EffectUserdata* ud = (EffectUserdata*)lua_newuserdata(L, sizeof(EffectUserdata));
+    ud->magic = LT::LT_MAGIC_AUDIO_FX;  // Phase G.1.7.2 — type tag
     ud->h = h;
     luaL_getmetatable(L, EFFECT_MT);
     lua_setmetatable(L, -2);
@@ -129,8 +138,11 @@ static int l_Effect_GetEnabled(lua_State* L) {
     return 1;
 }
 
+// Phase G.1.7.2: __gc 后 设 magic = DEAD
 static int l_Effect_Delete(lua_State* L) {
     auto* ud = (EffectUserdata*)luaL_checkudata(L, 1, EFFECT_MT);
+    if (ud->magic == LT::LT_MAGIC_DEAD) return 0;
+    ud->magic = LT::LT_MAGIC_DEAD;
     if (ud->h) {
         AudioBackend::FreeEffect(ud->h);
         ud->h = nullptr;

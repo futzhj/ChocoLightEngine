@@ -45,6 +45,7 @@
  */
 
 #include "light.h"
+#include "light_lua_helpers.h"  // Phase G.1.7.2 — 类型安全 helpers + magic
 #include "light_platform_net.h"
 #include "light_network_packet.h"
 
@@ -86,7 +87,9 @@ static uint64_t NowMs() {
 
 // ==================== userdata ====================
 
+/// Phase G.1.7.2: 首字段 magic 防止 type-confusion
 struct RpcClient {
+    uint32_t  magic;                           // = LT_MAGIC_NET_RPC
     PlatformNet::EnetHost* host;
     PlatformNet::EnetPeer* peer;
     int       onEventRef;                       // OnEvent cb registry ref
@@ -98,18 +101,29 @@ struct RpcClient {
     lua_State* L;
 };
 
+/// Phase G.1.7.2: 首字段 magic 防止 type-confusion (server 与 client 共享同一 magic, 一个文件里 Check 函数靠 MT 区分)
 struct RpcServer {
+    uint32_t  magic;                           // = LT_MAGIC_NET_RPC
     PlatformNet::EnetHost* host;
     int       methodsRef;                       // {name → handler_fn} table, registry ref
     int       onEventRef;                       // OnEvent cb registry ref
     lua_State* L;
 };
 
+/// Phase G.1.7.2: magic 双保险
 static RpcClient* CheckClient(lua_State* L, int idx) {
-    return (RpcClient*)luaL_checkudata(L, idx, RPC_CLIENT_MT);
+    auto* c = (RpcClient*)luaL_checkudata(L, idx, RPC_CLIENT_MT);
+    if (c && c->magic != LT::LT_MAGIC_NET_RPC) {
+        luaL_error(L, "Light.Network.Rpc.Client: type confusion at arg #%d", idx);
+    }
+    return c;
 }
 static RpcServer* CheckServer(lua_State* L, int idx) {
-    return (RpcServer*)luaL_checkudata(L, idx, RPC_SERVER_MT);
+    auto* s = (RpcServer*)luaL_checkudata(L, idx, RPC_SERVER_MT);
+    if (s && s->magic != LT::LT_MAGIC_NET_RPC) {
+        luaL_error(L, "Light.Network.Rpc.Server: type confusion at arg #%d", idx);
+    }
+    return s;
 }
 
 // ==================== JSON ↔ Lua 转换 ====================
@@ -651,6 +665,7 @@ static int l_Rpc_Connect(lua_State* L) {
     }
 
     auto* c = (RpcClient*)lua_newuserdata(L, sizeof(RpcClient));
+    c->magic        = LT::LT_MAGIC_NET_RPC;  // Phase G.1.7.2 — type tag
     c->host         = eh;
     c->peer         = peer;
     c->onEventRef   = LUA_NOREF;
@@ -813,6 +828,7 @@ static int l_Rpc_Listen(lua_State* L) {
     }
 
     auto* s = (RpcServer*)lua_newuserdata(L, sizeof(RpcServer));
+    s->magic      = LT::LT_MAGIC_NET_RPC;  // Phase G.1.7.2 — type tag
     s->host       = eh;
     s->onEventRef = LUA_NOREF;
     s->L          = L;

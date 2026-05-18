@@ -116,7 +116,9 @@ EM_JS(void, js_ws_close, (int id), {
 
 // ==================== Http 上下文 ====================
 
+/// Phase G.1.7.2: 首字段 magic 防止 type-confusion
 struct WebHttpContext {
+    uint32_t magic;         // 必须 = LT_MAGIC_NET_WEB
     char     host[256];
     uint16_t port;
     bool     useTLS;        // https
@@ -128,12 +130,9 @@ struct WebHttpContext {
     lua_State* L;
 };
 
+// Phase G.1.7.2: magic 校验防 type-confusion
 static WebHttpContext* GetWebCtx(lua_State* L, int idx) {
-    lua_getfield(L, idx, "__instance");
-    if (!lua_isuserdata(L, -1)) { lua_pop(L, 1); return nullptr; }
-    auto* ctx = (WebHttpContext*)lua_touserdata(L, -1);
-    lua_pop(L, 1);
-    return ctx;
+    return LT::TryCheckInstance<WebHttpContext>(L, idx, LT::LT_MAGIC_NET_WEB);
 }
 
 // ==================== Network 函数 ====================
@@ -347,6 +346,7 @@ static int l_Web_Http_Call(lua_State* L) {
 
     auto* ctx = (WebHttpContext*)lua_newuserdata(L, sizeof(WebHttpContext));
     memset(ctx, 0, sizeof(WebHttpContext));
+    ctx->magic = LT::LT_MAGIC_NET_WEB;  // Phase G.1.7.2 — type tag
     strncpy(ctx->host, ip, sizeof(ctx->host) - 1);
     ctx->port = (uint16_t)port;
     ctx->useTLS = (port == 443);

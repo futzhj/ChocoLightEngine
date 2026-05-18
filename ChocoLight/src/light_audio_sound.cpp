@@ -35,6 +35,7 @@
  */
 
 #include "light.h"
+#include "light_lua_helpers.h"  // Phase G.1.7.2 — 类型安全 helpers + magic
 #include "light_audio_backend.h"
 #include "asset_loader.h"
 
@@ -53,26 +54,35 @@ static const char* GROUP_MT = "Light.Audio.SoundGroup";    // 跨模块共享
 static const char* EFFECT_MT = "Light.Audio.Effect";       // 跨模块共享
 
 // Sound userdata
+/// Phase G.1.7.2: 首字段 magic 防止 type-confusion
 struct SoundUserdata {
+    uint32_t magic;  // 必须 = LT_MAGIC_AUDIO_SRC
     AudioHandle* h;
     int groupRef;    // LUA_NOREF / LUA_REFNIL / registry index
     int effectRef;
 };
 
 // GroupUserdata 与 EffectUserdata 在 light_audio_group.cpp / light_audio_effect.cpp 定义,
-// 但其首字段必须是对应 handle pointer, 这里通过 luaL_testudata 安全访问.
-// 我们仅依赖 first field = handle pointer 的内存布局假设
+// 这里通过 luaL_checkudata 取得指针后按布局读取 handle pointer.
+// Phase G.1.7.2: 布局首字段为 magic, 第二字段为 handle pointer (与实际 struct 同步)
 struct GroupUserdata_Shared {
+    uint32_t magic;     // Phase G.1.7.2 — = LT_MAGIC_AUDIO_GRP
     GroupHandle* h;
     int parentRef;
     int effectRef;
 };
 struct EffectUserdata_Shared {
+    uint32_t magic;     // Phase G.1.7.2 — = LT_MAGIC_AUDIO_FX
     EffectHandle* h;
 };
 
+/// Phase G.1.7.2: magic 双保险
 static SoundUserdata* CheckSound(lua_State* L, int idx) {
-    return (SoundUserdata*)luaL_checkudata(L, idx, SOUND_MT);
+    auto* ud = (SoundUserdata*)luaL_checkudata(L, idx, SOUND_MT);
+    if (ud && ud->magic != LT::LT_MAGIC_AUDIO_SRC) {
+        luaL_error(L, "Light.Audio.Sound: type confusion at arg #%d (magic mismatch)", idx);
+    }
+    return ud;
 }
 
 // ==================== Sound.Load(path) ====================
@@ -91,6 +101,7 @@ static int l_Sound_Load(lua_State* L) {
         return 2;
     }
     SoundUserdata* ud = (SoundUserdata*)lua_newuserdata(L, sizeof(SoundUserdata));
+    ud->magic = LT::LT_MAGIC_AUDIO_SRC;  // Phase G.1.7.2 — type tag
     ud->h = h;
     ud->groupRef = LUA_NOREF;
     ud->effectRef = LUA_NOREF;
@@ -108,6 +119,7 @@ static int SoundPushResult_(void* L_, AssetLoader::FutureState* state) {
         return 1;
     }
     SoundUserdata* ud = (SoundUserdata*)lua_newuserdata(L, sizeof(SoundUserdata));
+    ud->magic = LT::LT_MAGIC_AUDIO_SRC;  // Phase G.1.7.2 — type tag
     ud->h = (AudioHandle*)state->resSoundHandle;
     ud->groupRef = LUA_NOREF;
     ud->effectRef = LUA_NOREF;
@@ -205,6 +217,7 @@ static int l_Sound_LoadPCM(lua_State* L) {
         return 2;
     }
     SoundUserdata* ud = (SoundUserdata*)lua_newuserdata(L, sizeof(SoundUserdata));
+    ud->magic = LT::LT_MAGIC_AUDIO_SRC;  // Phase G.1.7.2 — type tag
     ud->h = h;
     ud->groupRef = LUA_NOREF;
     ud->effectRef = LUA_NOREF;
@@ -412,8 +425,11 @@ static int l_Sound_SetEffect(lua_State* L) {
 
 // ==================== Lifecycle ====================
 
+// Phase G.1.7.2: __gc 后 设 magic = DEAD
 static int l_Sound_Delete(lua_State* L) {
     auto* ud = (SoundUserdata*)luaL_checkudata(L, 1, SOUND_MT);
+    if (ud->magic == LT::LT_MAGIC_DEAD) return 0;  // 重复 __gc 防腔
+    ud->magic = LT::LT_MAGIC_DEAD;
     if (ud->groupRef != LUA_NOREF) {
         luaL_unref(L, LUA_REGISTRYINDEX, ud->groupRef);
         ud->groupRef = LUA_NOREF;

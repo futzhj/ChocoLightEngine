@@ -58,6 +58,7 @@
  *    round-tripped through Read/WriteU64*. Smoke tests stay below 2^32.
  */
 #include "light.h"
+#include "light_lua_helpers.h"  // Phase G.1.7.2 — 类型安全 helpers + magic
 
 #include <SDL3/SDL.h>
 
@@ -70,7 +71,9 @@ extern "C" {
 
 #define MT_IOSTREAM "Light.IOStream.Stream"
 
+/// Phase G.1.7.2: 首字段 magic 防止 type-confusion
 struct LIOStream {
+    uint32_t      magic;  // 必须 = LT_MAGIC_IOSTREAM
     SDL_IOStream* io;
     void*         mem;   // owned buffer for IOFromMem / IOFromConstMem variants
 };
@@ -78,8 +81,13 @@ struct LIOStream {
 // ============================================================
 // helpers
 // ============================================================
+/// Phase G.1.7.2: magic 双保险
 static LIOStream* CheckHandle(lua_State* L, int idx) {
-    return (LIOStream*)luaL_checkudata(L, idx, MT_IOSTREAM);
+    auto* h = (LIOStream*)luaL_checkudata(L, idx, MT_IOSTREAM);
+    if (h && h->magic != LT::LT_MAGIC_IOSTREAM) {
+        luaL_error(L, "Light.IOStream: type confusion at arg #%d (magic mismatch)", idx);
+    }
+    return h;
 }
 
 static SDL_IOStream* CheckLive(lua_State* L, int idx) {
@@ -106,6 +114,7 @@ static int NewHandle(lua_State* L, SDL_IOStream* io, void* owned_mem) {
         return PushSdlError(L);
     }
     LIOStream* h = (LIOStream*)lua_newuserdata(L, sizeof(LIOStream));
+    h->magic = LT::LT_MAGIC_IOSTREAM;  // Phase G.1.7.2 — type tag
     h->io  = io;
     h->mem = owned_mem;
     luaL_getmetatable(L, MT_IOSTREAM);

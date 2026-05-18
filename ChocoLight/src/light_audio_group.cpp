@@ -20,6 +20,7 @@
  */
 
 #include "light.h"
+#include "light_lua_helpers.h"  // Phase G.1.7.2 — 类型安全 helpers + magic
 #include "light_audio_backend.h"
 
 #include <cstring>
@@ -32,7 +33,9 @@ extern "C" {
 static const char* GROUP_MT = "Light.Audio.SoundGroup";
 static const char* EFFECT_MT = "Light.Audio.Effect";
 
+/// Phase G.1.7.2: 首字段 magic 防止 type-confusion
 struct GroupUserdata {
+    uint32_t magic;  // 必须 = LT_MAGIC_AUDIO_GRP
     GroupHandle* h;
     int parentRef;
     int effectRef;
@@ -42,8 +45,13 @@ struct EffectUserdata_Shared {
     EffectHandle* h;
 };
 
+/// Phase G.1.7.2: magic 双保险
 static GroupUserdata* CheckGroup(lua_State* L, int idx) {
-    return (GroupUserdata*)luaL_checkudata(L, idx, GROUP_MT);
+    auto* ud = (GroupUserdata*)luaL_checkudata(L, idx, GROUP_MT);
+    if (ud && ud->magic != LT::LT_MAGIC_AUDIO_GRP) {
+        luaL_error(L, "Light.Audio.SoundGroup: type confusion at arg #%d (magic mismatch)", idx);
+    }
+    return ud;
 }
 
 // ==================== SoundGroup.New([parent]) ====================
@@ -72,6 +80,7 @@ static int l_Group_New(lua_State* L) {
         return 2;
     }
     GroupUserdata* ud = (GroupUserdata*)lua_newuserdata(L, sizeof(GroupUserdata));
+    ud->magic = LT::LT_MAGIC_AUDIO_GRP;  // Phase G.1.7.2 — type tag
     ud->h = h;
     ud->parentRef = parentRef;
     ud->effectRef = LUA_NOREF;
@@ -164,8 +173,11 @@ static int l_Group_SetEffect(lua_State* L) {
 
 // ==================== Lifecycle ====================
 
+// Phase G.1.7.2: __gc 后 设 magic = DEAD
 static int l_Group_Delete(lua_State* L) {
     auto* ud = (GroupUserdata*)luaL_checkudata(L, 1, GROUP_MT);
+    if (ud->magic == LT::LT_MAGIC_DEAD) return 0;
+    ud->magic = LT::LT_MAGIC_DEAD;
     if (ud->parentRef != LUA_NOREF) {
         luaL_unref(L, LUA_REGISTRYINDEX, ud->parentRef);
         ud->parentRef = LUA_NOREF;
