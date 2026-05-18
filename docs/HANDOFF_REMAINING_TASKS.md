@@ -71,6 +71,15 @@
 * API 完全兼容 (Lua 不感知); encoder state 严格 worker thread 独占
 * 文档: `docs/Phase F.0.11.6.1 MP4 Worker/FINAL_PhaseF_0_11_6_1.md` (含十一章全部交付细节)
 
+### ✅ [已交付 2026-05-18] Phase F.0.11.6.2 — MP4 录屏功能扩展 (A8 + A10 + A11 + A12)
+* **A8 GOP / 关键帧间隔**: `RecordMP4(path, {gop_size=N})` — N=1 全 I 帧 / N=15 高频关键帧 / 0=默认 fps×2
+* **A10 Pause/Resume**: `Gfx.PauseRecord() / ResumeRecord() / IsRecordPaused()` — pts 不前进, mp4 时间线无缝衔接
+* **A11 max_size_bytes**: `Gfx.SetRecordMaxSize(bytes)` — 0=无限, 不自动停 (由脚本查 stats 决定切分)
+* **A12 GetRecordStats**: `Gfx.GetRecordStats()` → `{mode, active, tick_frame_count, frames, bytes, max_bytes, encoder, paused}`
+* commit `2ef81ea` (4 files +341/-10)
+* smoke `screenshot` 增 19 用例 → 61 PASS / 0 FAIL; 全 7 套 smoke 回归 PASS
+* 文档: `docs/Phase F.0.11.6.2 MP4 Recording Ext/FINAL_PhaseF_0_11_6_2.md`
+
 ---
 
 ## 3. 下一步候选方向 (Phase F.0.11.6.1 收尾后)
