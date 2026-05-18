@@ -1,7 +1,7 @@
 # Phase G.1.5 — 待办事项 (TODO)
 
 > **创建日期**：2026-05-18
-> **状态**：Phase G.1.5 收尾完成 (D1 + T2 + D2 + T3)。本文记录后续可继续优化方向。
+> **状态**：Phase G.1.5 收尾完成 (D1 + T2 + D2 + T3 + T6)。本文记录后续可继续优化方向。
 
 ---
 
@@ -20,11 +20,12 @@
 - ✅ 真实 .glb fixture (1192 bytes) + Python generator
 - ✅ 8 用例 smoke (12 PASS)
 
-### 收尾 (D1 + T2 + D2 + T3)
+### 收尾 (D1 + T2 + D2 + T3 + T6)
 - ✅ **D1**: `docs/api/Light_Graphics.md` 加入 `Light.Graphics.Mesh.LoadGLTF` + `Light.Graphics.Mesh.LoadGLTFAsync` 完整 API 描述 (灵活签名 / 性能特征 / 路径分发 / 错误处理 / 示例)
 - ✅ **T2**: PBR material texture 启用 mipmap (worker 路径 `glGenerateMipmap` + `LINEAR_MIPMAP_LINEAR`; fallback 路径 `RenderBackend::GenerateMipmap2D` 公共虚接口); 同步 `LoadGLTF` 路径同步对齐
 - ✅ **D2**: `samples/demo_gltf_async/main.lua` 演示异步加载 fixture + Future poll / Callback 双风格切换 (R / M / F 键控制)
 - ✅ **T3**: cgltf Texture Sampler 透传 (mag/min/wrap_s/wrap_t); `MaterialImageJob` 加 4 字段; `RenderBackend::SetTexture2DSampler` 公共虚接口 (default no-op, GL33 override); worker + fallback + 同步路径三路一致; min_filter mipmap-aware (非 mipmap 类型跳过 `glGenerateMipmap`); 默认值符合 glTF 2.0 规范 (mag=LINEAR / min=LINEAR_MIPMAP_LINEAR / wrap=REPEAT); 新 fixture `test_box_sampler.glb` + smoke Case 9 (13 PASS)
+- ✅ **T6**: `samples/perf_async_gltf/` 真机性能测试 benchmark (主线程帧时 P50/P95/P99/Max + 平均加载耗时); CLI 可调模型路径 / repeat 次数 / loads_per_frame; 本地基线 (NVIDIA RTX GL 3.3 Core): P50=4.17ms / P95=4.79ms (LPF=5) / 4.37ms (LPF=1), 远低于 60fps budget 16.7ms
 
 ---
 
@@ -63,21 +64,12 @@
 
 ### 2.3 测试 / 验证
 
-#### T6. 大规模真机性能测试
-
-- **现状**: 本地用 fixture 1×1 PNG 测试 (P95 < 1ms 不可测)
-- **场景**: 真实游戏资源 1024×1024 - 4096×4096 PNG, 5 类 texture 全设
-- **方案**: 加 `samples/perf_async_gltf/` benchmark sample, 类似 `perf_async_loader/` 但用 GLB fixture
-- **位置**: `@e:/jinyiNew/Light/samples/perf_async_gltf/main.lua` (新建)
-- **优先级**: 中 (验证设计性能模型)
-- **预估**: 4-6h (含数据生成 + 报告输出)
-
 #### T7. Worker Thread 失败注入测试
 
 - **现状**: image 失败兜底 (slot=0 + log) 路径未明确测试
 - **场景**: glGen 返 0, glTexImage2D 报错
 - **方案**: 用 broken GLB fixture (含损坏 PNG) 验证 worker fallback 路径
-- **位置**: `@e:/jinyiNew/Light/scripts/smoke/asset_loader_async_gltf.lua` 加 Case 9
+- **位置**: `@e:/jinyiNew/Light/scripts/smoke/asset_loader_async_gltf.lua` 加 Case 10 (Case 9 已被 T3 sampler fixture 占用)
 - **优先级**: 低 (代码已有兜底, 但行为路径未端到端验证)
 - **预估**: 2h (生成损坏 PNG fixture + smoke case)
 
@@ -111,9 +103,8 @@
 
 | 优先级 | 任务 | 收益 |
 |----|----|----|
-| P0 | T6 真机性能测试 | 验证设计性能模型 |
-| P1 | T1 Worker Thread Pool | 进一步优化 worker 总用时 |
-| P2 | T5 Image Cache | 内存优化 |
-| P3 | T7 失败注入测试 | 代码已防御, 验证补充 |
-| P4 | D3 Khronos sample model | demo 视觉提升 |
+| P0 | T1 Worker Thread Pool | 进一步优化 worker 总用时 |
+| P1 | T5 Image Cache | 内存优化 |
+| P2 | T7 失败注入测试 | 代码已防御, 验证补充 |
+| P3 | D3 Khronos sample model | demo 视觉提升 + perf_async_gltf 真机资源 |
 | 待定 | T4 KTX/DDS | 移动端优化, 暂不紧急 |
