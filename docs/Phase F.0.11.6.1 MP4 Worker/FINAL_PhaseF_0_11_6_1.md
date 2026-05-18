@@ -205,21 +205,70 @@ e:\jinyiNew\Light\lumen-master\build\src\light\Release\light.exe `
 
 ---
 
-## 十. 后续优化候选 (剩余, 低优先级)
+## 十. A5 + A6 + A7 增量交付 (2026-05-18 同日交付, commit `0e5487b`)
 
-- **A5**: Lua opts 加 `prefer_hwenc` / `encoder` 字段, 让用户显式指定 (现状: 自动 NVENC 优先)
-- **A6**: Encoder 内部颜色空间 BT.709 vs BT.601 默认 (现状 sws 默认, 可能与浏览器 / 播放器解析不一致)
-- **A7**: 录屏期间在屏幕角落显示 REC 标记 + 帧计数 OSD (可选, 用户体感)
+### 10.1 A5 — Lua opts 显式 encoder 偏好
+
+- **问题**: A3 自动 NVENC 优先, 但用户在某些场景 (libx264 复现性更好 / 跨平台对比 / 测试 fallback 路径) 想显式选编码器
+- **方案**: `RecordMP4(path, opts)` 的 `opts` 表新增两个字段 (互斥优先 `encoder`):
+  - `encoder = "auto" / "libx264" / "h264_nvenc" / "h264_amf"` (字符串, case-insensitive)
+  - `prefer_hwenc = true / false` (bool, false 等价 `encoder = "libx264"`; 二者并存时 `encoder` 优先)
+- **行为**:
+  - `encoder=nil + prefer_hwenc=true (默认)` → 走 A3 自动选择 (NVENC → libx264 → AMF → 兜底)
+  - `encoder="libx264"` → 强制软编, 跳过 NVENC 探测
+  - `encoder="h264_nvenc"` → 仅尝试 NVENC, 不可用时 Open 失败 (返 nil + err)
+  - `prefer_hwenc=false + encoder=nil` → 等价 `encoder="libx264"`
+- **代码**: `@e:\jinyiNew\Light\ChocoLight\src\light_graphics.cpp:1052-1077` (Lua 解析) + `@e:\jinyiNew\Light\ChocoLight\src\record_mp4.cpp:Open` (encoder_pref 传参)
+- **回归**: 老 caller 不传 opts 时行为完全等价 A3 (默认 prefer_hwenc=true + encoder=nil)
+
+### 10.2 A6 — BT.709 color metadata 显式标注
+
+- **问题**: 现状 codec_ctx 不设 `colorspace / color_primaries / color_trc / color_range`, ffmpeg 默认 unspecified, 部分播放器 (Chromium / Safari / 移动端) 解释为 BT.601, 颜色与渲染时 BT.709 sRGB 假设不一致 → 录屏画面偏色 (饱和度 / 蓝绿偏移)
+- **方案**: codec_ctx 显式 4 字段:
+  - `colorspace = AVCOL_SPC_BT709`
+  - `color_primaries = AVCOL_PRI_BT709`
+  - `color_trc = AVCOL_TRC_BT709`
+  - `color_range = AVCOL_RANGE_MPEG` (limited range, mp4 标准, 与播放器默认一致)
+  - `frame->colorspace / color_range` 同步标注, 兼容部分编码器从 frame 读取
+- **收益**: mp4 容器内嵌 BT.709 metadata, 主流播放器 (VLC / ffplay / Chromium / QuickTime) 全部正确解析, 与渲染色彩一致
+- **代码**: `@e:\jinyiNew\Light\ChocoLight\src\record_mp4.cpp:Open` (codec_ctx) + `@e:\jinyiNew\Light\ChocoLight\src\record_mp4.cpp:WriteRGBA` (frame)
+- **零代价**: 仅 metadata 字段赋值, 无运行时开销
+
+### 10.3 A7 — REC OSD 录屏指示器
+
+- **问题**: 录屏期间无视觉反馈, 用户不知道当前是否在录、第几帧
+- **方案**: 在 `RecordTickHook` (readback) **之后**、`SwapBuffers` 之前, 调用 `Light_Graphics_DrawRecordOSD(w, h)` 绘制屏幕左上角红点闪烁 + 文字提示, 严格保证:
+  - **不进 mp4**: 绘制时机晚于 readback, mp4 帧数据已固化, OSD 仅出现在屏幕显示
+  - **不进 PNG screenshot**: 同理, screenshot API 用 `glReadPixels` 在 OSD 绘制之前调用
+- **闪烁逻辑**: 基于 `g_record.frame_count` 半秒周期 (~15 帧 @ 30fps) 切换 alpha, 类似相机 REC 指示
+- **开关 API** (默认开启):
+  - `Light.Graphics.SetRecordOSD(boolean)` → bool (是否显示)
+  - `Light.Graphics.GetRecordOSD()` → boolean
+- **代码**:
+  - `@e:\jinyiNew\Light\ChocoLight\src\light_graphics.cpp:Light_Graphics_DrawRecordOSD` (绘制函数, 即时模式 GL 红方块)
+  - `@e:\jinyiNew\Light\ChocoLight\src\light_ui.cpp:750-752` (调用点, RecordTickHook 之后)
+  - `@e:\jinyiNew\Light\ChocoLight\src\light_graphics.cpp:5686-5703` (Set/Get Lua API)
+- **回归**: 不录屏时 OSD 函数廉价 no-op (查 `g_record.active`)
+
+### 10.4 累积 Lua API 增量
+
+| API | 入参 | 默认 | 说明 |
+|-----|------|------|------|
+| `RecordMP4(path, opts.encoder)` | `string?` | nil = auto | A5: 显式编码器名 (libx264 / h264_nvenc / h264_amf) |
+| `RecordMP4(path, opts.prefer_hwenc)` | `bool?` | true | A5: false = 强制软编 |
+| `SetRecordOSD(enabled)` | `bool` | true | A7: OSD 红点开关 |
+| `GetRecordOSD()` | — | bool | A7: 查询 |
 
 ---
 
 ## 十一. 文件变更累计
 
-| 文件 | F.0.11.6.1 | A1 | A2+A3+A4 | 累计 |
-|------|-----------|-----|----------|------|
-| `@e:\jinyiNew\Light\ChocoLight\src\record_mp4.cpp` | +135 / -56 | +99 / -45 | +47 / -16 | 总 +281 / -117 |
-| `@e:\jinyiNew\Light\ChocoLight\include\record_mp4.h` | — | +18 / -3 | +8 / 0 | 总 +26 / -3 |
-| `@e:\jinyiNew\Light\ChocoLight\src\light_graphics.cpp` | — | +22 / -11 | +52 / -15 | 总 +74 / -26 |
+| 文件 | F.0.11.6.1 | A1 | A2+A3+A4 | A5+A6+A7 | 累计 |
+|------|-----------|-----|----------|----------|------|
+| `@e:\jinyiNew\Light\ChocoLight\src\record_mp4.cpp` | +135 / -56 | +99 / -45 | +47 / -16 | +25 / -2 | 总 +306 / -119 |
+| `@e:\jinyiNew\Light\ChocoLight\include\record_mp4.h` | — | +18 / -3 | +8 / 0 | +5 / -1 | 总 +31 / -4 |
+| `@e:\jinyiNew\Light\ChocoLight\src\light_graphics.cpp` | — | +22 / -11 | +52 / -15 | +130 / -10 | 总 +204 / -36 |
+| `@e:\jinyiNew\Light\ChocoLight\src\light_ui.cpp` | — | — | — | +6 / -2 | 总 +6 / -2 |
 
-**commits**: `d506ad7` (worker) + `8bdd888` (A1) + 待 push (A2+A3+A4) — 全部 in `main`
+**commits**: `d506ad7` (worker) + `8bdd888` (A1) + `81789dd` (A2+A3+A4) + `0e5487b` (A5+A6+A7) — 全部 in `main`
 **author**: Cascade-assisted refactor
