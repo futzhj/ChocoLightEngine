@@ -87,6 +87,23 @@
 * commit `3bb7d3b` (2 files +106/-5); smoke +4 用例 → screenshot 65 PASS
 * 实现策略比预估简单 (~1.5h): 不改 backend, 仅在 light_graphics 层加 ROI 字段 + helper
 
+### ✅ [已交付 2026-05-18] Phase F.0.11.6.4.A14 — MP4 GIF 录屏
+* **A14 GIF**: `Gfx.RecordMP4("anim.gif", {fps=15})` 或 `Gfx.RecordGIF("demo.gif", ...)` — 后缀 .gif 自动切到 GIF encoder + BGR8 pix_fmt
+* 复用 worker thread / ring buffer / Pause/Resume / GetStats 全部基础设施
+* GIF muxer + GIF encoder + sws RGBA→BGR8 (256 色固定调色板, sws 内部 dither, 无需 palettegen)
+* GIF 模式忽略 encoder pref / GOP / bitrate / BT.709 (gif 是无损 LZW + RGB direct)
+* commit `4003414` (3 files +109/-35); smoke +6 用例 → screenshot 71 PASS
+
+### ✅ [已交付 2026-05-18] Phase F.0.11.6.5.A13 — MP4 Audio Capture (Windows WASAPI loopback + AAC)
+* **A13 Audio**: `Gfx.RecordMP4(path, {audio=true})` — 录系统扬声器输出 (loopback) 并 mux 进 mp4
+* Windows WASAPI loopback (默认 render 设备共享模式) → ring buffer (16MB SPSC) → audio_thread → swr → AAC FLTP → mp4 audio stream
+* 跨平台桩 (macOS/Linux 静默 disable audio, video 仍正常录)
+* 任一 audio 步骤失败仅 disable audio, 不影响 video (健壮性)
+* GetRecordStats 加 audio_enabled / audio_frames / audio_sample_rate / audio_channels / audio_dropped 5 字段
+* commit `9000011` (5 files +686/-13); smoke +10 用例 → screenshot 81 PASS
+* **未真机验收**: 用户需自行验证音质 / 同步 / AAC encoder 可用性 (作者无音频测试环境)
+* 文档: `docs/Phase F.0.11.6.5 MP4 Audio Capture/FINAL_PhaseF_0_11_6_5.md`
+
 ---
 
 ## 3. 下一步候选方向 (Phase F.0.11.6.1 收尾后)
