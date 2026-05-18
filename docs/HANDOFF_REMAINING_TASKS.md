@@ -1,8 +1,8 @@
 # ChocoLight Engine - 交接与未完成任务清单 (Handoff Summary)
 
 > **创建时间**: 2026-05-17
-> **最后更新**: 2026-05-17 (F.2 渲染架构补齐已交付; 渲染方向全闭环)
-> **当前基线**: Phase F.2 完结 (HDR + EXR/MP4 截图录屏 + 全 10 后处理多实例 + TAAU 全交付)
+> **最后更新**: 2026-05-18 (G.1.5 异步 GLTF Material 收尾 + F.0.11.6.1 MP4 worker thread 已交付)
+> **当前基线**: G.1.5 完结 (异步 GLTF + worker pool + sampler + benchmark + 失败注入) + F.0.11.6.1 (MP4 编码 worker thread)
 > **目的**: 供下一个 AI 助手接手开发时，快速建立上下文并明确下一步任务优先级。
 
 ---
@@ -58,9 +58,12 @@
   - 进一步完善对错误传参的 C++ 侧容错, 避免导致 Engine Crash。
   - 完善 Lua 端的热重载 (Hot Reload) 机制, 不仅仅是 LUT 的热重载, 还包括 Lua 脚本本身逻辑的热重载。
 
-### 5. 录屏后台 Worker Thread
-* **现状 (F.0.11.6)**: mp4 编码在主线程同步执行, 1080p @ 30fps 软件 H.264 medium preset 预计 ~30-50ms/frame, 可能影响帧率
-* **需求**: PBO 读取后丢入 worker thread 队列编码; encoder API 已 thread-safe (per-context)
+### ✅ [已交付 2026-05-18] Phase F.0.11.6.1 — MP4 录屏 Worker Thread 编码
+* `record_mp4.cpp` 加 worker thread + queue + back-pressure (commit `d506ad7`)
+* 主线程帧时 25-40ms → ~5-7ms (降低 80-85%)
+* API 完全兼容 (Lua 不感知); encoder state 严格 worker thread 独占
+* 文档: `docs/Phase F.0.11.6.1 MP4 Worker/FINAL_PhaseF_0_11_6_1.md`
+* 后续候选: ring buffer (A1) / PBO async readback 接入 mp4 (A2) / NVENC 硬编 (A3)
 
 ---
 
