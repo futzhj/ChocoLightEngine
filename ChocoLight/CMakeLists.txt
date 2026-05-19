@@ -247,6 +247,7 @@ set(LIGHT_SOURCES
     ${CHOCO_SRC}/light_plugins_codec.cpp
     ${CHOCO_SRC}/light_plugins_path.cpp
     ${CHOCO_SRC}/light_plugins_uuid.cpp
+    ${CHOCO_SRC}/light_plugins_json.cpp
     ${CHOCO_SRC}/light_antidebug.cpp
     ${CHOCO_SRC}/light_io.cpp
     ${CHOCO_SRC}/light_storage.cpp

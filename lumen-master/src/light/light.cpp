@@ -525,6 +525,8 @@ static const struct { const char *modName; const char *procName; } g_lightModule
     {"Light.Plugins.Path",        "luaopen_Light_Plugins_Path"},
     {"Light.Plugins.UUID",        "luaopen_Light_Plugins_UUID"},
     {"uuid",                      "luaopen_uuid"},
+    {"Light.Plugins.JSON",        "luaopen_Light_Plugins_JSON"},
+    {"json",                      "luaopen_json"},
     {"Light.Event",               "luaopen_Light_Event"},
     {"Light.Graphics.Mesh",       "luaopen_Light_Graphics_Mesh"},
     {"Light.Graphics.Material",   "luaopen_Light_Graphics_Material"},
