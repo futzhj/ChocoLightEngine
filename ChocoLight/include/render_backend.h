@@ -385,12 +385,17 @@ public:
      *   - idxCount > 0 (与 CreateMesh iCount 等价);
      *   - backend 接管 vao/vbo/ebo 所有权, 后续由 DeleteMesh 释放.
      *
+     * Phase G.1.4 — vboBytes/eboBytes 用于 DeleteMesh 内部 UntrackBytes 闭环.
+     *   - worker 路径: caller 已调 TrackBytes("Mesh VBO/EBO", bytes), 此处仅写入 m 字段不再 Track.
+     *   - 老 backend (Legacy / 默认实现): 忽略 bytes, 不 Track 也不 Untrack (与现状一致).
+     *
      * @return mesh id (0=失败, 例: backend 不支持 3D / 参数无效)
      *
      * 失败时调用方应自行 glDelete 这些 handles 兜底 (避免泄漏).
      */
-    virtual uint32_t RegisterUploadedMesh(uint32_t vao, uint32_t vbo, uint32_t ebo, int idxCount) {
-        (void)vao; (void)vbo; (void)ebo; (void)idxCount;
+    virtual uint32_t RegisterUploadedMesh(uint32_t vao, uint32_t vbo, uint32_t ebo, int idxCount,
+                                          int64_t vboBytes = 0, int64_t eboBytes = 0) {
+        (void)vao; (void)vbo; (void)ebo; (void)idxCount; (void)vboBytes; (void)eboBytes;
         return 0;
     }
     /// 释放 mesh GPU 资源

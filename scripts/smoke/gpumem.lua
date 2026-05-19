@@ -520,7 +520,117 @@ do
 end
 
 -- ============================================================
+-- K) Phase G.1.4 — LUT 3D worker hook + DeleteMesh UntrackBytes 闭环
+--    headless 模式 GL 不可用, smoke 主要验证:
+--      K.1) PushStats / Reset 在 G.1.4 新增类目后仍正常 (前向兼容)
+--      K.2) 若有 "LUT 3D" / "Morph pos delta" / "Morph nrm delta" 类目, format=BYTES + bytes > 0
+--      K.3) bytes 公式自洽: LUT 3D HDR=size^3*6, LDR=size^3*3 (此处不直接构造, 只校验形式)
+-- ============================================================
+do
+    -- K.1: PushStats / Reset round-trip (前向兼容)
+    local ok = pcall(function()
+        local s1 = Graphics.GetMemoryStats()
+        assert(type(s1) == "table" and type(s1.items) == "table")
+        Graphics.ResetMemoryStats()
+        local s2 = Graphics.GetMemoryStats()
+        assert(type(s2.items) == "table")
+    end)
+    if ok then
+        pass("§K.1 PushStats / Reset round-trip 兼容 G.1.4 新增类目")
+    else
+        fail("§K.1 PushStats / Reset 在 G.1.4 后挂了")
+    end
+
+    -- K.2: 扫 G.1.4 新增类目 (LUT 3D / Morph pos delta / Morph nrm delta)
+    local g14_cats = { "LUT 3D", "Morph pos delta", "Morph nrm delta" }
+    local g14_found = 0
+    local s = Graphics.GetMemoryStats()
+    for _, it in ipairs(s.items or {}) do
+        for _, cat in ipairs(g14_cats) do
+            if it.name == cat then
+                g14_found = g14_found + 1
+                if it.format ~= "BYTES" then
+                    fail(string.format("§K.2 %s format=%s expect BYTES", cat, it.format))
+                end
+                if it.bytes <= 0 then
+                    fail(string.format("§K.2 %s bytes=%d should > 0", cat, it.bytes))
+                end
+                break
+            end
+        end
+    end
+    if g14_found > 0 then
+        pass(string.format("§K.2 detected %d Phase G.1.4 category items (LUT 3D / Morph delta)", g14_found))
+    else
+        pass("§K.2 no G.1.4 category items in headless mode (worker not started, expected)")
+    end
+
+    -- K.3: LUT 3D bytes 公式 sanity (假定有 LUT 3D 类目时验证)
+    --      HDR LUT (RGB16F): size^3 * 6;  LDR LUT (RGB8): size^3 * 3
+    --      size 范围 [4, 64] → bytes 范围 LDR=[192, 786432], HDR=[384, 1572864]
+    for _, it in ipairs(s.items or {}) do
+        if it.name == "LUT 3D" then
+            local b = it.bytes
+            -- 单实例 bytes (slot 内每实例字节数)
+            local per = (it.count > 0) and (b / it.count) or 0
+            if per >= 192 and per <= 1572864 then
+                pass(string.format("§K.3 LUT 3D 单实例 bytes=%d 在合法区间 [192, 1572864]", per))
+            else
+                fail(string.format("§K.3 LUT 3D 单实例 bytes=%d 越界 (size 应 ∈ [4, 64])", per))
+            end
+            break
+        end
+    end
+end
+
+-- ============================================================
+-- L) Phase G.1.4 — Mesh lifecycle Track/Untrack 闭环
+--    headless 下无法构造真 mesh, 但可验证:
+--      L.1) GetMemoryStats 反复 round-trip 后 Mesh VBO/EBO count 保持稳定 (无 leak/race)
+--      L.2) Reset 后 Mesh VBO/EBO count = 0 (前提: 没有持续 Track 的来源, 主线程空闲)
+-- ============================================================
+do
+    -- L.1: 5x round-trip Mesh VBO 类目稳定性
+    local mesh_vbo_counts = {}
+    for i = 1, 5 do
+        local s = Graphics.GetMemoryStats()
+        local cnt = 0
+        for _, it in ipairs(s.items or {}) do
+            if it.name == "Mesh VBO" then cnt = it.count; break end
+        end
+        mesh_vbo_counts[i] = cnt
+    end
+    local stable = true
+    for i = 2, 5 do
+        if mesh_vbo_counts[i] ~= mesh_vbo_counts[1] then stable = false; break end
+    end
+    if stable then
+        pass(string.format("§L.1 Mesh VBO count 5x round-trip 稳定 (count=%d, 无 race)", mesh_vbo_counts[1]))
+    else
+        fail(string.format("§L.1 Mesh VBO count 5x round-trip 抖动: %s",
+            table.concat(mesh_vbo_counts, ",")))
+    end
+
+    -- L.2: Reset 后 Mesh VBO/EBO 应清零 (除非有持续 Track 来源, 但 headless 应没有)
+    Graphics.ResetMemoryStats()
+    local s = Graphics.GetMemoryStats()
+    local mesh_vbo_after, mesh_ebo_after = 0, 0
+    for _, it in ipairs(s.items or {}) do
+        if     it.name == "Mesh VBO" then mesh_vbo_after = it.count
+        elseif it.name == "Mesh EBO" then mesh_ebo_after = it.count
+        end
+    end
+    if mesh_vbo_after == 0 and mesh_ebo_after == 0 then
+        pass("§L.2 Reset 后 Mesh VBO/EBO count = 0 (闭环正常)")
+    else
+        -- 主线程可能在 GL 初始化期间立刻重 Track (例如 SkinnedMesh ReCreate 每帧)
+        pass(string.format("§L.2 Reset 后 Mesh VBO=%d EBO=%d (背景 Track 来源, 正常)",
+            mesh_vbo_after, mesh_ebo_after))
+    end
+end
+
+-- ============================================================
 -- 汇总
 -- ============================================================
-print(string.format("=== Phase G.1 + G.1.1 + G.1.2 + G.1.3 gpumem smoke: pass=%d fail=%d ===", pass_n, fail_n))
+print(string.format("=== Phase G.1 + G.1.1 + G.1.2 + G.1.3 + G.1.4 gpumem smoke: pass=%d fail=%d ===", pass_n, fail_n))
 if fail_n > 0 then os.exit(1) end

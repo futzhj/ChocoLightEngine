@@ -954,6 +954,10 @@ static void WorkerUploadLUT_(Task& task) {
     st.lutBytes.clear();  st.lutBytes.shrink_to_fit();
     st.lutFloats.clear(); st.lutFloats.shrink_to_fit();
     st.resLUTId = (uint32_t)tex;
+    // Phase G.1.4 — LUT 3D worker Track: HDR=RGB16F(6B), LDR=RGB8(3B), 体积=size^3
+    const int64_t lutBytes = (int64_t)st.lutSize * (int64_t)st.lutSize * (int64_t)st.lutSize
+                             * (isHDR ? 6LL : 3LL);
+    LT::GpuMem::TrackBytes("LUT 3D", lutBytes);
     glFlush();
     GLsync fence = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
     st.glFence  = (void*)fence;
@@ -1399,8 +1403,12 @@ void Tick() {
                 if (task.type == TaskType::GLTF) {
                     uint32_t meshId = 0;
                     if (g_render && st->glMeshVao && st->glMeshVbo && st->glMeshEbo) {
+                        // Phase G.1.4 — 传 bytes 信息 (worker 已 TrackBytes, backend 仅写 m 字段供 DeleteMesh Untrack)
+                        const int64_t vboBytes = (int64_t)st->gltfVertCount * (int64_t)sizeof(RenderVertex3D);
+                        const int64_t eboBytes = (int64_t)st->glMeshIdxCount * (int64_t)sizeof(uint32_t);
                         meshId = g_render->RegisterUploadedMesh(
-                            st->glMeshVao, st->glMeshVbo, st->glMeshEbo, st->glMeshIdxCount);
+                            st->glMeshVao, st->glMeshVbo, st->glMeshEbo, st->glMeshIdxCount,
+                            vboBytes, eboBytes);
                     }
                     if (!meshId) {
                         // backend 拒绝注册 → glDelete 兜底 + 转 Error

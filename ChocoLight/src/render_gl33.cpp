@@ -3508,16 +3508,23 @@ void main() {
 #endif
 
 // Phase AS.2 — Mesh GPU 资源 (Phase AX 扩展加 morph delta texture)
+// Phase G.1.4 — vboBytes/eboBytes 用于 DeleteMesh UntrackBytes 闭环
 struct MeshGPU {
-    GLuint vao;
-    GLuint vbo;
-    GLuint ebo;
-    int    indexCount;
+    GLuint vao = 0;
+    GLuint vbo = 0;
+    GLuint ebo = 0;
+    int    indexCount = 0;
+    // Phase G.1.4 — VRAM Tracking bytes (DeleteMesh 时 UntrackBytes 用; 0 = 未记账, 跳过)
+    int64_t vboBytes = 0;
+    int64_t eboBytes = 0;
     // Phase AX — morph target 资源 (仅 skinnedMorphMeshes 用; 其他 mesh 默认 0)
     GLuint morphPosTex     = 0;     // RGB32F 2D texture: width=vCount, height=morphCount
     GLuint morphNrmTex     = 0;     // 同上 (NORMAL delta), 0 表示未提供
     int    morphCount      = 0;     // 实际 target 数 (1..MORPH_TARGET_MAX)
     bool   hasMorphNormal  = false;
+    // Phase G.1.4 — morph delta texture bytes (DeleteMesh 时 UntrackBytes; 0 = 不记账)
+    int64_t morphPosBytes  = 0;
+    int64_t morphNrmBytes  = 0;
 };
 
 // ==================== GL33Backend ====================
@@ -5059,6 +5066,9 @@ public:
         if (programPBR)   { glDeleteProgram(programPBR);   programPBR   = 0; }
         for (auto& kv : meshes) {
             const MeshGPU& m = kv.second;
+            // Phase G.1.4 — Shutdown 也 Untrack 保状态一致 (即使 GpuMem::Reset 顺序变也安全)
+            if (m.vboBytes > 0) LT::GpuMem::UntrackBytes("Mesh VBO", m.vboBytes);
+            if (m.eboBytes > 0) LT::GpuMem::UntrackBytes("Mesh EBO", m.eboBytes);
             if (m.ebo) glDeleteBuffers(1, &m.ebo);
             if (m.vbo) glDeleteBuffers(1, &m.vbo);
             if (m.vao) glDeleteVertexArrays(1, &m.vao);
@@ -5071,6 +5081,8 @@ public:
         if (uboJointMatrices) { glDeleteBuffers(1, &uboJointMatrices); uboJointMatrices = 0; }
         for (auto& kv : skinnedMeshes) {
             const MeshGPU& m = kv.second;
+            if (m.vboBytes > 0) LT::GpuMem::UntrackBytes("Mesh VBO", m.vboBytes);
+            if (m.eboBytes > 0) LT::GpuMem::UntrackBytes("Mesh EBO", m.eboBytes);
             if (m.ebo) glDeleteBuffers(1, &m.ebo);
             if (m.vbo) glDeleteBuffers(1, &m.vbo);
             if (m.vao) glDeleteVertexArrays(1, &m.vao);
@@ -5083,6 +5095,10 @@ public:
         if (programPBRSkinMorph)   { glDeleteProgram(programPBRSkinMorph);   programPBRSkinMorph   = 0; }
         for (auto& kv : skinnedMorphMeshes) {
             const MeshGPU& m = kv.second;
+            if (m.vboBytes > 0)      LT::GpuMem::UntrackBytes("Mesh VBO",        m.vboBytes);
+            if (m.eboBytes > 0)      LT::GpuMem::UntrackBytes("Mesh EBO",        m.eboBytes);
+            if (m.morphPosBytes > 0) LT::GpuMem::UntrackBytes("Morph pos delta", m.morphPosBytes);
+            if (m.morphNrmBytes > 0) LT::GpuMem::UntrackBytes("Morph nrm delta", m.morphNrmBytes);
             if (m.ebo)        glDeleteBuffers(1, &m.ebo);
             if (m.vbo)        glDeleteBuffers(1, &m.vbo);
             if (m.vao)        glDeleteVertexArrays(1, &m.vao);
@@ -9084,6 +9100,11 @@ public:
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
 
         m.indexCount = iCount;
+        // Phase G.1.4 — 主线程 Mesh VBO/EBO Track (与 worker 路径对称)
+        m.vboBytes = (int64_t)vCount * (int64_t)sizeof(RenderVertex3D);
+        m.eboBytes = (int64_t)iCount * (int64_t)sizeof(uint32_t);
+        LT::GpuMem::TrackBytes("Mesh VBO", m.vboBytes);
+        LT::GpuMem::TrackBytes("Mesh EBO", m.eboBytes);
         uint32_t id = nextMeshId++;
         meshes[id] = m;
         return id;
@@ -9093,7 +9114,9 @@ public:
     /// 输入: 已经 glBufferData 完成的 vao/vbo/ebo + index count;
     /// 行为: 仅 C++ 共享状态写入 (O(1)), 不发任何 GL 命令;
     /// 失败: 不接管 handles, 返 0; 调用方负责清理.
-    uint32_t RegisterUploadedMesh(uint32_t vao, uint32_t vbo, uint32_t ebo, int idxCount) override {
+    /// Phase G.1.4 — vboBytes/eboBytes 仅写入 m 字段, 不重复 Track (worker 路径已 TrackBytes).
+    uint32_t RegisterUploadedMesh(uint32_t vao, uint32_t vbo, uint32_t ebo, int idxCount,
+                                  int64_t vboBytes = 0, int64_t eboBytes = 0) override {
         if (!vao || !vbo || !ebo || idxCount <= 0) return 0;
         if (!programPBR && !programUnlit) return 0;  // 与 CreateMesh 等价的 3D 支持检查
         MeshGPU m;
@@ -9101,6 +9124,9 @@ public:
         m.vbo = (GLuint)vbo;
         m.ebo = (GLuint)ebo;
         m.indexCount = idxCount;
+        // Phase G.1.4 — 仅记账 bytes 信息, 不重复 Track (worker 已在上传时 Track)
+        m.vboBytes = vboBytes;
+        m.eboBytes = eboBytes;
         uint32_t id = nextMeshId++;
         meshes[id] = m;
         return id;
@@ -9108,19 +9134,43 @@ public:
 
     void DeleteMesh(uint32_t meshId) override {
         // Phase AW: 高位 0x80000000 表示 skinned mesh
+        // Phase G.1.4 — UntrackBytes 闭环 (vboBytes/eboBytes > 0 时才 Untrack, 老 caller 兼容)
         if (meshId & 0x80000000u) {
             auto it = skinnedMeshes.find(meshId);
             if (it == skinnedMeshes.end()) return;
             const MeshGPU& m = it->second;
+            // Phase G.1.4 — Untrack 必须在 glDelete 之前 (此时 m 字段仍有效)
+            if (m.vboBytes > 0) LT::GpuMem::UntrackBytes("Mesh VBO", m.vboBytes);
+            if (m.eboBytes > 0) LT::GpuMem::UntrackBytes("Mesh EBO", m.eboBytes);
             if (m.ebo) glDeleteBuffers(1, &m.ebo);
             if (m.vbo) glDeleteBuffers(1, &m.vbo);
             if (m.vao) glDeleteVertexArrays(1, &m.vao);
             skinnedMeshes.erase(it);
             return;
         }
+        // Phase G.1.4.x — 高位 0xC0000000 表示 skinned morph mesh
+        if ((meshId & 0xC0000000u) == 0xC0000000u) {
+            auto it = skinnedMorphMeshes.find(meshId);
+            if (it == skinnedMorphMeshes.end()) return;
+            const MeshGPU& m = it->second;
+            if (m.vboBytes > 0)      LT::GpuMem::UntrackBytes("Mesh VBO",        m.vboBytes);
+            if (m.eboBytes > 0)      LT::GpuMem::UntrackBytes("Mesh EBO",        m.eboBytes);
+            if (m.morphPosBytes > 0) LT::GpuMem::UntrackBytes("Morph pos delta", m.morphPosBytes);
+            if (m.morphNrmBytes > 0) LT::GpuMem::UntrackBytes("Morph nrm delta", m.morphNrmBytes);
+            if (m.morphNrmTex) glDeleteTextures(1, &m.morphNrmTex);
+            if (m.morphPosTex) glDeleteTextures(1, &m.morphPosTex);
+            if (m.ebo) glDeleteBuffers(1, &m.ebo);
+            if (m.vbo) glDeleteBuffers(1, &m.vbo);
+            if (m.vao) glDeleteVertexArrays(1, &m.vao);
+            skinnedMorphMeshes.erase(it);
+            return;
+        }
         auto it = meshes.find(meshId);
         if (it == meshes.end()) return;
         const MeshGPU& m = it->second;
+        // Phase G.1.4 — Untrack 必须在 glDelete 之前
+        if (m.vboBytes > 0) LT::GpuMem::UntrackBytes("Mesh VBO", m.vboBytes);
+        if (m.eboBytes > 0) LT::GpuMem::UntrackBytes("Mesh EBO", m.eboBytes);
         if (m.ebo) glDeleteBuffers(1, &m.ebo);
         if (m.vbo) glDeleteBuffers(1, &m.vbo);
         if (m.vao) glDeleteVertexArrays(1, &m.vao);
@@ -9511,6 +9561,11 @@ public:
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
 
         m.indexCount = iCount;
+        // Phase G.1.4 — SkinnedMesh VBO/EBO Track (SkinnedVertex3D 比 RenderVertex3D 多 32B)
+        m.vboBytes = (int64_t)vCount * (int64_t)sizeof(RenderVertex3DSkin);
+        m.eboBytes = (int64_t)iCount * (int64_t)sizeof(uint32_t);
+        LT::GpuMem::TrackBytes("Mesh VBO", m.vboBytes);
+        LT::GpuMem::TrackBytes("Mesh EBO", m.eboBytes);
         uint32_t id = nextSkinnedMeshId++;
         skinnedMeshes[id] = m;
         return id;
@@ -9685,6 +9740,18 @@ public:
 
         m.indexCount     = iCount;
         m.morphCount     = morphTargetCount;
+        // Phase G.1.4 — SkinnedMorphMesh VBO/EBO + morph delta textures Track
+        // morphPosTex / morphNrmTex 是 RGB32F 2D texture, width=vCount, height=morphCount, 每像素 12B (RGB32F)
+        m.vboBytes      = (int64_t)vCount * (int64_t)sizeof(RenderVertex3DSkin);
+        m.eboBytes      = (int64_t)iCount * (int64_t)sizeof(uint32_t);
+        m.morphPosBytes = (int64_t)vCount * (int64_t)morphTargetCount * 12LL;  // RGB32F
+        m.morphNrmBytes = (m.morphNrmTex != 0)
+                            ? (int64_t)vCount * (int64_t)morphTargetCount * 12LL
+                            : 0;
+        LT::GpuMem::TrackBytes("Mesh VBO",        m.vboBytes);
+        LT::GpuMem::TrackBytes("Mesh EBO",        m.eboBytes);
+        LT::GpuMem::TrackBytes("Morph pos delta", m.morphPosBytes);
+        if (m.morphNrmBytes > 0) LT::GpuMem::TrackBytes("Morph nrm delta", m.morphNrmBytes);
         uint32_t id      = nextSkinnedMorphMeshId++;
         skinnedMorphMeshes[id] = m;
         return id;
