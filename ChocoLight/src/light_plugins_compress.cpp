@@ -13,7 +13,9 @@ namespace {
 static const size_t kMaxDecompressedSize = 64u * 1024u * 1024u;
 
 static int ClampLevel(int level) {
-    return std::max(MZ_NO_COMPRESSION, std::min(MZ_BEST_COMPRESSION, level));
+    const int minLevel = static_cast<int>(MZ_NO_COMPRESSION);
+    const int maxLevel = static_cast<int>(MZ_BEST_COMPRESSION);
+    return std::max(minLevel, std::min(maxLevel, level));
 }
 
 static uint32_t Adler32Local(const uint8_t* data, size_t len) {
