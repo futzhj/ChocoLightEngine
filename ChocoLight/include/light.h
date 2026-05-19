@@ -222,6 +222,8 @@ LIGHT_API int luaopen_Light_Plugins_UUID(lua_State* L);
 LIGHT_API int luaopen_uuid(lua_State* L);
 LIGHT_API int luaopen_Light_Plugins_JSON(lua_State* L);
 LIGHT_API int luaopen_json(lua_State* L);
+LIGHT_API int luaopen_Light_Plugins_Compress(lua_State* L);
+LIGHT_API int luaopen_zlib(lua_State* L);
 
 // 事件子系统 (Phase AR)
 LIGHT_API int luaopen_Light_Event(lua_State* L);

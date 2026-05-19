@@ -151,6 +151,18 @@ target_include_directories(cjson INTERFACE
 
 message(STATUS "cJSON: integrated via FetchContent (v1.7.18)")
 
+FetchContent_Declare(
+    miniz
+    GIT_REPOSITORY https://github.com/richgel999/miniz.git
+    GIT_TAG        3.0.2
+    GIT_SHALLOW    TRUE
+)
+FetchContent_GetProperties(miniz)
+if(NOT miniz_POPULATED)
+    FetchContent_Populate(miniz)
+endif()
+message(STATUS "miniz: integrated via FetchContent (3.0.2)")
+
 # ==================== Phase BC T1: ENet (FetchContent) ====================
 # ENet 1.3.18 — reliable UDP library, MIT license
 # 桌面 + Android + iOS 使用 (ENet 基于 BSD socket, 跨平台原生支持)
@@ -248,6 +260,7 @@ set(LIGHT_SOURCES
     ${CHOCO_SRC}/light_plugins_path.cpp
     ${CHOCO_SRC}/light_plugins_uuid.cpp
     ${CHOCO_SRC}/light_plugins_json.cpp
+    ${CHOCO_SRC}/light_plugins_compress.cpp
     ${CHOCO_SRC}/light_antidebug.cpp
     ${CHOCO_SRC}/light_io.cpp
     ${CHOCO_SRC}/light_storage.cpp
@@ -320,6 +333,7 @@ set(LIGHT_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/miniaudio_impl.c
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/tiny_aes.c
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/tiny_hash.c
+    ${miniz_SOURCE_DIR}/miniz.c
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/cgltf_impl.c
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/tinyexr_impl.cpp   # Phase F.0.11.5 — EXR HDR screenshot
 )
@@ -389,6 +403,7 @@ target_include_directories(Light PRIVATE
     ${LUA_INCLUDE_DIR}
     ${SQLITE3_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party
+    ${miniz_SOURCE_DIR}
 )
 
 if(NOT EMSCRIPTEN AND NOT ANDROID AND NOT CHOCO_IOS)
