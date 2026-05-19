@@ -196,6 +196,36 @@ if(NOT EMSCRIPTEN)
     message(STATUS "ENet: integrated via FetchContent (v1.3.18)")
 endif()
 
+# ==================== jpgd (vendored, single-file JPEG decoder) ====================
+# Rich Geldreich 单文件 JPEG 解码器, MIT-0 / Public Domain, 单 .h + .cpp 约 5500 行,
+# 覆盖完整 JPEG 标准 (含 stb_image 不支持的多 huffman 表 / 自定义 SOS 引用)。
+# 用于 mx_map / 鸿鸣 自定义 JPEG 解码 fallback (light_plugins_map.cpp)。
+# 源码位于 third_party/jpgd/。直接进 LIGHT_SOURCES, 无独立 target。
+
+# ==================== libwebp 1.4.0 (FetchContent) ====================
+# WebP 解码/编码库, 用于未来 webp 资源解码扩展。
+# 关键选项: 关闭所有 cmd-line tool / 动画 / mux, 仅保留核心 libwebp + libwebpdecoder。
+set(BUILD_SHARED_LIBS         OFF CACHE BOOL "" FORCE)
+set(WEBP_BUILD_ANIM_UTILS     OFF CACHE BOOL "" FORCE)
+set(WEBP_BUILD_CWEBP          OFF CACHE BOOL "" FORCE)
+set(WEBP_BUILD_DWEBP          OFF CACHE BOOL "" FORCE)
+set(WEBP_BUILD_GIF2WEBP       OFF CACHE BOOL "" FORCE)
+set(WEBP_BUILD_IMG2WEBP       OFF CACHE BOOL "" FORCE)
+set(WEBP_BUILD_VWEBP          OFF CACHE BOOL "" FORCE)
+set(WEBP_BUILD_WEBPINFO       OFF CACHE BOOL "" FORCE)
+set(WEBP_BUILD_LIBWEBPMUX     OFF CACHE BOOL "" FORCE)
+set(WEBP_BUILD_WEBPMUX        OFF CACHE BOOL "" FORCE)
+set(WEBP_BUILD_EXTRAS         OFF CACHE BOOL "" FORCE)
+set(WEBP_LINK_STATIC          ON  CACHE BOOL "" FORCE)
+FetchContent_Declare(
+    libwebp
+    GIT_REPOSITORY https://github.com/webmproject/libwebp.git
+    GIT_TAG        v1.4.0
+    GIT_SHALLOW    TRUE
+)
+FetchContent_MakeAvailable(libwebp)
+message(STATUS "libwebp: integrated via FetchContent (v1.4.0)")
+
 # ==================== Lumen (lua51) 库路径 ====================
 
 # 允许外部指定, 否则使用默认路径
@@ -354,6 +384,7 @@ set(LIGHT_SOURCES
     ${miniz_SOURCE_DIR}/miniz_tinfl.c
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/cgltf_impl.c
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/tinyexr_impl.cpp   # Phase F.0.11.5 — EXR HDR screenshot
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/jpgd/jpgd.cpp      # mx_map JPEG fallback decoder
 )
 
 # 平台条件源文件
@@ -520,6 +551,13 @@ endif()
 
 # Phase BC T6 — cJSON (RPC + Room 序列化, 全平台启用)
 target_link_libraries(Light PRIVATE cjson)
+
+# jpgd 头文件路径 (mx_map JPEG fallback decoder, 源文件已加入 LIGHT_SOURCES)
+target_include_directories(Light PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/third_party/jpgd)
+
+# libwebp (未来 webp 资源解码扩展)
+target_link_libraries(Light PRIVATE webp)
+target_compile_definitions(Light PRIVATE CHOCO_HAS_LIBWEBP=1)
 
 # ==================== 编译定义 ====================
 

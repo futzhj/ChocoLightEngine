@@ -7,11 +7,17 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <memory>
 #include <string>
 #include <utility>
 #include <vector>
+
+// jpgd (Rich Geldreich 单文件 JPEG 解码器)：stb_image 在 mx_map 多 huffman 表场景报
+// "bad huffman code"，jpgd 覆盖完整 JPEG 标准，作为 stb_image 的 fallback。
+#include "jpgd.h"
 
 namespace {
 
@@ -156,21 +162,43 @@ std::vector<uint8_t> FixJpegYunfeng(const uint8_t* src, size_t size) {
     return out;
 }
 
-bool DecodeJpegToRgba(const uint8_t* bytes, size_t size, ImageRGBA& out) {
-    std::vector<uint8_t> fixed = FixJpegYunfeng(bytes, size);
+// 用 jpgd 解码 JPEG 字节流到 RGBA。覆盖完整 JPEG 标准（含 stb_image 不支持的多 huffman
+// 表 / 自定义 SOS 引用 DC2/AC2 等场景）。req_comps=4 让 jpgd 直接产出 RGBA8。
+bool DecodeJpegToRgbaJpgd(const uint8_t* bytes, size_t size, ImageRGBA& out) {
+    if (!bytes || size < 4) return false;
     int w = 0;
     int h = 0;
-    int channels = 0;
-    stbi_uc* pixels = stbi_load_from_memory(fixed.data(), static_cast<int>(fixed.size()), &w, &h, &channels, 4);
-    if (!pixels || w <= 0 || h <= 0) {
-        if (pixels) stbi_image_free(pixels);
+    int actualComps = 0;
+    unsigned char* px = jpgd::decompress_jpeg_image_from_memory(
+        bytes, static_cast<int>(size), &w, &h, &actualComps, 4);
+    if (!px || w <= 0 || h <= 0) {
+        if (px) std::free(px);
         return false;
     }
     out.width = w;
     out.height = h;
-    out.rgba.assign(reinterpret_cast<const char*>(pixels), static_cast<size_t>(w) * h * 4);
-    stbi_image_free(pixels);
+    out.rgba.assign(reinterpret_cast<const char*>(px), static_cast<size_t>(w) * h * 4);
+    std::free(px);  // jpgd_malloc 内部走 ::malloc，对应 ::free
     return true;
+}
+
+bool DecodeJpegToRgba(const uint8_t* bytes, size_t size, ImageRGBA& out) {
+    std::vector<uint8_t> fixed = FixJpegYunfeng(bytes, size);
+    // 优先 stb_image (fast path, 处理标准 JPEG 已经够好)
+    int w = 0;
+    int h = 0;
+    int channels = 0;
+    stbi_uc* pixels = stbi_load_from_memory(fixed.data(), static_cast<int>(fixed.size()), &w, &h, &channels, 4);
+    if (pixels && w > 0 && h > 0) {
+        out.width = w;
+        out.height = h;
+        out.rgba.assign(reinterpret_cast<const char*>(pixels), static_cast<size_t>(w) * h * 4);
+        stbi_image_free(pixels);
+        return true;
+    }
+    if (pixels) stbi_image_free(pixels);
+    // stb_image 拒绝时 fallback 到 jpgd (覆盖多 huffman 表等边角场景)
+    return DecodeJpegToRgbaJpgd(fixed.data(), fixed.size(), out);
 }
 
 void Paste(ImageRGBA& dst, const ImageRGBA& src, int dstX, int dstY) {
@@ -187,6 +215,8 @@ void Paste(ImageRGBA& dst, const ImageRGBA& src, int dstX, int dstY) {
     }
 }
 
+// GMX 模式 tile 解码：commonHeader (SOI + SOF0 + DHT + DQT) 拼接每个 80x80 partition 的 entropy data。
+// DecodeJpegToRgba 内部 stb_image fail → libjpeg-turbo fallback，覆盖多 huffman 表等边角场景。
 bool DecodeGmxJpegTile(const uint8_t* bytes, size_t size, ImageRGBA& out) {
     if (size < 26) return false;
     const uint16_t commonSize = U16(bytes);
@@ -217,6 +247,7 @@ bool DecodeGmxJpegTile(const uint8_t* bytes, size_t size, ImageRGBA& out) {
                 Paste(out, part, x, y);
                 any = true;
             }
+            // 解码失败时该 80x80 区域保留 alpha=0 (见函数顶部注释)
         }
     }
     return any;
