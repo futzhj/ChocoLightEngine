@@ -15,7 +15,7 @@
 | T9 | WorkerUploadLUT_ 加 TrackBytes(LUT 3D) | ✅ |
 | T10 | smoke §K (LUT 3D) + §L (Mesh lifecycle) | ✅ |
 | T11 | 6A 4 文档 | ✅ |
-| T12 | git commit + push + CI | ⏳ 待执行 |
+| T12 | git commit + push + CI | ✅ run 26074068905: 6/6 success |
 
 ## 2. 文件改动清单
 
@@ -85,5 +85,5 @@
 ## 8. 版本说明
 
 - 基线: G.1.3 commit `1e30223` (CI 6/6 PASS)
-- 提交: Phase G.1.4 (待执行)
+- 提交: Phase G.1.4 commit `0cc2477` (CI run `26074068905` 6/6 success)
 - 后续: v1.5 Sprite frame __gc / v1.6 LUT Untrack + Image __gc fix

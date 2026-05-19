@@ -7,9 +7,10 @@
 ## 2. CI 验证
 
 - 基线: G.1.3 commit `1e30223` (CI 6/6 PASS)
-- 改动: 4 files (1 header / 2 cpp / 1 lua / 4 docs)
-- 提交: 待执行
-- 期望: 6/6 全平台编译通过 + Windows runtime smoke gpumem.lua §K + §L 全 PASS
+- 提交: G.1.4 commit `0cc2477`
+- CI: [run 26074068905](https://github.com/futzhj/ChocoLightEngine/actions/runs/26074068905) — 6/6 success
+- Jobs: build-web / build-ios / build-linux / build-android / build-windows / build-macos 全 success
+- Windows runtime smoke: completed success (包含 `gpumem.lua` §K + §L)
 
 ## 3. 关键技术决策 (10/10 自动决策)
 
@@ -121,4 +122,4 @@ local lut_id = Light.Graphics.LUT.LoadCubeAsync("path.cube")
 ## 9. 版本
 
 - 基线: Phase G.1.3 commit `1e30223`
-- 提交: Phase G.1.4 (待执行 commit)
+- 提交: Phase G.1.4 commit `0cc2477` (CI run `26074068905` 6/6 success)
