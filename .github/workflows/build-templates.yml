@@ -109,6 +109,12 @@ jobs:
           $phaseG16Smoke  = Resolve-Path "scripts\smoke\asset_loader_preload.lua"
           $phaseG170Smoke = Resolve-Path "scripts\smoke\lua_api_robustness.lua"
           $phaseG171PerfSmoke = Resolve-Path "scripts\smoke\lua_api_magic_perf.lua"
+          $phaseG2CodecSmoke   = Resolve-Path "scripts\smoke\codec.lua"
+          $phaseG2PathSmoke    = Resolve-Path "scripts\smoke\path.lua"
+          $phaseG2UUIDSmoke    = Resolve-Path "scripts\smoke\uuid.lua"
+          $phaseG2JSONSmoke    = Resolve-Path "scripts\smoke\json.lua"
+          $phaseG2CompressSmoke = Resolve-Path "scripts\smoke\compress.lua"
+          $phaseG2CompatSmoke  = Resolve-Path "scripts\smoke\lua_compat_utils.lua"
           Copy-Item ChocoLight\build\bin\Release\Light.dll $runtimeDir -Force
           & "$runtimeDir\light.exe" $coreSmoke
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -237,6 +243,18 @@ jobs:
           & "$runtimeDir\light.exe" $phaseG170Smoke
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & "$runtimeDir\light.exe" $phaseG171PerfSmoke
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & "$runtimeDir\light.exe" $phaseG2CodecSmoke
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & "$runtimeDir\light.exe" $phaseG2PathSmoke
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & "$runtimeDir\light.exe" $phaseG2UUIDSmoke
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & "$runtimeDir\light.exe" $phaseG2JSONSmoke
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & "$runtimeDir\light.exe" $phaseG2CompressSmoke
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & "$runtimeDir\light.exe" $phaseG2CompatSmoke
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Package Windows Template
