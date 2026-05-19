@@ -342,6 +342,8 @@ set(LIGHT_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/tiny_aes.c
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/tiny_hash.c
     ${miniz_SOURCE_DIR}/miniz.c
+    ${miniz_SOURCE_DIR}/miniz_tdef.c
+    ${miniz_SOURCE_DIR}/miniz_tinfl.c
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/cgltf_impl.c
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/tinyexr_impl.cpp   # Phase F.0.11.5 — EXR HDR screenshot
 )
