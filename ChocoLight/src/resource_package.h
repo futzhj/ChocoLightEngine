@@ -3,6 +3,7 @@
 #include "light.h"
 #include "light_lua_helpers.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <memory>
@@ -66,6 +67,10 @@ std::unique_ptr<IResourcePackage> OpenPackageFile(const std::string& path, std::
 std::unique_ptr<IResourcePackage> OpenWdfPackage(const std::string& path, std::string& err);
 std::unique_ptr<IResourcePackage> OpenWpkPackage(const std::string& path, std::string& err);
 std::unique_ptr<IResourcePackage> OpenFlsPackage(const std::string& path, std::string& err);
+
+void DecryptFlsIndex(uint8_t* data, size_t bytes, uint32_t count);
+void DecryptFlsData(const uint8_t* input, size_t bytes, uint32_t hash, std::string& out);
+bool LooksLikeKnownPayload(const std::string& data);
 
 void RegisterPluginsSubmodule(lua_State* L, const char* name, const luaL_Reg* funcs);
 
