@@ -922,6 +922,40 @@ static int l_UI_Loop(lua_State* L) {
     return 1;
 }
 
+// ==================== Phase H.0.2 — 单帧执行 helper ====================
+// 抽出 l_UI_Resume / l_UI_RunBrowserMainLoop / BrowserMainLoopFrame_ 共用的单帧逻辑.
+// 不处理 ShouldClose; 调用方自行检查.
+// 不操作 Lua 栈 (Pcall 内自管栈; 异常已 Log 不外抛).
+static void RunSingleFrame_(lua_State* L) {
+    // 1) 拉取并分发事件 (SDL3 拉模式)
+    DispatchEvents(L);
+
+    if (!g_mainWindow) return;
+
+    // 2) 反调试周期检查
+    LightAntiDebug::Check();
+    float af = LightAntiDebug::GetAnomalyFactor();
+    bool skipRender = (af > 0.0f && (rand() % 100) < (int)(af * 30.0f));
+
+    // 3) 调用 Window:__call (内部走 H.0 主循环 11 步: BeginFrame / fixed / FinalizeFrame / Draw / OnRender / Swap)
+    if (g_windowRef != LUA_NOREF && !skipRender) {
+        lua_rawgeti(L, LUA_REGISTRYINDEX, g_windowRef);
+        lua_getfield(L, -1, "__call");
+        if (lua_isfunction(L, -1)) {
+            lua_pushvalue(L, -2);  // self
+            lua_pushvalue(L, -3);  // Window table 作为 arg
+            if (lua_pcall(L, 2, 1, 0)) {
+                CC::Log(CC::LOG_ERROR, "RunSingleFrame: %s", lua_tostring(L, -1));
+                lua_pop(L, 1);
+            }
+            lua_pop(L, 1);  // 丢弃返回值
+        } else {
+            lua_pop(L, 1);
+        }
+        lua_pop(L, 1);  // 弹出 Window table
+    }
+}
+
 // ==================== UI.Resume ====================
 // 主事件泵: 拉取 SDL 事件 → 分发到 Lua 回调 → 调用 Window:__call
 
@@ -931,45 +965,75 @@ static int l_UI_Resume(lua_State* L) {
         return 1;
     }
 
-    // 1. 拉取并分发事件 (SDL3 拉模式, 替代 GLFW glfwPollEvents 的隐式回调)
-    DispatchEvents(L);
-
-    if (g_mainWindow) {
-        if (PlatformWindow::ShouldClose(g_mainWindow)) {
-            // 窗口关闭 → 走统一清理路径 (与 l_UI_Loop 共用, 幂等)
-            PerformWindowShutdown_(L);
-            lua_pushboolean(L, 0);
-            return 1;
-        }
-
-        // 反调试周期检查
-        LightAntiDebug::Check();
-        float af = LightAntiDebug::GetAnomalyFactor();
-        bool skipRender = (af > 0.0f && (rand() % 100) < (int)(af * 30.0f));
-
-        // 调用 Window:__call (Draw + Update + Swap)
-        if (g_windowRef != LUA_NOREF && !skipRender) {
-            lua_rawgeti(L, LUA_REGISTRYINDEX, g_windowRef);
-            lua_getfield(L, -1, "__call");
-            if (lua_isfunction(L, -1)) {
-                lua_pushvalue(L, -2);  // self
-                lua_pushvalue(L, -3);  // Window table 作为 arg
-                if (lua_pcall(L, 2, 1, 0)) {
-                    CC::Log(CC::LOG_ERROR, "Resume: %s", lua_tostring(L, -1));
-                    lua_pop(L, 1);
-                }
-                lua_pop(L, 1);  // 丢弃返回值
-            } else {
-                lua_pop(L, 1);
-            }
-            lua_pop(L, 1);  // 弹出 Window table
-        }
-
-        lua_pushboolean(L, 1);
-    } else {
+    if (g_mainWindow && PlatformWindow::ShouldClose(g_mainWindow)) {
+        // 窗口关闭 → 走统一清理路径 (与 l_UI_Loop 共用, 幂等)
+        // 注: ShouldClose 检测前不需要先 DispatchEvents, 因为 l_UI_Loop 调用前已 dispatch 过.
+        //     此分支主要捕获本帧之前已设的关闭标志.
+        PerformWindowShutdown_(L);
         lua_pushboolean(L, 0);
+        return 1;
     }
+
+    if (!g_mainWindow) {
+        // 窗口未创建仍允许调 (event-only mode); 拉一次事件即返
+        DispatchEvents(L);
+        lua_pushboolean(L, 0);
+        return 1;
+    }
+
+    // 标准路径: 单帧执行
+    RunSingleFrame_(L);
+
+    // RunSingleFrame_ 内可能触发 OnClose → ShouldClose=true; 此处再查一次确保紧 close 即返 false
+    if (PlatformWindow::ShouldClose(g_mainWindow)) {
+        PerformWindowShutdown_(L);
+        lua_pushboolean(L, 0);
+        return 1;
+    }
+
+    lua_pushboolean(L, 1);
     return 1;
+}
+
+// ==================== Phase H.0.2 — Browser Main Loop ====================
+// Web 平台: emscripten_set_main_loop_arg(frame, L, 0, 1) — 浏览器异步驱动, 永不返回
+// Native:   阻塞 while 等价 `while UI.Loop() do UI.Resume() end`
+//
+// 加性 API: 32+ 老 sample 不调用此函数, 仍走 ASYNCIFY 路径; 新 sample 可一行替代 while 循环.
+
+#ifdef __EMSCRIPTEN__
+// 浏览器每帧 callback. arg = lua_State*.
+// 内部检查 ShouldClose; 关闭后 CancelMainLoop + Shutdown.
+static void BrowserMainLoopFrame_(void* arg) {
+    lua_State* L = (lua_State*)arg;
+    if (!g_mainWindow || PlatformWindow::ShouldClose(g_mainWindow)) {
+        PlatformWindow::CancelMainLoop();
+        PerformWindowShutdown_(L);
+        return;
+    }
+    RunSingleFrame_(L);
+}
+#endif
+
+static int l_UI_RunBrowserMainLoop(lua_State* L) {
+    if (!g_platformInited) {
+        // 平台未初始化 → no-op
+        return 0;
+    }
+#ifdef __EMSCRIPTEN__
+    // 浏览器异步主循环 (simulate_infinite_loop=1: 永不返回)
+    // 浏览器后台标签页时自动暂停 callback → 节能
+    PlatformWindow::RunMainLoop(&BrowserMainLoopFrame_, L);
+    // 不可达
+    return 0;
+#else
+    // Native: 阻塞循环 = 等价 lua `while UI.Loop() do UI.Resume() end`
+    while (g_mainWindow && !PlatformWindow::ShouldClose(g_mainWindow)) {
+        RunSingleFrame_(L);
+    }
+    PerformWindowShutdown_(L);
+    return 0;
+#endif
 }
 
 // ==================== Window:StartTextInput / StopTextInput / IsTextInputActive (Phase AQ) ====================
@@ -1117,6 +1181,8 @@ static int l_Window_SetOrientation(lua_State* L) {
 static const luaL_Reg ui_funcs[] = {
     {"Loop",   l_UI_Loop},
     {"Resume", l_UI_Resume},
+    // Phase H.0.2 — 跨平台一行主循环 (web: emscripten_set_main_loop_arg; native: 阻塞 while)
+    {"RunBrowserMainLoop", l_UI_RunBrowserMainLoop},
     {NULL, NULL}
 };
 

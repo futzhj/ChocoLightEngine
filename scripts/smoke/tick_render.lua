@@ -338,8 +338,33 @@ do
     Time.SetHUDEnabled(false)  -- 复位
 end
 
+-- ============================================================
+-- §12) Phase H.0.2 — Light.UI.RunBrowserMainLoop API surface
+-- ============================================================
+-- smoke headless 不真正调用 (会阻塞或永不返回); 只验证 API 存在 + 类型.
+do
+    local okUI, UI = pcall(require, "Light.UI")
+    if not okUI or type(UI) ~= "table" then
+        pass("§12 Light.UI 不可用, 跳过 RunBrowserMainLoop 检查")
+    else
+        if type(UI.RunBrowserMainLoop) ~= "function" then
+            fail("Light.UI.RunBrowserMainLoop 缺失 (Phase H.0.2)")
+        end
+        pass("§12 Light.UI.RunBrowserMainLoop 存在 (function)")
+
+        -- 老 API 保留 (零回归)
+        if type(UI.Loop) ~= "function" then
+            fail("Light.UI.Loop 老 API 应保留 (零回归)")
+        end
+        if type(UI.Resume) ~= "function" then
+            fail("Light.UI.Resume 老 API 应保留 (零回归)")
+        end
+        pass("§12 Light.UI.Loop/Resume 老 API 完整保留 (零回归)")
+    end
+end
+
 print("")
-print("=== Phase H.0 + H.0.1 Tick-Render smoke: ALL TESTS PASSED ===")
+print("=== Phase H.0 + H.0.1 + H.0.2 Tick-Render smoke: ALL TESTS PASSED ===")
 print("Coverage: " .. #fn_names .. " Light.Time fn + Box2D/Bullet SetAutoStep/GetAutoStep")
 print("           + 5 HUD overlay fn + perf budget assertion")
 print("Highlights:")

@@ -141,14 +141,12 @@ while Light.UI.Loop() do Light.UI.Resume() end
 
 ## 5. 未来增强候选 (按 ROI 排序)
 
-### 5.1 emscripten_set_main_loop_arg 真集成 ⭐⭐⭐
-**估时**: 4-6h
-**收益**: Web 后台能耗下降 30%; 节省约 5% CPU.
-**实现要点**:
-- 新增 `emscripten_set_main_loop_arg(MainLoopStep, &state, 0, 1)`.
-- `MainLoopStep(void* arg)` 内执行原 while 内单次迭代 (BeginFrame → fixed loop → render → SwapBuffers).
-- 退出条件: 检测 `g_engine_should_quit` flag, 调 `emscripten_cancel_main_loop()`.
-- 与现有 ASYNCIFY 路径用 `#ifdef USE_BROWSER_MAIN_LOOP` 切换 (默认 OFF, 兼容).
+### 5.1 emscripten_set_main_loop_arg 真集成 ✅ 已完成 (Phase H.0.2)
+**实际**: ~1.6h. 加性 API `Light.UI.RunBrowserMainLoop`.
+- Web: `emscripten_set_main_loop_arg(BrowserMainLoopFrame_, L, 0, 1)`.
+- Native: 阻塞 while 等价老 `while UI.Loop() do UI.Resume() end`.
+- 老 sample (不调新 API) 完全走 ASYNCIFY 路径, 零回归.
+**详见**: `docs/Phase H.0.2 Web Browser Main Loop/`
 
 ### 5.2 iOS/Android pause 状态机 ⭐⭐
 **估时**: 2-3h

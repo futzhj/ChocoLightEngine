@@ -237,5 +237,13 @@ end
 -- ============================================================
 
 Light(Demo):Open(W, H, "Phase H.0 - Tick-Render Decouple Demo")
-while Light.UI.Loop() do Light.UI.Resume() end
+
+-- Phase H.0.2 — 跨平台一行主循环 (优先用; 老 sample 的 while 写法仍工作).
+-- Web: emscripten_set_main_loop_arg, 后台标签页自动暂停 (节能).
+-- Native: 阻塞 while 等价 `while UI.Loop() do UI.Resume() end`.
+if Light.UI.RunBrowserMainLoop then
+    Light.UI.RunBrowserMainLoop()
+else
+    while Light.UI.Loop() do Light.UI.Resume() end
+end
 print("demo_tick_render ok")
