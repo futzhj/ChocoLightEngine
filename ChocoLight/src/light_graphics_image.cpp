@@ -152,6 +152,8 @@ static int l_Image_Call(lua_State* L) {
 
             // 创建纹理 (通过渲染后端) - 防御 headless/no-GL 环境 g_render==nullptr
             ctx->texId = g_render ? g_render->CreateTexture(w, h, 4, pixels) : 0;
+            // Phase G.1.2 — VRAM Tracking (Untrack 缺失: l_Image_Call 不设 __gc 是历史 leak, G.1.7+ 修)
+            if (ctx->texId) LT::GpuMem::Track("User Image", "RGBA8", w, h);
 
             CC::Log(CC::LOG_INFO, "Image loaded: %s (%dx%d, texId=%u)", path, w, h, ctx->texId);
             stbi_image_free(pixels);
@@ -173,6 +175,8 @@ static int l_Image_Call(lua_State* L) {
             ctx->channels = 4;
             // 防御 headless/no-GL 环境 g_render==nullptr (smoke 环境常见)
             ctx->texId    = g_render ? g_render->CreateTexture(w, h, 4, (const unsigned char*)bytes) : 0;
+            // Phase G.1.2 — VRAM Tracking (同 Untrack 缺失说明, 见 sync from file 分支)
+            if (ctx->texId) LT::GpuMem::Track("User Image", "RGBA8", w, h);
             CC::Log(CC::LOG_INFO, "Image from bytes (%dx%d, texId=%u)", w, h, ctx->texId);
         } else {
             CC::Log(CC::LOG_ERROR, "Image from bytes: invalid w=%d h=%d byte_len=%zu (expected %d)",
@@ -458,7 +462,12 @@ static int l_Font_GC(lua_State* L) {
     if (fc && fc->magic == LT::LT_MAGIC_FONT) {
         if (fc->ttfBuffer) { free(fc->ttfBuffer); fc->ttfBuffer = nullptr; }
         if (fc->atlasBitmap) { free(fc->atlasBitmap); fc->atlasBitmap = nullptr; }
-        if (fc->texId && g_render) { g_render->DeleteTexture(fc->texId); fc->texId = 0; }
+        if (fc->texId && g_render) {
+            // Phase G.1.2 — VRAM Tracking: Untrack 必须在 DeleteTexture 之前 (此时 atlasW/H 仍有效)
+            LT::GpuMem::Untrack("Font atlas", "R8", fc->atlasW, fc->atlasH);
+            g_render->DeleteTexture(fc->texId);
+            fc->texId = 0;
+        }
         fc->magic = LT::LT_MAGIC_DEAD;
     }
     return 0;
@@ -515,6 +524,8 @@ static int l_Font_Call(lua_State* L) {
 
     // 创建图集纹理 (单通道, 通过渲染后端)
     fc->texId = g_render->CreateTexture(fc->atlasW, fc->atlasH, 1, fc->atlasBitmap);
+    // Phase G.1.2 — VRAM Tracking (Untrack 在 l_Font_GC)
+    if (fc->texId) LT::GpuMem::Track("Font atlas", "R8", fc->atlasW, fc->atlasH);
 
     // 设置 __gc 元表
     lua_createtable(L, 0, 1);
@@ -731,6 +742,8 @@ static int FontPushResult_(void* L_, AssetLoader::FutureState* state) {
         lua_pushnil(L);
         return 1;
     }
+    // Phase G.1.2 — VRAM Tracking (Untrack 在 l_Font_GC; 与 sync 路径一致)
+    LT::GpuMem::Track("Font atlas", "R8", fc->atlasW, fc->atlasH);
 
     lua_createtable(L, 0, 1);
     lua_pushcfunction(L, l_Font_GC);

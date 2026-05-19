@@ -21,24 +21,29 @@
 | 3. Auto Exposure luminance RT | ✅ | base 级 R16F (mipmap chain 简化不计) |
 | 4. TAAU outputSceneTex 主动 Track | ✅ | `OnTAAURenderScaleChanged` 内补 Track, 与 ReleaseRT Untrack 形成闭环 |
 
-### P1 (中价值, 改动适中)
+### ✅ P1 已交付 — Phase G.1.2 (commit 待确认)
 
-#### 5. 用户 Image / ImageData 跟踪
-- **价值**: 用户大量 Sprite 时可见占用
-- **难点**: 50+ 处 `glGenTextures + glTexImage2D`, 需要在 `Image::Create*` / `ImageData::Create*` 高层 wrapper 加 hook
-- **改动**: ~10 处 (覆盖 PNG/JPG/HDR/EXR/ImageData/RenderToTexture)
-- **估时**: 2h
+详见 `docs/Phase G.1.2 VRAM User Texture Tracking/FINAL_PhaseG_1_2.md`.
 
-#### 6. Font glyph atlas 跟踪
-- **价值**: 大字号 + CJK + emoji 时可见
-- **改动**: 1 处 hook 在 `light_graphics_font.cpp::EnsureAtlas`
-- **估时**: 1h
+#### 5. 用户 Image / ImageData 跟踪 ✅
+- 4 处主线程 hook (sync x2 + async UploadImage_ + sync fallback)
+- Untrack 缺失 = 已知 Image leak (G.1.7+ 修)
+- 实际 1.3h (vs 估时 2h, -35%)
 
-#### 7. Mesh VBO/EBO 跟踪
-- **价值**: 大型 GLB 模型加载后可见占用
+#### 6. Font glyph atlas 跟踪 ✅
+- 2 处 Track (sync + async dispatcher) + 1 处 Untrack (Font GC 配对)
+- 完整 Track/Untrack 闭环
+- 实际 0.3h (vs 估时 1h, -70%)
+
+#### M. Mesh material + Sprite frame 跟踪 ✅ (G.1.2 顺手做)
+- GLTF mesh material (sync + main-thread upload) + Sprite lazy frame
+- Untrack 留 v1.3 (Mesh/Sprite GC 路径分散)
+
+#### 7. Mesh VBO/EBO 跟踪 ❌ 未做
 - **难点**: `asset_loader.cpp` worker thread 上传, 需要 **mutex 化 tracker**
 - **改动**: tracker 加 `std::mutex` + 2-3 处 hook 在 mesh upload 路径
 - **估时**: 2h (含 mutex 化)
+- **升级**: 留 G.1.3 — 与 Worker thread upload Track 一并做
 
 ### P2 (低价值或工程繁琐)
 

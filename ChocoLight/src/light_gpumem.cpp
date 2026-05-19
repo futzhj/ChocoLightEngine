@@ -84,6 +84,9 @@ static int BytesPerPixel(const char* format) {
     if (std::strcmp(format, "DEPTH24")  == 0) return 4;
     if (std::strcmp(format, "DEPTH32F") == 0) return 4;
     if (std::strcmp(format, "RGB32F")   == 0) return 12;
+    // Phase G.1.2 — 用户 Image / Font glyph atlas (channels 1/3/4 对应)
+    if (std::strcmp(format, "R8")       == 0) return 1;
+    if (std::strcmp(format, "RGB8")     == 0) return 3;
     return 0;   // 未知格式
 }
 

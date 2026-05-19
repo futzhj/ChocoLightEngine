@@ -1524,6 +1524,8 @@ static int l_DrawSprite(lua_State* L) {
         if (lua_isuserdata(L, -1)) {
             const void* pixels = lua_touserdata(L, -1);
             texId = g_render->CreateTexture(fw, fh, 4, pixels);
+            // Phase G.1.2 — VRAM Tracking (Sprite 帧懒创建; Untrack 留 Sprite GC, 现 GC 路径分散 v1.3)
+            if (texId) LT::GpuMem::Track("Sprite frame", "RGBA8", fw, fh);
 
             // 缓存 texId 到帧表
             lua_pushnumber(L, (lua_Number)texId);

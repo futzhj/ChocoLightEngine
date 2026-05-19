@@ -1147,6 +1147,8 @@ static void UploadImage_(FutureState& st, const std::string& path) {
         st.status.store((int)FutureStatus::Error);
         return;   // pixels 在 dtor 中 stbi_image_free
     }
+    // Phase G.1.2 — VRAM Tracking (主线程上传, worker 解码; Untrack 缺失 = 已知 Image leak)
+    LT::GpuMem::Track("User Image", "RGBA8", st.imgW, st.imgH);
     st.resTexId = texId;
     stbi_image_free(st.imgPixels);
     st.imgPixels = nullptr;
@@ -1272,6 +1274,8 @@ static void UploadGLTF_(FutureState& st, const std::string& path) {
             if (!job.pixels || job.w <= 0 || job.h <= 0) continue;
             uint32_t texId = g_render->CreateTexture(job.w, job.h, 4, job.pixels);
             if (texId) {
+                // Phase G.1.2 — VRAM Tracking (GLTF material 主线程上传; Untrack 留 Mesh GC v1.3)
+                LT::GpuMem::Track("Mesh texture", "RGBA8", job.w, job.h);
                 // Phase G.1.5 T3 — 透传 cgltf sampler + mipmap-aware 生成.
                 // GL_NEAREST_MIPMAP_NEAREST=0x2700 / GL_LINEAR_MIPMAP_NEAREST=0x2701
                 // GL_NEAREST_MIPMAP_LINEAR=0x2702 / GL_LINEAR_MIPMAP_LINEAR=0x2703
@@ -1608,6 +1612,8 @@ std::shared_ptr<FutureState> LoadImageAsync(const char* path) {
             state->status.store((int)FutureStatus::Error);
             return state;
         }
+        // Phase G.1.2 — VRAM Tracking (sync fallback, worker 未启动; Untrack 缺失 = Image leak 已知)
+        LT::GpuMem::Track("User Image", "RGBA8", w, h);
         state->imgW = w;
         state->imgH = h;
         state->imgChannels = 4;

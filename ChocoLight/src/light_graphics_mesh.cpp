@@ -458,6 +458,8 @@ static uint32_t LoadGLTFImage(const cgltf_texture* tex, const std::string& gltfD
     uint32_t texId = g_render->CreateTexture(w, h, 4, pixels);
     stbi_image_free(pixels);
     if (!texId) return 0;
+    // Phase G.1.2 — VRAM Tracking (GLTF material texture; Untrack 留到 Mesh GC 时, 现 mesh GC 路径分散, v1.3 改进)
+    LT::GpuMem::Track("Mesh texture", "RGBA8", w, h);
 
     // Phase G.1.5 T2 + T3 — 提取 cgltf sampler + mipmap-aware 生成 + 透传 sampler.
     // sampler 可能为 NULL (未指定), 此时按 glTF 2.0 默认: mag=LINEAR / min=LINEAR_MIPMAP_LINEAR / wrap=REPEAT.
