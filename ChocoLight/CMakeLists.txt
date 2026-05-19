@@ -244,6 +244,7 @@ set(LIGHT_SOURCES
     ${CHOCO_SRC}/light_gpumem.cpp
     ${CHOCO_SRC}/light_ui_widget.cpp
     ${CHOCO_SRC}/light_crypto.cpp
+    ${CHOCO_SRC}/light_plugins_codec.cpp
     ${CHOCO_SRC}/light_antidebug.cpp
     ${CHOCO_SRC}/light_io.cpp
     ${CHOCO_SRC}/light_storage.cpp
