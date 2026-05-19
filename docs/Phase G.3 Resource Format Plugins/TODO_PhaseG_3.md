@@ -9,12 +9,12 @@
 
 | 优先级 | 待办 | 状态 | 说明 |
 |---|---|---:|---|
-| P0 | 实现 Package MVP | ⏳ | PFDW/WPK/FLS 容器读取 |
-| P0 | 建立 smoke 框架 | ⏳ | 无 assets 时跳过，有 assets 时完整验证 |
+| P0 | 实现 Package MVP | ✅ | PFDW/WPK/FLS 容器读取已实现，等待 CI 验证 |
+| P0 | 建立 smoke 框架 | ✅ | `scripts/smoke/resource_package.lua` 已新增；无 assets 时跳过 |
 | P0 | 实现 TCP-SP Decode | ⏳ | assets 有多份 SP `.tcp` 样本 |
 | P1 | 实现 Map M1.0 基础读取 | ⏳ | assets 有 `1001.map` |
 | P1 | 完善 WPK AC/XC 解密 | ⏳ | 需确认具体条目是否加密 |
-| P1 | 完善 FLS 数据解密 | ⏳ | 需对照真实条目输出验证 |
+| P1 | 完善 FLS 数据解密 | ⏳ | MVP 已实现基础 XOR/自动判断；仍需真实条目对照验证 |
 | P2 | IGS Decode 真实样本验证 | ⏳ | 当前未直接发现 `.igs` 样本 |
 | P2 | WDFX/WDFH/SFDW/WDFS 样本验证 | ⏳ | 当前 assets 只有 PFDW |
 | P2 | MAPX/M2.5/M3.0/ROL0 | ⏳ | 需要更多 MAP 样本 |
@@ -175,11 +175,15 @@ return 1;
 $env:LIGHT_TEST_ASSETS="E:\jinyiNew\Light\assets"
 ```
 
-后续实现后建议运行：
+本地只建议 Lua 语法检查，runtime smoke 交给 CI 或用户授权环境：
 
 ```powershell
-# 示例，具体命令以项目 smoke 入口为准
-.\build\light.exe scripts\smoke\resource_formats.lua
+.\tools\lightc.exe -p scripts\smoke\resource_package.lua
+```
+
+```powershell
+$env:LIGHT_TEST_ASSETS="E:\jinyiNew\Light\assets"
+.\dist\windows-x64\light.exe scripts\smoke\resource_package.lua
 ```
 
 若 assets 不存在：

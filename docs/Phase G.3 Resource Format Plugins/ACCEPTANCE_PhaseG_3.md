@@ -11,10 +11,10 @@
 |---|---:|---|
 | 设计范围确认 | ✅ | NXPK/MHWD 排除；SFDW/WDFS 合并；assets 作为测试资源 |
 | 模块 API 设计 | ✅ | Package/TCP/IGS/Map 四模块 |
-| 代码实现 | ⏳ | 待进入实现阶段 |
-| smoke 测试 | ⏳ | 待实现 `resource_formats.lua` |
-| API 文档 | ⏳ | 待实现后同步 `docs/api/Light_Plugins.md` |
-| 样本验证 | ⏳ | 待实现后用 `E:\jinyiNew\Light\assets` 验证 |
+| 代码实现 | 🔄 | G.3.1 Package MVP ✅；TCP/IGS/Map 待后续阶段 |
+| smoke 测试 | 🔄 | `scripts/smoke/resource_package.lua` ✅ 并接入 CI；待 CI runtime 验证 |
+| API 文档 | 🔄 | Package MVP 已同步；TCP/IGS/Map 待实现后补充 |
+| 样本验证 | ⏳ | 真实 assets 验证留给 CI 或用户授权环境 |
 
 ---
 
@@ -121,14 +121,19 @@ E:\jinyiNew\Light\assets
 | 日期 | 项目 | 结果 | 证据 |
 |---|---|---|---|
 | 2026-05-19 | 设计文档生成 | ✅ | ALIGNMENT/DESIGN/TASK/ACCEPTANCE/TODO |
+| 2026-05-19 | G.3.1 Package MVP plan | ✅ | `docs/superpowers/plans/2026-05-19-phase-g3-resource-package-mvp.md` |
+| 2026-05-19 | G.3.1 Package MVP 实现 | ✅ | `phase-g3-resource-package-mvp` 分支 8 commits，含 smoke / core / WDF / WPK / FLS / Lua binding / build wiring / docs |
+| 2026-05-19 | G.3.1 Package MVP 静态验证 | ✅ | `git diff --check HEAD` 无空白错误；`scripts/smoke/resource_package.lua` 与 6 个 C++ 文件均存在 |
+| 2026-05-19 | G.3.1 Package MVP 自审 fix | ✅ | `455c483 fix: harden resource package edge cases` (`ReadFileHead(0)` 边界 + WPK MD5 key 大小写 + `0xFFFF` external entry) |
+| 待 CI | G.3.1 Package MVP build + runtime smoke | ⏳ | 推送 `phase-g3-resource-package-mvp` 分支后由 GitHub Actions 验证 |
 
 ---
 
 ## 八. 最终验收结论
 
-当前仍处于设计阶段，尚未进入代码实现。最终验收必须在实现后补充：
+G.3.1 Package MVP 代码实现已完成并完成静态自审。完整最终验收仍需补充：
 
-- 本地 smoke 输出。
-- assets 样本验证结果。
-- CI 结果。
-- 未覆盖格式的 TODO 与后续样本需求。
+- `resource_package.lua` runtime smoke 输出 (CI 或用户授权环境)。
+- `assets/` 真实样本验证结果。
+- CI build + runtime smoke 全平台结果。
+- 未覆盖格式 (NXPK/MHWD/WDFX/WDFH/SFDW/WDFS/TCP/IGS/MAP) 的 TODO 与后续样本需求 (见 `TODO_PhaseG_3.md`)。
