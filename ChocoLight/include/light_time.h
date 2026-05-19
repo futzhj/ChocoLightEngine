@@ -96,6 +96,25 @@ bool   GetHUDEnabled();
 void   SetHUDPosition(float x, float y);
 void   GetHUDPosition(float* outX, float* outY);  // 出参; 任一可为 nullptr
 
+// ---------------------------------------------------------------------------
+// Pause / Resume 状态机 (Phase H.0.3) — iOS/Android 切后台节能 + 防 dt 长跳
+// ---------------------------------------------------------------------------
+// 入口:
+//   - PlatformWindow 派 SDL_EVENT_DID_ENTER_BACKGROUND → Pause()
+//   - PlatformWindow 派 SDL_EVENT_WILL_ENTER_FOREGROUND → Resume()
+//   - 用户也可通过 Light.Time.Pause / Resume 主动控制 (编辑器/测试场景)
+//
+// 行为:
+//   - Pause: 设 g_paused=true. BeginFrame 仍调但 accumulator 不增量;
+//            g_lastTime 持续刷新, 避免 Resume 后第一帧 dt 长跳.
+//   - Resume: 设 g_paused=false + 设 g_skipNextDt=true (下一帧 dt 强制 0).
+//   - 多次 Pause/Resume 不嵌套, 状态机用 if (paused) return 守卫.
+//
+// 默认: paused=false.
+void   Pause();
+void   Resume();
+bool   IsPaused();
+
 }  // namespace TickRender
 
 // =============================================================================

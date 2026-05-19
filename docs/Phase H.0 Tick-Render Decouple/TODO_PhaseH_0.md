@@ -148,14 +148,14 @@ while Light.UI.Loop() do Light.UI.Resume() end
 - 老 sample (不调新 API) 完全走 ASYNCIFY 路径, 零回归.
 **详见**: `docs/Phase H.0.2 Web Browser Main Loop/`
 
-### 5.2 iOS/Android pause 状态机 ⭐⭐
-**估时**: 2-3h
-**收益**: 移动端切回前台 0 卡顿; log 不再刷.
-**实现要点**:
-- `LT::TickRender::Pause()` 设 paused=true, 记录 `pauseTime`.
-- `LT::TickRender::Resume()` 设 paused=false, 让 `BeginFrame` 跳过本次 dt 计算 (置 0 不累积).
-- iOS: hook `applicationWillResignActive` / `applicationDidBecomeActive`.
-- Android: hook `onPause` / `onResume`.
+### 5.2 iOS/Android pause 状态机 ✅ 已完成 (Phase H.0.3)
+**实际**: ~1.5h. TickRender Pause/Resume + skipNextDt + SDL3 BG/FG 事件 hook.
+- `LT::TickRender::Pause()` / `Resume()` / `IsPaused()` C++ API.
+- `Light.Time.Pause` / `Resume` / `IsPaused` Lua wrapper.
+- `Window:OnAppEnterBackground` / `OnAppEnterForeground` Lua callback.
+- SDL_EVENT_DID_ENTER_BACKGROUND/WILL_ENTER_FOREGROUND 自动驱动 TickRender 状态.
+- iOS/Android/Web (SDL3 抽象) 统一路径.
+**详见**: `docs/Phase H.0.3 Pause-Resume State Machine/`
 
 ### 5.3 物理双 Step 检测 ✅ 已完成 (Phase H.0.1, commit 待确认)
 **实际**: 1h. Box2D + Bullet 各自 `l_World_Step` 内插入 throttle warn (limit 3 次).

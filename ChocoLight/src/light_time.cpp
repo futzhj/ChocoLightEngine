@@ -438,6 +438,12 @@ struct State {
 
     // 诊断 (节流 spiral log)
     bool   warnedSpiralLastFrame = false;
+
+    // Phase H.0.3 — Pause/Resume 状态机
+    // paused: true 时 BeginFrame 仅刷新 lastTime, 不累积 dt.
+    // skipNextDt: Resume 后第一帧强制 dt=0, 防 background 期间 wall-clock 长跳.
+    bool   paused               = false;
+    bool   skipNextDt           = false;
 };
 
 // 全局单例; 多窗口未来扩展可改 thread_local, 但当前主循环只有一个
@@ -484,8 +490,23 @@ void Shutdown() {
 
 void BeginFrame() {
     double now = NowSeconds();
+
+    // Phase H.0.3 — 暂停路径: 仅刷新 lastTime (防 Resume 后 wall-clock 跳),
+    // accumulator/stepCount/frameTime 保持 — Lua 查 GetLastFrameTime 为上一个 active 帧值。
+    if (g_state.paused) {
+        g_state.lastTime           = now;
+        g_state.lastFixedStepCount = 0;
+        return;
+    }
+
     double frameTime = (g_state.lastTime == 0.0) ? 0.0 : (now - g_state.lastTime);
     g_state.lastTime = now;
+
+    // Phase H.0.3 — Resume 后第一帧强制 dt=0 (避免 background 期间积累)
+    if (g_state.skipNextDt) {
+        frameTime           = 0.0;
+        g_state.skipNextDt  = false;
+    }
 
     // spiral guard: 单帧 frameTime 上限 (防 alt-tab/debug pause 后回来累积器爆炸)
     if (frameTime > g_state.frameTimeClamp) frameTime = g_state.frameTimeClamp;
@@ -588,6 +609,29 @@ void GetHUDPosition(float* outX, float* outY) {
     if (outX) *outX = g_hud.x;
     if (outY) *outY = g_hud.y;
 }
+
+// ---------------------------------------------------------------------------
+// Phase H.0.3 — Pause / Resume 状态机
+// ---------------------------------------------------------------------------
+// 事件源 (light_ui DispatchEvents 调):
+//   - AppEnterBackground (SDL_EVENT_DID_ENTER_BACKGROUND) → Pause()
+//   - AppEnterForeground (SDL_EVENT_WILL_ENTER_FOREGROUND) → Resume()
+// Lua 也可调 Light.Time.Pause / Resume / IsPaused.
+void Pause() {
+    if (g_state.paused) return;   // 幂等
+    g_state.paused = true;
+    CC::Log(CC::LOG_INFO, "TickRender::Pause() (accumulator frozen)");
+}
+
+void Resume() {
+    if (!g_state.paused) return;  // 幂等
+    g_state.paused     = false;
+    g_state.skipNextDt = true;    // 下一帧 dt=0, 避免长跳
+    // lastTime 保持 paused 期间最后一次 BeginFrame 刷新的值, skipNextDt 联同作用下 dt 仍为 0.
+    CC::Log(CC::LOG_INFO, "TickRender::Resume() (next dt forced to 0)");
+}
+
+bool IsPaused() { return g_state.paused; }
 
 }  // namespace TickRender
 
@@ -781,6 +825,25 @@ int l_Time_GetLastFrameTime(lua_State* L) {
     return 1;
 }
 
+// ---------- Phase H.0.3 Pause/Resume Lua wrappers ----------
+
+int l_Time_Pause(lua_State* L) {
+    (void)L;
+    LT::TickRender::Pause();
+    return 0;
+}
+
+int l_Time_Resume(lua_State* L) {
+    (void)L;
+    LT::TickRender::Resume();
+    return 0;
+}
+
+int l_Time_IsPaused(lua_State* L) {
+    lua_pushboolean(L, LT::TickRender::IsPaused() ? 1 : 0);
+    return 1;
+}
+
 }  // anonymous namespace
 
 // ===========================================================
@@ -821,6 +884,10 @@ static const luaL_Reg kTimeReg[] = {
     { "GetHUDEnabled",               l_Time_GetHUDEnabled               },
     { "SetHUDPosition",              l_Time_SetHUDPosition              },
     { "GetHUDPosition",              l_Time_GetHUDPosition              },
+    // Phase H.0.3 — Pause/Resume 状态机 (iOS/Android 切后台)
+    { "Pause",                       l_Time_Pause                       },
+    { "Resume",                      l_Time_Resume                      },
+    { "IsPaused",                    l_Time_IsPaused                    },
     { nullptr, nullptr },
 };
 

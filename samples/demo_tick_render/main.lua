@@ -183,11 +183,12 @@ function Demo:Draw()
         Gfx.DrawText(txt, 20, y)
         y = y + 16
     end
-    line(string.format("alpha lerp: %s   Box2D auto-step: %s   HUD: %s",
+    line(string.format("alpha lerp: %s   Box2D auto-step: %s   HUD: %s   PAUSED: %s",
                        use_alpha and "ON" or "OFF",
                        (use_box2d and world and world:GetAutoStep()) and "ON" or "OFF",
-                       Light.Time.GetHUDEnabled() and "ON" or "OFF"))
-    line("Keys: 1=30Hz 2=60Hz 3=120Hz 4=144Hz   A=alpha P=physics H=HUD R=reset ESC")
+                       Light.Time.GetHUDEnabled() and "ON" or "OFF",
+                       Light.Time.IsPaused() and "YES" or "no"))
+    line("Keys: 1=30Hz 2=60Hz 3=120Hz 4=144Hz   A=alpha P=physics H=HUD G=pause R=reset ESC")
 end
 
 -- ============================================================
@@ -220,10 +221,20 @@ function Demo:OnKey(key, scancode, action, mods)
         local cur = Light.Time.GetHUDEnabled()
         Light.Time.SetHUDEnabled(not cur)
         print("[demo_tick_render] HUD = " .. tostring(not cur))
+    elseif key == string.byte("G") then
+        -- Phase H.0.3 — 手动切 Pause/Resume (模拟切后台/前台)
+        if Light.Time.IsPaused() then
+            Light.Time.Resume()
+            print("[demo_tick_render] Resume (next dt forced 0)")
+        else
+            Light.Time.Pause()
+            print("[demo_tick_render] Pause (accumulator frozen)")
+        end
     elseif key == string.byte("R") then
         Light.Time.SetFixedTimestep(60)
         use_alpha = true
         Light.Time.SetHUDEnabled(true)
+        Light.Time.Resume()  -- Phase H.0.3 — reset 确保非 paused
         if use_box2d and world then world:SetAutoStep(true) end
         cube_prev.x, cube_prev.y = 100, 350
         cube_curr.x, cube_curr.y = 100, 350

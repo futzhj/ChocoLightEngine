@@ -226,6 +226,44 @@ static void DispatchOnTextEditing(lua_State* L, const char* text, int start, int
     lua_settop(L, top);
 }
 
+// ==================== Phase H.0.3 — App 生命周期 dispatch ====================
+
+/// 调用 Window:OnAppEnterBackground()  — iOS/Android 切后台 (auto Pause 已在 hook 内调过)
+static void DispatchOnAppEnterBackground(lua_State* L) {
+    if (!L || g_windowRef == LUA_NOREF) return;
+    int top = lua_gettop(L);
+    lua_rawgeti(L, LUA_REGISTRYINDEX, g_windowRef);
+    lua_getfield(L, -1, "OnAppEnterBackground");
+    if (lua_isfunction(L, -1)) {
+        lua_pushvalue(L, -2);   // self
+        if (lua_pcall(L, 1, 0, 0)) {
+            CC::Log(CC::LOG_ERROR, "OnAppEnterBackground: %s", lua_tostring(L, -1));
+            lua_pop(L, 1);
+        }
+    } else {
+        lua_pop(L, 1);
+    }
+    lua_settop(L, top);
+}
+
+/// 调用 Window:OnAppEnterForeground()  — iOS/Android 切回前台 (auto Resume 已在 hook 内调过)
+static void DispatchOnAppEnterForeground(lua_State* L) {
+    if (!L || g_windowRef == LUA_NOREF) return;
+    int top = lua_gettop(L);
+    lua_rawgeti(L, LUA_REGISTRYINDEX, g_windowRef);
+    lua_getfield(L, -1, "OnAppEnterForeground");
+    if (lua_isfunction(L, -1)) {
+        lua_pushvalue(L, -2);   // self
+        if (lua_pcall(L, 1, 0, 0)) {
+            CC::Log(CC::LOG_ERROR, "OnAppEnterForeground: %s", lua_tostring(L, -1));
+            lua_pop(L, 1);
+        }
+    } else {
+        lua_pop(L, 1);
+    }
+    lua_settop(L, top);
+}
+
 // ==================== Phase AR — Pen 事件 dispatch ====================
 
 /// 调用 Window:OnPenProximity(penId, action)  — action: 1=in, 0=out
@@ -442,6 +480,15 @@ static void DispatchEvents(lua_State* L) {
             // Phase AR — Timer 事件 (light_time.cpp 提供处理)
             case PlatformWindow::Event::Timer:
                 Time_OnTimerEvent(L, ev.penButton);  // 复用 penButton 字段作为 timer_id
+                break;
+            // Phase H.0.3 — App 生命周期: 先驱动 TickRender 状态机, 再回调 Lua
+            case PlatformWindow::Event::AppEnterBackground:
+                LT::TickRender::Pause();
+                DispatchOnAppEnterBackground(L);
+                break;
+            case PlatformWindow::Event::AppEnterForeground:
+                LT::TickRender::Resume();
+                DispatchOnAppEnterForeground(L);
                 break;
             default:
                 break;

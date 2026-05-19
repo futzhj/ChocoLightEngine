@@ -479,6 +479,17 @@ bool PollEvent(Event* out) {
             out->type = Event::Quit;
             return true;
 
+        // ==================== Phase H.0.3 — App 生命周期 ====================
+        // iOS: applicationDidEnterBackground / applicationWillEnterForeground
+        // Android: onPause / onResume
+        // Web: blur/focus → emscripten 内部映射
+        case SDL_EVENT_DID_ENTER_BACKGROUND:
+            out->type = Event::AppEnterBackground;
+            return true;
+        case SDL_EVENT_WILL_ENTER_FOREGROUND:
+            out->type = Event::AppEnterForeground;
+            return true;
+
         // ==================== 手柄事件 ====================
         case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
             out->type      = Event::GamepadButton;

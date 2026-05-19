@@ -363,8 +363,54 @@ do
     end
 end
 
+-- ============================================================
+-- §13) Phase H.0.3 — Pause / Resume 状态机
+-- ============================================================
+do
+    -- API surface
+    for _, k in ipairs({"Pause", "Resume", "IsPaused"}) do
+        if type(Time[k]) ~= "function" then
+            fail("Light.Time." .. k .. " 缺失 (Phase H.0.3)")
+        end
+    end
+    pass("§13 Pause/Resume/IsPaused 3 fn 完整")
+
+    -- 默认 not paused (零回归)
+    if Time.IsPaused() ~= false then
+        fail("默认 IsPaused 应 false, 得 " .. tostring(Time.IsPaused()))
+    end
+    pass("§13 默认 IsPaused = false (零回归)")
+
+    -- round-trip: Pause → IsPaused=true
+    Time.Pause()
+    if Time.IsPaused() ~= true then fail("Pause() 后 IsPaused 应 true") end
+    pass("§13 Pause() round-trip ok")
+
+    -- 幂等: 再 Pause 不抛
+    local ok = pcall(Time.Pause)
+    if not ok then fail("Pause() 幂等调用不应抛异常") end
+    if Time.IsPaused() ~= true then fail("Pause() 第二次后 IsPaused 仍 true") end
+    pass("§13 Pause() 幂等 ok")
+
+    -- Resume → IsPaused=false
+    Time.Resume()
+    if Time.IsPaused() ~= false then fail("Resume() 后 IsPaused 应 false") end
+    pass("§13 Resume() round-trip ok")
+
+    -- Resume 幂等
+    local ok2 = pcall(Time.Resume)
+    if not ok2 then fail("Resume() 幂等调用不应抛异常") end
+    if Time.IsPaused() ~= false then fail("Resume() 第二次后 IsPaused 仍 false") end
+    pass("§13 Resume() 幂等 ok")
+
+    -- 切换序列: Pause → Resume → Pause → Resume
+    Time.Pause(); Time.Resume(); Time.Pause(); Time.Resume()
+    if Time.IsPaused() ~= false then fail("4 次切换后 IsPaused 应 false") end
+    pass("§13 Pause/Resume 多次切换 ok")
+end
+
 print("")
-print("=== Phase H.0 + H.0.1 + H.0.2 Tick-Render smoke: ALL TESTS PASSED ===")
+print("=== Phase H.0 + H.0.1 + H.0.2 + H.0.3 Tick-Render smoke: ALL TESTS PASSED ===")
 print("Coverage: " .. #fn_names .. " Light.Time fn + Box2D/Bullet SetAutoStep/GetAutoStep")
 print("           + 5 HUD overlay fn + perf budget assertion")
 print("Highlights:")

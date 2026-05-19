@@ -61,6 +61,9 @@ struct Event {
         PenAxis          = 23,   // 压感/倾斜/距离变化 (penAxis, penAxisValue)
         // Phase AR — Timer 自定义事件 (Light.Time.AddTimer 中转, 不暴露给外部 hook)
         Timer            = 24,   // 内部使用: penButton 字段复用为 timer_id
+        // Phase H.0.3 — App 生命周期事件 (iOS/Android/Web 切后台)
+        AppEnterBackground = 25, // 对应 SDL_EVENT_DID_ENTER_BACKGROUND — 立刻 Pause TickRender
+        AppEnterForeground = 26, // 对应 SDL_EVENT_WILL_ENTER_FOREGROUND — 立刻 Resume TickRender
     } type = None;
 
     // 注意: 不使用 union 以避免 ABI 复杂性, 字段直接列出
