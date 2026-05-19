@@ -110,6 +110,7 @@ jobs:
           $phaseG170Smoke = Resolve-Path "scripts\smoke\lua_api_robustness.lua"
           $phaseG171PerfSmoke = Resolve-Path "scripts\smoke\lua_api_magic_perf.lua"
           $phaseG2CodecSmoke   = Resolve-Path "scripts\smoke\codec.lua"
+          $phaseG2CryptoSmoke  = Resolve-Path "scripts\smoke\crypto_utils.lua"
           $phaseG2PathSmoke    = Resolve-Path "scripts\smoke\path.lua"
           $phaseG2UUIDSmoke    = Resolve-Path "scripts\smoke\uuid.lua"
           $phaseG2JSONSmoke    = Resolve-Path "scripts\smoke\json.lua"
@@ -245,6 +246,8 @@ jobs:
           & "$runtimeDir\light.exe" $phaseG171PerfSmoke
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & "$runtimeDir\light.exe" $phaseG2CodecSmoke
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & "$runtimeDir\light.exe" $phaseG2CryptoSmoke
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & "$runtimeDir\light.exe" $phaseG2PathSmoke
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
