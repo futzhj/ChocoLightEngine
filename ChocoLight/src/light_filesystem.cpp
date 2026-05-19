@@ -275,6 +275,10 @@ static int l_FS_List(lua_State* L) {
 
 static int l_FS_Attributes(lua_State* L) {
     const char* path = luaL_checkstring(L, 1);
+    const char* key = nullptr;
+    if (!lua_isnoneornil(L, 2)) {
+        key = luaL_checkstring(L, 2);
+    }
     SDL_PathInfo info;
     if (!SDL_GetPathInfo(path, &info)) {
         lua_pushnil(L);
@@ -283,8 +287,7 @@ static int l_FS_Attributes(lua_State* L) {
         return 2;
     }
     l_FS_PushAttributes(L, info);
-    if (!lua_isnoneornil(L, 2)) {
-        const char* key = luaL_checkstring(L, 2);
+    if (key) {
         lua_getfield(L, -1, key);
         return 1;
     }
