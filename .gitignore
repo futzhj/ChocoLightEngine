@@ -81,6 +81,7 @@ Thumbs.db
 *.zip
 
 # CI workflow log downloads (temporary debugging artifacts)
+.ci-runtime/
 _win*.txt
 _lin*.txt
 _mac*.txt

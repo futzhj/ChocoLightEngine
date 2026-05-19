@@ -1,4 +1,5 @@
 local TCP = require("Light.Plugins.TCP")
+local FS = require("Light.Filesystem")
 
 local function check(cond, msg)
     if not cond then
@@ -7,12 +8,7 @@ local function check(cond, msg)
 end
 
 local function exists(path)
-    local f = io.open(path, "rb")
-    if f then
-        f:close()
-        return true
-    end
-    return false
+    return FS.GetPathInfo(path) ~= nil
 end
 
 local sep = package.config:sub(1, 1)

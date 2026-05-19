@@ -722,16 +722,30 @@ static bool GetDrawableTexture(lua_State* L, int idx,
 
     if (isCanvas) {
         // CanvasContext 布局: { fbo[0], texture[1], depthRB[2], w(int)[3], h(int)[4] }
-        if (raw[1] == 0) return false;  // 无纹理
-        *texId = raw[1];
-        *w = (int)raw[3];
-        *h = (int)raw[4];
+        if (raw[0] == LT::LT_MAGIC_CANVAS) {
+            if (raw[2] == 0) return false;  // 无纹理
+            *texId = raw[2];
+            *w = (int)raw[4];
+            *h = (int)raw[5];
+        } else {
+            if (raw[1] == 0) return false;  // 无纹理
+            *texId = raw[1];
+            *w = (int)raw[3];
+            *h = (int)raw[4];
+        }
     } else {
         // ImageContext 布局: { texId[0], width[1], height[2] }
-        if (raw[0] == 0) return false;
-        *texId = raw[0];
-        *w = (int)raw[1];
-        *h = (int)raw[2];
+        if (raw[0] == LT::LT_MAGIC_IMAGE) {
+            if (raw[1] == 0) return false;
+            *texId = raw[1];
+            *w = (int)raw[2];
+            *h = (int)raw[3];
+        } else {
+            if (raw[0] == 0) return false;
+            *texId = raw[0];
+            *w = (int)raw[1];
+            *h = (int)raw[2];
+        }
     }
     return true;
 }
