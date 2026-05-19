@@ -30,7 +30,16 @@ H.0.4 在 `Light.Time` 加了 4 个 alpha 插值 helper (`Lerp` / `LerpVec2` / `
 
 ## 3. CI 验证
 
-待 commit 后填.
+| 平台 | 状态 |
+|------|------|
+| build-linux | ✅ |
+| build-windows | ✅ |
+| build-macos | ✅ |
+| build-ios | ✅ |
+| build-android | ✅ |
+| build-web | ✅ |
+
+**结论**: 6/6 PASS. Commit `035a6dc`. Run [26070777355](https://github.com/futzhj/ChocoLightEngine/actions/runs/26070777355).
 
 ---
 
