@@ -34,7 +34,9 @@ G.1.3 给 LT::GpuMem tracker 加 std::mutex (4 API + Reset + PushStats 全部 lo
 
 ## 3. CI 验证
 
-待 commit 后填.
+**Run**: [26072400642](https://github.com/futzhj/ChocoLightEngine/actions/runs/26072400642)
+**结果**: ✅ 6/6 PASS (windows / linux / macos / android / ios / web)
+**提交**: a10ea61 "Phase G.1.3 VRAM Worker Upload Tracking - mutex + Mesh VBO/EBO"
 
 ---
 
