@@ -41,6 +41,12 @@ bool ReadFileHead(const std::string& path, size_t bytes, std::string& out, std::
         return false;
     }
 
+    if (bytes == 0) {
+        out.clear();
+        std::fclose(fp);
+        return true;
+    }
+
     out.assign(bytes, '\0');
     size_t n = std::fread(&out[0], 1, bytes, fp);
     std::fclose(fp);

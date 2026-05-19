@@ -30,6 +30,15 @@ std::string JoinPath(const std::string& dir, const std::string& name) {
 #endif
 }
 
+std::string LowerAscii(std::string value) {
+    for (char& ch : value) {
+        if (ch >= 'A' && ch <= 'Z') {
+            ch = static_cast<char>(ch - 'A' + 'a');
+        }
+    }
+    return value;
+}
+
 class WpkPackage final : public IResourcePackage {
 public:
     explicit WpkPackage(std::string path)
@@ -103,18 +112,18 @@ public:
     const std::vector<ResourceEntry>& Entries() const override { return entries_; }
 
     bool Has(const std::string& key) const override {
-        return keyToIndex_.find(key) != keyToIndex_.end();
+        return keyToIndex_.find(LowerAscii(key)) != keyToIndex_.end();
     }
 
     bool Read(const std::string& key, const ReadOptions& opts, std::string& out, std::string& err) override {
-        auto it = keyToIndex_.find(key);
+        auto it = keyToIndex_.find(LowerAscii(key));
         if (it == keyToIndex_.end()) {
             err = "entry not found";
             return false;
         }
 
         const ResourceEntry& e = entries_[it->second];
-        if (e.archive == 0xFF) {
+        if (e.archive == 0xFF || e.archive == 0xFFFF) {
             err = "external WPK entry is not stored in archive";
             return false;
         }
