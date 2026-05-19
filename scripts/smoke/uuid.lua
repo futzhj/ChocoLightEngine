@@ -1,0 +1,22 @@
+local UUID = require("Light.Plugins.UUID")
+assert(Light.Plugins.UUID == UUID)
+assert(type(UUID.V4) == "function")
+assert(type(UUID.IsValid) == "function")
+assert(type(UUID.Parse) == "function")
+assert(type(UUID.Format) == "function")
+
+local id = UUID.V4()
+assert(type(id) == "string" and #id == 36)
+assert(UUID.IsValid(id) == true)
+local raw = assert(UUID.Parse(id))
+assert(type(raw) == "string" and #raw == 16)
+assert(UUID.IsValid(UUID.Format(raw)) == true)
+assert(UUID.IsValid("not-a-uuid") == false)
+
+local uuid = require("uuid")
+assert(type(uuid.v4) == "function")
+assert(type(uuid.is_valid) == "function")
+local id2 = uuid.v4()
+assert(uuid.is_valid(id2) == true)
+
+print("[smoke] uuid ok")
