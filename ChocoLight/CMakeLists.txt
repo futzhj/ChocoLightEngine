@@ -202,7 +202,7 @@ endif()
 # 用于 mx_map / 鸿鸣 自定义 JPEG 解码 fallback (light_plugins_map.cpp)。
 # 源码位于 third_party/jpgd/。直接进 LIGHT_SOURCES, 无独立 target。
 
-# ==================== libwebp 1.4.0 (FetchContent) ====================
+# ==================== libwebp 1.5.0 (FetchContent) ====================
 # WebP 解码/编码库, 用于未来 webp 资源解码扩展。
 # 关键选项: 关闭所有 cmd-line tool / 动画 / mux, 仅保留核心 libwebp + libwebpdecoder。
 set(BUILD_SHARED_LIBS         OFF CACHE BOOL "" FORCE)
@@ -220,11 +220,11 @@ set(WEBP_LINK_STATIC          ON  CACHE BOOL "" FORCE)
 FetchContent_Declare(
     libwebp
     GIT_REPOSITORY https://github.com/webmproject/libwebp.git
-    GIT_TAG        v1.4.0
+    GIT_TAG        v1.5.0
     GIT_SHALLOW    TRUE
 )
 FetchContent_MakeAvailable(libwebp)
-message(STATUS "libwebp: integrated via FetchContent (v1.4.0)")
+message(STATUS "libwebp: integrated via FetchContent (v1.5.0)")
 
 # ==================== Lumen (lua51) 库路径 ====================
 
