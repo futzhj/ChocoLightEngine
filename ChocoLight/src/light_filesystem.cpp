@@ -211,6 +211,86 @@ static int l_FS_GlobDirectory(lua_State* L) {
     return 1;
 }
 
+static const char* l_FS_ModeName(SDL_PathType type) {
+    switch (type) {
+        case SDL_PATHTYPE_FILE: return "file";
+        case SDL_PATHTYPE_DIRECTORY: return "directory";
+        case SDL_PATHTYPE_OTHER: return "other";
+        default: return "none";
+    }
+}
+
+static void l_FS_PushAttributes(lua_State* L, const SDL_PathInfo& info) {
+    lua_newtable(L);
+    lua_pushinteger(L, (lua_Integer)info.type); lua_setfield(L, -2, "type");
+    lua_pushstring(L, l_FS_ModeName(info.type)); lua_setfield(L, -2, "mode");
+    lua_pushnumber(L, (lua_Number)info.size); lua_setfield(L, -2, "size");
+    lua_pushnumber(L, (lua_Number)info.create_time); lua_setfield(L, -2, "create_time");
+    lua_pushnumber(L, (lua_Number)info.modify_time); lua_setfield(L, -2, "modify_time");
+    lua_pushnumber(L, (lua_Number)info.access_time); lua_setfield(L, -2, "access_time");
+    lua_pushnumber(L, (lua_Number)info.modify_time); lua_setfield(L, -2, "modification");
+    lua_pushnumber(L, (lua_Number)info.access_time); lua_setfield(L, -2, "access");
+    lua_pushnumber(L, (lua_Number)info.modify_time); lua_setfield(L, -2, "change");
+}
+
+static int l_FS_Exists(lua_State* L) {
+    const char* path = luaL_checkstring(L, 1);
+    SDL_PathInfo info;
+    lua_pushboolean(L, SDL_GetPathInfo(path, &info) ? 1 : 0);
+    return 1;
+}
+
+static int l_FS_IsFile(lua_State* L) {
+    const char* path = luaL_checkstring(L, 1);
+    SDL_PathInfo info;
+    lua_pushboolean(L, SDL_GetPathInfo(path, &info) && info.type == SDL_PATHTYPE_FILE);
+    return 1;
+}
+
+static int l_FS_IsDirectory(lua_State* L) {
+    const char* path = luaL_checkstring(L, 1);
+    SDL_PathInfo info;
+    lua_pushboolean(L, SDL_GetPathInfo(path, &info) && info.type == SDL_PATHTYPE_DIRECTORY);
+    return 1;
+}
+
+static int l_FS_List(lua_State* L) {
+    const char* path = luaL_checkstring(L, 1);
+    int count = 0;
+    char** items = SDL_GlobDirectory(path, nullptr, 0, &count);
+    if (!items) {
+        lua_pushnil(L);
+        const char* e = SDL_GetError();
+        lua_pushstring(L, (e && *e) ? e : "SDL_GlobDirectory failed");
+        return 2;
+    }
+    lua_newtable(L);
+    for (int i = 0; i < count; ++i) {
+        lua_pushstring(L, items[i]);
+        lua_rawseti(L, -2, i + 1);
+    }
+    SDL_free(items);
+    return 1;
+}
+
+static int l_FS_Attributes(lua_State* L) {
+    const char* path = luaL_checkstring(L, 1);
+    SDL_PathInfo info;
+    if (!SDL_GetPathInfo(path, &info)) {
+        lua_pushnil(L);
+        const char* e = SDL_GetError();
+        lua_pushstring(L, (e && *e) ? e : "SDL_GetPathInfo failed");
+        return 2;
+    }
+    l_FS_PushAttributes(L, info);
+    if (!lua_isnoneornil(L, 2)) {
+        const char* key = luaL_checkstring(L, 2);
+        lua_getfield(L, -1, key);
+        return 1;
+    }
+    return 1;
+}
+
 // ============================================================
 // luaopen_Light_Filesystem
 // ============================================================
@@ -219,12 +299,18 @@ static const luaL_Reg kFSReg[] = {
     { "GetPrefPath",         l_FS_GetPrefPath         },
     { "GetUserFolder",       l_FS_GetUserFolder       },
     { "GetCurrentDirectory", l_FS_GetCurrentDirectory },
+    { "CurrentDir",          l_FS_GetCurrentDirectory },
     { "CreateDirectory",     l_FS_CreateDirectory     },
     { "RemovePath",          l_FS_RemovePath          },
     { "RenamePath",          l_FS_RenamePath          },
     { "CopyFile",            l_FS_CopyFile            },
     { "GetPathInfo",         l_FS_GetPathInfo         },
     { "GlobDirectory",       l_FS_GlobDirectory       },
+    { "Exists",              l_FS_Exists              },
+    { "IsFile",              l_FS_IsFile              },
+    { "IsDirectory",         l_FS_IsDirectory         },
+    { "List",                l_FS_List                },
+    { "Attributes",          l_FS_Attributes          },
     { nullptr, nullptr },
 };
 
