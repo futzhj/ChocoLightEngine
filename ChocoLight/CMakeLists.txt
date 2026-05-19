@@ -161,6 +161,13 @@ FetchContent_GetProperties(miniz)
 if(NOT miniz_POPULATED)
     FetchContent_Populate(miniz)
 endif()
+file(MAKE_DIRECTORY "${miniz_BINARY_DIR}")
+file(WRITE "${miniz_BINARY_DIR}/miniz_export.h"
+    "#pragma once\n"
+    "#ifndef MINIZ_EXPORT\n"
+    "#define MINIZ_EXPORT\n"
+    "#endif\n"
+)
 message(STATUS "miniz: integrated via FetchContent (3.0.2)")
 
 # ==================== Phase BC T1: ENet (FetchContent) ====================
@@ -405,6 +412,7 @@ target_include_directories(Light PRIVATE
     ${SQLITE3_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party
     ${miniz_SOURCE_DIR}
+    ${miniz_BINARY_DIR}
 )
 
 if(NOT EMSCRIPTEN AND NOT ANDROID AND NOT CHOCO_IOS)
