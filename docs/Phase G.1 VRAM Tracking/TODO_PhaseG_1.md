@@ -39,11 +39,11 @@
 - GLTF mesh material (sync + main-thread upload) + Sprite lazy frame
 - Untrack 留 v1.3 (Mesh/Sprite GC 路径分散)
 
-#### 7. Mesh VBO/EBO 跟踪 ❌ 未做
-- **难点**: `asset_loader.cpp` worker thread 上传, 需要 **mutex 化 tracker**
-- **改动**: tracker 加 `std::mutex` + 2-3 处 hook 在 mesh upload 路径
-- **估时**: 2h (含 mutex 化)
-- **升级**: 留 G.1.3 — 与 Worker thread upload Track 一并做
+#### 7. Mesh VBO/EBO 跟踪 ✅ 已交付 — Phase G.1.3
+- 见 `docs/Phase G.1.3 VRAM Worker Upload Tracking/FINAL_PhaseG_1_3.md`
+- 实际改动: tracker `std::mutex` + 4 处 worker hook (Image RGBA8 + VBO/EBO BYTES + material RGBA8)
+- 实际 1.3h (vs 估时 2h, -35%)
+- 闭合 G.1.2 留下的 ~10% under-report (worker upload 路径)
 
 ### P2 (低价值或工程繁琐)
 

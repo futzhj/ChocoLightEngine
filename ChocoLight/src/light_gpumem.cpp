@@ -33,6 +33,7 @@
 #include "light.h"
 #include <cstring>
 #include <cstdint>
+#include <mutex>   // Phase G.1.3 — worker thread Track 需 mutex 护航
 
 namespace {
 
@@ -50,6 +51,10 @@ struct GpuMemItem {
 };
 
 static GpuMemItem s_items[GPU_MEM_MAX_ITEMS];
+
+// Phase G.1.3 — 护航 s_items 全局数组. 质粒度: 整个 API 体. 锁内 < 100 ns,
+//   不影响主线程帧预算. Worker thread 调 Track 与主线程调 PushStats 互斥.
+static std::mutex s_mutex;
 
 // 查找已有 item (按 name + format + bytesPerInst 三元组匹配)
 //   bytesPerInst 包含尺寸信息 → 同 category 不同尺寸算两条记录
@@ -107,6 +112,7 @@ void Track(const char* name, const char* format, int w, int h) {
     const int bpp = BytesPerPixel(format);
     if (bpp <= 0) return;
     const int64_t bytesPerInst = (int64_t)w * (int64_t)h * (int64_t)bpp;
+    std::lock_guard<std::mutex> lock(s_mutex);   // Phase G.1.3 — worker safe
 
     int slot = FindItem(name, format, bytesPerInst);
     if (slot < 0) {
@@ -132,6 +138,7 @@ void Untrack(const char* name, const char* format, int w, int h) {
     const int bpp = BytesPerPixel(format);
     if (bpp <= 0) return;
     const int64_t bytesPerInst = (int64_t)w * (int64_t)h * (int64_t)bpp;
+    std::lock_guard<std::mutex> lock(s_mutex);   // Phase G.1.3 — worker safe
 
     int slot = FindItem(name, format, bytesPerInst);
     if (slot < 0) return;   // release 多于 create, 静默忽略
@@ -150,6 +157,7 @@ void Untrack(const char* name, const char* format, int w, int h) {
 /// @param bytes 单实例 bytes
 void TrackBytes(const char* name, int64_t bytes) {
     if (!name || bytes <= 0) return;
+    std::lock_guard<std::mutex> lock(s_mutex);   // Phase G.1.3 — worker safe
 
     // 用 "BYTES" 作 format 标识, 用 bytes 自身作 bytesPerInst
     int slot = FindItem(name, "BYTES", bytes);
@@ -172,6 +180,7 @@ void TrackBytes(const char* name, int64_t bytes) {
 
 void UntrackBytes(const char* name, int64_t bytes) {
     if (!name || bytes <= 0) return;
+    std::lock_guard<std::mutex> lock(s_mutex);   // Phase G.1.3 — worker safe
     int slot = FindItem(name, "BYTES", bytes);
     if (slot < 0) return;
     s_items[slot].count--;
@@ -186,6 +195,7 @@ void UntrackBytes(const char* name, int64_t bytes) {
 
 /// 清空全部跟踪 (smoke 用)
 void Reset() {
+    std::lock_guard<std::mutex> lock(s_mutex);   // Phase G.1.3 — worker safe
     for (int i = 0; i < GPU_MEM_MAX_ITEMS; ++i) {
         s_items[i].used = false;
         s_items[i].count = 0;
@@ -209,6 +219,7 @@ int PushStats(lua_State* L) {
     int64_t totalBytes = 0;
     int64_t rtCount = 0,  rtBytes  = 0;
     int64_t uboCount = 0, uboBytes = 0;
+    std::lock_guard<std::mutex> lock(s_mutex);   // Phase G.1.3 — worker safe
 
     // 汇总
     for (int i = 0; i < GPU_MEM_MAX_ITEMS; ++i) {

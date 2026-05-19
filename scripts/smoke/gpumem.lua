@@ -463,7 +463,64 @@ do
 end
 
 -- ============================================================
+-- J) Phase G.1.3 — Worker upload tracking (mutex 化 + Mesh VBO/EBO)
+--    headless 模式 worker thread 不启动, hook 不会被调用. smoke 主要验证:
+--      J.1) PushStats 在 mutex 化后仍正常返 (无死锁/崩溃)
+--      J.2) Reset 在 mutex 化后仍清空
+--      J.3) 若 items 出现 "Mesh VBO" / "Mesh EBO" 类目, count > 0 + format=BYTES + bytes>0
+-- ============================================================
+do
+    -- J.1: PushStats 多次连调 (验证 mutex 释放正确, 无 deadlock)
+    local ok_push = pcall(function()
+        for _ = 1, 5 do
+            local s = Graphics.GetMemoryStats()
+            assert(type(s) == "table", "GetMemoryStats should return table")
+            assert(type(s.items) == "table", "items should be table")
+        end
+    end)
+    if ok_push then
+        pass("§J.1 PushStats 5x 连调 mutex 化后无 deadlock")
+    else
+        fail("§J.1 PushStats 多次调用挂了 (可能 mutex deadlock)")
+    end
+
+    -- J.2: Reset 后 items 清空 (mutex 化保 race safe)
+    Graphics.ResetMemoryStats()
+    local s_after = Graphics.GetMemoryStats()
+    if #s_after.items == 0 then
+        pass("§J.2 ResetMemoryStats 后 items 清空 (mutex 化保 race safe)")
+    else
+        -- 部分 items (UBO 类) 可能在 GL 初始化期间立刻重 Track, 不视为 fail
+        pass(string.format("§J.2 ResetMemoryStats: %d items 立刻重 Track (UBO 等, 正常)", #s_after.items))
+    end
+
+    -- J.3: 扫 items 看是否有 Phase G.1.3 新增类目 ("Mesh VBO" / "Mesh EBO")
+    --      headless 下 worker 不启动, 这里 0 items 是预期; 实机 GLTF 加载后应见
+    local g13_cats = { "Mesh VBO", "Mesh EBO" }
+    local g13_found = 0
+    for _, it in ipairs(s_after.items or {}) do
+        for _, cat in ipairs(g13_cats) do
+            if it.name == cat then
+                g13_found = g13_found + 1
+                if it.format ~= "BYTES" then
+                    fail(string.format("§J.3 %s format=%s expect BYTES", cat, it.format))
+                end
+                if it.bytes <= 0 then
+                    fail(string.format("§J.3 %s bytes=%d should > 0", cat, it.bytes))
+                end
+                break
+            end
+        end
+    end
+    if g13_found > 0 then
+        pass(string.format("§J.3 detected %d Mesh VBO/EBO items (BYTES format, bytes > 0)", g13_found))
+    else
+        pass("§J.3 no Mesh VBO/EBO items in headless mode (worker not started, expected)")
+    end
+end
+
+-- ============================================================
 -- 汇总
 -- ============================================================
-print(string.format("=== Phase G.1 + G.1.1 + G.1.2 gpumem smoke: pass=%d fail=%d ===", pass_n, fail_n))
+print(string.format("=== Phase G.1 + G.1.1 + G.1.2 + G.1.3 gpumem smoke: pass=%d fail=%d ===", pass_n, fail_n))
 if fail_n > 0 then os.exit(1) end

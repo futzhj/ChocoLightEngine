@@ -750,6 +750,8 @@ static void WorkerUploadImage_(Task& task) {
     stbi_image_free(st.imgPixels);
     st.imgPixels = nullptr;
     st.resTexId  = (uint32_t)tex;
+    // Phase G.1.3 — VRAM Tracking (worker thread; tracker mutex 保 race)
+    LT::GpuMem::Track("User Image", "RGBA8", st.imgW, st.imgH);
     glFlush();   // 确保命令进入 GPU 队列, 让 fence 在主线程 ClientWaitSync 时可见
     GLsync fence = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
     st.glFence   = (void*)fence;
@@ -831,6 +833,9 @@ static void WorkerUploadMesh_(Task& task) {
     st.glMeshVbo      = (uint32_t)vbo;
     st.glMeshEbo      = (uint32_t)ebo;
     st.glMeshIdxCount = st.gltfIdxCount;
+    // Phase G.1.3 — VRAM Tracking: VBO + EBO 用 BYTES 格式 (vertCount*48 + idxCount*4)
+    LT::GpuMem::TrackBytes("Mesh VBO", (int64_t)st.gltfVertCount * (int64_t)sizeof(RenderVertex3D));
+    LT::GpuMem::TrackBytes("Mesh EBO", (int64_t)st.gltfIdxCount  * (int64_t)sizeof(uint32_t));
 
     // Phase G.1.5 — withMaterial: 串行上传 5 类 PBR texture (与 CreateTexture(channels=4) 等价).
     // 任一 texture 失败仅 log warn, 不破坏 mesh; 释放本 job pixels 后继续下一个.
@@ -889,6 +894,8 @@ static void WorkerUploadMesh_(Task& task) {
             glBindTexture(GL_TEXTURE_2D, 0);
             stbi_image_free(job.pixels); job.pixels = nullptr;
             job.glTexId = (uint32_t)tex;
+            // Phase G.1.3 — VRAM Tracking (worker thread material texture; mutex 保 race)
+            LT::GpuMem::Track("Mesh texture", "RGBA8", job.w, job.h);
         }
     }
 
