@@ -274,6 +274,8 @@ set(LIGHT_SOURCES
     ${CHOCO_SRC}/resource_wpk.cpp
     ${CHOCO_SRC}/resource_fls.cpp
     ${CHOCO_SRC}/light_plugins_package.cpp
+    ${CHOCO_SRC}/light_plugins_tcp.cpp
+    ${CHOCO_SRC}/light_plugins_map.cpp
     ${CHOCO_SRC}/light_lua_compat.cpp
     ${CHOCO_SRC}/light_antidebug.cpp
     ${CHOCO_SRC}/light_io.cpp
