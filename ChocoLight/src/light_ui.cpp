@@ -40,6 +40,7 @@
 #include "light_audio_backend.h"
 #include "light_platform_net.h"
 #include "platform_window.h"
+#include "light_time.h"                 // Phase H.0 — Tick-Render 解耦 (LT::TickRender)
 #include <cstdint>
 
 // Input 模块事件处理 (定义在 light_input.cpp)
@@ -531,6 +532,10 @@ static int l_Window_Open(lua_State* L) {
     // Phase F.0: 初始化 TAA 主管线 (默认 autoEnable=false, 用户主动 Enable)
     TAARenderer::Init(g_render);
 
+    // Phase H.0: 初始化 Tick-Render 解耦 — 重置 accumulator + lastTime
+    // 不影响 Phase AR Light.Time 现有 SDL_AddTimer 路径
+    LT::TickRender::Init();
+
     // Phase G.1: 启动异步资源加载 worker (失败不致命, 内部 fallback 同步加载)
     // Phase G.1.1: 传入主窗口/主 GL ctx, 内部 probe Shared GL Context;
     //              probe 失败仍正常启动 worker, 走主线程上传路径
@@ -672,7 +677,48 @@ static int l_Window_SetVSync(lua_State* L) {
 }
 
 // ==================== Window:__call ====================
-// 事件循环步进: BeginFrame → Draw → Update(dt) → EndFrame → SwapBuffers
+// Phase H.0 重构 — Tick-Render 解耦.
+//
+// 严格顺序 (CONSENSUS §2.6):
+//   1) LT::TickRender::BeginFrame  (累积 frameTime)
+//   2) while ShouldStepFixed:
+//        a. 物理 auto-step (Box2D + Bullet, 仅 SetAutoStep(true) 的 World)
+//        b. Lua: OnFixedUpdate(fixedDt)
+//        c. ConsumeFixedStep
+//   3) LT::TickRender::FinalizeFrame  (alpha + accumulator clamp)
+//   4) BeginFrame + AssetLoader::Tick + Batch/HDR/TAA::Begin + TAA::ApplyJitter
+//   5) Lua: Draw  (旧)
+//   6) Lua: Update(frameTime)  (旧, dt = wall-clock)
+//   7) Lua: OnRender(alpha, frameTime)  (新 H.0; 仅当 Lua 定义时调)
+//   8) Batch/HDR/TAA::End + g_render->EndFrame
+//   9) RecordTickHook + DrawRecordOSD
+//  10) SwapBuffers
+
+// Phase H.0 — 调 Lua 回调 helper (减少 6 处 lua_getfield+pcall+log 重复).
+// windowIdx: Window self table 在 lua 栈的索引 (通常为 1)
+// argc: 0 / 1 / 2; 通过 numArgs 控制 push 几个 arg
+static void CallLuaWindowCallback_(lua_State* L, int windowIdx,
+                                    const char* name, int argc,
+                                    double arg1 = 0.0, double arg2 = 0.0) {
+    lua_getfield(L, windowIdx, name);
+    if (!lua_isfunction(L, -1)) {
+        lua_pop(L, 1);
+        return;
+    }
+    lua_pushvalue(L, windowIdx);
+    if (argc >= 1) lua_pushnumber(L, arg1);
+    if (argc >= 2) lua_pushnumber(L, arg2);
+    if (lua_pcall(L, 1 + argc, 0, 0)) {
+        CC::Log(CC::LOG_ERROR, "%s: %s", name, lua_tostring(L, -1));
+        lua_pop(L, 1);
+    }
+}
+
+// Phase H.0 — 物理 auto-step 桥接.
+// 实现位于 light_time.cpp (Light_PhysicsAutoStepAll → LT::PhysicsRegistry::StepAllAuto).
+// 物理子系统 (Box2D / Bullet) 通过 LT::PhysicsRegistry::RegisterWorld 注入回调,
+// 主循环每个 fixed step 调一次. 列表为空 (无 World 注册) 时零开销早退.
+extern "C" void Light_PhysicsAutoStepAll(double dt);
 
 static int l_Window_Call(lua_State* L) {
     luaL_checktype(L, 1, LUA_TTABLE);
@@ -682,13 +728,26 @@ static int l_Window_Call(lua_State* L) {
         return 1;
     }
 
-    // 帧时间
-    static double lastTime = PlatformWindow::GetTime();
-    double nowTime = PlatformWindow::GetTime();
-    double dt = nowTime - lastTime;
-    lastTime = nowTime;
+    // ---------- Phase H.0 步骤 1: BeginFrame ----------
+    LT::TickRender::BeginFrame();
 
-    // 清屏 + 重置矩阵
+    // ---------- Phase H.0 步骤 2: Fixed-step 累积器循环 ----------
+    while (LT::TickRender::ShouldStepFixed()) {
+        const double fixedDt = LT::TickRender::GetFixedDt();
+        // 2a) 物理 auto-step (T4A/T4B 实现)
+        Light_PhysicsAutoStepAll(fixedDt);
+        // 2b) Lua OnFixedUpdate(fixedDt)
+        CallLuaWindowCallback_(L, 1, "OnFixedUpdate", 1, fixedDt);
+        // 2c) 消费 1 步
+        LT::TickRender::ConsumeFixedStep();
+    }
+
+    // ---------- Phase H.0 步骤 3: FinalizeFrame ----------
+    LT::TickRender::FinalizeFrame();
+    const double alpha     = LT::TickRender::GetAlpha();
+    const double frameTime = LT::TickRender::GetLastFrameTime();   // 已 clamp
+
+    // ---------- 步骤 4: 渲染上下文 setup ----------
     if (g_render) {
         g_render->BeginFrame(0, 0, 0, 1);
     }
@@ -703,30 +762,14 @@ static int l_Window_Call(lua_State* L) {
     //   需在 BeginScene 后 (确保 HDR FBO 已绑) + 用户 Draw 之前
     if (TAARenderer::IsEnabled())     TAARenderer::ApplyJitter();
 
-    // Draw 回调
-    lua_getfield(L, 1, "Draw");
-    if (lua_isfunction(L, -1)) {
-        lua_pushvalue(L, 1);
-        if (lua_pcall(L, 1, 0, 0)) {
-            CC::Log(CC::LOG_ERROR, "Draw: %s", lua_tostring(L, -1));
-            lua_pop(L, 1);
-        }
-    } else {
-        lua_pop(L, 1);
-    }
+    // ---------- 步骤 5: Lua Draw (旧) ----------
+    CallLuaWindowCallback_(L, 1, "Draw", 0);
 
-    // Update 回调
-    lua_getfield(L, 1, "Update");
-    if (lua_isfunction(L, -1)) {
-        lua_pushvalue(L, 1);
-        lua_pushnumber(L, dt);
-        if (lua_pcall(L, 2, 0, 0)) {
-            CC::Log(CC::LOG_ERROR, "Update: %s", lua_tostring(L, -1));
-            lua_pop(L, 1);
-        }
-    } else {
-        lua_pop(L, 1);
-    }
+    // ---------- 步骤 6: Lua Update(frameTime) (旧, wall-clock dt) ----------
+    CallLuaWindowCallback_(L, 1, "Update", 1, frameTime);
+
+    // ---------- 步骤 7 (Phase H.0): Lua OnRender(alpha, frameTime) (新) ----------
+    CallLuaWindowCallback_(L, 1, "OnRender", 2, alpha, frameTime);
 
     // 结束帧 + 交换缓冲区
     // 顺序: Lit 批先 EndFrame (依赖 BatchRenderer 不破坏 Lit shader state),
@@ -831,6 +874,8 @@ static void PerformWindowShutdown_(lua_State* L) {
     AssetLoader::Shutdown();
     PlatformNet::Shutdown();
     AudioBackend::Shutdown();
+    // Phase H.0: Tick-Render 解耦关闭 (重置 accumulator / PhysicsRegistry 留给 World 析构自清)
+    LT::TickRender::Shutdown();
     // Phase F.0: TAA 依赖 HDR sceneTex + velocity + dilation; 管线最末端 → 最先关闭
     TAARenderer::Shutdown();
     // Phase E.15: Motion Blur 依赖 HDR sceneTex + velocityTex; 最先关闭 (管线末端)

@@ -1,5 +1,6 @@
 #include "light.h"
 #include "light_lua_helpers.h"  // Phase G.1.7.3 — 类型安全 helpers + magic
+#include "light_time.h"         // Phase H.0 — LT::PhysicsRegistry (auto-step)
 
 #if CHOCO_HAS_BOX2D
 #include <box2d/box2d.h>
@@ -1654,6 +1655,10 @@ static int l_World_GC(lua_State* L) {
     auto* world = (PhysicsWorld*)lua_touserdata(L, 1);
     if (!world || !world->alive) return 0;
 
+    // Phase H.0 — 先从 PhysicsRegistry 注销 (确保下次主循环不再 auto-step 此 world)
+    // 必须在 b2World 销毁之前; thunk 内的 alive 校验只是双保险.
+    LT::PhysicsRegistry::UnregisterWorld(world);
+
     // Phase AO: 先失效 joints (在 body/world 销毁前, 释放 registry ref)
     for (auto* joint : world->joints) InvalidateJoint(L, joint, true);
     for (auto* body : world->bodies) InvalidateBody(L, body, true);
@@ -1680,6 +1685,18 @@ static void SetWorldGC(lua_State* L) {
     lua_setmetatable(L, -2);
 }
 
+// Phase H.0 — 物理 auto-step thunk.
+// LT::PhysicsRegistry::StepAllAuto 调度时回调此函数; 内部 cast 回 PhysicsWorld* 调 Step.
+// dt 永远是 LT::TickRender::GetFixedDt() (固定值, 不漂移).
+// 静默处理 world->alive=false (GC 后短暂未注销的边界情况).
+static void Box2DWorldStepThunk_(void* worldPtr, double dt) {
+    auto* w = static_cast<PhysicsWorld*>(worldPtr);
+    if (!w || !w->alive || !w->world) return;
+    // 与 l_World_Step 行为一致: 8 vel iter / 3 pos iter, 然后 dispatch contact events
+    w->world->Step((float)dt, 8, 3);
+    DispatchContactEvents(w->L, w);
+}
+
 /// @lua_api Light.Physics.World.New
 /// @brief Create a Box2D physics World instance
 static int l_World_Call(lua_State* L) {
@@ -1696,6 +1713,8 @@ static int l_World_Call(lua_State* L) {
     world->alive = true;
     SetWorldGC(L);
     lua_setfield(L, 1, "__instance");
+    // Phase H.0 — 注册到 PhysicsRegistry (autoStep 默认 false, 用户主动 SetAutoStep 启用)
+    LT::PhysicsRegistry::RegisterWorld(world, &Box2DWorldStepThunk_);
     return 0;
 }
 
@@ -1732,6 +1751,27 @@ static int l_World_Step(lua_State* L) {
     world->world->Step((float)luaL_checknumber(L, 2), 8, 3);
     DispatchContactEvents(L, world);
     return 0;
+}
+
+/// @lua_api Light.Physics.World.SetAutoStep
+/// @brief Phase H.0 — 设置 World 是否自动 Step.
+///        启用后, 引擎主循环在每个 fixed step (默认 60Hz) 自动调 World:Step(fixedDt).
+///        用户不应再手动 World:Step (会导致双 step 物理震荡).
+/// @param enabled boolean
+static int l_World_SetAutoStep(lua_State* L) {
+    auto* world = CheckWorld(L, 1);
+    if (!world) return 0;
+    luaL_checktype(L, 2, LUA_TBOOLEAN);
+    LT::PhysicsRegistry::SetAutoStep(world, lua_toboolean(L, 2) != 0);
+    return 0;
+}
+
+/// @lua_api Light.Physics.World.GetAutoStep
+/// @return boolean 当前 autoStep 状态; World 已销毁返 false
+static int l_World_GetAutoStep(lua_State* L) {
+    auto* world = CheckWorld(L, 1);
+    lua_pushboolean(L, world ? (LT::PhysicsRegistry::GetAutoStep(world) ? 1 : 0) : 0);
+    return 1;
 }
 
 /// @lua_api Light.Physics.World.ClearForces
@@ -3425,6 +3465,9 @@ static const luaL_Reg g_world_funcs[] = {
     {"SetGravity",           l_World_SetGravity},
     {"GetGravity",           l_World_GetGravity},
     {"Step",                 l_World_Step},
+    // Phase H.0 — Tick-Render 解耦: 物理 World auto-step 开关 (默认 false)
+    {"SetAutoStep",          l_World_SetAutoStep},
+    {"GetAutoStep",          l_World_GetAutoStep},
     {"ClearForces",          l_World_ClearForces},
     {"SetAllowSleeping",     l_World_SetAllowSleeping},
     {"SetContinuousPhysics", l_World_SetContinuousPhysics},

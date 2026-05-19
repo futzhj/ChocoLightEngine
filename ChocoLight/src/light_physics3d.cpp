@@ -49,6 +49,7 @@
 
 #include "light.h"
 #include "light_lua_helpers.h"  // Phase G.1.7.3 — 类型安全 helpers + magic
+#include "light_time.h"         // Phase H.0 — LT::PhysicsRegistry (auto-step)
 
 #if CHOCO_HAS_BULLET
 #include <btBulletCollisionCommon.h>
@@ -939,6 +940,9 @@ static int l_NewWorld(lua_State* L) {
 
     luaL_getmetatable(L, WORLD_MT);
     lua_setmetatable(L, -2);
+
+    // Phase H.0 — 注册到 PhysicsRegistry (autoStep 默认 false, 用户主动 SetAutoStep 启用)
+    LT::PhysicsRegistry::RegisterWorld(w, &BulletWorldStepThunk_);
     return 1;
 }
 
@@ -994,6 +998,39 @@ static int l_World_Step(lua_State* L) {
     w->world->stepSimulation(dt, maxSubSteps, fixedTimeStep);
     DispatchContacts(L, w);
     return 0;
+}
+
+// Phase H.0 — Bullet 物理 auto-step thunk.
+// 与 Box2D 类似, 但用 stepSimulation(dt, maxSubSteps=1, fixedTimeStep=dt).
+// 外层 LT::TickRender accumulator 已保证 dt = fixedDt 恒定 → maxSubSteps=1 即可;
+// Bullet 内部不再做 sub-step (避免双层 accumulator 抢节奏).
+static void BulletWorldStepThunk_(void* worldPtr, double dt) {
+    auto* w = static_cast<World3D*>(worldPtr);
+    if (!w || !w->alive || !w->world) return;
+    const btScalar dtF = (btScalar)dt;
+    w->world->stepSimulation(dtF, /*maxSubSteps=*/1, dtF);
+    DispatchContacts(w->L, w);
+}
+
+/// @lua_api Light.Physics3D.World.SetAutoStep
+/// @brief Phase H.0 — 设置 World 是否自动 Step.
+///        启用后, 引擎主循环在每个 fixed step (默认 60Hz) 自动调
+///        stepSimulation(fixedDt, 1, fixedDt). 用户不应再手动 World:Step.
+/// @param enabled boolean
+static int l_World_SetAutoStep(lua_State* L) {
+    World3D* w = CheckWorld(L, 1);
+    if (!w || !w->alive) return 0;
+    luaL_checktype(L, 2, LUA_TBOOLEAN);
+    LT::PhysicsRegistry::SetAutoStep(w, lua_toboolean(L, 2) != 0);
+    return 0;
+}
+
+/// @lua_api Light.Physics3D.World.GetAutoStep
+/// @return boolean
+static int l_World_GetAutoStep(lua_State* L) {
+    World3D* w = CheckWorld(L, 1);
+    lua_pushboolean(L, (w && w->alive && LT::PhysicsRegistry::GetAutoStep(w)) ? 1 : 0);
+    return 1;
 }
 
 static int l_World_CreateBody(lua_State* L) {
@@ -2769,6 +2806,8 @@ static void InvalidateSoftBody(lua_State* L, SoftBody3D* s);
 // 释放 Bullet 资源, 可重复调用 (幂等)
 static void World_ReleaseBullet(lua_State* L, World3D* w) {
     if (!w->alive) return;
+    // Phase H.0 — 先从 PhysicsRegistry 注销 (主循环不再调度此 world auto-step)
+    LT::PhysicsRegistry::UnregisterWorld(w);
     // Phase AU Step 3.2: joints 必须先于 bodies 销毁 (Bullet constraint 引用 body)
     for (auto* j : w->joints) {
         InvalidateJoint(L, j);
@@ -2863,6 +2902,9 @@ static const luaL_Reg kWorldMethods[] = {
     { "SetGravity",     l_World_SetGravity },
     { "GetGravity",     l_World_GetGravity },
     { "Step",           l_World_Step },
+    // Phase H.0 — Tick-Render 解耦: 物理 World auto-step 开关 (默认 false)
+    { "SetAutoStep",    l_World_SetAutoStep },
+    { "GetAutoStep",    l_World_GetAutoStep },
     { "CreateBody",     l_World_CreateBody },
     { "DestroyBody",    l_World_DestroyBody },
     { "GetBodyCount",   l_World_GetBodyCount },
