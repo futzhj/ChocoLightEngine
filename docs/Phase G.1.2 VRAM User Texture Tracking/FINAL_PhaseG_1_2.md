@@ -41,7 +41,9 @@ G.1.2 在 G.1/G.1.1 基础上扩展 VRAM tracker, 覆盖用户 Image / Font glyp
 
 ## 3. CI 验证
 
-待 commit 后填.
+**Run**: [26071687897](https://github.com/futzhj/ChocoLightEngine/actions/runs/26071687897)
+**结果**: ✅ 6/6 PASS (windows / linux / macos / android / ios / web)
+**提交**: 2ac043b "Phase G.1.2 VRAM User Texture Tracking - Image/Font/Mesh/Sprite hooks"
 
 ---
 
