@@ -216,6 +216,7 @@ LIGHT_API int luaopen_Light_Record(lua_State* L);
 LIGHT_API int luaopen_Light_Plugins(lua_State* L);
 LIGHT_API int luaopen_Light_Plugins_WDFData(lua_State* L);
 LIGHT_API int luaopen_Light_Plugins_NEMData(lua_State* L);
+LIGHT_API int luaopen_Light_Plugins_Package(lua_State* L);
 LIGHT_API int luaopen_Light_Plugins_Codec(lua_State* L);
 LIGHT_API int luaopen_Light_Plugins_Path(lua_State* L);
 LIGHT_API int luaopen_Light_Plugins_UUID(lua_State* L);

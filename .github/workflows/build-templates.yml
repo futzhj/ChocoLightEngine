@@ -116,6 +116,7 @@ jobs:
           $phaseG2JSONSmoke    = Resolve-Path "scripts\smoke\json.lua"
           $phaseG2CompressSmoke = Resolve-Path "scripts\smoke\compress.lua"
           $phaseG2CompatSmoke  = Resolve-Path "scripts\smoke\lua_compat_utils.lua"
+          $phaseG3PackageSmoke = Resolve-Path "scripts\smoke\resource_package.lua"
           Copy-Item ChocoLight\build\bin\Release\Light.dll $runtimeDir -Force
           & "$runtimeDir\light.exe" $coreSmoke
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -258,6 +259,8 @@ jobs:
           & "$runtimeDir\light.exe" $phaseG2CompressSmoke
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & "$runtimeDir\light.exe" $phaseG2CompatSmoke
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & "$runtimeDir\light.exe" $phaseG3PackageSmoke
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Package Windows Template

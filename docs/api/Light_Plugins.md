@@ -156,6 +156,54 @@ local FS = require("Light.Filesystem")
 - `FS.List(path) -> table | nil, err`
 - `FS.Attributes(path [, key]) -> table|value | nil, err`
 
+## Light.Plugins.Package
+
+```lua
+local Package = require("Light.Plugins.Package")
+```
+
+资源包读取插件。运行时失败返回 `nil, err`，参数类型错误使用 Lua 原生参数检查报错。二进制条目内容以 Lua string 返回。
+
+- `Package.Probe(path) -> table | nil, err`
+- `Package.Open(path) -> PackageHandle | nil, err`
+- `handle:GetInfo() -> table`
+- `handle:List() -> table | nil, err`
+- `handle:Has(key) -> boolean`
+- `handle:GetData(key [, options]) -> string | nil, err`
+- `handle:Close() -> true`
+
+`options`:
+
+```lua
+{
+    raw = false,
+    decode = true,
+    maxBytes = nil,
+}
+```
+
+当前 MVP 支持：
+
+- `PFDW/WDFP` WDF 基础条目读取。
+- `SKPW` IDX + WPK 分卷读取。
+- `0SLF` FLS 索引解密和条目读取。
+
+当前 MVP 明确不支持：
+
+- `NXPK`
+- `MHWD`
+- `WDFX/WDFH/SFDW/WDFS` 完整读取
+
+示例：
+
+```lua
+local pkg = assert(Package.Open("assets/wzife.wdf"))
+local info = pkg:GetInfo()
+local entries = assert(pkg:List())
+local data = assert(pkg:GetData(entries[1].key))
+pkg:Close()
+```
+
 ## 兼容模块
 
 ### json

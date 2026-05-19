@@ -268,6 +268,12 @@ set(LIGHT_SOURCES
     ${CHOCO_SRC}/light_plugins_uuid.cpp
     ${CHOCO_SRC}/light_plugins_json.cpp
     ${CHOCO_SRC}/light_plugins_compress.cpp
+    ${CHOCO_SRC}/resource_package.cpp
+    ${CHOCO_SRC}/resource_crypto.cpp
+    ${CHOCO_SRC}/resource_wdf.cpp
+    ${CHOCO_SRC}/resource_wpk.cpp
+    ${CHOCO_SRC}/resource_fls.cpp
+    ${CHOCO_SRC}/light_plugins_package.cpp
     ${CHOCO_SRC}/light_lua_compat.cpp
     ${CHOCO_SRC}/light_antidebug.cpp
     ${CHOCO_SRC}/light_io.cpp
