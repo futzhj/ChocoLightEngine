@@ -88,10 +88,14 @@ end
 
 function Demo:OnOpen()
     Light.Time.SetFixedTimestep(60)
+    -- Phase H.0.1 — 启用引擎内置 HUD overlay (默认关; 此处主动打开)
+    Light.Time.SetHUDPosition(20, 20)
+    Light.Time.SetHUDEnabled(true)
     init_physics()
-    print(string.format("[demo_tick_render] init: fixedHz=%d, box2d=%s",
+    print(string.format("[demo_tick_render] init: fixedHz=%d, box2d=%s, HUD=%s",
                          Light.Time.GetFixedTimestep(),
-                         tostring(use_box2d)))
+                         tostring(use_box2d),
+                         tostring(Light.Time.GetHUDEnabled())))
 end
 
 -- ============================================================
@@ -170,30 +174,20 @@ function Demo:Draw()
         Gfx.DrawText("Box2D auto-step ball", 30, 620)
     end
 
-    -- ---------- HUD ----------
-    local y = 20
+    -- Phase H.0.1 — 引擎内置 HUD (4 行 fixedHz/FPS/alpha/accumulator)
+    Light.Time.DrawHUD()
+
+    -- demo 专属信息: state + 按键提示 (HUD 之下偏移 90px)
+    local y = 90
     local function line(txt)
         Gfx.DrawText(txt, 20, y)
-        y = y + 18
+        y = y + 16
     end
-
-    local hz   = Light.Time.GetFixedTimestep()
-    local a    = Light.Time.GetAlpha()
-    local acc  = Light.Time.GetAccumulator()
-    local n    = Light.Time.GetLastStepCount()
-    local lft  = Light.Time.GetLastFrameTime()
-    line(string.format("Phase H.0 Tick-Render Decouple"))
-    line(string.format("fixedHz=%d  fixedDt=%.4fs  maxStep=%d",
-                       hz, Light.Time.GetFixedDt(),
-                       Light.Time.GetMaxFixedStepsPerFrame()))
-    line(string.format("FPS=%.0f  frameTime=%.2fms  steps/frame=%d",
-                       fps_avg, lft * 1000, n))
-    line(string.format("alpha=%.3f  accumulator=%.4fs", a, acc))
-    line(string.format("alpha lerp: %s   Box2D auto-step: %s",
+    line(string.format("alpha lerp: %s   Box2D auto-step: %s   HUD: %s",
                        use_alpha and "ON" or "OFF",
-                       (use_box2d and world and world:GetAutoStep()) and "ON" or "OFF"))
-    line("")
-    line("Keys: 1=30Hz 2=60Hz 3=120Hz 4=144Hz   A=alpha P=physics R=reset ESC")
+                       (use_box2d and world and world:GetAutoStep()) and "ON" or "OFF",
+                       Light.Time.GetHUDEnabled() and "ON" or "OFF"))
+    line("Keys: 1=30Hz 2=60Hz 3=120Hz 4=144Hz   A=alpha P=physics H=HUD R=reset ESC")
 end
 
 -- ============================================================
@@ -221,9 +215,15 @@ function Demo:OnKey(key, scancode, action, mods)
             world:SetAutoStep(not cur)
             print("[demo_tick_render] Box2D auto-step = " .. tostring(not cur))
         end
+    elseif key == string.byte("H") then
+        -- Phase H.0.1 — 切引擎内置 HUD 显示
+        local cur = Light.Time.GetHUDEnabled()
+        Light.Time.SetHUDEnabled(not cur)
+        print("[demo_tick_render] HUD = " .. tostring(not cur))
     elseif key == string.byte("R") then
         Light.Time.SetFixedTimestep(60)
         use_alpha = true
+        Light.Time.SetHUDEnabled(true)
         if use_box2d and world then world:SetAutoStep(true) end
         cube_prev.x, cube_prev.y = 100, 350
         cube_curr.x, cube_curr.y = 100, 350

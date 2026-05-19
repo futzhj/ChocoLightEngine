@@ -273,12 +273,79 @@ do
     pass("§9 状态复位 (fixedHz=60, maxStep=8, clamp=0.25)")
 end
 
+-- ============================================================
+-- §10) Phase H.0.1 — perf budget assertion
+-- ============================================================
+-- 在新建 TickRender 状态下 (smoke headless), accumulator 应永远 < fixedDt
+-- 真实运行时 budget = accumulator < fixedDt * 2 (确保未触发 spiral guard 长时)
+do
+    local fixedDt = Time.GetFixedDt()
+    local budget  = fixedDt * 2.0
+    local acc     = Time.GetAccumulator()
+    if acc > budget then
+        fail(string.format("§10 perf budget violation: accumulator=%.4f > fixedDt*2=%.4f", acc, budget))
+    end
+    pass(string.format("§10 perf budget: accumulator %.6fs <= fixedDt*2 %.6fs", acc, budget))
+end
+
+-- ============================================================
+-- §11) Phase H.0.1 — HUD overlay API surface + DrawHUD 防御
+-- ============================================================
+do
+    -- HUD API 表面
+    for _, k in ipairs({"SetHUDEnabled", "GetHUDEnabled", "SetHUDPosition", "GetHUDPosition", "DrawHUD"}) do
+        if type(Time[k]) ~= "function" then
+            fail("Light.Time." .. k .. " 缺失 (Phase H.0.1)")
+        end
+    end
+    pass("§11 HUD overlay 5 fn 完整")
+
+    -- 默认 HUD 关闭
+    if Time.GetHUDEnabled() ~= false then
+        fail("默认 HUD enabled 应 false, 得 " .. tostring(Time.GetHUDEnabled()))
+    end
+    pass("§11 默认 HUD enabled = false (零回归)")
+
+    -- round-trip
+    Time.SetHUDEnabled(true)
+    if Time.GetHUDEnabled() ~= true then fail("SetHUDEnabled(true) round-trip 失败") end
+    Time.SetHUDEnabled(false)
+    if Time.GetHUDEnabled() ~= false then fail("SetHUDEnabled(false) round-trip 失败") end
+    pass("§11 SetHUDEnabled round-trip ok")
+
+    -- 位置 round-trip
+    local dx, dy = Time.GetHUDPosition()
+    if dx ~= 10 or dy ~= 10 then fail("默认 HUD 位置应 (10, 10), 得 (" .. dx .. ", " .. dy .. ")") end
+    pass("§11 默认 HUD 位置 = (10, 10)")
+
+    Time.SetHUDPosition(50, 100)
+    local x, y = Time.GetHUDPosition()
+    if x ~= 50 or y ~= 100 then fail("SetHUDPosition round-trip 失败") end
+    pass("§11 SetHUDPosition round-trip ok")
+    Time.SetHUDPosition(10, 10)  -- 复位
+
+    -- DrawHUD 防御性: 默认关 + Gfx 不可用 → no-op (不抛异常)
+    Time.SetHUDEnabled(false)
+    local ok1 = pcall(Time.DrawHUD)
+    if not ok1 then fail("DrawHUD (HUD 关) 不应抛异常") end
+    pass("§11 DrawHUD (HUD 关) silent no-op")
+
+    -- DrawHUD 启用但 Gfx 不可用时也应 no-op (smoke headless 下 Gfx.DrawText 可能不存在)
+    Time.SetHUDEnabled(true)
+    local ok2 = pcall(Time.DrawHUD)
+    if not ok2 then fail("DrawHUD (HUD 开 + Gfx 可能不可用) 不应抛异常") end
+    pass("§11 DrawHUD (HUD 开) silent no-op or 正常调用 (取决于 Gfx)")
+    Time.SetHUDEnabled(false)  -- 复位
+end
+
 print("")
-print("=== Phase H.0 Tick-Render Decouple smoke: ALL TESTS PASSED ===")
+print("=== Phase H.0 + H.0.1 Tick-Render smoke: ALL TESTS PASSED ===")
 print("Coverage: " .. #fn_names .. " Light.Time fn + Box2D/Bullet SetAutoStep/GetAutoStep")
+print("           + 5 HUD overlay fn + perf budget assertion")
 print("Highlights:")
 print("  - Defaults: fixedHz=60, maxStep=8, frameTimeClamp=0.25s")
 print("  - Friendly clamp (Set 越界 → clamp + log warn, 不 raise)")
 print("  - GetAlpha ∈ [0, 1); accumulator/stepCount/frameTime >= 0")
 print("  - Box2D + Bullet auto-step 默认 false (零回归; 32 老 sample 不必改)")
 print("  - Phase AR 旧 fn (GetTicks/Delay/Timer) 完整保留")
+print("  - HUD 默认 disabled, position (10,10); DrawHUD silent no-op")

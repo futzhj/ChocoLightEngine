@@ -564,6 +564,31 @@ void SetFrameTimeClamp(double s) {
     g_state.frameTimeClamp = clamped;
 }
 
+// ---------------------------------------------------------------------------
+// Phase H.0.1 HUD overlay 状态 (Lua 端 Light.Time.DrawHUD 读)
+// ---------------------------------------------------------------------------
+namespace {
+struct HUDState {
+    bool  enabled = false;     // 默认关 (release 性能优先)
+    float x       = 10.0f;     // 默认左上
+    float y       = 10.0f;
+};
+HUDState g_hud;
+}  // anonymous
+
+void SetHUDEnabled(bool enabled) { g_hud.enabled = enabled; }
+bool GetHUDEnabled()             { return g_hud.enabled; }
+
+void SetHUDPosition(float x, float y) {
+    g_hud.x = x;
+    g_hud.y = y;
+}
+
+void GetHUDPosition(float* outX, float* outY) {
+    if (outX) *outX = g_hud.x;
+    if (outY) *outY = g_hud.y;
+}
+
 }  // namespace TickRender
 
 // ============================================================================
@@ -703,6 +728,34 @@ int l_Time_SetFrameTimeClamp(lua_State* L) {
     return 0;
 }
 
+// ---------- Phase H.0.1 HUD overlay Lua wrappers ----------
+
+int l_Time_SetHUDEnabled(lua_State* L) {
+    luaL_checktype(L, 1, LUA_TBOOLEAN);
+    LT::TickRender::SetHUDEnabled(lua_toboolean(L, 1) != 0);
+    return 0;
+}
+
+int l_Time_GetHUDEnabled(lua_State* L) {
+    lua_pushboolean(L, LT::TickRender::GetHUDEnabled() ? 1 : 0);
+    return 1;
+}
+
+int l_Time_SetHUDPosition(lua_State* L) {
+    float x = (float)luaL_checknumber(L, 1);
+    float y = (float)luaL_checknumber(L, 2);
+    LT::TickRender::SetHUDPosition(x, y);
+    return 0;
+}
+
+int l_Time_GetHUDPosition(lua_State* L) {
+    float x = 0, y = 0;
+    LT::TickRender::GetHUDPosition(&x, &y);
+    lua_pushnumber(L, x);
+    lua_pushnumber(L, y);
+    return 2;
+}
+
 int l_Time_GetFrameTimeClamp(lua_State* L) {
     lua_pushnumber(L, (lua_Number)LT::TickRender::GetFrameTimeClamp());
     return 1;
@@ -763,6 +816,11 @@ static const luaL_Reg kTimeReg[] = {
     { "GetAccumulator",              l_Time_GetAccumulator              },
     { "GetLastStepCount",            l_Time_GetLastStepCount            },
     { "GetLastFrameTime",            l_Time_GetLastFrameTime            },
+    // Phase H.0.1 — HUD overlay 状态控制 (DrawHUD 在 Lua 端实现)
+    { "SetHUDEnabled",               l_Time_SetHUDEnabled               },
+    { "GetHUDEnabled",               l_Time_GetHUDEnabled               },
+    { "SetHUDPosition",              l_Time_SetHUDPosition              },
+    { "GetHUDPosition",              l_Time_GetHUDPosition              },
     { nullptr, nullptr },
 };
 
@@ -787,6 +845,53 @@ extern "C" LIGHT_API int luaopen_Light_Time(lua_State* L) {
 
     // Phase AR — 预注册 Timer 事件类型 (避免 AddTimer 调用时才注册造成丢事件)
     EnsureTimerEventTypeRegistered();
+
+    // Phase H.0.1 — Light.Time.DrawHUD 用 Lua 实现 (调 Light.Graphics.DrawText)
+    // 不直接依赖 GL ctx, 在 Gfx 不可用 / DrawText 不存在时 silently no-op.
+    // 栈顶是 Time 表, dup 一份给闭包 upvalue 用.
+    static const char* kDrawHUDSource =
+        "return function(TimeTbl)\n"
+        "  return function()\n"
+        "    if not TimeTbl.GetHUDEnabled or not TimeTbl.GetHUDEnabled() then return end\n"
+        "    local ok, Gfx = pcall(require, 'Light.Graphics')\n"
+        "    if not ok or type(Gfx) ~= 'table' or type(Gfx.DrawText) ~= 'function' then return end\n"
+        "    local x, y = TimeTbl.GetHUDPosition()\n"
+        "    local function line(txt)\n"
+        "      Gfx.DrawText(txt, x, y); y = y + 16\n"
+        "    end\n"
+        "    local hz   = TimeTbl.GetFixedTimestep()\n"
+        "    local dt   = TimeTbl.GetFixedDt()\n"
+        "    local mx   = TimeTbl.GetMaxFixedStepsPerFrame()\n"
+        "    local a    = TimeTbl.GetAlpha()\n"
+        "    local acc  = TimeTbl.GetAccumulator()\n"
+        "    local n    = TimeTbl.GetLastStepCount()\n"
+        "    local lft  = TimeTbl.GetLastFrameTime()\n"
+        "    local fps  = lft > 0 and (1.0/lft) or 0\n"
+        "    line(string.format('Phase H.0 Tick-Render HUD'))\n"
+        "    line(string.format('fixedHz=%d  fixedDt=%.4fs  maxStep=%d', hz, dt, mx))\n"
+        "    line(string.format('FPS=%.0f  frameTime=%.2fms  steps/frame=%d', fps, lft*1000, n))\n"
+        "    line(string.format('alpha=%.3f  accumulator=%.4fs', a, acc))\n"
+        "  end\n"
+        "end\n";
+    if (luaL_loadstring(L, kDrawHUDSource) == 0) {
+        if (lua_pcall(L, 0, 1, 0) == 0) {
+            // factory(TimeTbl) → DrawHUD closure
+            lua_pushvalue(L, -2);             // dup Time table 作为 arg
+            if (lua_pcall(L, 1, 1, 0) == 0) {
+                lua_setfield(L, -2, "DrawHUD"); // Time.DrawHUD = closure
+            } else {
+                CC::Log(CC::LOG_WARN, "Light.Time.DrawHUD factory call failed: %s",
+                        lua_tostring(L, -1));
+                lua_pop(L, 1);
+            }
+        } else {
+            CC::Log(CC::LOG_WARN, "Light.Time.DrawHUD compile failed: %s",
+                    lua_tostring(L, -1));
+            lua_pop(L, 1);
+        }
+    } else {
+        lua_pop(L, 1);  // 弹掉错误信息
+    }
 
     return 1;
 }

@@ -1748,6 +1748,18 @@ static int l_World_GetGravity(lua_State* L) {
 static int l_World_Step(lua_State* L) {
     auto* world = CheckWorld(L, 1);
     if (!world) return 0;
+    // Phase H.0.1 — 双 Step 检测: 启用 auto-step 后又手动调 Step → 物理 step 两次
+    // throttle 限 3 次防刷屏; 用户能定位到错误用法即可.
+    if (LT::PhysicsRegistry::GetAutoStep(world)) {
+        static int s_warn_count = 0;
+        if (s_warn_count++ < 3) {
+            CC::Log(CC::LOG_WARN,
+                "Light.Physics.World:Step called while autoStep=true — "
+                "world will Step TWICE per frame. "
+                "Disable auto-step (world:SetAutoStep(false)) or remove manual Step call. "
+                "(warn %d/3)", s_warn_count);
+        }
+    }
     world->world->Step((float)luaL_checknumber(L, 2), 8, 3);
     DispatchContactEvents(L, world);
     return 0;

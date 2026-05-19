@@ -84,6 +84,18 @@ void   SetFixedHz(int hz);
 void   SetMaxFixedStepsPerFrame(int n);
 void   SetFrameTimeClamp(double s);
 
+// ---------------------------------------------------------------------------
+// HUD overlay (Phase H.0.1) — 引擎内置调试 HUD 状态
+// ---------------------------------------------------------------------------
+// 仅存储状态; 实际 DrawHUD 在 Lua 端走 Light.Graphics.DrawText 实现.
+// C++ 侧只负责 enabled / position 状态的 round-trip + 默认值.
+//
+// 默认: enabled=false, x=10, y=10
+void   SetHUDEnabled(bool enabled);
+bool   GetHUDEnabled();
+void   SetHUDPosition(float x, float y);
+void   GetHUDPosition(float* outX, float* outY);  // 出参; 任一可为 nullptr
+
 }  // namespace TickRender
 
 // =============================================================================

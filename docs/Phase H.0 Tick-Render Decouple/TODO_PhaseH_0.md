@@ -159,21 +159,9 @@ while Light.UI.Loop() do Light.UI.Resume() end
 - iOS: hook `applicationWillResignActive` / `applicationDidBecomeActive`.
 - Android: hook `onPause` / `onResume`.
 
-### 5.3 物理双 Step 检测 ⭐
-**估时**: 1h
-**收益**: 用户友好 log; 减少物理 bug 排查时间.
-**实现要点**:
-```cpp
-// l_World_Step 内
-if (LT::PhysicsRegistry::GetAutoStep(w)) {
-    static int warn_count = 0;
-    if (warn_count++ < 3) {
-        CC::Log(CC::LOG_WARN, "Light.Physics.World:Step called while autoStep=true; "
-                              "this will Step the world TWICE per frame. "
-                              "Either disable auto-step or remove manual Step call.");
-    }
-}
-```
+### 5.3 物理双 Step 检测 ✅ 已完成 (Phase H.0.1, commit 待确认)
+**实际**: 1h. Box2D + Bullet 各自 `l_World_Step` 内插入 throttle warn (limit 3 次).
+**详见**: `docs/Phase H.0.1 Tick-Render Polish/`
 
 ### 5.4 GPU 端 alpha 插值 helper ⭐⭐
 **估时**: 3h
@@ -182,17 +170,13 @@ if (LT::PhysicsRegistry::GetAutoStep(w)) {
 - 新增 `Light.Time.LerpTransform(prev, curr, alpha)` (返回 4x4 矩阵).
 - 或 Component 系统自动维护 `Transform.prev` (类似 E.13 Motion Vector).
 
-### 5.5 HUD overlay ⭐
-**估时**: 2h
-**收益**: dev 调试看 fixedHz/FPS/alpha 不需自己写 DrawText.
-**实现要点**:
-- `Light.Time.DrawHUD(x, y)` 复用 demo HUD 代码.
-- 默认关; `Light.Time.SetHUDEnabled(true)` 启用.
+### 5.5 HUD overlay ✅ 已完成 (Phase H.0.1)
+**实际**: 2h. `Light.Time.DrawHUD()` (Lua 实现) + Set/Get HUDEnabled/HUDPosition (C++).
+**详见**: `docs/Phase H.0.1 Tick-Render Polish/`
 
-### 5.6 实机性能基准 ⭐
-**估时**: 2h
-**收益**: 把估算 (< 0.005 ms/帧) 替换为实测.
-**手段**: 60Hz / 144Hz 显示器各跑 demo 60 秒, 记录 `Light.Time.GetLastFrameTime()` 直方图.
+### 5.6 实机性能基准 ⚠️ 部分完成 (Phase H.0.1 加 smoke perf budget)
+**已做**: smoke §10 perf budget assertion (accumulator < fixedDt * 2).
+**未做**: 60Hz / 144Hz 显示器实机直方图 (需要两台显示器手动跑, 留 dev 验证).
 
 ---
 

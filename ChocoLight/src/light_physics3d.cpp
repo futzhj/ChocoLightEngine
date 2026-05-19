@@ -996,6 +996,17 @@ static void DispatchContacts(lua_State* L, World3D* w) {
 static int l_World_Step(lua_State* L) {
     World3D* w = CheckWorld(L, 1);
     if (!w->alive) return 0;
+    // Phase H.0.1 — 双 Step 检测: 启用 auto-step 后又手动调 Step → 物理 step 两次
+    if (LT::PhysicsRegistry::GetAutoStep(w)) {
+        static int s_warn_count = 0;
+        if (s_warn_count++ < 3) {
+            CC::Log(CC::LOG_WARN,
+                "Light.Physics3D.World:Step called while autoStep=true — "
+                "world will Step TWICE per frame. "
+                "Disable auto-step (world:SetAutoStep(false)) or remove manual Step call. "
+                "(warn %d/3)", s_warn_count);
+        }
+    }
     float dt = (float)luaL_checknumber(L, 2);
     int maxSubSteps = (int)luaL_optinteger(L, 3, 10);
     float fixedTimeStep = (float)luaL_optnumber(L, 4, 1.0 / 60.0);
