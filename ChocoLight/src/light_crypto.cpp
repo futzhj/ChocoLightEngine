@@ -37,6 +37,7 @@
  */
 
 #include "light.h"
+#include "light_utils_core.h"
 extern "C" {
   #include "tiny_aes.h"
   #include "tiny_hash.h"
@@ -155,6 +156,60 @@ static int l_MD5_Raw(lua_State* L) {
     uint8_t digest[16];
     md5(data, len, digest);
     lua_pushlstring(L, (const char*)digest, 16);
+    return 1;
+}
+
+static int l_SHA1(lua_State* L) {
+    size_t len = 0;
+    const char* data = luaL_checklstring(L, 1, &len);
+    uint8_t digest[20];
+    LT::Utils::SHA1(reinterpret_cast<const uint8_t*>(data), len, digest);
+    std::string hex = LT::Utils::HexEncode(digest, 20, false);
+    lua_pushlstring(L, hex.data(), hex.size());
+    return 1;
+}
+
+static int l_SHA1_Raw(lua_State* L) {
+    size_t len = 0;
+    const char* data = luaL_checklstring(L, 1, &len);
+    uint8_t digest[20];
+    LT::Utils::SHA1(reinterpret_cast<const uint8_t*>(data), len, digest);
+    lua_pushlstring(L, reinterpret_cast<const char*>(digest), 20);
+    return 1;
+}
+
+static int l_Crypto_HexEncode(lua_State* L) {
+    size_t len = 0;
+    const char* data = luaL_checklstring(L, 1, &len);
+    bool upper = false;
+    if (!lua_isnoneornil(L, 2)) {
+        luaL_checktype(L, 2, LUA_TBOOLEAN);
+        upper = lua_toboolean(L, 2) != 0;
+    }
+    std::string out = LT::Utils::HexEncode(reinterpret_cast<const uint8_t*>(data), len, upper);
+    lua_pushlstring(L, out.data(), out.size());
+    return 1;
+}
+
+static int l_Crypto_HexDecode(lua_State* L) {
+    size_t len = 0;
+    const char* data = luaL_checklstring(L, 1, &len);
+    std::string out;
+    std::string err;
+    if (!LT::Utils::HexDecode(data, len, out, err)) {
+        lua_pushnil(L);
+        lua_pushlstring(L, err.data(), err.size());
+        return 2;
+    }
+    lua_pushlstring(L, out.data(), out.size());
+    return 1;
+}
+
+static int l_Crypto_CRC32(lua_State* L) {
+    size_t len = 0;
+    const char* data = luaL_checklstring(L, 1, &len);
+    uint32_t crc = LT::Utils::CRC32(reinterpret_cast<const uint8_t*>(data), len);
+    lua_pushnumber(L, static_cast<lua_Number>(crc));
     return 1;
 }
 
@@ -373,6 +428,11 @@ int luaopen_Light_Crypto(lua_State* L) {
         {"SHA256_Raw",      l_SHA256_Raw},
         {"MD5",             l_MD5},
         {"MD5_Raw",         l_MD5_Raw},
+        {"SHA1",            l_SHA1},
+        {"SHA1_Raw",        l_SHA1_Raw},
+        {"HexEncode",       l_Crypto_HexEncode},
+        {"HexDecode",       l_Crypto_HexDecode},
+        {"CRC32",           l_Crypto_CRC32},
         {"AES256_Encrypt",  l_AES256_Encrypt},
         {"AES256_Decrypt",  l_AES256_Decrypt},
         {"Base64Encode",    l_Base64Encode},
