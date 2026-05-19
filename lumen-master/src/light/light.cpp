@@ -522,6 +522,8 @@ static const struct { const char *modName; const char *procName; } g_lightModule
     {"Light.Plugins.WDFData",     "luaopen_Light_Plugins_WDFData"},
     {"Light.Plugins.NEMData",     "luaopen_Light_Plugins_NEMData"},
     {"Light.Plugins.Package",     "luaopen_Light_Plugins_Package"},
+    {"Light.Plugins.TCP",         "luaopen_Light_Plugins_TCP"},
+    {"Light.Plugins.Map",         "luaopen_Light_Plugins_Map"},
     {"Light.Plugins.Codec",       "luaopen_Light_Plugins_Codec"},
     {"Light.Plugins.Path",        "luaopen_Light_Plugins_Path"},
     {"Light.Plugins.UUID",        "luaopen_Light_Plugins_UUID"},

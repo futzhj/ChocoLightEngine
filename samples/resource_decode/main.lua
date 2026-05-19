@@ -92,6 +92,7 @@ function Demo:OnOpen()
     local sep = package.config:sub(1, 1)
     local assets = os.getenv("LIGHT_TEST_ASSETS") or "assets"
 
+    add_message("keys: 1=TCP 2=1001.map 3=mx1001 4=mx1002 ESC=quit")
     load_tcp(assets .. sep .. "鸿鸣.tcp")
     load_map(assets .. sep .. "1001.map")
     load_map(assets .. sep .. "mx_map" .. sep .. "1001.map")
@@ -133,26 +134,6 @@ function Demo:Draw()
         Gfx.Pop()
     end
 
-    if Gfx.Print then
-        local y = 10
-        local function line(text)
-            Gfx.Print(text, 12, y, 0)
-            y = y + 18
-        end
-        line("Resource Decode Demo | 1=TCP 2=1001.map 3=mx1001 4=mx1002 ESC=quit")
-        if entry then
-            local tileText = ""
-            if entry.decodedTiles then
-                tileText = string.format(" tiles=%d/%d", entry.decodedTiles, entry.totalTiles or 0)
-            end
-            line(string.format("Current[%d/%d]: %s  size=%dx%d%s", current, #entries, entry.title, entry.width, entry.height, tileText))
-        else
-            line("No decoded image loaded")
-        end
-        for i = 1, math.min(#messages, 6) do
-            line(messages[i])
-        end
-    end
 end
 
 Demo:Open(WIN_W, WIN_H, "Resource Decode Demo")
