@@ -904,6 +904,10 @@ static int l_Body_Tostring(lua_State* L) {
 
 // ==================== World 实现 ====================
 
+// Phase H.0 — 前向声明 (BulletWorldStepThunk_ 完整实现在 l_World_Step 之后,
+//             但 l_NewWorld 创建时即取地址传入 PhysicsRegistry, 故需前置声明).
+static void BulletWorldStepThunk_(void* worldPtr, double dt);
+
 static int l_NewWorld(lua_State* L) {
     float gx = (float)luaL_optnumber(L, 1, 0.0);
     float gy = (float)luaL_optnumber(L, 2, -9.81);
