@@ -217,6 +217,7 @@ LIGHT_API int luaopen_Light_Plugins(lua_State* L);
 LIGHT_API int luaopen_Light_Plugins_WDFData(lua_State* L);
 LIGHT_API int luaopen_Light_Plugins_NEMData(lua_State* L);
 LIGHT_API int luaopen_Light_Plugins_Codec(lua_State* L);
+LIGHT_API int luaopen_Light_Plugins_Path(lua_State* L);
 
 // 事件子系统 (Phase AR)
 LIGHT_API int luaopen_Light_Event(lua_State* L);
