@@ -161,12 +161,15 @@ while Light.UI.Loop() do Light.UI.Resume() end
 **实际**: 1h. Box2D + Bullet 各自 `l_World_Step` 内插入 throttle warn (limit 3 次).
 **详见**: `docs/Phase H.0.1 Tick-Render Polish/`
 
-### 5.4 GPU 端 alpha 插值 helper ⭐⭐
-**估时**: 3h
-**收益**: Lua 用户少写 lerp 代码; 引擎自动管理 prev/curr Transform.
-**实现要点**:
-- 新增 `Light.Time.LerpTransform(prev, curr, alpha)` (返回 4x4 矩阵).
-- 或 Component 系统自动维护 `Transform.prev` (类似 E.13 Motion Vector).
+### 5.4 alpha 插值 helper ✅ 已完成 (Phase H.0.4, CPU 端)
+**实际**: ~1h (vs 估时 3h, -67% 因去除 4x4 矩阵复杂方案).
+- `Light.Time.Lerp` / `LerpVec2` / `LerpVec3` / `LerpAngle` 4 fn.
+- `t` 缺省自动用 `GetAlpha()` (90% 用户场景一行解决).
+- LerpAngle 短路径 (-π+0.1 → π-0.1 经 -π 不绕远).
+- 不 clamp t (允许 extrapolation 过冲/反向).
+- demo_tick_render 已用 LerpVec2 替换手写.
+- 4x4 矩阵 lerp / quat slerp 留 H.1 Transform component.
+**详见**: `docs/Phase H.0.4 Tick-Render Lerp Helpers/`
 
 ### 5.5 HUD overlay ✅ 已完成 (Phase H.0.1)
 **实际**: 2h. `Light.Time.DrawHUD()` (Lua 实现) + Set/Get HUDEnabled/HUDPosition (C++).

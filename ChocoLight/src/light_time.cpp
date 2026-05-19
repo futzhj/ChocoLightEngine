@@ -844,6 +844,71 @@ int l_Time_IsPaused(lua_State* L) {
     return 1;
 }
 
+// ---------- Phase H.0.4 Lerp helpers ----------
+// 设计:
+//   - t (alpha) 参数可选: 缺省 → 自动用 LT::TickRender::GetAlpha()
+//   - 公式 a + (b - a) * t (避免精度损失 + 少一次乘法)
+//   - 不 clamp t: 允许 extrapolation (t > 1 过冲, t < 0 反向; 是合法用法)
+
+// 内部辅助: 取 t (若 stack idx 处无参或 nil → 用 GetAlpha)
+static inline double LerpT_(lua_State* L, int idx) {
+    return lua_isnoneornil(L, idx) ? LT::TickRender::GetAlpha()
+                                   : (double)luaL_checknumber(L, idx);
+}
+
+// Light.Time.Lerp(a, b [, t]) → a + (b-a)*t
+int l_Time_Lerp(lua_State* L) {
+    double a = luaL_checknumber(L, 1);
+    double b = luaL_checknumber(L, 2);
+    double t = LerpT_(L, 3);
+    lua_pushnumber(L, a + (b - a) * t);
+    return 1;
+}
+
+// Light.Time.LerpVec2(ax, ay, bx, by [, t]) → rx, ry
+int l_Time_LerpVec2(lua_State* L) {
+    double ax = luaL_checknumber(L, 1);
+    double ay = luaL_checknumber(L, 2);
+    double bx = luaL_checknumber(L, 3);
+    double by = luaL_checknumber(L, 4);
+    double t  = LerpT_(L, 5);
+    lua_pushnumber(L, ax + (bx - ax) * t);
+    lua_pushnumber(L, ay + (by - ay) * t);
+    return 2;
+}
+
+// Light.Time.LerpVec3(ax, ay, az, bx, by, bz [, t]) → rx, ry, rz
+int l_Time_LerpVec3(lua_State* L) {
+    double ax = luaL_checknumber(L, 1);
+    double ay = luaL_checknumber(L, 2);
+    double az = luaL_checknumber(L, 3);
+    double bx = luaL_checknumber(L, 4);
+    double by = luaL_checknumber(L, 5);
+    double bz = luaL_checknumber(L, 6);
+    double t  = LerpT_(L, 7);
+    lua_pushnumber(L, ax + (bx - ax) * t);
+    lua_pushnumber(L, ay + (by - ay) * t);
+    lua_pushnumber(L, az + (bz - az) * t);
+    return 3;
+}
+
+// Light.Time.LerpAngle(a, b [, t]) — 弧度, 走最短路径
+// 输入: a, b ∈ ℝ (任意弧度); 内部对差值归一化到 (-π, π].
+// 输出: a + diff_normalized * t  (未必在 [-π, π], 用户可自行 wrap)
+int l_Time_LerpAngle(lua_State* L) {
+    constexpr double kPI    = 3.14159265358979323846;
+    constexpr double kTwoPI = 6.28318530717958647693;
+    double a = luaL_checknumber(L, 1);
+    double b = luaL_checknumber(L, 2);
+    double t = LerpT_(L, 3);
+    double diff = b - a;
+    // 归一化差值到 (-π, π] —— 选最短弧, 防止远跨绕一圈
+    while (diff >  kPI) diff -= kTwoPI;
+    while (diff < -kPI) diff += kTwoPI;
+    lua_pushnumber(L, a + diff * t);
+    return 1;
+}
+
 }  // anonymous namespace
 
 // ===========================================================
@@ -888,6 +953,11 @@ static const luaL_Reg kTimeReg[] = {
     { "Pause",                       l_Time_Pause                       },
     { "Resume",                      l_Time_Resume                      },
     { "IsPaused",                    l_Time_IsPaused                    },
+    // Phase H.0.4 — Lerp helpers (alpha 缺省自动用 GetAlpha)
+    { "Lerp",                        l_Time_Lerp                        },
+    { "LerpVec2",                    l_Time_LerpVec2                    },
+    { "LerpVec3",                    l_Time_LerpVec3                    },
+    { "LerpAngle",                   l_Time_LerpAngle                   },
     { nullptr, nullptr },
 };
 

@@ -4,8 +4,8 @@
 --   1) 双方块对比 alpha 插值:
 --      左方块 — 不用 alpha (每帧渲染 fixed update 后的最新位置)
 --               高 fixedHz / 低 render fps 时直观可见跳动
---      右方块 — 用 alpha = Light.Time.GetAlpha() 做 lerp(prev, curr, alpha)
---               即便 60Hz fixed / 144Hz render 仍平滑
+--      右方块 — 用 Light.Time.LerpVec2 (Phase H.0.4 helper) 做 lerp(prev, curr)
+--               即便 60Hz fixed / 144Hz render 仍平滑; alpha 缺省自动 GetAlpha()
 --   2) Box2D 弹球 (auto-step) — 引擎自动 Step, Lua 不调 world:Step
 --   3) HUD 显示:
 --        fixedHz / actualFPS (1/wallDt) / alpha / lastStepCount / accumulator
@@ -149,9 +149,12 @@ function Demo:Draw()
     Gfx.SetColor(1, 1, 1, 1)
 
     -- ---------- 右方块: 用 alpha 插值 ----------
-    -- lerp(prev, curr, alpha) → 在两个 fixed update 之间平滑插值
-    local alpha = use_alpha and Light.Time.GetAlpha() or 1.0
-    local rx = cube_prev.x + (cube_curr.x - cube_prev.x) * alpha
+    -- Phase H.0.4 — 用 Light.Time.LerpVec2 helper, alpha 缺省自动 GetAlpha()
+    -- 老写法 (手写 lerp): local rx = prev.x + (curr.x - prev.x) * alpha
+    -- 新写法 (一行):
+    local rx, _ = Light.Time.LerpVec2(cube_prev.x, cube_prev.y,
+                                       cube_curr.x, cube_curr.y,
+                                       use_alpha and nil or 1.0)
     Gfx.SetColor(0.4, 0.9, 0.4, 1)
     Gfx.DrawRect(rx - 30, 400, 60, 60)
     Gfx.SetColor(1, 1, 1, 1)

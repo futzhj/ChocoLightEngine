@@ -409,8 +409,94 @@ do
     pass("§13 Pause/Resume 多次切换 ok")
 end
 
+-- ============================================================
+-- §14) Phase H.0.4 — Lerp helpers (Lerp / LerpVec2 / LerpVec3 / LerpAngle)
+-- ============================================================
+do
+    -- API surface
+    for _, k in ipairs({"Lerp", "LerpVec2", "LerpVec3", "LerpAngle"}) do
+        if type(Time[k]) ~= "function" then
+            fail("Light.Time." .. k .. " 缺失 (Phase H.0.4)")
+        end
+    end
+    pass("§14 Lerp/LerpVec2/LerpVec3/LerpAngle 4 fn 完整")
+
+    -- 浮点近似比较 helper (避免精度问题)
+    local function approx(a, b, eps)
+        eps = eps or 1e-9
+        return math.abs(a - b) <= eps
+    end
+
+    -- ----- Lerp(a, b, t) 显式 t -----
+    local r = Time.Lerp(0, 10, 0.3)
+    if not approx(r, 3.0) then fail("Lerp(0,10,0.3) 期 3.0 得 " .. tostring(r)) end
+    pass("§14 Lerp(0,10,0.3)=3.0")
+
+    -- 边界: t=0 → a; t=1 → b
+    if not approx(Time.Lerp(5, 15, 0), 5)  then fail("Lerp(5,15,0)=5 fail") end
+    if not approx(Time.Lerp(5, 15, 1), 15) then fail("Lerp(5,15,1)=15 fail") end
+    pass("§14 Lerp 边界 t=0/1 ok")
+
+    -- 反向 lerp (t < 0)
+    if not approx(Time.Lerp(0, 10, -0.5), -5) then fail("Lerp(0,10,-0.5)=-5 fail (extrapolation)") end
+    pass("§14 Lerp 允许 extrapolation (t<0)")
+
+    -- 过冲 lerp (t > 1)
+    if not approx(Time.Lerp(0, 10, 1.5), 15) then fail("Lerp(0,10,1.5)=15 fail (overshoot)") end
+    pass("§14 Lerp 允许 overshoot (t>1)")
+
+    -- ----- LerpVec2 -----
+    local rx, ry = Time.LerpVec2(0, 0, 10, 20, 0.5)
+    if not (approx(rx, 5) and approx(ry, 10)) then
+        fail(string.format("LerpVec2(0,0,10,20,0.5) 期 (5,10) 得 (%g,%g)", rx, ry))
+    end
+    pass("§14 LerpVec2(0,0,10,20,0.5)=(5,10)")
+
+    -- ----- LerpVec3 -----
+    local rx3, ry3, rz3 = Time.LerpVec3(0, 0, 0, 10, 20, 30, 0.1)
+    if not (approx(rx3, 1) and approx(ry3, 2) and approx(rz3, 3)) then
+        fail(string.format("LerpVec3(0,0,0,10,20,30,0.1) 期 (1,2,3) 得 (%g,%g,%g)", rx3, ry3, rz3))
+    end
+    pass("§14 LerpVec3(0,0,0,10,20,30,0.1)=(1,2,3)")
+
+    -- ----- LerpAngle 短路径 -----
+    local PI = math.pi
+    -- a = -π+0.1, b = π-0.1 (差 ≈ 2π-0.2 ≈ 6.08 长路径; 短路径 ≈ -0.2)
+    -- t=0.5 → a + (-0.1) ≈ -π + 0.0 ≈ -π
+    local ang = Time.LerpAngle(-PI + 0.1, PI - 0.1, 0.5)
+    -- 应为 a + (-0.2)*0.5 = -π+0.1-0.1 = -π
+    if not approx(ang, -PI, 1e-6) then
+        fail(string.format("LerpAngle(-π+0.1, π-0.1, 0.5) 期 ≈ -π 得 %g (短路径 fail)", ang))
+    end
+    pass("§14 LerpAngle 短路径 ok: -π+0.1 → π-0.1 经 -π (不绕远)")
+
+    -- LerpAngle t=0 → a; t=1 → b 等价 (b 已 normalize 后)
+    if not approx(Time.LerpAngle(0, PI/2, 0),    0)    then fail("LerpAngle t=0 fail") end
+    if not approx(Time.LerpAngle(0, PI/2, 1),    PI/2) then fail("LerpAngle t=1 fail") end
+    pass("§14 LerpAngle 边界 t=0/1 ok")
+
+    -- ----- t 缺省自动用 GetAlpha() -----
+    -- alpha 由 BeginFrame 计算, smoke 未调主循环 → alpha=0 (初始 0, FinalizeFrame 未调)
+    -- 所以缺省 t 应 == 0
+    local cur_alpha = Time.GetAlpha()
+    local r_auto = Time.Lerp(100, 200)  -- 缺省 t
+    local r_explicit = Time.Lerp(100, 200, cur_alpha)
+    if not approx(r_auto, r_explicit) then
+        fail(string.format("Lerp 缺省 t 应 == GetAlpha(); auto=%g explicit=%g alpha=%g",
+                           r_auto, r_explicit, cur_alpha))
+    end
+    pass(string.format("§14 Lerp 缺省 t 自动用 GetAlpha()=%g", cur_alpha))
+
+    -- LerpVec2 缺省 t
+    local ax, ay = Time.LerpVec2(0, 0, 100, 200)
+    if not (approx(ax, 100 * cur_alpha) and approx(ay, 200 * cur_alpha)) then
+        fail("LerpVec2 缺省 t 自动 GetAlpha 失败")
+    end
+    pass("§14 LerpVec2 缺省 t 自动用 GetAlpha()")
+end
+
 print("")
-print("=== Phase H.0 + H.0.1 + H.0.2 + H.0.3 Tick-Render smoke: ALL TESTS PASSED ===")
+print("=== Phase H.0 + H.0.1 + H.0.2 + H.0.3 + H.0.4 Tick-Render smoke: ALL TESTS PASSED ===")
 print("Coverage: " .. #fn_names .. " Light.Time fn + Box2D/Bullet SetAutoStep/GetAutoStep")
 print("           + 5 HUD overlay fn + perf budget assertion")
 print("Highlights:")
