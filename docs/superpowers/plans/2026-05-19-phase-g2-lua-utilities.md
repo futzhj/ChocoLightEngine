@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add common Lua utility libraries to ChocoLight with official `Light.*` APIs and compatibility `require("...")` modules.
+**Goal:** Add common Lua utility libraries to ChocoLight with official `Light.Plugins.*` APIs and compatibility `require("...")` modules.
 
 **Architecture:** Build small focused C++ Lua modules for compression, codec, path, UUID, and JSON, then add thin compatibility wrappers for `lfs`, `zlib`, `md5`, `sha1`, `json`, and `uuid`. Reuse existing `Light.Crypto` and `Light.Filesystem` where possible; keep OpenSSL out of the default dependency graph.
 
@@ -15,8 +15,8 @@
 - Do **not** run local CMake builds.
 - Do **not** run local `light.exe` smoke tests.
 - `lightc -p` syntax checks are allowed if a local `lightc.exe` already exists.
-- New `Light.XXX` modules must return a table with `lua_newtable` + `luaL_register(L, nullptr, funcs)` or equivalent.
-- Do **not** use `luaL_register(L, "Light.XXX", funcs)`.
+- New `Light.Plugins.XXX` submodules must attach their table under `Light.Plugins` and return that subtable.
+- Do **not** use `luaL_register(L, "Light.Plugins.XXX", funcs)`.
 - Lua binary string smoke tests must use `string.char(...)`, not `"\xNN"` escapes.
 - Keep OpenSSL as future TODO only; do not add it as a dependency.
 
@@ -26,16 +26,16 @@
 
 - `ChocoLight/src/light_utils_core.h`
   - Shared internal helpers for hex, URL codec, CRC32, SHA1, UUID parsing/formatting, and Lua table registration.
-- `ChocoLight/src/light_compress.cpp`
-  - Official `Light.Compress` module and `zlib` compatibility module.
-- `ChocoLight/src/light_codec.cpp`
-  - Official `Light.Codec` module.
-- `ChocoLight/src/light_path.cpp`
-  - Official `Light.Path` module.
-- `ChocoLight/src/light_uuid.cpp`
-  - Official `Light.UUID` module and `uuid` compatibility module.
-- `ChocoLight/src/light_json.cpp`
-  - Official `Light.JSON` module and `json` compatibility module.
+- `ChocoLight/src/light_plugins_compress.cpp`
+  - Official `Light.Plugins.Compress` module and `zlib` compatibility module.
+- `ChocoLight/src/light_plugins_codec.cpp`
+  - Official `Light.Plugins.Codec` module.
+- `ChocoLight/src/light_plugins_path.cpp`
+  - Official `Light.Plugins.Path` module.
+- `ChocoLight/src/light_plugins_uuid.cpp`
+  - Official `Light.Plugins.UUID` module and `uuid` compatibility module.
+- `ChocoLight/src/light_plugins_json.cpp`
+  - Official `Light.Plugins.JSON` module and `json` compatibility module.
 - `ChocoLight/src/light_lua_compat.cpp`
   - `lfs`, `md5`, and `sha1` compatibility modules.
 
@@ -44,7 +44,7 @@
 - `ChocoLight/CMakeLists.txt`
   - Add miniz FetchContent source and new module sources.
 - `ChocoLight/include/light.h`
-  - Add `luaopen_Light_Compress`, `luaopen_Light_Codec`, `luaopen_Light_Path`, `luaopen_Light_UUID`, `luaopen_Light_JSON`.
+  - Add `luaopen_Light_Plugins_Compress`, `luaopen_Light_Plugins_Codec`, `luaopen_Light_Plugins_Path`, `luaopen_Light_Plugins_UUID`, `luaopen_Light_Plugins_JSON`.
   - Add compatibility exports: `luaopen_lfs`, `luaopen_zlib`, `luaopen_md5`, `luaopen_sha1`, `luaopen_json`, `luaopen_uuid`.
 - `lumen-master/src/light/light.cpp`
   - Add Windows preload entries for official and compatibility modules.
@@ -66,7 +66,7 @@
 
 - `.github/workflows/build-templates.yml`
   - Register the new smoke scripts in Windows runtime smoke.
-- `docs/api/Light_Utilities.md`
+- `docs/api/Light_Plugins.md`
   - Add user-facing API documentation for the new utility modules.
 - `docs/Phase G.2 Lua Utilities/ACCEPTANCE_PhaseG_2.md`
 - `docs/Phase G.2 Lua Utilities/FINAL_PhaseG_2.md`
@@ -108,7 +108,8 @@ std::string JoinPathParts(lua_State* L, int firstArg, int lastArg);
 std::string NormalizePath(const std::string& path, char sep);
 bool ParseUUID(const char* text, size_t len, uint8_t out16[16]);
 std::string FormatUUID(const uint8_t raw16[16]);
-void RegisterTable(lua_State* L, const luaL_Reg* funcs);
+void RegisterPlainTable(lua_State* L, const luaL_Reg* funcs);
+void RegisterPluginsSubmodule(lua_State* L, const char* name, const luaL_Reg* funcs);
 
 }
 ```
@@ -122,10 +123,13 @@ Keep functions small and deterministic:
 - `URLDecode` rejects malformed `%` escapes.
 - `CRC32` implements standard polynomial `0xEDB88320` and accepts a seed for zlib compatibility.
 - `SHA1` is a compact local implementation because current `tiny_hash` only exposes MD5/SHA256 in existing usage.
-- `RegisterTable` does:
+- `RegisterPlainTable` is only for compatibility modules such as `json`, `uuid`, `zlib`, `lfs`, `md5`, and `sha1`.
+- `RegisterPluginsSubmodule` follows the existing `Light.Plugins.WDFData` pattern: ensure `Light`, ensure `Light.Plugins`, create or reuse `Light.Plugins[name]`, register functions on that subtable, and leave the subtable on top of the Lua stack.
+
+`RegisterPlainTable` does:
 
 ```cpp
-inline void RegisterTable(lua_State* L, const luaL_Reg* funcs) {
+inline void RegisterPlainTable(lua_State* L, const luaL_Reg* funcs) {
     lua_newtable(L);
     luaL_register(L, nullptr, funcs);
 }
@@ -150,10 +154,10 @@ git commit -m "feat: add shared Lua utilities helpers"
 
 ---
 
-## Task 2: Add `Light.Codec`
+## Task 2: Add `Light.Plugins.Codec`
 
 **Files:**
-- Create: `ChocoLight/src/light_codec.cpp`
+- Create: `ChocoLight/src/light_plugins_codec.cpp`
 - Modify: `ChocoLight/CMakeLists.txt`
 - Modify: `ChocoLight/include/light.h`
 - Modify: `lumen-master/src/light/light.cpp`
@@ -164,7 +168,8 @@ git commit -m "feat: add shared Lua utilities helpers"
 Create `scripts/smoke/codec.lua`:
 
 ```lua
-local Codec = require("Light.Codec")
+local Codec = require("Light.Plugins.Codec")
+assert(Light.Plugins.Codec == Codec)
 assert(type(Codec) == "table")
 assert(type(Codec.HexEncode) == "function")
 assert(type(Codec.HexDecode) == "function")
@@ -194,10 +199,10 @@ print("[smoke] codec ok")
 
 - [ ] **Step 2: Add module implementation**
 
-Create `ChocoLight/src/light_codec.cpp` exposing:
+Create `ChocoLight/src/light_plugins_codec.cpp` exposing:
 
 ```cpp
-extern "C" LIGHT_API int luaopen_Light_Codec(lua_State* L);
+extern "C" LIGHT_API int luaopen_Light_Plugins_Codec(lua_State* L);
 ```
 
 Functions:
@@ -209,10 +214,10 @@ Functions:
 - `URLEncode(text)` uses `LT::Utils::URLEncode`.
 - `URLDecode(text)` uses `LT::Utils::URLDecode`.
 
-Module registration must be:
+Module registration must attach to `Light.Plugins.Codec`:
 
 ```cpp
-extern "C" LIGHT_API int luaopen_Light_Codec(lua_State* L) {
+extern "C" LIGHT_API int luaopen_Light_Plugins_Codec(lua_State* L) {
     static const luaL_Reg funcs[] = {
         {"Base64Encode", l_Base64Encode},
         {"Base64Decode", l_Base64Decode},
@@ -222,7 +227,7 @@ extern "C" LIGHT_API int luaopen_Light_Codec(lua_State* L) {
         {"URLDecode",    l_URLDecode},
         {nullptr, nullptr}
     };
-    LT::Utils::RegisterTable(L, funcs);
+    LT::Utils::RegisterPluginsSubmodule(L, "Codec", funcs);
     return 1;
 }
 ```
@@ -232,25 +237,25 @@ extern "C" LIGHT_API int luaopen_Light_Codec(lua_State* L) {
 Modify `ChocoLight/CMakeLists.txt` source list near `light_crypto.cpp`:
 
 ```cmake
-${CHOCO_SRC}/light_codec.cpp
+${CHOCO_SRC}/light_plugins_codec.cpp
 ```
 
 Modify `ChocoLight/include/light.h` inside `extern "C"`:
 
 ```cpp
-LIGHT_API int luaopen_Light_Codec(lua_State* L);
+LIGHT_API int luaopen_Light_Plugins_Codec(lua_State* L);
 ```
 
 Modify `lumen-master/src/light/light.cpp` `g_lightModules` near `Light.Crypto`:
 
 ```cpp
-{"Light.Codec",               "luaopen_Light_Codec"},
+{"Light.Plugins.Codec",               "luaopen_Light_Plugins_Codec"},
 ```
 
 - [ ] **Step 4: Syntax/static checks**
 
 ```powershell
-git diff --check -- ChocoLight/src/light_codec.cpp ChocoLight/CMakeLists.txt ChocoLight/include/light.h lumen-master/src/light/light.cpp scripts/smoke/codec.lua
+git diff --check -- ChocoLight/src/light_plugins_codec.cpp ChocoLight/CMakeLists.txt ChocoLight/include/light.h lumen-master/src/light/light.cpp scripts/smoke/codec.lua
 ```
 
 If local `lightc.exe` exists, run syntax only:
@@ -264,8 +269,8 @@ Expected: syntax success. Do not run `light.exe`.
 - [ ] **Step 5: Commit**
 
 ```powershell
-git add -- ChocoLight/src/light_codec.cpp ChocoLight/CMakeLists.txt ChocoLight/include/light.h lumen-master/src/light/light.cpp scripts/smoke/codec.lua
-git commit -m "feat: add Light.Codec utilities"
+git add -- ChocoLight/src/light_plugins_codec.cpp ChocoLight/CMakeLists.txt ChocoLight/include/light.h lumen-master/src/light/light.cpp scripts/smoke/codec.lua
+git commit -m "feat: add Light.Plugins.Codec utilities"
 ```
 
 ---
@@ -327,10 +332,10 @@ git commit -m "feat: extend Light.Crypto utility hashes"
 
 ---
 
-## Task 4: Add `Light.Path`
+## Task 4: Add `Light.Plugins.Path`
 
 **Files:**
-- Create: `ChocoLight/src/light_path.cpp`
+- Create: `ChocoLight/src/light_plugins_path.cpp`
 - Modify: `ChocoLight/CMakeLists.txt`
 - Modify: `ChocoLight/include/light.h`
 - Modify: `lumen-master/src/light/light.cpp`
@@ -341,7 +346,8 @@ git commit -m "feat: extend Light.Crypto utility hashes"
 Create `scripts/smoke/path.lua`:
 
 ```lua
-local Path = require("Light.Path")
+local Path = require("Light.Plugins.Path")
+assert(Light.Plugins.Path == Path)
 assert(type(Path.Join) == "function")
 assert(type(Path.Normalize) == "function")
 assert(type(Path.Basename) == "function")
@@ -367,7 +373,7 @@ print("[smoke] path ok")
 
 - [ ] **Step 2: Implement path string module**
 
-Create `light_path.cpp` with pure string functions. Do not call filesystem APIs.
+Create `light_plugins_path.cpp` with pure string functions. Do not call filesystem APIs.
 
 Functions:
 
@@ -380,44 +386,45 @@ Functions:
 - `IsAbsolute(path)`
 - `Split(path)`
 - `Separator()`
+- `luaopen_Light_Plugins_Path` attaches to `Light.Plugins.Path`.
 
 - [ ] **Step 3: Register build and preload**
 
 Add source:
 
 ```cmake
-${CHOCO_SRC}/light_path.cpp
+${CHOCO_SRC}/light_plugins_path.cpp
 ```
 
 Add export:
 
 ```cpp
-LIGHT_API int luaopen_Light_Path(lua_State* L);
+LIGHT_API int luaopen_Light_Plugins_Path(lua_State* L);
 ```
 
 Add preload:
 
 ```cpp
-{"Light.Path",                "luaopen_Light_Path"},
+{"Light.Plugins.Path",                "luaopen_Light_Plugins_Path"},
 ```
 
 - [ ] **Step 4: Static checks and commit**
 
 ```powershell
-git diff --check -- ChocoLight/src/light_path.cpp ChocoLight/CMakeLists.txt ChocoLight/include/light.h lumen-master/src/light/light.cpp scripts/smoke/path.lua
+git diff --check -- ChocoLight/src/light_plugins_path.cpp ChocoLight/CMakeLists.txt ChocoLight/include/light.h lumen-master/src/light/light.cpp scripts/smoke/path.lua
 ```
 
 ```powershell
-git add -- ChocoLight/src/light_path.cpp ChocoLight/CMakeLists.txt ChocoLight/include/light.h lumen-master/src/light/light.cpp scripts/smoke/path.lua
-git commit -m "feat: add Light.Path utilities"
+git add -- ChocoLight/src/light_plugins_path.cpp ChocoLight/CMakeLists.txt ChocoLight/include/light.h lumen-master/src/light/light.cpp scripts/smoke/path.lua
+git commit -m "feat: add Light.Plugins.Path utilities"
 ```
 
 ---
 
-## Task 5: Add `Light.UUID` and `uuid` compatibility module
+## Task 5: Add `Light.Plugins.UUID` and `uuid` compatibility module
 
 **Files:**
-- Create: `ChocoLight/src/light_uuid.cpp`
+- Create: `ChocoLight/src/light_plugins_uuid.cpp`
 - Modify: `ChocoLight/CMakeLists.txt`
 - Modify: `ChocoLight/include/light.h`
 - Modify: `lumen-master/src/light/light.cpp`
@@ -428,7 +435,8 @@ git commit -m "feat: add Light.Path utilities"
 Create `scripts/smoke/uuid.lua`:
 
 ```lua
-local UUID = require("Light.UUID")
+local UUID = require("Light.Plugins.UUID")
+assert(Light.Plugins.UUID == UUID)
 assert(type(UUID.V4) == "function")
 assert(type(UUID.IsValid) == "function")
 assert(type(UUID.Parse) == "function")
@@ -453,53 +461,54 @@ print("[smoke] uuid ok")
 
 - [ ] **Step 2: Implement UUID module**
 
-Create `light_uuid.cpp`:
+Create `light_plugins_uuid.cpp`:
 
-- `Light.UUID.V4()` generates 16 bytes, sets UUID v4 version and variant bits, returns canonical lowercase string.
-- `Light.UUID.IsValid(s)` checks canonical form.
-- `Light.UUID.Parse(s)` returns raw 16 bytes or `nil, err`.
-- `Light.UUID.Format(raw16)` returns canonical string or `nil, err`.
+- `Light.Plugins.UUID.V4()` generates 16 bytes, sets UUID v4 version and variant bits, returns canonical lowercase string.
+- `Light.Plugins.UUID.IsValid(s)` checks canonical form.
+- `Light.Plugins.UUID.Parse(s)` returns raw 16 bytes or `nil, err`.
+- `Light.Plugins.UUID.Format(raw16)` returns canonical string or `nil, err`.
 - `luaopen_uuid` exposes `{ v4 = ..., is_valid = ... }` thin wrappers.
+- `luaopen_Light_Plugins_UUID` attaches to `Light.Plugins.UUID`; `luaopen_uuid` returns a plain compatibility table.
 
 - [ ] **Step 3: Register official and compatibility modules**
 
 Add source:
 
 ```cmake
-${CHOCO_SRC}/light_uuid.cpp
+${CHOCO_SRC}/light_plugins_uuid.cpp
 ```
 
 Add exports:
 
 ```cpp
-LIGHT_API int luaopen_Light_UUID(lua_State* L);
+LIGHT_API int luaopen_Light_Plugins_UUID(lua_State* L);
 LIGHT_API int luaopen_uuid(lua_State* L);
 ```
 
 Add preload entries:
 
 ```cpp
-{"Light.UUID",                "luaopen_Light_UUID"},
+{"Light.Plugins.UUID",                "luaopen_Light_Plugins_UUID"},
 {"uuid",                      "luaopen_uuid"},
 ```
 
 - [ ] **Step 4: Static checks and commit**
 
 ```powershell
-git diff --check -- ChocoLight/src/light_uuid.cpp ChocoLight/CMakeLists.txt ChocoLight/include/light.h lumen-master/src/light/light.cpp scripts/smoke/uuid.lua
+git diff --check -- ChocoLight/src/light_plugins_uuid.cpp ChocoLight/CMakeLists.txt ChocoLight/include/light.h lumen-master/src/light/light.cpp scripts/smoke/uuid.lua
 ```
 
 ```powershell
-git add -- ChocoLight/src/light_uuid.cpp ChocoLight/CMakeLists.txt ChocoLight/include/light.h lumen-master/src/light/light.cpp scripts/smoke/uuid.lua
-git commit -m "feat: add Light.UUID and uuid compat module"
+git add -- ChocoLight/src/light_plugins_uuid.cpp ChocoLight/CMakeLists.txt ChocoLight/include/light.h lumen-master/src/light/light.cpp scripts/smoke/uuid.lua
+git commit -m "feat: add Light.Plugins.UUID and uuid compat module"
 ```
 
 ---
 
-## Task 6: Add `Light.JSON` and `json` compatibility module
+## Task 6: Add `Light.Plugins.JSON` and `json` compatibility module
 
 **Files:**
-- Create: `ChocoLight/src/light_json.cpp`
+- Create: `ChocoLight/src/light_plugins_json.cpp`
 - Modify: `ChocoLight/CMakeLists.txt`
 - Modify: `ChocoLight/include/light.h`
 - Modify: `lumen-master/src/light/light.cpp`
@@ -510,7 +519,8 @@ git commit -m "feat: add Light.UUID and uuid compat module"
 Create `scripts/smoke/json.lua`:
 
 ```lua
-local JSON = require("Light.JSON")
+local JSON = require("Light.Plugins.JSON")
+assert(Light.Plugins.JSON == JSON)
 assert(type(JSON.Encode) == "function")
 assert(type(JSON.Decode) == "function")
 assert(type(JSON.Null) == "function")
@@ -541,55 +551,56 @@ print("[smoke] json ok")
 
 - [ ] **Step 2: Implement cJSON conversion**
 
-Create `light_json.cpp`:
+Create `light_plugins_json.cpp`:
 
 - Include `cJSON.h`.
 - `Encode(value [, options])` converts Lua values to cJSON.
 - `Decode(text)` parses cJSON to Lua values.
-- JSON null maps to a sentinel table returned by `Light.JSON.Null()`.
+- JSON null maps to a sentinel table returned by `Light.Plugins.JSON.Null()`.
 - `IsNull(value)` checks the sentinel.
 - Detect table cycles with a registry stack/table to avoid infinite recursion.
 - Keep array/object detection explicit: continuous integer keys `1..n` with no other keys means array.
+- `luaopen_Light_Plugins_JSON` attaches to `Light.Plugins.JSON`; `luaopen_json` returns a plain compatibility table.
 
 - [ ] **Step 3: Register modules**
 
 Add source:
 
 ```cmake
-${CHOCO_SRC}/light_json.cpp
+${CHOCO_SRC}/light_plugins_json.cpp
 ```
 
 Add exports:
 
 ```cpp
-LIGHT_API int luaopen_Light_JSON(lua_State* L);
+LIGHT_API int luaopen_Light_Plugins_JSON(lua_State* L);
 LIGHT_API int luaopen_json(lua_State* L);
 ```
 
 Add preload entries:
 
 ```cpp
-{"Light.JSON",                "luaopen_Light_JSON"},
+{"Light.Plugins.JSON",                "luaopen_Light_Plugins_JSON"},
 {"json",                      "luaopen_json"},
 ```
 
 - [ ] **Step 4: Static checks and commit**
 
 ```powershell
-git diff --check -- ChocoLight/src/light_json.cpp ChocoLight/CMakeLists.txt ChocoLight/include/light.h lumen-master/src/light/light.cpp scripts/smoke/json.lua
+git diff --check -- ChocoLight/src/light_plugins_json.cpp ChocoLight/CMakeLists.txt ChocoLight/include/light.h lumen-master/src/light/light.cpp scripts/smoke/json.lua
 ```
 
 ```powershell
-git add -- ChocoLight/src/light_json.cpp ChocoLight/CMakeLists.txt ChocoLight/include/light.h lumen-master/src/light/light.cpp scripts/smoke/json.lua
-git commit -m "feat: add Light.JSON and json compat module"
+git add -- ChocoLight/src/light_plugins_json.cpp ChocoLight/CMakeLists.txt ChocoLight/include/light.h lumen-master/src/light/light.cpp scripts/smoke/json.lua
+git commit -m "feat: add Light.Plugins.JSON and json compat module"
 ```
 
 ---
 
-## Task 7: Add miniz-backed `Light.Compress` and `zlib` compatibility module
+## Task 7: Add miniz-backed `Light.Plugins.Compress` and `zlib` compatibility module
 
 **Files:**
-- Create: `ChocoLight/src/light_compress.cpp`
+- Create: `ChocoLight/src/light_plugins_compress.cpp`
 - Modify: `ChocoLight/CMakeLists.txt`
 - Modify: `ChocoLight/include/light.h`
 - Modify: `lumen-master/src/light/light.cpp`
@@ -600,7 +611,8 @@ git commit -m "feat: add Light.JSON and json compat module"
 Create `scripts/smoke/compress.lua`:
 
 ```lua
-local Compress = require("Light.Compress")
+local Compress = require("Light.Plugins.Compress")
+assert(Light.Plugins.Compress == Compress)
 assert(type(Compress.Compress) == "function")
 assert(type(Compress.Decompress) == "function")
 assert(type(Compress.Deflate) == "function")
@@ -646,7 +658,7 @@ message(STATUS "miniz: integrated via FetchContent (3.0.2)")
 Add to `LIGHT_SOURCES`:
 
 ```cmake
-${CHOCO_SRC}/light_compress.cpp
+${CHOCO_SRC}/light_plugins_compress.cpp
 ${miniz_SOURCE_DIR}/miniz.c
 ```
 
@@ -658,7 +670,7 @@ ${miniz_SOURCE_DIR}
 
 - [ ] **Step 3: Implement compression module**
 
-Create `light_compress.cpp` using `miniz.h`:
+Create `light_plugins_compress.cpp` using `miniz.h`:
 
 - `Compress(data [, level])` uses zlib wrapper output.
 - `Decompress(data)` grows output buffer until success or a safe maximum.
@@ -668,32 +680,33 @@ Create `light_compress.cpp` using `miniz.h`:
 - `Adler32(data)` uses miniz if available, otherwise local standard implementation.
 - `Version()` returns miniz version string.
 - `luaopen_zlib` exposes lowercase wrappers.
+- `luaopen_Light_Plugins_Compress` attaches to `Light.Plugins.Compress`; `luaopen_zlib` returns a plain compatibility table.
 
 - [ ] **Step 4: Register official and compatibility modules**
 
 Add exports:
 
 ```cpp
-LIGHT_API int luaopen_Light_Compress(lua_State* L);
+LIGHT_API int luaopen_Light_Plugins_Compress(lua_State* L);
 LIGHT_API int luaopen_zlib(lua_State* L);
 ```
 
 Add preload entries:
 
 ```cpp
-{"Light.Compress",            "luaopen_Light_Compress"},
+{"Light.Plugins.Compress",            "luaopen_Light_Plugins_Compress"},
 {"zlib",                      "luaopen_zlib"},
 ```
 
 - [ ] **Step 5: Static checks and commit**
 
 ```powershell
-git diff --check -- ChocoLight/src/light_compress.cpp ChocoLight/CMakeLists.txt ChocoLight/include/light.h lumen-master/src/light/light.cpp scripts/smoke/compress.lua
+git diff --check -- ChocoLight/src/light_plugins_compress.cpp ChocoLight/CMakeLists.txt ChocoLight/include/light.h lumen-master/src/light/light.cpp scripts/smoke/compress.lua
 ```
 
 ```powershell
-git add -- ChocoLight/src/light_compress.cpp ChocoLight/CMakeLists.txt ChocoLight/include/light.h lumen-master/src/light/light.cpp scripts/smoke/compress.lua
-git commit -m "feat: add Light.Compress and zlib compat module"
+git add -- ChocoLight/src/light_plugins_compress.cpp ChocoLight/CMakeLists.txt ChocoLight/include/light.h lumen-master/src/light/light.cpp scripts/smoke/compress.lua
+git commit -m "feat: add Light.Plugins.Compress and zlib compat module"
 ```
 
 ---
@@ -858,7 +871,7 @@ git commit -m "ci: add Phase G.2 Lua utilities smokes"
 ## Task 10: Add API and acceptance documentation
 
 **Files:**
-- Create: `docs/api/Light_Utilities.md`
+- Create: `docs/api/Light_Plugins.md`
 - Create: `docs/Phase G.2 Lua Utilities/ACCEPTANCE_PhaseG_2.md`
 - Create: `docs/Phase G.2 Lua Utilities/FINAL_PhaseG_2.md`
 - Create: `docs/Phase G.2 Lua Utilities/TODO_PhaseG_2.md`
@@ -867,12 +880,12 @@ git commit -m "ci: add Phase G.2 Lua utilities smokes"
 
 Document:
 
-- `Light.Codec`
+- `Light.Plugins.Codec`
 - `Light.Crypto` new helpers
-- `Light.Path`
-- `Light.UUID`
-- `Light.JSON`
-- `Light.Compress`
+- `Light.Plugins.Path`
+- `Light.Plugins.UUID`
+- `Light.Plugins.JSON`
+- `Light.Plugins.Compress`
 - compatibility modules `lfs`, `zlib`, `md5`, `sha1`, `json`, `uuid`
 
 Include concise examples using `string.char(...)` for binary data.
@@ -903,7 +916,7 @@ Record expected checks:
 - [ ] **Step 4: Commit**
 
 ```powershell
-git add -- docs/api/Light_Utilities.md "docs/Phase G.2 Lua Utilities/ACCEPTANCE_PhaseG_2.md" "docs/Phase G.2 Lua Utilities/FINAL_PhaseG_2.md" "docs/Phase G.2 Lua Utilities/TODO_PhaseG_2.md"
+git add -- docs/api/Light_Plugins.md "docs/Phase G.2 Lua Utilities/ACCEPTANCE_PhaseG_2.md" "docs/Phase G.2 Lua Utilities/FINAL_PhaseG_2.md" "docs/Phase G.2 Lua Utilities/TODO_PhaseG_2.md"
 git commit -m "docs: add Phase G.2 Lua utilities documentation"
 ```
 
@@ -965,7 +978,7 @@ No implementation step depends on an unresolved design decision. Deferred items 
 
 ### Type consistency
 
-- Official module names use uppercase ChocoLight style: `Light.JSON`, `Light.UUID`.
+- Official module names use uppercase ChocoLight style: `Light.Plugins.JSON`, `Light.Plugins.UUID`.
 - Compatibility module names use lowercase Lua ecosystem style: `json`, `uuid`, `zlib`, `lfs`, `md5`, `sha1`.
 - Hash raw functions return Lua binary strings via `lua_pushlstring`.
 - Runtime failures return `nil, err`; argument type errors use `luaL_check*`.

@@ -11,7 +11,7 @@ ChocoLight 当前已经提供大量 `Light.*` 引擎模块，并已有 `Light.Cr
 
 本阶段目标是补齐 Lua 常用工具库能力，并采用“双轨兼容”策略：
 
-1. **正式 API** 放在 `Light.*` 命名空间下，保持 ChocoLight 风格。
+1. **正式 API** 放在 `Light.Plugins.*` 命名空间下，保持 ChocoLight 插件风格。
 2. **兼容 API** 支持常见 Lua 包名，方便迁移既有 Lua 生态代码。
 3. **本期默认不接 OpenSSL**，避免跨平台 CI、移动端、Web 端构建复杂度上升。
 4. 继续遵守 ChocoLight 现有工作流：不本地 CMake build，不本地运行 `light.exe` smoke；提交后由 GitHub Actions 验证。
@@ -22,13 +22,13 @@ Phase G.2 按三段实施，避免一次性引入过大改动。
 
 ### 2.1 Phase G.2.0 Core Utils
 
-补齐正式 `Light.*` API：
+补齐正式 `Light.Plugins.*` API：
 
-- `Light.Compress`
-- `Light.Codec`
-- `Light.Path`
-- `Light.UUID`
-- `Light.JSON`
+- `Light.Plugins.Compress`
+- `Light.Plugins.Codec`
+- `Light.Plugins.Path`
+- `Light.Plugins.UUID`
+- `Light.Plugins.JSON`
 - 增强 `Light.Crypto`
 - 增强 `Light.Filesystem`
 
@@ -36,7 +36,7 @@ Phase G.2 按三段实施，避免一次性引入过大改动。
 
 ### 2.2 Phase G.2.1 Lua Compat Layer
 
-在 `Light.*` 能力稳定后，增加 Lua 生态兼容入口：
+在 `Light.Plugins.*` 能力稳定后，增加 Lua 生态兼容入口：
 
 - `require("lfs")`
 - `require("zlib")`
@@ -45,7 +45,7 @@ Phase G.2 按三段实施，避免一次性引入过大改动。
 - `require("json")`
 - `require("uuid")`
 
-兼容层只做薄封装，优先转发到 `Light.*`，避免两套实现分叉。
+兼容层只做薄封装，优先转发到 `Light.Plugins.*`，避免两套实现分叉。
 
 ### 2.3 Phase G.2.2 Extended Utils
 
@@ -62,7 +62,7 @@ OpenSSL 不进入默认依赖，仅作为后续可选模块候选，例如 `Ligh
 
 ## 3. API 设计
 
-### 3.1 `Light.Compress`
+### 3.1 `Light.Plugins.Compress`
 
 职责：压缩、解压与 CRC 校验。
 
@@ -82,7 +82,7 @@ OpenSSL 不进入默认依赖，仅作为后续可选模块候选，例如 `Ligh
 - 压缩等级 clamp 到库支持范围。
 - 二进制输入输出全部使用 Lua string，测试中用 `string.char()` 构造字节数据。
 
-### 3.2 `Light.Codec`
+### 3.2 `Light.Plugins.Codec`
 
 职责：文本/二进制编码工具。
 
@@ -123,8 +123,8 @@ OpenSSL 不进入默认依赖，仅作为后续可选模块候选，例如 `Ligh
 
 - `SHA1(data) -> string`
 - `SHA1_Raw(data) -> string`
-- `CRC32(data) -> integer`，可转发 `Light.Compress.CRC32`
-- `HexEncode(data [, upper]) -> string`，可转发 `Light.Codec.HexEncode`
+- `CRC32(data) -> integer`，可转发 `Light.Plugins.Compress.CRC32`
+- `HexEncode(data [, upper]) -> string`，可转发 `Light.Plugins.Codec.HexEncode`
 - `HexDecode(hex) -> string | nil, err`
 
 可选延后：
@@ -134,7 +134,7 @@ OpenSSL 不进入默认依赖，仅作为后续可选模块候选，例如 `Ligh
 
 OpenSSL 不作为默认实现来源。
 
-### 3.4 `Light.Path`
+### 3.4 `Light.Plugins.Path`
 
 职责：纯字符串路径处理，不执行文件系统 IO。
 
@@ -156,7 +156,7 @@ OpenSSL 不作为默认实现来源。
 - `Normalize` 处理 `.`、`..`、重复分隔符。
 - 不访问磁盘，避免与 `Light.Filesystem` 职责重叠。
 
-### 3.5 `Light.UUID`
+### 3.5 `Light.Plugins.UUID`
 
 职责：UUID 生成与校验。
 
@@ -173,7 +173,7 @@ OpenSSL 不作为默认实现来源。
 - 设置 UUID v4 的 version/variant 位。
 - `Parse` 支持标准 36 字符格式。
 
-### 3.6 `Light.JSON`
+### 3.6 `Light.Plugins.JSON`
 
 职责：Lua table 与 JSON 文本互转。
 
@@ -190,7 +190,7 @@ OpenSSL 不作为默认实现来源。
 - Lua nil 不可作为数组元素直接编码；object 字段为 nil 时跳过。
 - array 判定：连续正整数键 `1..n` 且无其他键。
 - object 判定：其他 table 作为 JSON object，key 必须可转字符串。
-- JSON null 解码为 `Light.JSON.Null()` sentinel，避免与 Lua nil 混淆。
+- JSON null 解码为 `Light.Plugins.JSON.Null()` sentinel，避免与 Lua nil 混淆。
 
 实现建议：
 
@@ -281,24 +281,27 @@ OpenSSL 不作为默认实现来源。
 - `uuid.v4()`
 - `uuid.is_valid(s)`
 
-薄封装 `Light.UUID`。
+薄封装 `Light.Plugins.UUID`。
 
 ## 5. 模块注册与加载
 
 ### 5.1 正式模块
 
-新增 `Light.*` 模块应加入：
+新增 `Light.Plugins.*` 子模块应加入：
 
 - `ChocoLight/src/*.cpp`
 - `ChocoLight/CMakeLists.txt`
 - `ChocoLight/include/light.h` 声明，若项目决定继续维护权威声明表
 - `lumen-master/src/light/light.cpp` 的 `g_lightModules`
 
-注册方式必须避开 ChocoLight OOP 根对象陷阱：
+注册方式必须避开 ChocoLight OOP 根对象陷阱，并沿用现有 `Light.Plugins.WDFData` 模式：
 
-- 使用 `lua_newtable + luaL_setfuncs`
-- 或 `luaL_register(L, NULL, funcs)`
-- 不使用 `luaL_register(L, "Light.XXX", funcs)`
+- 先 `LT::EnsureLightTable(L)`
+- 确保 `Light.Plugins` 父表存在
+- 创建或复用 `Light.Plugins.Xxx` 子表
+- 在子表上使用 `luaL_setfuncs` 或 `luaL_register(L, NULL, funcs)` 注册函数
+- 返回该子表，保证 `require("Light.Plugins.Xxx")` 与 `Light.Plugins.Xxx` 指向一致
+- 不使用 `luaL_register(L, "Light.Plugins.XXX", funcs)`
 
 ### 5.2 兼容模块
 
@@ -320,7 +323,7 @@ OpenSSL 不作为默认实现来源。
 - `json`
 - `uuid`
 
-兼容模块内部可以直接调用共享 helper，或通过 C++ helper 层复用 `Light.*` 底层实现，不依赖 Lua 层 `require("Light.X")`，避免加载顺序问题。
+兼容模块内部可以直接调用共享 helper，或通过 C++ helper 层复用 `Light.Plugins.*` 底层实现，不依赖 Lua 层 `require("Light.Plugins.X")`，避免加载顺序问题。
 
 ## 6. 错误处理策略
 
@@ -395,7 +398,7 @@ API 文档应同步到现有 API reference 或 `docs/api` 下相应文件。
 
 Phase G.2 完成后应满足：
 
-1. `Light.Compress/Codec/Path/UUID/JSON` 可正常 require 并使用。
+1. `Light.Plugins.Compress/Codec/Path/UUID/JSON` 可正常 require 并使用。
 2. `Light.Crypto` 与 `Light.Filesystem` 得到必要增强。
 3. `require("lfs")/require("zlib")/require("md5")/require("sha1")/require("json")/require("uuid")` 可用。
 4. 所有新增 smoke 在 GitHub Actions Windows runtime smoke 通过。
