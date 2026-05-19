@@ -332,8 +332,11 @@ jobs:
           path: dist/linux-x64/
 
   # ==================== macOS (Universal) ====================
+  # 注: 锁定 macos-14 (Xcode 15 + macOS 14 SDK) 以规避 macos-15 image 中
+  # Xcode 16.4 SDK math.h 声明 _Float16 数学内置函数, 而 GitHub Actions runner
+  # 默认 target 不支持 fp16, 导致 libwebp sharpyuv_csp.c 等 .c 文件编不过.
   build-macos:
-    runs-on: macos-latest
+    runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
 
@@ -483,8 +486,9 @@ jobs:
           if-no-files-found: error
 
   # ==================== iOS (.app unsigned) ====================
+  # 注: 与 build-macos 同步锁 macos-14, 避免 image 漂移引入回归.
   build-ios:
-    runs-on: macos-latest
+    runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
 
