@@ -1,6 +1,6 @@
 # Phase G.3 — 资源格式插件集成 (ACCEPTANCE)
 
-> **依赖**: [ALIGNMENT](ALIGNMENT_PhaseG_3.md) · [DESIGN](DESIGN_PhaseG_3.md) · [TASK](TASK_PhaseG_3.md)  
+> **依赖**: [ALIGNMENT](ALIGNMENT_PhaseG_3.md) · [DESIGN](DESIGN_PhaseG_3.md) · [TASK](TASK_PhaseG_3.md)
 > **状态**: 设计阶段创建，执行阶段逐项回填
 
 ---

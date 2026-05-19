@@ -1,7 +1,7 @@
 # Phase G.3 — 资源格式插件集成 (ALIGNMENT)
 
-> **创建日期**: 2026-05-19  
-> **状态**: Align 阶段  
+> **创建日期**: 2026-05-19
+> **状态**: Align 阶段
 > **目标**: 将外部 WDF/WPK/FLS/IGS/TCP/MAP 解析能力以 ChocoLight 插件形式纳入引擎
 
 ---
@@ -151,7 +151,7 @@ E:\jinyiNew\Light\assets
 
 ### D1 ｜ NXPK/MHWD 范围
 
-**决策**：不支持。  
+**决策**：不支持。
 **处理方式**：如果探测到对应 magic，返回明确错误：
 
 ```lua

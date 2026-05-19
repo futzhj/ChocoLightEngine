@@ -1,7 +1,7 @@
 # Phase G.3 — 资源格式插件集成 (DESIGN)
 
-> **创建日期**: 2026-05-19  
-> **依赖**: [ALIGNMENT_PhaseG_3.md](ALIGNMENT_PhaseG_3.md)  
+> **创建日期**: 2026-05-19
+> **依赖**: [ALIGNMENT_PhaseG_3.md](ALIGNMENT_PhaseG_3.md)
 > **设计结论**: 采用“统一容器读取 + 独立格式解码 + MAP 分阶段”的插件化架构
 
 ---
