@@ -226,6 +226,27 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(libwebp)
 message(STATUS "libwebp: integrated via FetchContent (v1.5.0)")
 
+# macOS universal build hack:
+# webp 内部用 host arch try_compile 探测 SIMD; macos-14 runner 是 arm64 (M1) 主机,
+# 探测 SSE2 失败 -> webp 关掉 SSE2 detection, 但 sharpyuv_gamma.c 等非 SIMD 源仍
+# 包含返回 __m128 类型的 inline 函数, cross-compile x86_64 切片时 clang 抛
+# "SSE2 register return with SSE2 disabled" 错误.
+# 修法: 给所有 webp target 强制加 -msse2; arm64 切片上 Apple Clang 会忽略 (no-op).
+if(APPLE)
+    set(_webp_targets_to_patch
+        webp webpdecoder webpdemux sharpyuv
+        webpdsp webpdspdecode webpencode
+        webputils webputilsdecode webpdecode)
+    foreach(_webp_tgt IN LISTS _webp_targets_to_patch)
+        if(TARGET ${_webp_tgt})
+            target_compile_options(${_webp_tgt} PRIVATE
+                $<$<COMPILE_LANGUAGE:C>:-msse2>
+                $<$<COMPILE_LANGUAGE:CXX>:-msse2>)
+        endif()
+    endforeach()
+    unset(_webp_targets_to_patch)
+endif()
+
 # ==================== Lumen (lua51) 库路径 ====================
 
 # 允许外部指定, 否则使用默认路径
