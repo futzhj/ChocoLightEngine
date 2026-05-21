@@ -184,6 +184,7 @@ message(STATUS "miniz: integrated via FetchContent (3.0.2)")
      ${ZSTD_DIR}/decompress/zstd_decompress_block.c
  )
  add_library(choco_zstd STATIC ${ZSTD_SOURCES})
+ target_compile_definitions(choco_zstd PRIVATE ZSTD_DISABLE_ASM)
  target_include_directories(choco_zstd PUBLIC
      ${ZSTD_DIR}
      ${ZSTD_DIR}/common
@@ -198,6 +199,7 @@ message(STATUS "miniz: integrated via FetchContent (3.0.2)")
  set(LZ4_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/lz4")
  add_library(choco_lz4 STATIC
      ${LZ4_DIR}/lz4.c
+     ${LZ4_DIR}/lz4hc.c
      ${LZ4_DIR}/lz4frame.c
      ${LZ4_DIR}/xxhash.c
  )
