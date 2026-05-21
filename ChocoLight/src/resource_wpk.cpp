@@ -1,6 +1,10 @@
 #include "resource_package.h"
 
+#include "lz4frame.h"
 #include "miniz.h"
+#define ZSTD_STATIC_LINKING_ONLY
+#include "zstd.h"
+#undef ZSTD_STATIC_LINKING_ONLY
 
 #include <algorithm>
 #include <array>
@@ -272,6 +276,80 @@ std::string LowerAscii(std::string value) {
      return TryInflateWithWindowBits(src, srcSize, -15, out);
  }
 
+ using NeoxDecompressFn = bool (*)(const uint8_t* src, size_t srcSize, std::string& out);
+
+ bool TryNeoxCompressedWithOffsets(NeoxDecompressFn fn, const uint8_t* src, size_t srcSize, std::string& out) {
+     if (!fn || !src || srcSize <= 4) return false;
+     if (fn(src + 4, srcSize - 4u, out)) return true;
+     if (srcSize <= 8) return false;
+     return fn(src + 8, srcSize - 8u, out);
+ }
+
+ bool TryZstdDecompress(const uint8_t* src, size_t srcSize, std::string& out) {
+     if (!src || srcSize == 0) return false;
+
+     size_t outCap = 0;
+     const unsigned long long frameSize = ZSTD_getFrameContentSize(src, srcSize);
+     if (frameSize != ZSTD_CONTENTSIZE_ERROR && frameSize != ZSTD_CONTENTSIZE_UNKNOWN) {
+         if (frameSize > static_cast<unsigned long long>(kWpkDecodeCapLimit)) return false;
+         outCap = static_cast<size_t>(frameSize);
+     } else {
+         const unsigned long long bound = ZSTD_decompressBound(src, srcSize);
+         if (bound == ZSTD_CONTENTSIZE_ERROR || bound == ZSTD_CONTENTSIZE_UNKNOWN) return false;
+         if (bound > static_cast<unsigned long long>(kWpkDecodeCapLimit)) return false;
+         outCap = static_cast<size_t>(bound);
+     }
+
+     if (outCap == 0) {
+         out.clear();
+         return true;
+     }
+
+     std::string tmp(outCap, '\0');
+     const size_t ret = ZSTD_decompress(tmp.data(), outCap, src, srcSize);
+     if (ZSTD_isError(ret) || ret > outCap) return false;
+     tmp.resize(ret);
+     out.swap(tmp);
+     return true;
+ }
+
+ bool TryLz4fDecompress(const uint8_t* src, size_t srcSize, std::string& out) {
+     if (!src || srcSize == 0) return false;
+
+     LZ4F_dctx* dctx = nullptr;
+     const size_t createRet = LZ4F_createDecompressionContext(&dctx, LZ4F_VERSION);
+     if (LZ4F_isError(createRet)) return false;
+     struct DctxGuard {
+         LZ4F_dctx* value;
+         ~DctxGuard() { if (value) LZ4F_freeDecompressionContext(value); }
+     } guard{dctx};
+
+     std::string result;
+     result.reserve(std::min<size_t>(srcSize * 4u, kWpkDecodeCapLimit));
+     std::vector<char> chunk(64u * 1024u, 0);
+
+     const uint8_t* inPtr = src;
+     size_t inLeft = srcSize;
+     while (inLeft > 0) {
+         size_t srcConsumed = inLeft;
+         size_t dstSize = chunk.size();
+         const size_t ret = LZ4F_decompress(dctx, chunk.data(), &dstSize, inPtr, &srcConsumed, nullptr);
+         if (LZ4F_isError(ret)) return false;
+         if (dstSize != 0) {
+             if (result.size() > kWpkDecodeCapLimit - dstSize) return false;
+             result.append(chunk.data(), dstSize);
+         }
+         inPtr += srcConsumed;
+         inLeft -= srcConsumed;
+         if (ret == 0) {
+             out.swap(result);
+             return true;
+         }
+         if (srcConsumed == 0 && dstSize == 0) return false;
+     }
+     return false;
+ }
+
  void GenerateAesKeyFromHeader(const uint8_t* in, size_t inSize, uint8_t outKey[16]) {
      const uint32_t dataSize = static_cast<uint32_t>(inSize - 8u);
      outKey[0] = static_cast<uint8_t>(dataSize % 0xFDu);
@@ -377,13 +455,13 @@ std::string LowerAscii(std::string value) {
          return true;
      }
      if (magic == kNeoxMagicZlib || magic == kNeoxMagicZlia) {
-         if (src.size() <= 4) return false;
-         if (TryZlibDecompress(p + 4, src.size() - 4u, out)) return true;
-         if (src.size() > 8) return TryZlibDecompress(p + 8, src.size() - 8u, out);
-         return false;
+         return TryNeoxCompressedWithOffsets(&TryZlibDecompress, p, src.size(), out);
      }
-     if (magic == kNeoxMagicZstd || magic == kNeoxMagicLz4f) {
-         return false;
+     if (magic == kNeoxMagicZstd) {
+         return TryNeoxCompressedWithOffsets(&TryZstdDecompress, p, src.size(), out);
+     }
+     if (magic == kNeoxMagicLz4f) {
+         return TryNeoxCompressedWithOffsets(&TryLz4fDecompress, p, src.size(), out);
      }
      return false;
  }
@@ -444,8 +522,8 @@ public:
     explicit WpkPackage(std::string path)
         : path_(std::move(path)) {}
 
-    // SKPE -> SKPW 解密：去 4 字节 "SKPE" magic，剩余整段 reverse + XOR 0x5A
-    // 参考：E:\jinyiNew\GGELUA_SDL3\deps\Sources\grr\mygxy\wpk.c:2870-2894
+    // SKPE -> SKPW 閻熸瑱绲介惁鎴︽晬濮橆剙绠?4 閻庢稒顨夋俊?"SKPE" magic闁挎稑鑻晶鎸庢媴濞嗘劖娈绘繛?reverse + XOR 0x5A
+    // 闁告瑥鍊介埀顒€鍠涚槐鐧?\jinyiNew\GGELUA_SDL3\deps\Sources\grr\mygxy\wpk.c:2870-2894
     static bool DecryptSkpeToSkpw(const std::string& body, std::string& out) {
         const size_t n = body.size();
         out.resize(n);
@@ -476,13 +554,13 @@ public:
             return false;
         }
 
-        // 读前 4 字节探外层 magic
+        // 閻犲洩顕ф晶?4 閻庢稒顨夋俊顓㈠箳閵忕媭妯嗛悘?magic
         std::string magic;
         if (!ReadAt(fp, 0, 4, magic, err)) return false;
 
-        // plain 持有真正的 SKPW 数据：
-        //   SKPW 路径 → 原内容直读
-        //   SKPE 路径 → 解密结果（reverse + XOR 0x5A）
+        // plain 闁归晲鐒﹀﹢渚€鎯囬悢鍓插妧闁?SKPW 闁轰胶澧楀畵渚€鏁?
+        //   SKPW 閻犱警鍨扮欢?闁?闁告鍠庨崬瀵糕偓鐟版贡濞茶法鎷?
+        //   SKPE 閻犱警鍨扮欢?闁?閻熸瑱绲介惁鎴犵磼閹惧浜柨娑樻緛everse + XOR 0x5A闁?
         std::string plain;
         std::string subtype;
 
@@ -510,7 +588,7 @@ public:
             return false;
         }
 
-        // 校验解密结果（SKPE 解出后必须是 SKPW）
+        // 闁哄稄绻濋悰娆戞喆閿濆懐妲曠紓浣规尰閻忓鏁嶉崷鐛絇E 閻熸瑱绲介崵顓㈠触鎼达紕绠戝銈囩帛濡?SKPW闁?
         if (plain.size() < 32) {
             err = "IDX too small after decode";
             return false;

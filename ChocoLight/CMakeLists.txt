@@ -169,6 +169,44 @@ file(WRITE "${miniz_BINARY_DIR}/miniz_export.h"
     "#endif\n"
 )
 message(STATUS "miniz: integrated via FetchContent (3.0.2)")
+ 
+ set(ZSTD_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/zstd")
+ set(ZSTD_SOURCES
+     ${ZSTD_DIR}/common/debug.c
+     ${ZSTD_DIR}/common/entropy_common.c
+     ${ZSTD_DIR}/common/error_private.c
+     ${ZSTD_DIR}/common/fse_decompress.c
+     ${ZSTD_DIR}/common/xxhash.c
+     ${ZSTD_DIR}/common/zstd_common.c
+     ${ZSTD_DIR}/decompress/huf_decompress.c
+     ${ZSTD_DIR}/decompress/zstd_ddict.c
+     ${ZSTD_DIR}/decompress/zstd_decompress.c
+     ${ZSTD_DIR}/decompress/zstd_decompress_block.c
+ )
+ add_library(choco_zstd STATIC ${ZSTD_SOURCES})
+ target_include_directories(choco_zstd PUBLIC
+     ${ZSTD_DIR}
+     ${ZSTD_DIR}/common
+     ${ZSTD_DIR}/decompress
+ )
+ if(MSVC)
+     target_compile_options(choco_zstd PRIVATE /W0)
+ else()
+     target_compile_options(choco_zstd PRIVATE -w)
+ endif()
+ 
+ set(LZ4_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/lz4")
+ add_library(choco_lz4 STATIC
+     ${LZ4_DIR}/lz4.c
+     ${LZ4_DIR}/lz4frame.c
+     ${LZ4_DIR}/xxhash.c
+ )
+ target_include_directories(choco_lz4 PUBLIC ${LZ4_DIR})
+ if(MSVC)
+     target_compile_options(choco_lz4 PRIVATE /W0)
+ else()
+     target_compile_options(choco_lz4 PRIVATE -w)
+ endif()
 
 # ==================== Phase BC T1: ENet (FetchContent) ====================
 # ENet 1.3.18 — reliable UDP library, MIT license
@@ -572,6 +610,8 @@ endif()
 
 # Phase BC T6 — cJSON (RPC + Room 序列化, 全平台启用)
 target_link_libraries(Light PRIVATE cjson)
+ target_link_libraries(Light PRIVATE choco_zstd)
+ target_link_libraries(Light PRIVATE choco_lz4)
 
 # jpgd 头文件路径 (mx_map JPEG fallback decoder, 源文件已加入 LIGHT_SOURCES)
 target_include_directories(Light PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/third_party/jpgd)
