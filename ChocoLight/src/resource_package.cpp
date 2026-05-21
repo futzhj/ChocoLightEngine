@@ -159,6 +159,15 @@ bool ProbePackageFile(const std::string& path, PackageInfo& info, std::string& e
         info.supported = true;
         return true;
     }
+    // SKPE: myxy 私有加密 WPK 变体，解密后内部即标准 SKPW
+    // 加密：明文 SKPW 整体 reverse 后 XOR 0x5A，再前置 4 字节 "SKPE" magic
+    // 参考：E:\jinyiNew\GGELUA_SDL3\deps\Sources\grr\mygxy\wpk.c:2870-2894
+    if (magic == "SKPE") {
+        info.kind = "WPK";
+        info.subtype = "SKPE";
+        info.supported = true;
+        return true;
+    }
     if (magic == "0SLF") {
         info.kind = "FLS";
         info.subtype = "0SLF";

@@ -44,6 +44,17 @@ public:
     explicit WpkPackage(std::string path)
         : path_(std::move(path)) {}
 
+    // SKPE -> SKPW 解密：去 4 字节 "SKPE" magic，剩余整段 reverse + XOR 0x5A
+    // 参考：E:\jinyiNew\GGELUA_SDL3\deps\Sources\grr\mygxy\wpk.c:2870-2894
+    static bool DecryptSkpeToSkpw(const std::string& body, std::string& out) {
+        const size_t n = body.size();
+        out.resize(n);
+        for (size_t i = 0; i < n; ++i) {
+            out[i] = static_cast<char>(static_cast<uint8_t>(body[n - 1 - i]) ^ 0x5A);
+        }
+        return true;
+    }
+
     bool Init(std::string& err) {
         FILE* fp = std::fopen(path_.c_str(), "rb");
         if (!fp) {
@@ -60,32 +71,66 @@ public:
             err = "failed to determine IDX size";
             return false;
         }
-        if (fileSize < 32) {
+        if (fileSize < 4) {
             err = "IDX too small";
             return false;
         }
 
-        std::string header;
-        if (!ReadAt(fp, 0, 32, header, err)) return false;
-        if (header.substr(0, 4) != "SKPW") {
+        // 读前 4 字节探外层 magic
+        std::string magic;
+        if (!ReadAt(fp, 0, 4, magic, err)) return false;
+
+        // plain 持有真正的 SKPW 数据：
+        //   SKPW 路径 → 原内容直读
+        //   SKPE 路径 → 解密结果（reverse + XOR 0x5A）
+        std::string plain;
+        std::string subtype;
+
+        if (magic == "SKPE") {
+            if (fileSize <= 4) {
+                err = "SKPE too small";
+                return false;
+            }
+            std::string body;
+            if (!ReadAt(fp, 4, fileSize - 4, body, err)) return false;
+            if (!DecryptSkpeToSkpw(body, plain)) {
+                err = "SKPE decrypt failed";
+                return false;
+            }
+            subtype = "SKPE";
+        } else if (magic == "SKPW") {
+            if (fileSize < 32) {
+                err = "IDX too small";
+                return false;
+            }
+            if (!ReadAt(fp, 0, fileSize, plain, err)) return false;
+            subtype = "SKPW";
+        } else {
             err = "invalid IDX magic";
             return false;
         }
 
-        const auto* h = reinterpret_cast<const uint8_t*>(header.data());
+        // 校验解密结果（SKPE 解出后必须是 SKPW）
+        if (plain.size() < 32) {
+            err = "IDX too small after decode";
+            return false;
+        }
+        if (plain.substr(0, 4) != "SKPW") {
+            err = "decoded magic is not SKPW: " + plain.substr(0, 4);
+            return false;
+        }
+
+        const auto* h = reinterpret_cast<const uint8_t*>(plain.data());
         uint32_t count = ReadLE32(h + 12);
         uint64_t recordsOffset = 32;
         uint64_t recordsBytes = static_cast<uint64_t>(count) * 28u;
-        if (!RangeInFile(fileSize, recordsOffset, recordsBytes)) {
+        if (plain.size() < recordsOffset + recordsBytes) {
             err = "invalid IDX record range";
             return false;
         }
 
-        std::string records;
-        if (!ReadAt(fp, recordsOffset, recordsBytes, records, err)) return false;
-
         info_.kind = "WPK";
-        info_.subtype = "SKPW";
+        info_.subtype = subtype;
         info_.path = path_;
         info_.count = count;
         info_.indexOffset = recordsOffset;
@@ -93,7 +138,7 @@ public:
 
         entries_.reserve(count);
         for (uint32_t i = 0; i < count; ++i) {
-            const auto* p = reinterpret_cast<const uint8_t*>(records.data() + static_cast<size_t>(i) * 28u);
+            const auto* p = reinterpret_cast<const uint8_t*>(plain.data() + recordsOffset + static_cast<size_t>(i) * 28u);
             ResourceEntry e;
             e.md5 = HexLower(p, 16);
             e.size = ReadLE32(p + 16);
