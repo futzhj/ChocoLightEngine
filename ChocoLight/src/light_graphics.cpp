@@ -63,6 +63,8 @@ extern "C" {
 // Phase F.0.11.6 — 窗口尺寸 extern (impl 在 light_ui.cpp)
 extern "C" int Light_GetWindowWidth();
 extern "C" int Light_GetWindowHeight();
+extern "C" int Light_GetFramebufferWidth();
+extern "C" int Light_GetFramebufferHeight();
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -261,8 +263,6 @@ static int l_GetColor(lua_State* L) {
 /// @param canvas Canvas|nil Canvas 离屏画布, nil 恢复默认
 /// @return void
 static int l_SetCanvas(lua_State* L) {
-    static int savedViewport[4] = {0, 0, 800, 600};
-
     // Phase E.3.2: 切换渲染目标前必须 Flush 所有 batch
     // (否则当前 batch 会绘到新 FBO 上, 破坏画家顺序)
     if (BatchRenderer::IsInited())    BatchRenderer::Flush();
@@ -275,9 +275,12 @@ static int l_SetCanvas(lua_State* L) {
         if (HDRRenderer::IsEnabled() && HDRRenderer::IsPaused()) {
             HDRRenderer::Resume();  // 内部 BindFBO(HDR_RT) + SetViewport
         } else {
+            int fbW = Light_GetFramebufferWidth();
+            int fbH = Light_GetFramebufferHeight();
+            if (fbW <= 0) fbW = Light_GetWindowWidth();
+            if (fbH <= 0) fbH = Light_GetWindowHeight();
             g_render->UnbindFBO();
-            g_render->SetViewport(savedViewport[0], savedViewport[1],
-                                  savedViewport[2], savedViewport[3]);
+            g_render->SetViewport(0, 0, fbW, fbH);
         }
         g_ctx.currentCanvas = nullptr;
     } else if (lua_istable(L, 1)) {
@@ -600,9 +603,12 @@ static int l_PopCanvas(lua_State* L) {
     // 恢复上一个 canvas (nullptr = 默认渲染目标)
     if (slot.canvasCtx == nullptr) {
         if (g_render) {
+            int fbW = Light_GetFramebufferWidth();
+            int fbH = Light_GetFramebufferHeight();
+            if (fbW <= 0) fbW = Light_GetWindowWidth();
+            if (fbH <= 0) fbH = Light_GetWindowHeight();
             g_render->UnbindFBO();
-            // viewport 用 800x600 默认 (与 SetCanvas savedViewport 兼容)
-            g_render->SetViewport(0, 0, 800, 600);
+            g_render->SetViewport(0, 0, fbW, fbH);
         }
         g_ctx.currentCanvas = nullptr;
     } else {

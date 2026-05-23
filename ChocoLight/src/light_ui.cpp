@@ -104,15 +104,21 @@ static bool EnsurePlatform() {
 
 // ==================== 2D 正交投影辅助 ====================
 
-static void SetupOrthoProjection(int width, int height) {
+static void SetupOrthoProjection() {
+    if (!g_mainWindow) return;
+    int winW = 0, winH = 0;
+    int fbW = 0, fbH = 0;
+    PlatformWindow::GetWindowSize(g_mainWindow, &winW, &winH);
+    PlatformWindow::GetFramebufferSize(g_mainWindow, &fbW, &fbH);
+
     if (g_render) {
-        g_render->SetViewport(0, 0, width, height);
-        g_render->LoadOrtho(0, (float)width, (float)height, 0, -1.0f, 1.0f);
+        g_render->SetViewport(0, 0, fbW, fbH);
+        g_render->LoadOrtho(0, (float)winW, (float)winH, 0, -1.0f, 1.0f);
     } else {
 #if !defined(__EMSCRIPTEN__) && !defined(__ANDROID__) && !defined(CHOCO_PLATFORM_IOS)
         glMatrixMode(GL_PROJECTION);
         glLoadIdentity();
-        glOrtho(0, width, height, 0, -1.0, 1.0);
+        glOrtho(0, winW, winH, 0, -1.0, 1.0);
         glMatrixMode(GL_MODELVIEW);
         glLoadIdentity();
 #endif
@@ -400,10 +406,7 @@ extern "C" void Time_OnTimerEvent(lua_State* L, int timer_id);
 
 /// 帧缓冲尺寸变更 → 更新视口和投影
 static void OnFramebufferResize(int width, int height) {
-    if (g_render) {
-        g_render->SetViewport(0, 0, width, height);
-    }
-    SetupOrthoProjection(width, height);
+    SetupOrthoProjection();
 }
 
 /// 处理一帧内累积的所有事件
@@ -601,9 +604,7 @@ static int l_Window_Open(lua_State* L) {
     }
 
     // 初始视口 + 2D 正交投影
-    int fbW, fbH;
-    PlatformWindow::GetFramebufferSize(g_mainWindow, &fbW, &fbH);
-    SetupOrthoProjection(fbW, fbH);
+    SetupOrthoProjection();
 
     // 初始颜色
     g_render->SetColor(1.0f, 1.0f, 1.0f, 1.0f);
@@ -657,6 +658,30 @@ extern "C" int Light_GetWindowHeight() {
     int w = 0, h = 0;
     if (g_mainWindow) PlatformWindow::GetWindowSize(g_mainWindow, &w, &h);
     return h;
+}
+
+extern "C" int Light_GetFramebufferWidth() {
+    int w = 0, h = 0;
+    if (g_mainWindow) PlatformWindow::GetFramebufferSize(g_mainWindow, &w, &h);
+    return w;
+}
+
+extern "C" int Light_GetFramebufferHeight() {
+    int w = 0, h = 0;
+    if (g_mainWindow) PlatformWindow::GetFramebufferSize(g_mainWindow, &w, &h);
+    return h;
+}
+
+static int l_Window_GetDPIScale(lua_State* L) {
+    int winW = 1, winH = 1;
+    int fbW = 1, fbH = 1;
+    if (g_mainWindow) {
+        PlatformWindow::GetWindowSize(g_mainWindow, &winW, &winH);
+        PlatformWindow::GetFramebufferSize(g_mainWindow, &fbW, &fbH);
+    }
+    float scale = (winW > 0) ? (float)fbW / (float)winW : 1.0f;
+    lua_pushnumber(L, scale);
+    return 1;
 }
 
 static int l_Window_GetWidth(lua_State* L) {
@@ -1295,6 +1320,7 @@ int luaopen_Light_UI_Window(lua_State* L) {
             {"SetHeight",     l_Window_SetHeight},
             {"SetDimensions", l_Window_SetDimensions},
             {"SetVSync",      l_Window_SetVSync},
+            {"GetDPIScale",   l_Window_GetDPIScale},
             {"SetOrientation", l_Window_SetOrientation},
             // Phase AQ — TextInput / IME (6 个方法)
             {"StartTextInput",        l_Window_StartTextInput},
